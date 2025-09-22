@@ -21,25 +21,11 @@ test.describe('인천대학교 이러닝 시스템 QA 테스트', () => {
   test.describe('로그인 기능 테스트', () => {
     
     test('TC_001: 유효한 아이디/비밀번호로 로그인 성공', async ({ page }) => {
-      // 로그인 페이지로 이동 또는 로그인 폼 찾기
       await page.click('text=로그인');
-      
-      // 아이디 입력
       await page.fill('#username', VALID_USERNAME);
-      // 또는 다른 셀렉터: await page.fill('input[name="username"]', VALID_USERNAME);
-      
-      // 비밀번호 입력
       await page.fill('#password', VALID_PASSWORD);
-      // 또는 다른 셀렉터: await page.fill('input[name="password"]', VALID_PASSWORD);
-      
-      // 로그인 버튼 클릭
       await page.click('button:has-text("로그인")');
-      // 또는 다른 셀렉터: await page.click('#login-button');
-      
-      // 성공적으로 로그인되어 메인 페이지로 이동했는지 확인
       await expect(page).toHaveURL(/.*\/main|.*\/dashboard|.*\/home/);
-      
-      // 로그인 성공 후 나타나는 요소 확인 (예: 사용자 메뉴, 로그아웃 버튼 등)
       await expect(page.locator('text=로그아웃')).toBeVisible();
     });
 

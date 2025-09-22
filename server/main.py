@@ -4,7 +4,7 @@ import os
 from typing import List, Any, Optional, Dict
 
 import requests
-import google.generativeai as genai
+from openai import OpenAI
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -56,12 +56,13 @@ class DomElement(BaseModel):
     element_type: str = ""  # button, input, link, etc.
 
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 
-# Configure genai library
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Configure OpenAI client
+client = None
+if OPENAI_API_KEY:
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 def _build_prompt(document_content: str) -> str:
@@ -82,47 +83,35 @@ def _build_prompt(document_content: str) -> str:
     )
 
 
-def _invoke_gemini(prompt: str) -> str:
+def _invoke_openai(prompt: str) -> str:
     try:
-        # 안전 설정 - 모든 카테고리에 대해 낮은 수준으로 설정
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        if not client:
+            print("OpenAI client not configured")
+            return ""
         
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        
-        generation_config = genai.types.GenerationConfig(
-            temperature=0.4,
-            max_output_tokens=2048,
+        print(f"Calling OpenAI API with model: {OPENAI_MODEL}")
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            max_completion_tokens=2048
         )
         
-        response = model.generate_content(
-            prompt,
-            generation_config=generation_config,
-            safety_settings=safety_settings
-        )
+        print(f"OpenAI response received: {len(response.choices)} choices")
+        if response.choices and response.choices[0].message:
+            content = response.choices[0].message.content or ""
+            print(f"Response content length: {len(content)}")
+            print(f"Response preview: {content[:200]}...")
+            return content
         
-        # Handle cases where response.text is not available
-        if hasattr(response, 'text') and response.text:
-            return response.text
-        elif hasattr(response, 'candidates') and response.candidates:
-            # Try to extract text from candidates
-            for candidate in response.candidates:
-                if hasattr(candidate, 'content') and candidate.content:
-                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                        for part in candidate.content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                return part.text
-        
-        # If no text found, return empty string to trigger fallback
+        # If no response found, return empty string to trigger fallback
+        print("No content in OpenAI response")
         return ""
         
     except Exception as e:
         # Return empty string to trigger fallback instead of raising exception
-        print(f"Gemini API error: {str(e)}")
+        print(f"OpenAI API error: {str(e)}")
         return ""
 
 
@@ -375,7 +364,7 @@ def _create_fallback_scenarios() -> List[TestScenario]:
         )
     ]
 
-def _parse_gemini_response(text: str) -> List[TestScenario]:
+def _parse_openai_response(text: str) -> List[TestScenario]:
     text = text.strip()
     
     # Handle empty or invalid response
@@ -425,22 +414,22 @@ def _parse_gemini_response(text: str) -> List[TestScenario]:
         return _create_fallback_scenarios()
 
 
-async def call_gemini_api(document_content: str) -> List[TestScenario]:
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
+async def call_openai_api(document_content: str) -> List[TestScenario]:
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
 
     prompt = _build_prompt(document_content)
-    response_text = await asyncio.to_thread(_invoke_gemini, prompt)
-    return _parse_gemini_response(response_text)
+    response_text = await asyncio.to_thread(_invoke_openai, prompt)
+    return _parse_openai_response(response_text)
 
-async def call_gemini_api_with_dom(dom_elements: List[DomElement], document_content: Optional[str] = None) -> List[TestScenario]:
+async def call_openai_api_with_dom(dom_elements: List[DomElement], document_content: Optional[str] = None) -> List[TestScenario]:
     """DOM 구조를 바탕으로 AI 테스트 시나리오 생성"""
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not configured")
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
 
     prompt = _build_prompt_from_dom(dom_elements, document_content)
-    response_text = await asyncio.to_thread(_invoke_gemini, prompt)
-    return _parse_gemini_response(response_text)
+    response_text = await asyncio.to_thread(_invoke_openai, prompt)
+    return _parse_openai_response(response_text)
 
 @app.get("/")
 async def root():
@@ -450,9 +439,9 @@ async def root():
 async def debug_config():
     """디버깅용: 환경변수 확인"""
     return {
-        "api_key_configured": bool(GEMINI_API_KEY),
-        "api_key_length": len(GEMINI_API_KEY) if GEMINI_API_KEY else 0,
-        "model": GEMINI_MODEL
+        "api_key_configured": bool(OPENAI_API_KEY),
+        "api_key_length": len(OPENAI_API_KEY) if OPENAI_API_KEY else 0,
+        "model": OPENAI_MODEL
     }
 
 @app.post("/generate-test-plan", response_model=List[TestScenario])
@@ -461,7 +450,7 @@ async def generate_test_plan(request: DocumentRequest):
         raise HTTPException(status_code=400, detail="Document content cannot be empty")
 
     try:
-        test_scenarios = await call_gemini_api(request.document_content)
+        test_scenarios = await call_openai_api(request.document_content)
         return test_scenarios
     except HTTPException:
         raise
@@ -485,7 +474,7 @@ async def analyze_and_generate_test_plan(request: UrlAnalysisRequest):
             raise HTTPException(status_code=404, detail="No interactive elements found on the website")
         
         # 2. DOM + 기획서(선택) 기반 AI 테스트 시나리오 생성
-        test_scenarios = await call_gemini_api_with_dom(dom_elements, request.document_content)
+        test_scenarios = await call_openai_api_with_dom(dom_elements, request.document_content)
         
         return test_scenarios
         
