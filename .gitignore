@@ -1,0 +1,55 @@
+# macOS
+.DS_Store
+
+# Python virtual environments
+.venv/
+venv/
+env/
+desktop_app/.venv/
+source/
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.egg-info/
+build/
+dist/
+htmlcov/
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+.tox/
+.cache/
+
+# Desktop app build outputs
+desktop_app/build/
+desktop_app/dist/
+desktop_app/*.spec
+
+# Node / Playwright artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+playwright-report/
+server/playwright-report/
+server/test-results/
+
+# Sub-projects or external code
+/server/playwright-mcp/
+
+# Environment variables
+.env
+/server/.env
+
+# Generated or temporary files
+/server/generated_checklist.json
+/server/test_planning_doc.py
+
+# Editor/IDE settings
+.vscode/
+.idea/
