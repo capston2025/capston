@@ -1,13 +1,33 @@
 import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from playwright.async_api import async_playwright, Playwright
-from typing import Dict, Any, Optional
+from playwright.async_api import async_playwright, Playwright, expect
+from typing import Dict, Any, Optional, List
 
 app = FastAPI(title="MCP Host", description="Model Context Protocol Host for Browser Automation")
 
+# --- Data Models for Test Scenarios ---
+class TestStep(BaseModel):
+    description: str
+    action: str
+    selector: str
+    params: List[Any] = []
+
+class Assertion(BaseModel):
+    description: str
+    selector: str
+    condition: str
+    params: List[Any] = []
+
+class TestScenario(BaseModel):
+    id: str
+    priority: str
+    scenario: str
+    steps: List[TestStep]
+    assertion: Assertion
+
 class McpRequest(BaseModel):
-    action: str = Field(..., description="The action to perform, e.g., 'analyze_page'.")
+    action: str = Field(..., description="The action to perform, e.g., 'analyze_page' or 'execute_scenario'.")
     params: Dict[str, Any] = Field(default_factory=dict, description="Parameters for the action.")
 
 # Global Playwright instance
@@ -100,6 +120,66 @@ async def analyze_page(url: str) -> Dict[str, Any]:
         await browser.close()
 
 
+async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
+    """
+    Executes a full test scenario using Playwright.
+    """
+    if not playwright_instance:
+        raise HTTPException(status_code=503, detail="Playwright is not initialized.")
+
+    logs = []
+    browser = await playwright_instance.chromium.launch(headless=True)
+    page = await browser.new_page()
+
+    try:
+        # Handle initial navigation if specified as the first step
+        if scenario.steps and scenario.steps[0].action == 'goto':
+            step = scenario.steps.pop(0)
+            url = step.params[0] if step.params else "about:blank"
+            await page.goto(url, timeout=30000)
+            logs.append(f"SUCCESS: Navigated to {url}")
+
+        # Execute remaining steps
+        for step in scenario.steps:
+            logs.append(f"Executing step: {step.description}")
+            element = page.locator(step.selector)
+
+            if step.action == 'click':
+                await element.click(timeout=10000)
+            elif step.action == 'fill':
+                await element.fill(str(step.params[0]), timeout=10000)
+            elif step.action == 'press':
+                await element.press(str(step.params[0]), timeout=10000)
+            else:
+                raise ValueError(f"Unsupported action: {step.action}")
+            logs.append(f"SUCCESS: {step.action} on '{step.selector}'")
+
+        # Execute assertion
+        logs.append(f"Executing assertion: {scenario.assertion.description}")
+        assertion = scenario.assertion
+        element = page.locator(assertion.selector)
+
+        if assertion.condition == 'is_visible':
+            await expect(element).to_be_visible(timeout=10000)
+        elif assertion.condition == 'contains_text':
+            await expect(element).to_contain_text(str(assertion.params[0]), timeout=10000)
+        elif assertion.condition == 'url_contains':
+            await expect(page).to_have_url(lambda url: str(assertion.params[0]) in url, timeout=10000)
+        else:
+            raise ValueError(f"Unsupported condition: {assertion.condition}")
+
+        logs.append(f"SUCCESS: Assertion passed.")
+        return {"status": "success", "logs": logs}
+
+    except Exception as e:
+        error_message = f"ERROR: {type(e).__name__} - {str(e)}"
+        logs.append(error_message)
+        print(f"Test scenario failed: {error_message}")
+        return {"status": "failed", "logs": logs, "error": error_message}
+    finally:
+        await browser.close()
+
+
 @app.post("/execute")
 async def execute_action(request: McpRequest):
     """
@@ -111,12 +191,20 @@ async def execute_action(request: McpRequest):
     if action == "analyze_page":
         url = params.get("url")
         if not url:
-            raise HTTPException(status_code=400, detail="URL parameter is required for 'analyze_page' action.")
+            raise HTTPException(status_code=400, detail="URL is required for 'analyze_page'.")
+        return await analyze_page(url)
 
-        result = await analyze_page(url)
-        if "error" in result:
-            raise HTTPException(status_code=500, detail=f"Failed to analyze page: {result['error']}")
-        return result
+    elif action == "execute_scenario":
+        scenario_data = params.get("scenario")
+        if not scenario_data:
+            raise HTTPException(status_code=400, detail="Scenario is required for 'execute_scenario'.")
+
+        try:
+            scenario = TestScenario(**scenario_data)
+            result = await run_test_scenario(scenario)
+            return result
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid scenario format: {e}")
 
     raise HTTPException(status_code=400, detail=f"Action '{action}' not supported.")
 

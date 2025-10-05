@@ -153,6 +153,55 @@ curl -X POST "http://localhost:8000/analyze-and-generate" \
 curl "http://localhost:8000/analyze-dom/https://example.com"
 ```
 
+### 테스트 시나리오 실행 (MCP 호스트 직접 호출)
+```bash
+# MCP 호스트의 /execute 엔드포인트로 직접 테스트 시나리오 실행
+curl -X POST "http://localhost:8001/execute" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "execute_scenario",
+    "params": {
+        "scenario": {
+            "id": "TC_LOGIN_01",
+            "priority": "High",
+            "scenario": "정상적인 로그인 테스트",
+            "steps": [
+                {
+                    "description": "로그인 페이지로 이동",
+                    "action": "goto",
+                    "selector": "",
+                    "params": ["https://example.com/login"]
+                },
+                {
+                    "description": "사용자 이름 입력",
+                    "action": "fill",
+                    "selector": "#username",
+                    "params": ["testuser"]
+                },
+                {
+                    "description": "비밀번호 입력",
+                    "action": "fill",
+                    "selector": "#password",
+                    "params": ["testpass"]
+                },
+                {
+                    "description": "로그인 버튼 클릭",
+                    "action": "click",
+                    "selector": "button[type=\"submit\"]",
+                    "params": []
+                }
+            ],
+            "assertion": {
+                "description": "로그인 후 대시보드 URL로 이동했는지 확인",
+                "selector": "body",
+                "condition": "url_contains",
+                "params": ["/dashboard"]
+            }
+        }
+    }
+}'
+```
+
 ## 👥 개발팀: 귀살대
 
 본 프로젝트는 캡스톤 프로젝트의 일환으로 개발되었으며, AI와 자동화 기술을 활용한 QA 혁신을 목표로 합니다.
