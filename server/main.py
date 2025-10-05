@@ -140,9 +140,6 @@ def _invoke_openai(prompt: str) -> str:
         return ""
 
 
-import subprocess
-import json as json_module
-
 def _load_mock_dom_elements(url: str) -> List[DomElement]:
     """Load mocked DOM metadata for the configured profile if available."""
 
@@ -255,115 +252,27 @@ def _load_mock_scenarios() -> List[TestScenario]:
     return scenarios
 
 
-async def call_mcp_playwright(action: str, params: dict) -> dict:
-    """실제 MCP Playwright 호출"""
+MCP_HOST_URL = os.getenv("MCP_HOST_URL", "http://localhost:8001")
+
+async def call_mcp_host(action: str, params: dict) -> dict:
+    """Calls the MCP host to perform a browser automation action."""
     try:
-        # MCP 명령 구성
-        mcp_command = {
-            "action": action,
-            "params": params
-        }
+        url = f"{MCP_HOST_URL}/execute"
+        payload = {"action": action, "params": params}
         
-        # MCP 클라이언트 호출 (간단한 구현)
-        # 실제 운영에서는 더 정교한 MCP 클라이언트 필요
+        # Use asyncio.to_thread to run the blocking requests call in a separate thread
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,  # Use the default executor
+            lambda: requests.post(url, json=payload, timeout=45)
+        )
         
-        if action == "analyze_page":
-            # Playwright로 실제 페이지 분석
-            # 여기서는 기본 Playwright 라이브러리 사용
-            return await _analyze_page_with_playwright(params["url"])
-        
-        return {}
-    except Exception as e:
-        print(f"MCP 호출 실패: {e}")
-        return {}
-
-async def _analyze_page_with_playwright(url: str) -> dict:
-    """Playwright로 실제 페이지 분석"""
-    try:
-        # 임시로 간단한 DOM 분석 (실제로는 더 정교해야 함)
-        # 이 부분이 실제 MCP Playwright 연동 포인트
-        
-        script = f"""
-import asyncio
-from playwright.async_api import async_playwright
-
-async def analyze():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto('{url}')
-        
-        # 폼 요소 찾기
-        inputs = await page.query_selector_all('input')
-        buttons = await page.query_selector_all('button')
-        
-        elements = []
-        for input_elem in inputs:
-            elem_type = await input_elem.get_attribute('type') or 'text'
-            elem_id = await input_elem.get_attribute('id')
-            elem_name = await input_elem.get_attribute('name')
-            elem_placeholder = await input_elem.get_attribute('placeholder')
-            
-            if elem_id:
-                selector = f"#{{elem_id}}"
-            elif elem_name:
-                selector = f"input[name='{{elem_name}}']"
-            else:
-                selector = "input"
-            
-            elements.append({{
-                "tag": "input",
-                "selector": selector,
-                "attributes": {{
-                    "type": elem_type,
-                    "id": elem_id,
-                    "name": elem_name,
-                    "placeholder": elem_placeholder
-                }},
-                "element_type": "input"
-            }})
-        
-        for button in buttons:
-            text = await button.inner_text()
-            button_type = await button.get_attribute('type') or 'button'
-            
-            elements.append({{
-                "tag": "button", 
-                "selector": f"button:has-text('{{text}}')",
-                "text": text,
-                "attributes": {{"type": button_type}},
-                "element_type": "button"
-            }})
-        
-        await browser.close()
-        return elements
-
-print(asyncio.run(analyze()))
-"""
-        
-        # Python 스크립트 실행 - JSON으로 안전하게 출력하도록 수정
-        import json as json_lib
-        safe_script = script.replace('print(asyncio.run(analyze()))', 'import json; print(json.dumps(asyncio.run(analyze())))')
-        
-        result = subprocess.run(['python', '-c', safe_script], 
-                              capture_output=True, text=True, timeout=30)
-        
-        if result.returncode == 0:
-            try:
-                elements_data = json_lib.loads(result.stdout.strip())
-                print(f"실제 DOM 분석 성공: {len(elements_data)}개 요소 발견")
-                return {"elements": elements_data}
-            except json_lib.JSONDecodeError as e:
-                print(f"JSON 파싱 오류: {e}")
-                print(f"Raw output: {result.stdout}")
-                return {"elements": []}
-        else:
-            print(f"Playwright 실행 오류: {result.stderr}")
-            return {"elements": []}
-            
-    except Exception as e:
-        print(f"페이지 분석 실패: {e}")
-        return {"elements": []}
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling MCP host: {e}")
+        # Return a dict with an error key to indicate failure
+        return {"error": str(e)}
 
 async def analyze_website_dom(url: str) -> List[DomElement]:
     """실제 MCP Playwright를 사용한 웹사이트 DOM 구조 분석"""
@@ -374,7 +283,7 @@ async def analyze_website_dom(url: str) -> List[DomElement]:
             return mocked
     
     # 실제 MCP 호출
-    mcp_result = await call_mcp_playwright("analyze_page", {"url": url})
+    mcp_result = await call_mcp_host("analyze_page", {"url": url})
     
     elements = []
     if "elements" in mcp_result:

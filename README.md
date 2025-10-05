@@ -16,8 +16,9 @@
 
 ```
 capston/
-├── server/                 # FastAPI 백엔드 서버
-│   ├── main.py            # 메인 API 서버 (DOM 분석, AI 연동)
+├── mcp/                   # MCP Host (Playwright 자동화 서버)
+├── server/                # FastAPI 백엔드 서버
+│   ├── main.py            # 메인 API 서버 (AI 연동)
 │   ├── mock_data/         # 테스트용 목 데이터
 │   └── CLAUDE.md          # 상세 개발 진행상황
 ├── agent/                 # React 웹 프론트엔드
@@ -56,6 +57,18 @@ capston/
 - **OS 수준 제어**: PyAutoGUI를 통한 시스템 자동화
 
 ## 🚀 실행 방법
+
+### MCP Host 시작
+```bash
+cd mcp
+pip install -r requirements.txt
+
+# Playwright 브라우저 드라이버 설치
+playwright install
+
+python main.py
+# MCP Host가 http://localhost:8001에서 실행됩니다
+```
 
 ### 백엔드 서버 시작
 ```bash
