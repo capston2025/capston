@@ -7,6 +7,7 @@ from typing import Iterable, Sequence
 
 from PyQt6.QtCore import QObject, QThread, pyqtSlot
 
+from app.services.backend_bridge import BackendBridge
 from app.services.pdf_service import PDFService
 from app.system.input_controller import InputController
 from app.ui.main_window import MainWindow
@@ -33,10 +34,12 @@ class AppController(QObject):
         self._pdf_service = self._config.pdf_service or PDFService()
         self._input_controller = self._config.input_controller or InputController()
         self._automation_worker_cls = self._config.automation_worker_factory or AutomationWorker
+        self._backend_bridge = BackendBridge()
 
         self._current_pdf: Path | None = None
         self._current_url: str | None = None
         self._checklist_items: Sequence[str] = ()
+        self._current_plan: Sequence[dict] = ()
         self._worker_thread: QThread | None = None
         self._worker: AutomationWorker | None = None
 
@@ -89,10 +92,6 @@ class AppController(QObject):
     # ------------------------------------------------------------------
     @pyqtSlot()
     def _on_start_requested(self) -> None:
-        if not self._current_pdf or not self._checklist_items:
-            self._window.append_log("⚠️ Please load a checklist PDF first.")
-            return
-
         if not self._current_url:
             self._window.append_log("⚠️ 테스트할 URL을 입력하거나 PDF에서 URL을 추출해주세요.")
             return
@@ -101,13 +100,52 @@ class AppController(QObject):
             self._window.append_log("⚠️ Automation already in progress.")
             return
 
+        try:
+            plan = self._backend_bridge.analyze_url_and_generate_plan(self._current_url)
+        except Exception as exc:
+            self._window.append_log(f"❌ 테스트 플랜 생성 실패: {exc}")
+            return
+
+        if not plan:
+            self._window.append_log("⚠️ 생성된 테스트 시나리오가 없습니다.")
+            return
+
+        self._current_plan = [
+            {
+                "id": scenario.id,
+                "priority": scenario.priority,
+                "scenario": scenario.scenario,
+                "steps": [
+                    {
+                        "description": step.description,
+                        "action": step.action,
+                        "selector": step.selector,
+                        "params": list(step.params),
+                    }
+                    for step in scenario.steps
+                ],
+                "assertion": {
+                    "description": scenario.assertion.description,
+                    "selector": scenario.assertion.selector,
+                    "condition": scenario.assertion.condition,
+                },
+            }
+            for scenario in plan
+        ]
+
+        self._checklist_items = [
+            f"{item['id']} [{item['priority']}] {item['scenario']}"
+            for item in self._current_plan
+        ]
+        self._window.show_checklist(self._checklist_items)
+
         self._window.set_busy(True)
-        self._start_worker(self._checklist_items, self._current_url)
+        self._start_worker(self._current_plan, self._current_url)
 
     # ------------------------------------------------------------------
-    def _start_worker(self, checklist: Iterable[str], target_url: str) -> None:
+    def _start_worker(self, plan: Iterable[dict], target_url: str) -> None:
         thread = QThread(self)
-        worker = self._automation_worker_cls(target_url, list(checklist))
+        worker = self._automation_worker_cls(target_url, list(plan))
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)

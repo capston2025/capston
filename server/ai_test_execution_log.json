@@ -1,0 +1,392 @@
+{
+  "ai_model": "OpenAI GPT-5",
+  "test_type": "AI Generated UI Test",
+  "summary": {
+    "total_scenarios": 4,
+    "successful_scenarios": 4,
+    "success_rate": "100.0%",
+    "execution_time": "8.76초"
+  },
+  "scenario_results": [
+    {
+      "id": "TC_001",
+      "name": "정상 로그인 시나리오",
+      "priority": "High",
+      "success": true
+    },
+    {
+      "id": "TC_002",
+      "name": "잘못된 사용자 이름으로 로그인 시도",
+      "priority": "High",
+      "success": true
+    },
+    {
+      "id": "TC_003",
+      "name": "잘못된 비밀번호로 로그인 시도",
+      "priority": "Medium",
+      "success": true
+    },
+    {
+      "id": "TC_004",
+      "name": "빈 사용자 이름과 비밀번호로 로그인 시도",
+      "priority": "Low",
+      "success": true
+    }
+  ],
+  "detailed_logs": [
+    {
+      "timestamp": "2025-09-23T19:37:11.096154",
+      "level": "INFO",
+      "message": "AI 테스트 시스템 초기화 중...",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:11.577812",
+      "level": "SUCCESS",
+      "message": "AI 테스트 환경 준비 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:11.577840",
+      "level": "INFO",
+      "message": "AI 시나리오 실행: TC_001",
+      "details": {
+        "scenario": "정상 로그인 시나리오",
+        "priority": "High"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.054634",
+      "level": "SUCCESS",
+      "message": "테스트 페이지 로딩 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.054664",
+      "level": "INFO",
+      "message": "단계 1: 사용자 이름 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#username",
+        "params": [
+          "valid_username"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.082165",
+      "level": "SUCCESS",
+      "message": "입력 완료: 사용자 이름 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.082188",
+      "level": "INFO",
+      "message": "단계 2: 비밀번호 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#password",
+        "params": [
+          "valid_password"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.101077",
+      "level": "SUCCESS",
+      "message": "입력 완료: 비밀번호 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.101098",
+      "level": "INFO",
+      "message": "단계 3: 로그인 버튼 클릭",
+      "details": {
+        "action": "click",
+        "selector": "button:has-text(\" Login\")",
+        "params": "없음"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.583119",
+      "level": "SUCCESS",
+      "message": "클릭 완료: 로그인 버튼 클릭",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:15.583147",
+      "level": "INFO",
+      "message": "AI 검증 실행: 로그인 성공 후 대시보드 페이지로 리다이렉션 확인",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.103607",
+      "level": "SUCCESS",
+      "message": "로그인 성공 검증 완료",
+      "details": {
+        "url": "https://the-internet.herokuapp.com/secure"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.103660",
+      "level": "SUCCESS",
+      "message": "AI 시나리오 TC_001 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.103675",
+      "level": "INFO",
+      "message": "AI 시나리오 실행: TC_002",
+      "details": {
+        "scenario": "잘못된 사용자 이름으로 로그인 시도",
+        "priority": "High"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.341628",
+      "level": "SUCCESS",
+      "message": "테스트 페이지 로딩 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.341757",
+      "level": "INFO",
+      "message": "단계 1: 잘못된 사용자 이름 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#username",
+        "params": [
+          "invalid_username"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.356902",
+      "level": "SUCCESS",
+      "message": "입력 완료: 잘못된 사용자 이름 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.357052",
+      "level": "INFO",
+      "message": "단계 2: 비밀번호 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#password",
+        "params": [
+          "valid_password"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.363831",
+      "level": "SUCCESS",
+      "message": "입력 완료: 비밀번호 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.363900",
+      "level": "INFO",
+      "message": "단계 3: 로그인 버튼 클릭",
+      "details": {
+        "action": "click",
+        "selector": "button:has-text(\" Login\")",
+        "params": "없음"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.835950",
+      "level": "SUCCESS",
+      "message": "클릭 완료: 로그인 버튼 클릭",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:16.836032",
+      "level": "INFO",
+      "message": "AI 검증 실행: 로그인 실패 메시지 확인",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.356599",
+      "level": "SUCCESS",
+      "message": "예상된 실패 검증 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.356659",
+      "level": "SUCCESS",
+      "message": "AI 시나리오 TC_002 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.356674",
+      "level": "INFO",
+      "message": "AI 시나리오 실행: TC_003",
+      "details": {
+        "scenario": "잘못된 비밀번호로 로그인 시도",
+        "priority": "Medium"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.595106",
+      "level": "SUCCESS",
+      "message": "테스트 페이지 로딩 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.595143",
+      "level": "INFO",
+      "message": "단계 1: 사용자 이름 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#username",
+        "params": [
+          "valid_username"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.604887",
+      "level": "SUCCESS",
+      "message": "입력 완료: 사용자 이름 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.604912",
+      "level": "INFO",
+      "message": "단계 2: 잘못된 비밀번호 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#password",
+        "params": [
+          "invalid_password"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.607667",
+      "level": "SUCCESS",
+      "message": "입력 완료: 잘못된 비밀번호 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:17.607690",
+      "level": "INFO",
+      "message": "단계 3: 로그인 버튼 클릭",
+      "details": {
+        "action": "click",
+        "selector": "button:has-text(\" Login\")",
+        "params": "없음"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.089846",
+      "level": "SUCCESS",
+      "message": "클릭 완료: 로그인 버튼 클릭",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.089915",
+      "level": "INFO",
+      "message": "AI 검증 실행: 로그인 실패 메시지 확인",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.610392",
+      "level": "SUCCESS",
+      "message": "예상된 실패 검증 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.610452",
+      "level": "SUCCESS",
+      "message": "AI 시나리오 TC_003 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.610468",
+      "level": "INFO",
+      "message": "AI 시나리오 실행: TC_004",
+      "details": {
+        "scenario": "빈 사용자 이름과 비밀번호로 로그인 시도",
+        "priority": "Low"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.848712",
+      "level": "SUCCESS",
+      "message": "테스트 페이지 로딩 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.848777",
+      "level": "INFO",
+      "message": "단계 1: 빈 사용자 이름 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#username",
+        "params": [
+          ""
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.862927",
+      "level": "SUCCESS",
+      "message": "입력 완료: 빈 사용자 이름 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.862970",
+      "level": "INFO",
+      "message": "단계 2: 빈 비밀번호 입력",
+      "details": {
+        "action": "fill",
+        "selector": "#password",
+        "params": [
+          ""
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.866051",
+      "level": "SUCCESS",
+      "message": "입력 완료: 빈 비밀번호 입력",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:18.866077",
+      "level": "INFO",
+      "message": "단계 3: 로그인 버튼 클릭",
+      "details": {
+        "action": "click",
+        "selector": "button:has-text(\" Login\")",
+        "params": "없음"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T19:37:19.333054",
+      "level": "SUCCESS",
+      "message": "클릭 완료: 로그인 버튼 클릭",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:19.333110",
+      "level": "INFO",
+      "message": "AI 검증 실행: 로그인 실패 메시지 확인",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:19.860935",
+      "level": "SUCCESS",
+      "message": "예상된 실패 검증 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T19:37:19.860996",
+      "level": "SUCCESS",
+      "message": "AI 시나리오 TC_004 완료",
+      "details": {}
+    }
+  ]
+}
