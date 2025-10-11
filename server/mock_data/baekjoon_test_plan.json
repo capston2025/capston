@@ -1,0 +1,173 @@
+{
+  "profile": "baekjoon",
+  "test_scenarios": [
+    {
+      "id": "TC_001",
+      "priority": "High",
+      "scenario": "로그인 성공 시나리오 (백준)",
+      "steps": [
+        {
+          "description": "상단 네비게이션에서 로그인 메뉴 선택",
+          "action": "click",
+          "selector": "a[href='/login']",
+          "params": []
+        },
+        {
+          "description": "아이디 입력",
+          "action": "fill",
+          "selector": "#login_form input[name='login_user_id']",
+          "params": ["demo_user"]
+        },
+        {
+          "description": "비밀번호 입력",
+          "action": "fill",
+          "selector": "#login_form input[name='login_user_password']",
+          "params": ["demo_password"]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login_form button[type='submit']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "헤더 영역에 사용자명이 노출되는지 확인",
+        "selector": "header .username, header .logged-in",
+        "condition": "text_contains('demo_user')"
+      }
+    },
+    {
+      "id": "TC_002",
+      "priority": "Medium",
+      "scenario": "잘못된 비밀번호로 로그인 실패",
+      "steps": [
+        {
+          "description": "로그인 페이지 진입",
+          "action": "click",
+          "selector": "a[href='/login']",
+          "params": []
+        },
+        {
+          "description": "아이디 입력",
+          "action": "fill",
+          "selector": "#login_form input[name='login_user_id']",
+          "params": ["demo_user"]
+        },
+        {
+          "description": "잘못된 비밀번호 입력",
+          "action": "fill",
+          "selector": "#login_form input[name='login_user_password']",
+          "params": ["wrong_password"]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login_form button[type='submit']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "오류 메시지가 표시되는지 확인",
+        "selector": ".login-error, .alert-danger, #login_form .text-danger",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC_003",
+      "priority": "Medium",
+      "scenario": "문제 검색 및 상세 페이지 접근",
+      "steps": [
+        {
+          "description": "검색 입력창에 문제 번호 입력",
+          "action": "fill",
+          "selector": "form[action='/problemset/search/'] input[name='query']",
+          "params": ["1000"]
+        },
+        {
+          "description": "검색 버튼 클릭",
+          "action": "click",
+          "selector": "form[action='/problemset/search/'] button[type='submit']",
+          "params": []
+        },
+        {
+          "description": "검색 결과에서 해당 문제 선택",
+          "action": "click",
+          "selector": "table.problem-list a[href='/problem/1000']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "문제 제목과 제한 정보가 노출되는지 확인",
+        "selector": "#problem_title, .problem-header",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC_004",
+      "priority": "High",
+      "scenario": "예제 코드 제출 플로우",
+      "steps": [
+        {
+          "description": "문제 상세에서 제출 버튼 클릭",
+          "action": "click",
+          "selector": "a[href='/submit/1000']",
+          "params": []
+        },
+        {
+          "description": "사용 언어 선택",
+          "action": "select",
+          "selector": "form[action^='/submit/'] select[name='language']",
+          "params": ["Python3"]
+        },
+        {
+          "description": "예제 코드 입력",
+          "action": "fill",
+          "selector": "form[action^='/submit/'] textarea[name='source']",
+          "params": ["print(\"Hello BOJ\")"]
+        },
+        {
+          "description": "제출 버튼 클릭",
+          "action": "click",
+          "selector": "form[action^='/submit/'] button[type='submit']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "제출 결과 페이지에서 채점 상태 확인",
+        "selector": "#status-table, .result span.result-text",
+        "condition": "text_contains('기다리는 중')"
+      }
+    },
+    {
+      "id": "TC_005",
+      "priority": "Low",
+      "scenario": "랭킹 페이지 진입 및 필터 확인",
+      "steps": [
+        {
+          "description": "헤더에서 랭킹 메뉴 클릭",
+          "action": "click",
+          "selector": "a[href='/ranklist']",
+          "params": []
+        },
+        {
+          "description": "랭킹 검색 필드에 닉네임 입력",
+          "action": "fill",
+          "selector": "form[action='/ranklist'] input[name='keyword']",
+          "params": ["demo_user"]
+        },
+        {
+          "description": "검색 버튼 클릭",
+          "action": "click",
+          "selector": "form[action='/ranklist'] button[type='submit']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "랭킹 테이블에서 검색한 닉네임 노출 확인",
+        "selector": "table#ranklist, table.ranklist",
+        "condition": "text_contains('demo_user')"
+      }
+    }
+  ]
+}

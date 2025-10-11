@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import List, Any, Optional, Dict
 
 import requests
@@ -57,12 +58,20 @@ class DomElement(BaseModel):
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT")
+OPENAI_VERBOSITY = os.getenv("OPENAI_VERBOSITY")
+OPENAI_MAX_COMPLETION_TOKENS = os.getenv("OPENAI_MAX_COMPLETION_TOKENS")
+OPENAI_FORCE_JSON = os.getenv("OPENAI_FORCE_JSON", "true").lower() in {"1", "true", "yes", "on"}
 
 # Configure OpenAI client
 client = None
 if OPENAI_API_KEY:
     client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Mock data configuration for offline demos / presentations
+GAIA_MOCK_PROFILE = os.getenv("GAIA_MOCK_PROFILE")
+MOCK_DATA_DIR = Path(__file__).parent / "mock_data"
 
 
 def _build_prompt(document_content: str) -> str:
@@ -90,13 +99,29 @@ def _invoke_openai(prompt: str) -> str:
             return ""
         
         print(f"Calling OpenAI API with model: {OPENAI_MODEL}")
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
+        request_payload: Dict[str, Any] = {
+            "model": OPENAI_MODEL,
+            "messages": [
                 {"role": "user", "content": prompt}
             ],
-            max_completion_tokens=2048
-        )
+        }
+
+        if OPENAI_REASONING_EFFORT:
+            request_payload["reasoning_effort"] = OPENAI_REASONING_EFFORT
+
+        if OPENAI_VERBOSITY:
+            request_payload["verbosity"] = OPENAI_VERBOSITY
+
+        if OPENAI_MAX_COMPLETION_TOKENS:
+            try:
+                request_payload["max_completion_tokens"] = int(OPENAI_MAX_COMPLETION_TOKENS)
+            except ValueError:
+                print("Ignoring OPENAI_MAX_COMPLETION_TOKENS - not an integer")
+
+        if OPENAI_FORCE_JSON:
+            request_payload["response_format"] = {"type": "json_object"}
+
+        response = client.chat.completions.create(**request_payload)
         
         print(f"OpenAI response received: {len(response.choices)} choices")
         if response.choices and response.choices[0].message:
@@ -115,124 +140,150 @@ def _invoke_openai(prompt: str) -> str:
         return ""
 
 
-import subprocess
-import json as json_module
+def _load_mock_dom_elements(url: str) -> List[DomElement]:
+    """Load mocked DOM metadata for the configured profile if available."""
 
-async def call_mcp_playwright(action: str, params: dict) -> dict:
-    """실제 MCP Playwright 호출"""
+    if not GAIA_MOCK_PROFILE:
+        return []
+
+    path = MOCK_DATA_DIR / f"{GAIA_MOCK_PROFILE}_dom.json"
+    if not path.exists():
+        return []
+
     try:
-        # MCP 명령 구성
-        mcp_command = {
-            "action": action,
-            "params": params
-        }
-        
-        # MCP 클라이언트 호출 (간단한 구현)
-        # 실제 운영에서는 더 정교한 MCP 클라이언트 필요
-        
-        if action == "analyze_page":
-            # Playwright로 실제 페이지 분석
-            # 여기서는 기본 Playwright 라이브러리 사용
-            return await _analyze_page_with_playwright(params["url"])
-        
-        return {}
-    except Exception as e:
-        print(f"MCP 호출 실패: {e}")
-        return {}
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(f"Mock DOM load failed: {exc}")
+        return []
 
-async def _analyze_page_with_playwright(url: str) -> dict:
-    """Playwright로 실제 페이지 분석"""
+    url_patterns = data.get("url_patterns", [])
+    if url_patterns and not any(pattern in url for pattern in url_patterns):
+        return []
+
+    elements: List[DomElement] = []
+    for raw in data.get("elements", []):
+        try:
+            elements.append(
+                DomElement(
+                    tag=raw.get("tag", ""),
+                    selector=raw.get("selector", ""),
+                    text=raw.get("text", ""),
+                    attributes=raw.get("attributes", {}),
+                    element_type=raw.get("element_type", ""),
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"Mock DOM element parse error: {exc}")
+
+    if elements:
+        print(
+            f"Loaded {len(elements)} mocked DOM elements for profile '{GAIA_MOCK_PROFILE}'"
+        )
+
+    return elements
+
+
+def _load_mock_scenarios() -> List[TestScenario]:
+    """Load mocked test scenarios for the configured profile if present."""
+
+    if not GAIA_MOCK_PROFILE:
+        return []
+
+    path = MOCK_DATA_DIR / f"{GAIA_MOCK_PROFILE}_test_plan.json"
+    if not path.exists():
+        return []
+
     try:
-        # 임시로 간단한 DOM 분석 (실제로는 더 정교해야 함)
-        # 이 부분이 실제 MCP Playwright 연동 포인트
-        
-        script = f"""
-import asyncio
-from playwright.async_api import async_playwright
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(f"Mock test plan load failed: {exc}")
+        return []
 
-async def analyze():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto('{url}')
-        
-        # 폼 요소 찾기
-        inputs = await page.query_selector_all('input')
-        buttons = await page.query_selector_all('button')
-        
-        elements = []
-        for input_elem in inputs:
-            elem_type = await input_elem.get_attribute('type') or 'text'
-            elem_id = await input_elem.get_attribute('id')
-            elem_name = await input_elem.get_attribute('name')
-            elem_placeholder = await input_elem.get_attribute('placeholder')
-            
-            if elem_id:
-                selector = f"#{{elem_id}}"
-            elif elem_name:
-                selector = f"input[name='{{elem_name}}']"
-            else:
-                selector = "input"
-            
-            elements.append({{
-                "tag": "input",
-                "selector": selector,
-                "attributes": {{
-                    "type": elem_type,
-                    "id": elem_id,
-                    "name": elem_name,
-                    "placeholder": elem_placeholder
-                }},
-                "element_type": "input"
-            }})
-        
-        for button in buttons:
-            text = await button.inner_text()
-            button_type = await button.get_attribute('type') or 'button'
-            
-            elements.append({{
-                "tag": "button", 
-                "selector": f"button:has-text('{{text}}')",
-                "text": text,
-                "attributes": {{"type": button_type}},
-                "element_type": "button"
-            }})
-        
-        await browser.close()
-        return elements
+    scenarios_raw = data.get("test_scenarios") or data.get("scenarios") or []
 
-print(asyncio.run(analyze()))
-"""
-        
-        # Python 스크립트 실행 - JSON으로 안전하게 출력하도록 수정
-        import json as json_lib
-        safe_script = script.replace('print(asyncio.run(analyze()))', 'import json; print(json.dumps(asyncio.run(analyze())))')
-        
-        result = subprocess.run(['python', '-c', safe_script], 
-                              capture_output=True, text=True, timeout=30)
-        
-        if result.returncode == 0:
+    scenarios: List[TestScenario] = []
+    for scenario_data in scenarios_raw:
+        steps_raw = scenario_data.get("steps", [])
+        steps = []
+        for step in steps_raw:
             try:
-                elements_data = json_lib.loads(result.stdout.strip())
-                print(f"실제 DOM 분석 성공: {len(elements_data)}개 요소 발견")
-                return {"elements": elements_data}
-            except json_lib.JSONDecodeError as e:
-                print(f"JSON 파싱 오류: {e}")
-                print(f"Raw output: {result.stdout}")
-                return {"elements": []}
-        else:
-            print(f"Playwright 실행 오류: {result.stderr}")
-            return {"elements": []}
-            
-    except Exception as e:
-        print(f"페이지 분석 실패: {e}")
-        return {"elements": []}
+                steps.append(
+                    TestStep(
+                        description=str(step.get("description", "")),
+                        action=str(step.get("action", "")),
+                        selector=str(step.get("selector", "")),
+                        params=list(step.get("params", [])),
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                print(f"Mock step parse error: {exc}")
+
+        assertion_raw = scenario_data.get("assertion", {})
+        try:
+            assertion = Assertion(
+                description=str(assertion_raw.get("description", "")),
+                selector=str(assertion_raw.get("selector", "")),
+                condition=str(assertion_raw.get("condition", "")),
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"Mock assertion parse error: {exc}")
+            assertion = Assertion(description="", selector="", condition="")
+
+        try:
+            scenarios.append(
+                TestScenario(
+                    id=str(scenario_data.get("id", "")),
+                    priority=str(scenario_data.get("priority", "")),
+                    scenario=str(scenario_data.get("scenario", "")),
+                    steps=steps,
+                    assertion=assertion,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            print(f"Mock scenario parse error: {exc}")
+
+    if scenarios:
+        print(
+            f"Loaded {len(scenarios)} mocked test scenarios for profile '{GAIA_MOCK_PROFILE}'"
+        )
+
+    return scenarios
+
+
+MCP_HOST_URL = os.getenv("MCP_HOST_URL", "http://localhost:8001")
+
+async def call_mcp_host(action: str, params: dict) -> dict:
+    """Calls the MCP host to perform a browser automation action."""
+    try:
+        url = f"{MCP_HOST_URL}/execute"
+        payload = {"action": action, "params": params}
+        
+        # Use asyncio.to_thread to run the blocking requests call in a separate thread
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,  # Use the default executor
+            lambda: requests.post(url, json=payload, timeout=45)
+        )
+        
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling MCP host: {e}")
+        # Return a dict with an error key to indicate failure
+        return {"error": str(e)}
 
 async def analyze_website_dom(url: str) -> List[DomElement]:
     """실제 MCP Playwright를 사용한 웹사이트 DOM 구조 분석"""
+
+    if GAIA_MOCK_PROFILE:
+        mocked = _load_mock_dom_elements(url)
+        if mocked:
+            return mocked
     
     # 실제 MCP 호출
-    mcp_result = await call_mcp_playwright("analyze_page", {"url": url})
+    mcp_result = await call_mcp_host("analyze_page", {"url": url})
     
     elements = []
     if "elements" in mcp_result:
@@ -281,6 +332,49 @@ def _get_fallback_elements(url: str) -> List[DomElement]:
             element_type="button"
         )
     ]
+
+
+def _escape_inner_quotes(json_text: str) -> str:
+    """JSON 문자열 내부의 미이스케이프 따옴표를 처리한다."""
+
+    result: List[str] = []
+    inside_string = False
+    escape_next = False
+    text_length = len(json_text)
+
+    for index, char in enumerate(json_text):
+        if not inside_string:
+            if char == '"':
+                inside_string = True
+            result.append(char)
+            continue
+
+        if escape_next:
+            result.append(char)
+            escape_next = False
+            continue
+
+        if char == '\\':
+            result.append(char)
+            escape_next = True
+            continue
+
+        if char == '"':
+            lookahead = index + 1
+            while lookahead < text_length and json_text[lookahead] in {" ", "\t", "\r", "\n"}:
+                lookahead += 1
+
+            if lookahead < text_length and json_text[lookahead] in {',', '}', ']', ':'}:
+                inside_string = False
+                result.append(char)
+            else:
+                result.append('\\')
+                result.append('"')
+            continue
+
+        result.append(char)
+
+    return ''.join(result)
 
 def _build_prompt_from_dom(dom_elements: List[DomElement], document_content: Optional[str] = None) -> str:
     """DOM 구조를 바탕으로 사용자 시나리오 생성 프롬프트 작성"""
@@ -391,30 +485,99 @@ def _parse_openai_response(text: str) -> List[TestScenario]:
         text = json_match.group()
     
     try:
-        # Fix common JSON issues
-        text = text.replace("'", '"')  # Replace single quotes with double quotes
-        text = re.sub(r',\s*}', '}', text)  # Remove trailing commas before }
-        text = re.sub(r',\s*]', ']', text)  # Remove trailing commas before ]
-        
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         print(f"JSON parsing failed: {exc}")
         print(f"Raw text: {text}")
-        return _create_fallback_scenarios()
+
+        normalized_text = text.replace("'", '"')
+        normalized_text = re.sub(r',\s*}', '}', normalized_text)
+        normalized_text = re.sub(r',\s*]', ']', normalized_text)
+
+        try:
+            parsed = json.loads(normalized_text)
+            text = normalized_text
+        except json.JSONDecodeError as normalized_exc:
+            print(f"Normalized JSON parsing failed: {normalized_exc}")
+            try:
+                repaired_text = _escape_inner_quotes(normalized_text)
+                parsed = json.loads(repaired_text)
+                text = repaired_text
+            except json.JSONDecodeError as repair_exc:
+                print(f"Repaired JSON parsing failed: {repair_exc}")
+                return _create_fallback_scenarios()
 
     scenarios = parsed.get("test_scenarios")
     if not isinstance(scenarios, list):
         print("No test_scenarios found in response")
         return _create_fallback_scenarios()
 
+    normalized_scenarios: List[Dict[str, Any]] = []
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+
+        steps = scenario.get("steps")
+        if isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                params = step.get("params")
+                if params is None:
+                    step["params"] = []
+                elif isinstance(params, dict):
+                    step["params"] = [params]
+                elif not isinstance(params, list):
+                    step["params"] = [params]
+        else:
+            scenario["steps"] = []
+
+        assertion = scenario.get("assertion")
+        if isinstance(assertion, dict):
+            description = assertion.get("description")
+            selector = assertion.get("selector")
+            condition = assertion.get("condition")
+
+            if not isinstance(description, str):
+                assertion["description"] = "" if description is None else str(description)
+
+            if not isinstance(selector, str):
+                assertion["selector"] = "" if selector is None else str(selector)
+
+            if isinstance(condition, dict):
+                assertion["condition"] = json.dumps(condition, ensure_ascii=False)
+            elif not isinstance(condition, str):
+                assertion["condition"] = "" if condition is None else str(condition)
+
+            scenario["assertion"] = assertion
+        else:
+            scenario["assertion"] = {
+                "description": "",
+                "selector": "",
+                "condition": ""
+            }
+
+        if not isinstance(scenario.get("priority"), str):
+            scenario["priority"] = str(scenario.get("priority", ""))
+
+        if not isinstance(scenario.get("scenario"), str):
+            scenario["scenario"] = str(scenario.get("scenario", ""))
+
+        normalized_scenarios.append(scenario)
+
     try:
-        return [TestScenario(**scenario) for scenario in scenarios]
+        return [TestScenario(**scenario) for scenario in normalized_scenarios]
     except Exception as exc:
         print(f"Schema validation failed: {exc}")
         return _create_fallback_scenarios()
 
 
 async def call_openai_api(document_content: str) -> List[TestScenario]:
+    if GAIA_MOCK_PROFILE:
+        mock = _load_mock_scenarios()
+        if mock:
+            return mock
+
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
 
@@ -424,6 +587,11 @@ async def call_openai_api(document_content: str) -> List[TestScenario]:
 
 async def call_openai_api_with_dom(dom_elements: List[DomElement], document_content: Optional[str] = None) -> List[TestScenario]:
     """DOM 구조를 바탕으로 AI 테스트 시나리오 생성"""
+    if GAIA_MOCK_PROFILE:
+        mock = _load_mock_scenarios()
+        if mock:
+            return mock
+
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured")
 
@@ -441,7 +609,11 @@ async def debug_config():
     return {
         "api_key_configured": bool(OPENAI_API_KEY),
         "api_key_length": len(OPENAI_API_KEY) if OPENAI_API_KEY else 0,
-        "model": OPENAI_MODEL
+        "model": OPENAI_MODEL,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "verbosity": OPENAI_VERBOSITY,
+        "max_completion_tokens": OPENAI_MAX_COMPLETION_TOKENS,
+        "force_json": OPENAI_FORCE_JSON,
     }
 
 @app.post("/generate-test-plan", response_model=List[TestScenario])

@@ -1,0 +1,109 @@
+{
+  "profile": "baekjoon",
+  "url_patterns": [
+    "acmicpc.net",
+    "boj.kr"
+  ],
+  "elements": [
+    {
+      "tag": "a",
+      "selector": "a[href='/login']",
+      "text": "로그인",
+      "attributes": {
+        "href": "/login"
+      },
+      "element_type": "link"
+    },
+    {
+      "tag": "input",
+      "selector": "#login_form input[name='login_user_id']",
+      "attributes": {
+        "type": "text",
+        "name": "login_user_id",
+        "placeholder": "아이디"
+      },
+      "element_type": "input"
+    },
+    {
+      "tag": "input",
+      "selector": "#login_form input[name='login_user_password']",
+      "attributes": {
+        "type": "password",
+        "name": "login_user_password",
+        "placeholder": "비밀번호"
+      },
+      "element_type": "input"
+    },
+    {
+      "tag": "button",
+      "selector": "#login_form button[type='submit']",
+      "text": "로그인",
+      "attributes": {
+        "type": "submit"
+      },
+      "element_type": "button"
+    },
+    {
+      "tag": "input",
+      "selector": "form[action='/problemset/search/'] input[name='query']",
+      "attributes": {
+        "type": "search",
+        "name": "query",
+        "placeholder": "문제 번호 또는 제목"
+      },
+      "element_type": "input"
+    },
+    {
+      "tag": "button",
+      "selector": "form[action='/problemset/search/'] button[type='submit']",
+      "text": "검색",
+      "attributes": {
+        "type": "submit"
+      },
+      "element_type": "button"
+    },
+    {
+      "tag": "a",
+      "selector": "table.problem-list a[href^='/problem/']",
+      "text": "문제 링크",
+      "attributes": {
+        "href": "/problem/1000"
+      },
+      "element_type": "link"
+    },
+    {
+      "tag": "a",
+      "selector": "a[href^='/submit/']",
+      "text": "제출",
+      "attributes": {
+        "href": "/submit/1000"
+      },
+      "element_type": "link"
+    },
+    {
+      "tag": "select",
+      "selector": "form[action^='/submit/'] select[name='language']",
+      "attributes": {
+        "name": "language"
+      },
+      "element_type": "select"
+    },
+    {
+      "tag": "textarea",
+      "selector": "form[action^='/submit/'] textarea[name='source']",
+      "attributes": {
+        "name": "source"
+      },
+      "element_type": "textarea"
+    },
+    {
+      "tag": "button",
+      "selector": "form[action^='/submit/'] button[type='submit']",
+      "text": "제출",
+      "attributes": {
+        "type": "submit"
+      },
+      "element_type": "button"
+    }
+  ]
+}

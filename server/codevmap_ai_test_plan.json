@@ -1,0 +1,81 @@
+{
+  "website_info": {
+    "name": "CodeVMap",
+    "type": "landing_page",
+    "main_purpose": "사전예약_및_정보제공"
+  },
+  "test_scenarios": [
+    {
+      "id": "TC_001",
+      "priority": "High",
+      "scenario": "메인 제목이 올바르게 표시되는지 검증",
+      "steps": [
+        {
+          "description": "메인 제목 요소를 확인한다.",
+          "action": "verify",
+          "selector": "div:has-text('CoDevMap')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "메인 제목이 'CoDevMap'으로 표시되어야 한다.",
+        "selector": "div:has-text('CoDevMap')",
+        "condition": "텍스트가 'CoDevMap'이다."
+      }
+    },
+    {
+      "id": "TC_002",
+      "priority": "High",
+      "scenario": "사전 예약 CTA 버튼이 올바르게 작동하는지 검증",
+      "steps": [
+        {
+          "description": "사전 예약 CTA 버튼을 클릭한다.",
+          "action": "click",
+          "selector": "div:has-text('사전 예약하기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "사전 예약 버튼 클릭 후 예상되는 행동을 검증한다.",
+        "selector": "div:has-text('지금 바로 사전 예약하기 →')",
+        "condition": "버튼이 클릭 가능 상태여야 한다."
+      }
+    },
+    {
+      "id": "TC_003",
+      "priority": "Medium",
+      "scenario": "프로젝트 소개 섹션의 가독성 검증",
+      "steps": [
+        {
+          "description": "프로젝트 소개 섹션을 확인한다.",
+          "action": "verify",
+          "selector": "div:has-text('나만의 미디어아트')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "프로젝트 소개 섹션이 '나만의 미디어아트 프로젝트'로 표시되어야 한다.",
+        "selector": "div:has-text('나만의 미디어아트')",
+        "condition": "텍스트가 '나만의 미디어아트 프로젝트'이다."
+      }
+    },
+    {
+      "id": "TC_004",
+      "priority": "Low",
+      "scenario": "네비게이션 링크의 존재 여부 검증",
+      "steps": [
+        {
+          "description": "네비게이션 링크를 확인한다.",
+          "action": "verify",
+          "selector": "a[href]",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "네비게이션 링크가 존재해야 한다.",
+        "selector": "a[href]",
+        "condition": "링크가 존재한다."
+      }
+    }
+  ]
+}

@@ -1,0 +1,345 @@
+{
+  "process_info": {
+    "start_time": "2025-09-23T20:14:00.512864",
+    "end_time": "2025-09-23T20:14:20.893464",
+    "duration_seconds": 20.380601,
+    "website": "https://codevmap.com/",
+    "extraction_method": "Playwright DOM Analysis",
+    "ai_model": "GPT-4o-mini"
+  },
+  "extracted_elements": [
+    {
+      "tag": "h1",
+      "selector": "h1:has-text(\"머리 속 아이디어를 현실로!\")",
+      "text": "머리 속 아이디어를 현실로!",
+      "element_type": "heading",
+      "description": "H1 제목"
+    },
+    {
+      "tag": "h2",
+      "selector": "h2:has-text(\"이런 분들께 추천드려요\")",
+      "text": "이런 분들께 추천드려요",
+      "element_type": "heading",
+      "description": "H2 제목"
+    },
+    {
+      "tag": "h1",
+      "selector": "h1:has-text(\"CoDevMap과 함께\n새로운 프로젝\")",
+      "text": "CoDevMap과 함께\n새로운 프로젝트를 탐험해보세요!",
+      "element_type": "heading",
+      "description": "H1 제목"
+    },
+    {
+      "tag": "a",
+      "selector": "a:has-text(\"CoDevMap\")",
+      "text": "CoDevMap",
+      "href": "/",
+      "element_type": "link",
+      "description": "네비게이션 링크"
+    },
+    {
+      "tag": "a",
+      "selector": "a:has-text(\"지금 바로 사전 예약하기 →\")",
+      "text": "지금 바로 사전 예약하기 →",
+      "href": "https://form.typeform.com/to/GdqwtRcK",
+      "element_type": "link",
+      "description": "네비게이션 링크"
+    },
+    {
+      "tag": "a",
+      "selector": "a:has-text(\"지금 바로 사전 예약하기 →\")",
+      "text": "지금 바로 사전 예약하기 →",
+      "href": "https://form.typeform.com/to/GdqwtRcK",
+      "element_type": "link",
+      "description": "네비게이션 링크"
+    }
+  ],
+  "ai_generated_plan": {
+    "analysis_summary": {
+      "total_elements": 6,
+      "website_type": "정보 제공 웹사이트",
+      "main_purpose": "사용자에게 CoDevMap 서비스에 대한 정보를 제공하고 사전 예약을 유도"
+    },
+    "test_scenarios": [
+      {
+        "id": "TC_001",
+        "priority": "High",
+        "scenario": "메인 헤딩이 올바르게 표시되는지 확인",
+        "steps": [
+          {
+            "description": "메인 헤딩 요소를 확인합니다.",
+            "action": "verify",
+            "selector": "h1:has-text('머리 속 아이디어를 현실로!')",
+            "params": []
+          }
+        ],
+        "assertion": {
+          "description": "메인 헤딩이 올바르게 표시되어야 합니다.",
+          "selector": "h1:has-text('머리 속 아이디어를 현실로!')",
+          "condition": "visible"
+        }
+      },
+      {
+        "id": "TC_002",
+        "priority": "Medium",
+        "scenario": "추천 헤딩이 올바르게 표시되는지 확인",
+        "steps": [
+          {
+            "description": "추천 헤딩 요소를 확인합니다.",
+            "action": "verify",
+            "selector": "h2:has-text('이런 분들께 추천드려요')",
+            "params": []
+          }
+        ],
+        "assertion": {
+          "description": "추천 헤딩이 올바르게 표시되어야 합니다.",
+          "selector": "h2:has-text('이런 분들께 추천드려요')",
+          "condition": "visible"
+        }
+      },
+      {
+        "id": "TC_003",
+        "priority": "High",
+        "scenario": "CoDevMap 헤딩이 올바르게 표시되는지 확인",
+        "steps": [
+          {
+            "description": "CoDevMap 헤딩 요소를 확인합니다.",
+            "action": "verify",
+            "selector": "h1:has-text('CoDevMap과 함께\n새로운 프로젝')",
+            "params": []
+          }
+        ],
+        "assertion": {
+          "description": "CoDevMap 헤딩이 올바르게 표시되어야 합니다.",
+          "selector": "h1:has-text('CoDevMap과 함께\n새로운 프로젝')",
+          "condition": "visible"
+        }
+      },
+      {
+        "id": "TC_004",
+        "priority": "High",
+        "scenario": "CoDevMap 링크가 올바르게 작동하는지 확인",
+        "steps": [
+          {
+            "description": "CoDevMap 링크를 클릭합니다.",
+            "action": "click",
+            "selector": "a:has-text('CoDevMap')",
+            "params": []
+          }
+        ],
+        "assertion": {
+          "description": "CoDevMap 페이지로 이동해야 합니다.",
+          "selector": "a:has-text('CoDevMap')",
+          "condition": "navigated"
+        }
+      },
+      {
+        "id": "TC_005",
+        "priority": "High",
+        "scenario": "사전 예약 링크가 올바르게 작동하는지 확인",
+        "steps": [
+          {
+            "description": "사전 예약 링크를 클릭합니다.",
+            "action": "click",
+            "selector": "a:has-text('지금 바로 사전 예약하기 →')",
+            "params": []
+          }
+        ],
+        "assertion": {
+          "description": "사전 예약 페이지로 이동해야 합니다.",
+          "selector": "a:has-text('지금 바로 사전 예약하기 →')",
+          "condition": "navigated"
+        }
+      }
+    ]
+  },
+  "execution_logs": [
+    {
+      "timestamp": "2025-09-23T20:14:00.512870",
+      "level": "INFO",
+      "message": "CodeVMap 실제 요소 추출 시작",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T20:14:00.985215",
+      "level": "INFO",
+      "message": "CodeVMap 접속 중",
+      "details": {
+        "url": "https://codevmap.com/"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.516554",
+      "level": "SUCCESS",
+      "message": "CodeVMap 페이지 로딩 완료",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.552840",
+      "level": "INFO",
+      "message": "DOM 요소 스캔 중",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.557830",
+      "level": "SUCCESS",
+      "message": "H1 요소 추출",
+      "details": {
+        "text": "머리 속 아이디어를 현실로!...",
+        "selector": "h1:has-text(\"머리 속 아이디어를 현실로!\")"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.560252",
+      "level": "SUCCESS",
+      "message": "H2 요소 추출",
+      "details": {
+        "text": "이런 분들께 추천드려요...",
+        "selector": "h2:has-text(\"이런 분들께 추천드려요\")"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.562553",
+      "level": "SUCCESS",
+      "message": "H1 요소 추출",
+      "details": {
+        "text": "CoDevMap과 함께\n새로운 프로젝트를 탐험해보세요!...",
+        "selector": "h1:has-text(\"CoDevMap과 함께\n새로운 프로젝\")"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.565526",
+      "level": "SUCCESS",
+      "message": "링크 요소 추출",
+      "details": {
+        "text": "CoDevMap",
+        "href": "/",
+        "selector": "a:has-text(\"CoDevMap\")"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.568013",
+      "level": "SUCCESS",
+      "message": "링크 요소 추출",
+      "details": {
+        "text": "지금 바로 사전 예약하기 →",
+        "href": "https://form.typeform.com/to/GdqwtRcK",
+        "selector": "a:has-text(\"지금 바로 사전 예약하기 →\")"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.570236",
+      "level": "SUCCESS",
+      "message": "링크 요소 추출",
+      "details": {
+        "text": "지금 바로 사전 예약하기 →",
+        "href": "https://form.typeform.com/to/GdqwtRcK",
+        "selector": "a:has-text(\"지금 바로 사전 예약하기 →\")"
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.584119",
+      "level": "SUCCESS",
+      "message": "요소 추출 완료",
+      "details": {
+        "total_elements": 6,
+        "element_types": [
+          "heading",
+          "link"
+        ]
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.586587",
+      "level": "INFO",
+      "message": "AI 테스트 플랜 생성 시작",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T20:14:04.586610",
+      "level": "INFO",
+      "message": "OpenAI API 호출 중",
+      "details": {
+        "model": "gpt-4o-mini",
+        "elements_count": 6
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893389",
+      "level": "SUCCESS",
+      "message": "AI API 응답 수신",
+      "details": {}
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893433",
+      "level": "SUCCESS",
+      "message": "AI 웹사이트 분석 완료",
+      "details": {
+        "website_type": "정보 제공 웹사이트",
+        "main_purpose": "사용자에게 CoDevMap 서비스에 대한 정보를 제공하고 사전 예약을 유도",
+        "total_elements": 6
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893443",
+      "level": "SUCCESS",
+      "message": "AI 테스트 시나리오 생성 완료",
+      "details": {
+        "scenario_count": 5,
+        "high_priority": 4,
+        "medium_priority": 1,
+        "low_priority": 0
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893448",
+      "level": "INFO",
+      "message": "생성된 시나리오: TC_001",
+      "details": {
+        "priority": "High",
+        "scenario": "메인 헤딩이 올바르게 표시되는지 확인",
+        "steps_count": 1
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893452",
+      "level": "INFO",
+      "message": "생성된 시나리오: TC_002",
+      "details": {
+        "priority": "Medium",
+        "scenario": "추천 헤딩이 올바르게 표시되는지 확인",
+        "steps_count": 1
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893455",
+      "level": "INFO",
+      "message": "생성된 시나리오: TC_003",
+      "details": {
+        "priority": "High",
+        "scenario": "CoDevMap 헤딩이 올바르게 표시되는지 확인",
+        "steps_count": 1
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893458",
+      "level": "INFO",
+      "message": "생성된 시나리오: TC_004",
+      "details": {
+        "priority": "High",
+        "scenario": "CoDevMap 링크가 올바르게 작동하는지 확인",
+        "steps_count": 1
+      }
+    },
+    {
+      "timestamp": "2025-09-23T20:14:20.893461",
+      "level": "INFO",
+      "message": "생성된 시나리오: TC_005",
+      "details": {
+        "priority": "High",
+        "scenario": "사전 예약 링크가 올바르게 작동하는지 확인",
+        "steps_count": 1
+      }
+    }
+  ]
+}
