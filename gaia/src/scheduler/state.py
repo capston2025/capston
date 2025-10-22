@@ -6,7 +6,7 @@ Tracks exploration state for adaptive scheduling decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Set
+from typing import Any, Dict, Set
 
 
 @dataclass
@@ -31,22 +31,26 @@ class GAIAState:
 
     def mark_url_visited(self, url: str) -> None:
         """Mark a URL as visited."""
-        self.visited_urls.add(url)
+        if url:  # Ignore empty strings
+            self.visited_urls.add(url)
 
     def mark_dom_seen(self, dom_signature: str) -> None:
         """Mark a DOM signature as seen."""
-        self.visited_dom_signatures.add(dom_signature)
-        self.current_dom_signature = dom_signature
+        if dom_signature:  # Ignore empty strings
+            self.visited_dom_signatures.add(dom_signature)
+            self.current_dom_signature = dom_signature
 
     def mark_test_failed(self, test_id: str) -> None:
         """Mark a test as failed."""
-        self.failed_test_ids.add(test_id)
+        if test_id:  # Ignore empty strings
+            self.failed_test_ids.add(test_id)
 
     def mark_test_completed(self, test_id: str) -> None:
         """Mark a test as completed."""
-        self.completed_test_ids.add(test_id)
-        # Remove from failed set if it was there
-        self.failed_test_ids.discard(test_id)
+        if test_id:  # Ignore empty strings
+            self.completed_test_ids.add(test_id)
+            # Remove from failed set if it was there
+            self.failed_test_ids.discard(test_id)
 
     def is_url_new(self, url: str) -> bool:
         """Check if URL has not been visited."""
@@ -67,3 +71,27 @@ class GAIAState:
     def increment_round(self) -> None:
         """Move to next execution round."""
         self.execution_round += 1
+
+    def reset(self) -> None:
+        """Reset state to initial values."""
+        self.visited_urls.clear()
+        self.visited_dom_signatures.clear()
+        self.failed_test_ids.clear()
+        self.completed_test_ids.clear()
+        self.current_dom_signature = None
+        self.execution_round = 0
+
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        Get current state statistics.
+
+        Returns:
+            Dict with state metrics
+        """
+        return {
+            "visited_urls_count": len(self.visited_urls),
+            "visited_dom_count": len(self.visited_dom_signatures),
+            "failed_tests_count": len(self.failed_test_ids),
+            "completed_tests_count": len(self.completed_test_ids),
+            "execution_round": self.execution_round,
+        }

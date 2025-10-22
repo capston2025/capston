@@ -8,8 +8,13 @@ from __future__ import annotations
 import requests
 from typing import Any, Dict, List
 
-from gaia.src.scheduler.adaptive_scheduler import AdaptiveScheduler, compute_dom_signature
-from gaia.src.utils.config import CONFIG
+from .adaptive_scheduler import AdaptiveScheduler, compute_dom_signature
+
+try:
+    from gaia.src.utils.config import CONFIG
+    DEFAULT_MCP_URL = CONFIG.mcp.host_url
+except (ImportError, AttributeError):
+    DEFAULT_MCP_URL = "http://localhost:8001"
 
 
 class SchedulerIntegration:
@@ -30,10 +35,10 @@ class SchedulerIntegration:
 
         Args:
             scheduler: Adaptive scheduler instance
-            mcp_host_url: MCP host URL (defaults to config)
+            mcp_host_url: MCP host URL (defaults to config or localhost:8001)
         """
         self.scheduler = scheduler or AdaptiveScheduler()
-        self.mcp_host_url = mcp_host_url or CONFIG.mcp.host_url
+        self.mcp_host_url = mcp_host_url or DEFAULT_MCP_URL
 
     def receive_from_agent(self, agent_output: Dict[str, Any]) -> None:
         """
@@ -55,7 +60,12 @@ class SchedulerIntegration:
         Args:
             agent_output: Agent service output (from /api/analyze)
         """
+        if not isinstance(agent_output, dict):
+            return  # Silently ignore invalid input
+
         checklist = agent_output.get("checklist", [])
+        if not isinstance(checklist, list):
+            return  # Silently ignore invalid checklist
 
         # Convert agent format to scheduler format
         scheduler_items = []
