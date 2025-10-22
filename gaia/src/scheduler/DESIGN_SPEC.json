@@ -1,0 +1,335 @@
+{
+  "specification": {
+    "title": "GAIA Adaptive Scheduler Design Specification",
+    "version": "1.0.0",
+    "date": "2025-10-22",
+    "author": "Claude AI",
+    "purpose": "Adaptive priority-based test execution scheduling for GAIA QA automation"
+  },
+
+  "scoring_policy": {
+    "description": "Priority score calculation rules for adaptive scheduling",
+    "base_priorities": {
+      "MUST": 100,
+      "SHOULD": 60,
+      "MAY": 30
+    },
+    "bonuses": {
+      "new_elements": {
+        "value": 15,
+        "description": "Per new DOM element discovered",
+        "multiplier": "per_element"
+      },
+      "unseen_url": {
+        "value": 20,
+        "description": "For exploring previously unvisited URLs",
+        "applies_when": "target_url not in visited_urls"
+      },
+      "recent_fail": {
+        "value": 10,
+        "description": "Retry incentive for recently failed tests",
+        "applies_when": "test_id in failed_test_ids"
+      }
+    },
+    "penalties": {
+      "no_dom_change": {
+        "value": -25,
+        "description": "Penalize tests that don't modify DOM (stagnation)",
+        "applies_when": "no_dom_change flag is True"
+      }
+    },
+    "formula": "score = base_priority + (new_elements * 15) + (unseen_url ? 20 : 0) + (recent_fail ? 10 : 0) - (no_dom_change ? 25 : 0)",
+    "score_range": {
+      "minimum": 0,
+      "typical_maximum": 150,
+      "notes": "Scores are clamped to non-negative values"
+    }
+  },
+
+  "queue_management": {
+    "description": "Priority queue implementation and operations",
+    "data_structure": "Binary heap (heapq)",
+    "ordering": "Max-heap (highest priority first)",
+    "implementation_note": "Python heapq is min-heap, so scores are negated",
+    "max_size": 100,
+    "operations": {
+      "push": {
+        "complexity": "O(log n)",
+        "description": "Insert item with computed priority score"
+      },
+      "pop": {
+        "complexity": "O(log n)",
+        "description": "Extract highest priority item"
+      },
+      "rescore_all": {
+        "complexity": "O(n log n)",
+        "description": "Rebuild heap with updated scores",
+        "triggered_by": ["dom_change", "state_update"]
+      },
+      "get_top_n": {
+        "complexity": "O(n log n)",
+        "description": "View top N items without removal"
+      }
+    },
+    "filters": {
+      "completed_tests": "Automatically excluded from queue",
+      "invalid_items": "Items without 'id' or 'priority' are rejected"
+    }
+  },
+
+  "execution_flow": {
+    "description": "Adaptive execution loop workflow",
+    "phases": [
+      {
+        "phase": "1_ingestion",
+        "description": "Receive test items from external agent",
+        "input": "Agent service output with checklist items",
+        "process": "Convert to scheduler format and push to queue",
+        "output": "Populated priority queue"
+      },
+      {
+        "phase": "2_scoring",
+        "description": "Calculate priority scores for all items",
+        "input": "Test items + current GAIA state",
+        "process": "Apply scoring formula based on state",
+        "output": "Scored items in priority queue"
+      },
+      {
+        "phase": "3_execution",
+        "description": "Execute highest priority tests",
+        "input": "Top N items from queue",
+        "process": "Call MCP host executor for each item",
+        "output": "Execution results with DOM signatures"
+      },
+      {
+        "phase": "4_state_update",
+        "description": "Update GAIA state based on results",
+        "input": "Execution results",
+        "process": "Mark URLs visited, DOM seen, tests completed/failed",
+        "output": "Updated GAIA state"
+      },
+      {
+        "phase": "5_dom_detection",
+        "description": "Detect DOM changes and trigger re-scoring",
+        "input": "Current vs previous DOM signatures",
+        "process": "Compare hashes, rescore if changed",
+        "output": "Re-prioritized queue if DOM changed"
+      },
+      {
+        "phase": "6_completion_check",
+        "description": "Evaluate completion criteria",
+        "input": "State and queue status",
+        "process": "Check threshold or max rounds",
+        "output": "Continue or terminate loop"
+      }
+    ],
+    "loop_control": {
+      "max_rounds": 20,
+      "completion_threshold": 0.9,
+      "early_exit_conditions": [
+        "Queue is empty",
+        "Completion threshold met",
+        "Max rounds reached"
+      ]
+    },
+    "failure_handling": {
+      "retry_strategy": "Re-add failed items with retry bonus",
+      "fatal_errors": "Remove from queue permanently",
+      "backoff": "Not implemented in v1.0"
+    }
+  },
+
+  "log_schema": {
+    "description": "Priority log entry format",
+    "file_format": "JSON",
+    "default_filename": "priority_log.json",
+    "entry_types": {
+      "score_entry": {
+        "id": "string - test identifier",
+        "action": "string - 'ingested' | 'scored' | 'executed'",
+        "score": "integer - computed priority score",
+        "priority": "string - 'MUST' | 'SHOULD' | 'MAY'",
+        "base_score": "integer - base priority value",
+        "dom_bonus": "integer - bonus from new elements",
+        "url_bonus": "integer - bonus from unseen URL",
+        "fail_bonus": "integer - bonus from recent failure",
+        "no_change_penalty": "integer - penalty for stagnation",
+        "new_elements_count": "integer - number of new elements",
+        "timestamp": "string - ISO 8601 UTC timestamp",
+        "execution_round": "integer - current round number"
+      },
+      "execution_entry": {
+        "id": "string - test identifier",
+        "action": "string - 'executed'",
+        "result": "string - 'success' | 'failed' | 'skipped'",
+        "score": "integer - score at execution time",
+        "priority": "string - test priority",
+        "timestamp": "string - ISO 8601 UTC timestamp",
+        "execution_round": "integer - current round",
+        "details": "object - optional execution details"
+      },
+      "rescore_entry": {
+        "action": "string - 'rescore'",
+        "reason": "string - 'dom_change' | 'new_url' | 'manual'",
+        "timestamp": "string - ISO 8601 UTC timestamp",
+        "execution_round": "integer - current round",
+        "state_summary": {
+          "visited_urls": "integer - count of visited URLs",
+          "visited_doms": "integer - count of seen DOM signatures",
+          "failed_tests": "integer - count of failed tests",
+          "completed_tests": "integer - count of completed tests"
+        }
+      }
+    },
+    "example_entry": {
+      "id": "TC001",
+      "action": "executed",
+      "result": "success",
+      "score": 135,
+      "priority": "MUST",
+      "base_score": 100,
+      "dom_bonus": 15,
+      "url_bonus": 20,
+      "fail_bonus": 0,
+      "no_change_penalty": 0,
+      "timestamp": "2025-10-22T14:00:00Z",
+      "execution_round": 1
+    }
+  },
+
+  "phase_integration": {
+    "description": "Integration with GAIA execution phases",
+    "architecture": "External Agent → Scheduler → MCP Host → Results",
+    "components": {
+      "external_agent": {
+        "location": "gaia/agent-service (Node.js)",
+        "endpoint": "POST /api/analyze",
+        "output_format": "checklist with test items and priorities",
+        "integration_class": "SchedulerIntegration.receive_from_agent()"
+      },
+      "scheduler": {
+        "location": "gaia/src/scheduler/",
+        "main_class": "AdaptiveScheduler",
+        "responsibilities": [
+          "Priority score calculation",
+          "Queue management",
+          "Execution orchestration",
+          "State tracking",
+          "Logging"
+        ]
+      },
+      "mcp_host": {
+        "location": "gaia/src/phase4/mcp_host.py",
+        "endpoint": "POST /execute",
+        "actions": ["execute_scenario", "analyze_page"],
+        "integration_method": "SchedulerIntegration.execute_with_mcp()"
+      }
+    },
+    "data_flow": {
+      "1_agent_to_scheduler": {
+        "format": "agent_output['checklist']",
+        "conversion": "Convert to scheduler item format with id, priority, steps",
+        "method": "receive_from_agent()"
+      },
+      "2_scheduler_to_mcp": {
+        "format": "MCP TestScenario format",
+        "conversion": "_convert_to_mcp_scenario()",
+        "fields": ["id", "priority", "scenario", "steps", "assertion"]
+      },
+      "3_mcp_to_scheduler": {
+        "format": "Execution result with status and DOM",
+        "fields": ["status", "dom_signature", "new_elements", "logs"],
+        "processing": "Update state, re-score queue if DOM changed"
+      }
+    },
+    "execution_pipeline": {
+      "step_1": "Agent generates test checklist → /api/analyze",
+      "step_2": "Scheduler ingests checklist → ingest_items()",
+      "step_3": "Compute scores → compute_priority_score()",
+      "step_4": "Execute top items → execute_with_mcp()",
+      "step_5": "Update state → mark_completed/mark_failed",
+      "step_6": "Detect DOM change → compute_dom_signature()",
+      "step_7": "Re-score queue → queue.rescore_all()",
+      "step_8": "Repeat until completion"
+    }
+  },
+
+  "state_management": {
+    "description": "GAIA exploration state tracking",
+    "class": "GAIAState",
+    "fields": {
+      "visited_urls": "Set of explored URLs",
+      "visited_dom_signatures": "Set of seen DOM structure hashes",
+      "failed_test_ids": "Set of tests that recently failed",
+      "completed_test_ids": "Set of successfully completed tests",
+      "current_dom_signature": "Hash of current DOM",
+      "execution_round": "Current execution round number"
+    },
+    "operations": [
+      "mark_url_visited(url)",
+      "mark_dom_seen(signature)",
+      "mark_test_failed(id)",
+      "mark_test_completed(id)",
+      "is_url_new(url)",
+      "is_dom_new(signature)",
+      "was_test_failed(id)",
+      "is_test_completed(id)"
+    ]
+  },
+
+  "dom_signature": {
+    "description": "DOM structure hashing for change detection",
+    "algorithm": "MD5",
+    "input": "List of (tag, selector) pairs from DOM elements",
+    "process": "Sort elements, join with '|', compute MD5 hash",
+    "output": "32-character hex string",
+    "usage": "Compare signatures to detect structural changes"
+  },
+
+  "api_reference": {
+    "AdaptiveScheduler": {
+      "methods": {
+        "ingest_items(items)": "Add test items to queue",
+        "execute_next_batch(executor, max_items)": "Execute top N items",
+        "execute_until_complete(executor, max_rounds, threshold)": "Run full loop",
+        "get_state()": "Get current GAIA state",
+        "get_stats()": "Get execution statistics",
+        "clear()": "Reset scheduler"
+      }
+    },
+    "SchedulerIntegration": {
+      "methods": {
+        "receive_from_agent(agent_output)": "Ingest from agent service",
+        "execute_with_mcp(item)": "Execute via MCP host",
+        "run_adaptive_execution(max_rounds, threshold)": "Run full pipeline",
+        "get_scheduler_summary()": "Get summary statistics"
+      }
+    }
+  },
+
+  "implementation_notes": {
+    "language": "Python 3.10+",
+    "dependencies": ["heapq (stdlib)", "hashlib (stdlib)", "requests"],
+    "testing": "pytest - see gaia/tests/test_scheduler.py",
+    "logging": "JSON format - priority_log.json",
+    "configuration": "Uses gaia.src.utils.config.CONFIG",
+    "extensibility": [
+      "Custom executors can be plugged in",
+      "Scoring formula can be adjusted via constants",
+      "Queue size and execution limits are configurable"
+    ]
+  },
+
+  "future_enhancements": {
+    "v1_1": [
+      "Exponential backoff for retries",
+      "Configurable scoring weights",
+      "Real-time dashboard"
+    ],
+    "v2_0": [
+      "Machine learning-based priority prediction",
+      "Distributed execution",
+      "Advanced analytics"
+    ]
+  }
+}
