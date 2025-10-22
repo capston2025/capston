@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-from gaia.src.scheduler.scoring import compute_score_breakdown
-from gaia.src.scheduler.state import GAIAState
+from .scoring import compute_score_breakdown
+from .state import GAIAState
 
 
 class PriorityLogger:

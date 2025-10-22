@@ -9,8 +9,8 @@ import heapq
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from gaia.src.scheduler.scoring import compute_priority_score
-from gaia.src.scheduler.state import GAIAState
+from .scoring import compute_priority_score
+from .state import GAIAState
 
 
 @dataclass(order=True)

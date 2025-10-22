@@ -8,9 +8,9 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Callable, Dict, List, Optional
 
-from gaia.src.scheduler.logger import PriorityLogger
-from gaia.src.scheduler.priority_queue import AdaptivePriorityQueue
-from gaia.src.scheduler.state import GAIAState
+from .logger import PriorityLogger
+from .priority_queue import AdaptivePriorityQueue
+from .state import GAIAState
 
 
 class AdaptiveScheduler:
