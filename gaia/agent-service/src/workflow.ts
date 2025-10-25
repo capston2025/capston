@@ -1,7 +1,7 @@
-import { Agent, AgentInputItem, Runner } from "@openai/agents";
+import { Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 
 const agent = new Agent({
-  name: "QA Analysis Agent",
+  name: "Agent",
   instructions: `너의 역할은 QA 자동화 분석 에이전트이다.
 
 주어진 기획서(또는 문서)에서 모든 제품/서비스 기능을 빠짐없이 식별하고,
@@ -41,7 +41,14 @@ const agent = new Agent({
 
 ### Document to analyze
 {input_as_text}`,
-  model: "gpt-5"
+  model: "gpt-5",
+  modelSettings: {
+    reasoning: {
+      effort: "medium",
+      summary: "auto"
+    },
+    store: true
+  }
 });
 
 export interface WorkflowInput {
@@ -54,72 +61,50 @@ export interface WorkflowOutput {
 
 // Main code entrypoint
 export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutput> => {
-  console.log("🤖 Using Agent:", agent.name);
-  console.log("🔧 Model:", (agent as any).model || "unknown");
+  return await withTrace("QA 도우미", async () => {
+    console.log("🤖 Using Agent:", agent.name);
+    console.log("🔧 Model:", (agent as any).model || "unknown");
 
-  const conversationHistory: AgentInputItem[] = [
-    {
-      role: "user",
-      content: [
-        {
-          type: "input_text",
-          text: workflow.input_as_text
-        }
-      ]
-    }
-  ];
+    const conversationHistory: AgentInputItem[] = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: workflow.input_as_text
+          }
+        ]
+      }
+    ];
 
-  const runner = new Runner({
-    traceMetadata: {
-      __trace_source__: "agent-builder",
-      workflow_id: "wf_68ea589f9a948190a518e9b2626ab1d5037b50134b0c56e7"
+    const runner = new Runner({
+      traceMetadata: {
+        __trace_source__: "agent-builder",
+        workflow_id: "wf_68ea589f9a948190a518e9b2626ab1d5037b50134b0c56e7"
+      }
+    });
+
+    const agentResultTemp = await runner.run(
+      agent,
+      [...conversationHistory]
+    );
+
+    conversationHistory.push(...agentResultTemp.newItems.map((item) => item.rawItem));
+
+    // Debug: Log response structure
+    console.log("Agent response items count:", agentResultTemp.newItems.length);
+    console.log("FinalOutput length:", agentResultTemp.finalOutput?.length || 0);
+
+    if (!agentResultTemp.finalOutput) {
+      throw new Error("Agent result is undefined");
     }
+
+    console.log("Final output length:", agentResultTemp.finalOutput.length);
+
+    const agentResult = {
+      output_text: agentResultTemp.finalOutput ?? ""
+    };
+
+    return agentResult;
   });
-
-  const agentResultTemp = await runner.run(
-    agent,
-    [...conversationHistory]
-  );
-
-  conversationHistory.push(...agentResultTemp.newItems.map((item) => item.rawItem));
-
-  // Debug: Log response structure
-  console.log("Agent response items count:", agentResultTemp.newItems.length);
-  console.log("FinalOutput length:", agentResultTemp.finalOutput?.length || 0);
-
-  // Try to get full output from all items
-  let fullOutput = agentResultTemp.finalOutput || "";
-
-  // If finalOutput is incomplete, try to reconstruct from newItems
-  if (agentResultTemp.newItems.length > 0) {
-    const textItems = agentResultTemp.newItems
-      .filter(item => {
-        const rawItem = item.rawItem as any;
-        return rawItem.role === "assistant" && Array.isArray(rawItem.content);
-      })
-      .flatMap(item => {
-        const rawItem = item.rawItem as any;
-        return rawItem.content || [];
-      })
-      .filter((content: any) => content.type === "output_text")
-      .map((content: any) => content.text)
-      .join("");
-
-    if (textItems.length > fullOutput.length) {
-      console.log("Using reconstructed output from newItems");
-      fullOutput = textItems;
-    }
-  }
-
-  if (!fullOutput) {
-    throw new Error("Agent result is undefined");
-  }
-
-  console.log("Final output length:", fullOutput.length);
-
-  const agentResult = {
-    output_text: fullOutput
-  };
-
-  return agentResult;
 };
