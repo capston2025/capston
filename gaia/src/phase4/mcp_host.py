@@ -1,9 +1,10 @@
 import asyncio
 import base64
+import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from playwright.async_api import async_playwright, Playwright, expect
+from playwright.async_api import async_playwright, Playwright, expect, Browser, Page
 from typing import Dict, Any, Optional, List
 
 app = FastAPI(title="MCP Host", description="Model Context Protocol Host for Browser Automation")
@@ -11,6 +12,34 @@ app = FastAPI(title="MCP Host", description="Model Context Protocol Host for Bro
 # Global state for live preview
 live_preview_subscribers: List[asyncio.Queue] = []
 current_page_screenshot: str = ""
+
+# Browser session management
+class BrowserSession:
+    """Maintains a persistent browser session for stateful testing"""
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.browser: Optional[Browser] = None
+        self.page: Optional[Page] = None
+        self.current_url: str = ""
+
+    async def get_or_create_page(self) -> Page:
+        """Get existing page or create new browser session"""
+        if not self.browser:
+            if not playwright_instance:
+                raise HTTPException(status_code=503, detail="Playwright not initialized")
+            self.browser = await playwright_instance.chromium.launch(headless=True)
+            self.page = await self.browser.new_page()
+        return self.page
+
+    async def close(self):
+        """Close browser session"""
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+            self.page = None
+
+# Active sessions storage
+active_sessions: Dict[str, BrowserSession] = {}
 
 # --- Data Models for Test Scenarios ---
 class TestStep(BaseModel):
@@ -231,75 +260,91 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-async def analyze_page(url: str) -> Dict[str, Any]:
-    """Navigate to the given URL and analyze its interactive elements."""
+async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str, Any]:
+    """Analyze page elements using persistent session."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    browser = await playwright_instance.chromium.launch(headless=True)
-    page = await browser.new_page()
+    # Get or create session
+    if session_id not in active_sessions:
+        active_sessions[session_id] = BrowserSession(session_id)
 
-    try:
+    session = active_sessions[session_id]
+    page = await session.get_or_create_page()
+
+    # Navigate only if URL is provided AND different from current
+    if url and session.current_url != url:
         await page.goto(url, timeout=30000)
-        return await analyze_page_elements(page)
-    finally:
-        await browser.close()
+        session.current_url = url
+
+    return await analyze_page_elements(page)
 
 
-async def capture_screenshot(url: str) -> Dict[str, Any]:
-    """Capture a screenshot of the given URL."""
+async def capture_screenshot(url: str = None, session_id: str = "default") -> Dict[str, Any]:
+    """Capture a screenshot using persistent session."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    browser = await playwright_instance.chromium.launch(headless=True)
-    page = await browser.new_page()
+    # Get or create session
+    if session_id not in active_sessions:
+        active_sessions[session_id] = BrowserSession(session_id)
 
-    try:
+    session = active_sessions[session_id]
+    page = await session.get_or_create_page()
+
+    # Navigate only if URL is provided AND different from current
+    if url and session.current_url != url:
         await page.goto(url, timeout=30000)
+        session.current_url = url
         try:
             await page.wait_for_load_state("networkidle", timeout=2000)
         except Exception:
             await page.wait_for_timeout(2000)
 
-        # Capture screenshot as base64
-        screenshot_bytes = await page.screenshot(full_page=False)
-        import base64
-        screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+    # Capture screenshot of current page (wherever it is)
+    screenshot_bytes = await page.screenshot(full_page=False)
+    screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
 
-        return {
-            "screenshot": screenshot_base64,
-            "url": page.url,
-            "title": await page.title()
-        }
-    finally:
-        await browser.close()
+    return {
+        "screenshot": screenshot_base64,
+        "url": page.url,
+        "title": await page.title()
+    }
 
 
-async def execute_simple_action(url: str, selector: str, action: str, value: str = None) -> Dict[str, Any]:
+async def execute_simple_action(url: str, selector: str, action: str, value: str = None, session_id: str = "default") -> Dict[str, Any]:
     """
-    Execute a simple action (click, fill, press) on a page.
+    Execute a simple action (click, fill, press) using persistent session.
 
     Args:
         url: Page URL
         selector: CSS selector
         action: Action type (click, fill, press)
         value: Value for fill/press actions
+        session_id: Browser session ID (default: "default")
 
     Returns:
-        Dict with success status
+        Dict with success status and screenshot
     """
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    browser = await playwright_instance.chromium.launch(headless=True)
-    page = await browser.new_page()
+    # Get or create session
+    if session_id not in active_sessions:
+        active_sessions[session_id] = BrowserSession(session_id)
+
+    session = active_sessions[session_id]
+    page = await session.get_or_create_page()
 
     try:
-        await page.goto(url, timeout=30000)
-        try:
-            await page.wait_for_load_state("networkidle", timeout=2000)
-        except Exception:
-            await page.wait_for_timeout(2000)
+        # Navigate only if URL changed
+        if session.current_url != url:
+            await page.goto(url, timeout=30000)
+            session.current_url = url
+            try:
+                await page.wait_for_load_state("networkidle", timeout=2000)
+            except Exception:
+                await page.wait_for_timeout(2000)
 
         # Use .first to handle multiple matches (avoid strict mode violation)
         element = page.locator(selector).first
@@ -317,11 +362,14 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         else:
             raise ValueError(f"Unsupported action: {action}")
 
-        # Wait for navigation or state change
+        # Wait for state change
         try:
             await page.wait_for_load_state("networkidle", timeout=3000)
         except Exception:
             await page.wait_for_timeout(1000)
+
+        # Update current URL in case of navigation
+        session.current_url = page.url
 
         # Capture screenshot after action for real-time preview
         screenshot_bytes = await page.screenshot(full_page=False)
@@ -330,14 +378,14 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         return {
             "success": True,
             "message": f"Action '{action}' executed on '{selector}'",
-            "screenshot": screenshot_base64
+            "screenshot": screenshot_base64,
+            "current_url": session.current_url
         }
 
     except Exception as e:
         return {"success": False, "message": f"Action failed: {str(e)}"}
 
-    finally:
-        await browser.close()
+    # Don't close browser - keep session alive!
 
 
 async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
@@ -560,18 +608,19 @@ async def execute_action(request: McpRequest):
     """
     action = request.action
     params = request.params
+    session_id = params.get("session_id", "default")
 
     if action == "analyze_page":
         url = params.get("url")
         if not url:
             raise HTTPException(status_code=400, detail="URL is required for 'analyze_page'.")
-        return await analyze_page(url)
+        return await analyze_page(url, session_id)
 
     elif action == "capture_screenshot":
         url = params.get("url")
         if not url:
             raise HTTPException(status_code=400, detail="URL is required for 'capture_screenshot'.")
-        return await capture_screenshot(url)
+        return await capture_screenshot(url, session_id)
 
     elif action == "execute_action":
         # Simple action execution (click, fill, press) without full scenario
@@ -583,7 +632,7 @@ async def execute_action(request: McpRequest):
         if not url or not selector or not action_type:
             raise HTTPException(status_code=400, detail="url, selector, and action are required for 'execute_action'.")
 
-        return await execute_simple_action(url, selector, action_type, value)
+        return await execute_simple_action(url, selector, action_type, value, session_id)
 
     elif action == "execute_scenario":
         scenario_data = params.get("scenario")
@@ -599,9 +648,23 @@ async def execute_action(request: McpRequest):
 
     raise HTTPException(status_code=400, detail=f"Action '{action}' not supported.")
 
+@app.post("/close_session")
+async def close_session(request: McpRequest):
+    """Close a browser session and clean up resources."""
+    session_id = request.params.get("session_id", "default")
+
+    if session_id in active_sessions:
+        session = active_sessions[session_id]
+        await session.close()
+        del active_sessions[session_id]
+        return {"success": True, "message": f"Session '{session_id}' closed"}
+
+    return {"success": False, "message": f"Session '{session_id}' not found"}
+
+
 @app.get("/")
 async def root():
-    return {"message": "MCP Host is running."}
+    return {"message": "MCP Host is running.", "active_sessions": len(active_sessions)}
 
 def main() -> None:
     import uvicorn

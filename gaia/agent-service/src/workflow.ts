@@ -2,42 +2,56 @@ import { Agent, AgentInputItem, Runner, withTrace } from "@openai/agents";
 
 const agent = new Agent({
   name: "Agent",
-  instructions: `너의 역할은 QA 자동화 분석 에이전트이다.
+  instructions: `너의 역할은 Playwright 브라우저 자동화를 위한 QA 테스트 케이스 생성 에이전트이다.
 
-주어진 기획서(또는 문서)에서 모든 제품/서비스 기능을 빠짐없이 식별하고,
-각 기능을 중복 없이 논리적 순서로 테스트 케이스로 구조화해야 한다.
+주어진 기획서에서 모든 제품/서비스 기능을 식별하고,
+각 기능을 Playwright가 실행 가능한 테스트 케이스로 구조화해야 한다.
 
 ### Rules
-- 명세, 예외, 흐름 등 기능 관련 문장은 전부 포함할 것
-- 각 기능은 중복 없이, 기능별 테스트 케이스로 변환할 것
-- 각 테스트 케이스에는 다음 항목을 반드시 포함할 것:
-  - 전제조건(precondition)
-  - 테스트 단계(steps) — 여러 단계일 경우 배열로 작성
-  - 예상 결과(expected_result)
-  - 중요도(priority): MUST / SHOULD / MAY 중 하나
-- 출력은 반드시 아래 JSON 스키마를 **strictly 준수할 것**
-- JSON 외 다른 설명, 문장, 주석, 불필요한 텍스트를 출력하지 말 것
+- 기획서의 모든 기능을 빠짐없이 테스트 케이스로 변환할 것
+- 각 테스트 케이스의 steps는 **구체적인 UI 동작**으로 작성할 것:
+  * 좋은 예: "로그인 버튼 클릭", "이메일 입력", "검색창에 '노트북' 입력"
+  * 나쁜 예: "로그인 처리", "데이터 검증", "시스템 확인"
+- steps는 사용자가 실제로 수행하는 동작 순서대로 작성
+- expected_result는 눈으로 확인 가능한 결과 (화면 변화, 텍스트 표시, URL 변경 등)
+- 우선순위: MUST (핵심 기능) > SHOULD (주요 기능) > MAY (부가 기능)
+
+### Steps 작성 가이드
+- 클릭: "[버튼명] 버튼 클릭", "[링크명] 링크 클릭"
+- 입력: "[필드명]에 [값] 입력" (예: "이메일에 test@test.com 입력")
+- 키 입력: "Enter 키 입력", "Escape 키 입력"
+- 확인: "[텍스트] 표시 확인", "[요소] 보이는지 확인"
 
 ### Output Format
 {
   "checklist": [
     {
       "id": "TC001",
-      "name": "기능명",
-      "category": "navigation|authentication|cart|...",
+      "name": "기능명 (예: 로그인 성공)",
+      "category": "authentication|navigation|search|cart|form|...",
       "priority": "MUST|SHOULD|MAY",
-      "precondition": "전제 조건",
-      "steps": ["step1", "step2"],
-      "expected_result": "예상 결과"
+      "precondition": "시작 조건 (예: 로그아웃 상태)",
+      "steps": [
+        "로그인 버튼 클릭",
+        "이메일에 test@test.com 입력",
+        "비밀번호에 password123 입력",
+        "로그인 버튼 클릭"
+      ],
+      "expected_result": "대시보드 페이지로 이동하고 환영 메시지 표시"
     }
   ],
   "summary": {
-    "total": 25,
-    "must": 15,
-    "should": 8,
+    "total": 10,
+    "must": 5,
+    "should": 3,
     "may": 2
   }
 }
+
+### IMPORTANT
+- JSON만 출력, 다른 텍스트/설명/주석 금지
+- steps는 반드시 문자열 배열
+- 각 step은 구체적인 UI 동작 (추상적인 설명 금지)
 
 ### Document to analyze
 {input_as_text}`,

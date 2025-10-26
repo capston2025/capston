@@ -33,6 +33,7 @@ class MasterOrchestrator:
         mcp_config: MCPConfig | None = None,
         llm_client: LLMVisionClient | None = None,
         screenshot_callback=None,
+        session_id: str = "default",
     ) -> None:
         """
         Initialize the master orchestrator.
@@ -42,16 +43,19 @@ class MasterOrchestrator:
             mcp_config: MCP host configuration
             llm_client: LLM vision client (defaults to GPT-4o)
             screenshot_callback: Optional callback for real-time screenshot updates
+            session_id: Browser session ID for persistent state
         """
         self.tracker = tracker or ChecklistTracker()
         self.mcp_config = mcp_config or CONFIG.mcp
         self.llm_client = llm_client or LLMVisionClient()
         self._screenshot_callback = screenshot_callback
+        self.session_id = session_id
         self.intelligent_orch = IntelligentOrchestrator(
             tracker=self.tracker,
             mcp_config=self.mcp_config,
             llm_client=self.llm_client,
-            screenshot_callback=screenshot_callback
+            screenshot_callback=screenshot_callback,
+            session_id=session_id
         )
         self._execution_logs: List[str] = []
         self._executed_test_ids: set[str] = set()
@@ -195,7 +199,7 @@ class MasterOrchestrator:
             import requests
             import json
 
-            dom_payload = {"action": "analyze_page", "params": {"url": url}}
+            dom_payload = {"action": "analyze_page", "params": {"url": url, "session_id": self.session_id}}
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=dom_payload,
@@ -205,7 +209,7 @@ class MasterOrchestrator:
             dom_data = response.json()
             dom_elements = dom_data.get("elements", [])
 
-            screenshot_payload = {"action": "capture_screenshot", "params": {"url": url}}
+            screenshot_payload = {"action": "capture_screenshot", "params": {"url": url, "session_id": self.session_id}}
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=screenshot_payload,
@@ -295,7 +299,8 @@ class MasterOrchestrator:
             "params": {
                 "url": url,
                 "selector": selector,
-                "action": "click"
+                "action": "click",
+                "session_id": self.session_id
             }
         }
 

@@ -102,6 +102,7 @@ class MCPClient:
 
     def __init__(self, config: MCPConfig | None = None) -> None:
         self.config = config or CONFIG.mcp
+        self._execution_timeout = max(self.config.request_timeout, 60)
 
     def analyze_dom(self, url: str) -> List[DomElement]:
         payload = {"action": "analyze_page", "params": {"url": url}}
@@ -129,6 +130,69 @@ class MCPClient:
         if not elements:
             return self._fallback_elements(url)
         return elements
+
+    def execute_scenario(
+        self,
+        scenario: TestScenario,
+        *,
+        base_url: str | None = None,
+    ) -> Dict[str, Any]:
+        """Execute a full test scenario via the MCP host."""
+        scenario_payload: Dict[str, Any] = scenario.model_dump()
+
+        steps: List[Dict[str, Any]] = list(scenario_payload.get("steps", []))
+        should_prepend_goto = bool(base_url) and (
+            not steps or steps[0].get("action") != "goto"
+        )
+        if should_prepend_goto:
+            steps.insert(
+                0,
+                {
+                    "description": f"Navigate to {base_url}",
+                    "action": "goto",
+                    "selector": "",
+                    "params": [base_url],
+                },
+            )
+        scenario_payload["steps"] = steps
+
+        request_body = {
+            "action": "execute_scenario",
+            "params": {"scenario": scenario_payload},
+        }
+
+        try:
+            response = requests.post(
+                f"{self.config.host_url}/execute",
+                json=request_body,
+                timeout=self._execution_timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "logs": [f"MCP execution request failed: {exc}"],
+            }
+
+        try:
+            data = response.json()
+        except ValueError as exc:  # pragma: no cover - defensive
+            return {
+                "status": "failed",
+                "error": f"Invalid JSON response: {exc}",
+                "logs": ["MCP host returned non-JSON payload."],
+            }
+
+        if isinstance(data, dict):
+            return data
+
+        return {
+            "status": "failed",
+            "error": "Unexpected MCP response format.",
+            "logs": ["MCP host response was not a JSON object."],
+            "raw_response": data,
+        }
 
     def _fallback_elements(self, url: str) -> List[DomElement]:  # noqa: ARG002 - url for future heuristics
         return [
@@ -193,6 +257,15 @@ class AgentOrchestrator:
 
         self._auto_mark(dom_elements)
         return executable
+
+    def execute_scenario(self, url: str, scenario: TestScenario) -> Dict[str, Any]:
+        """Execute a prepared scenario via the MCP host and update tracking."""
+        result = self.mcp_client.execute_scenario(scenario, base_url=url)
+        if result.get("status") == "success":
+            logs = result.get("logs")
+            evidence = json.dumps(logs, ensure_ascii=False) if logs else None
+            self.tracker.mark_found(scenario.id, evidence=evidence)
+        return result
 
     @property
     def last_dom_snapshot(self) -> List[DomElement]:

@@ -167,22 +167,30 @@ class PlanRepository:
         plans_dir = self._root.parent / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename
+        # Generate filename and derive profile key
+        profile_key: str
+        host_for_index: str | None = None
+
         if url:
             url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-            host = urlparse(url).netloc.replace(".", "_") or "unknown"
-            filename = f"{host}_{url_hash}_plan.json"
+            parsed_host = urlparse(url).netloc.lower()
+            safe_host = parsed_host.replace(".", "_") or "unknown"
+            filename = f"{safe_host}_{url_hash}_plan.json"
+            profile_key = safe_host
+            host_for_index = parsed_host
         elif pdf_hash:
             filename = f"pdf_{pdf_hash}_plan.json"
+            profile_key = pdf_hash
         else:
             # Fallback: use timestamp
             import time
             filename = f"plan_{int(time.time())}.json"
+            profile_key = "default"
 
         file_path = plans_dir / filename
 
         # Prepare data
-        profile = host if url else (pdf_hash or "default")
+        profile = profile_key
         data = {
             "profile": profile,
             "url": url or "",
@@ -195,9 +203,53 @@ class PlanRepository:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         # Update in-memory cache
-        self._plans[host] = scenarios
+        self._plans[profile] = scenarios
+        if host_for_index:
+            self._url_index.setdefault(host_for_index, []).append(profile)
 
         return file_path
+
+    def load_plan_file(
+        self,
+        plan_path: Path | str,
+    ) -> tuple[List[TestScenario], Dict[str, str | Path | None]]:
+        """Load a saved test plan JSON file."""
+        path = Path(plan_path)
+        if not path.exists():
+            raise FileNotFoundError(path)
+
+        data = self._read_json(path)
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid plan format: {path}")
+
+        scenarios_raw: Sequence[dict] = data.get("test_scenarios", [])  # type: ignore[arg-type]
+        scenarios: List[TestScenario] = []
+        for raw in scenarios_raw:
+            try:
+                scenarios.append(TestScenario.model_validate(raw))
+            except Exception as exc:
+                raise ValueError(f"Failed to parse scenario in {path.name}: {exc}") from exc
+
+        profile = str(data.get("profile") or "").strip() or None
+        url = str(data.get("url") or "").strip()
+        pdf_hash = data.get("pdf_hash")
+
+        metadata: Dict[str, str | Path | None] = {
+            "profile": profile,
+            "url": url,
+            "pdf_hash": pdf_hash,
+            "path": path,
+        }
+
+        if profile and scenarios:
+            self._plans[profile] = scenarios
+        if url:
+            host = urlparse(url).netloc.lower()
+            if host:
+                key = profile or host
+                self._url_index.setdefault(host, []).append(key)
+
+        return scenarios, metadata
 
 
 __all__ = ["PlanRepository"]

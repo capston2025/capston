@@ -35,7 +35,7 @@ class AutomationWorker(QObject):
             self.finished.emit()
             return
 
-        self.progress.emit(f"🚀 Starting automation for {self._target_url} (demo mode)")
+        self.progress.emit(f"🚀 Starting automation for {self._target_url} (MCP mode)")
 
         for scenario_index, scenario in enumerate(self._plan, start=1):
             if self._cancel_requested:
@@ -46,32 +46,25 @@ class AutomationWorker(QObject):
                 f"📋 {scenario.id} ({scenario.priority}): {scenario.scenario}"
             )
 
-            for step_index, step in enumerate(scenario.steps, start=1):
-                if self._cancel_requested:
-                    self.progress.emit("⏹️ Automation cancelled by user.")
-                    break
+            if self._cancel_requested:
+                self.progress.emit("⏹️ Automation cancelled by user.")
+                break
 
-                self.progress.emit(
-                    "   ↳ Step {}/{} | {} {} — {}".format(
-                        step_index,
-                        len(scenario.steps),
-                        step.action.upper(),
-                        step.selector,
-                        step.description,
-                    )
-                )
-                time.sleep(0.2)
+            result = self._orchestrator.execute_scenario(self._target_url, scenario)
+            status = result.get("status", "failed")
+            logs = result.get("logs") or []
 
-            assertion = scenario.assertion
-            self.progress.emit(
-                "   ✅ Assertion: {} (@ {})".format(
-                    assertion.description,
-                    assertion.selector,
-                )
-            )
-            self._orchestrator.tracker.mark_found(
-                scenario.id, evidence="automation-run"
-            )
+            if status == "success":
+                self.progress.emit("   ✅ Scenario executed successfully.")
+            elif status == "skipped":
+                self.progress.emit("   ⏭️ Scenario skipped by MCP host.")
+            else:
+                error = result.get("error", "Unknown failure.")
+                self.progress.emit(f"   ❌ Scenario failed: {error}")
+
+            for log in logs:
+                self.progress.emit(f"      • {log}")
+
             time.sleep(0.2)
 
         self.finished.emit()

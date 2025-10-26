@@ -27,6 +27,7 @@ class IntelligentOrchestrator:
         mcp_config: MCPConfig | None = None,
         llm_client: LLMVisionClient | None = None,
         screenshot_callback=None,
+        session_id: str = "default",
     ) -> None:
         """
         Initialize the intelligent orchestrator.
@@ -36,12 +37,14 @@ class IntelligentOrchestrator:
             mcp_config: MCP host configuration
             llm_client: LLM vision client (defaults to GPT-4o)
             screenshot_callback: Optional callback for real-time screenshot updates
+            session_id: Browser session ID for persistent state
         """
         self.tracker = tracker or ChecklistTracker()
         self.mcp_config = mcp_config or CONFIG.mcp
         self.llm_client = llm_client or LLMVisionClient()
         self._execution_logs: List[str] = []
         self._screenshot_callback = screenshot_callback
+        self.session_id = session_id
 
     def execute_scenarios(
         self,
@@ -273,12 +276,12 @@ Return ONLY a JSON array with executable scenarios in priority order:
                 # Wait a bit for page to update
                 time.sleep(1)
 
-                # Capture new state
-                screenshot = self._capture_screenshot(current_url)
+                # Capture new state (don't pass URL - use current page)
+                screenshot = self._capture_screenshot(None)
 
-                # If action changes page, re-analyze DOM
+                # If action changes page, re-analyze DOM (don't pass URL - use current page)
                 if llm_decision["action"] in ("click", "press"):
-                    dom_elements = self._analyze_dom(current_url)
+                    dom_elements = self._analyze_dom(None)
 
             # Step 3: Verify final result using LLM
             if scenario.assertion and scenario.assertion.description:
@@ -339,9 +342,12 @@ Return ONLY a JSON array with executable scenarios in priority order:
                 "logs": logs
             }
 
-    def _analyze_dom(self, url: str) -> List[DomElement]:
-        """Analyze DOM using MCP host."""
-        payload = {"action": "analyze_page", "params": {"url": url}}
+    def _analyze_dom(self, url: str | None) -> List[DomElement]:
+        """Analyze DOM using MCP host. If url is None, analyzes current page."""
+        params = {"session_id": self.session_id}
+        if url:
+            params["url"] = url
+        payload = {"action": "analyze_page", "params": params}
         try:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
@@ -363,9 +369,12 @@ Return ONLY a JSON array with executable scenarios in priority order:
             print(f"DOM analysis failed: {e}")
             return []
 
-    def _capture_screenshot(self, url: str) -> str:
-        """Capture screenshot using MCP host, returns base64 string."""
-        payload = {"action": "capture_screenshot", "params": {"url": url}}
+    def _capture_screenshot(self, url: str | None) -> str:
+        """Capture screenshot using MCP host. If url is None, captures current page."""
+        params = {"session_id": self.session_id}
+        if url:
+            params["url"] = url
+        payload = {"action": "capture_screenshot", "params": params}
         try:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
@@ -397,7 +406,8 @@ Return ONLY a JSON array with executable scenarios in priority order:
                     "url": url,
                     "selector": selector,
                     "action": action,
-                    "value": value
+                    "value": value,
+                    "session_id": self.session_id
                 }
             }
 

@@ -1,0 +1,44 @@
+{
+  "profile": "4d3a73778372",
+  "url": "",
+  "pdf_hash": "4d3a73778372",
+  "test_scenarios": [
+    {
+      "id": "TC_001",
+      "priority": "MUST",
+      "scenario": "사용자는 이메일과 비밀번호로 정상 로그인할 수 있다.",
+      "steps": [
+        {
+          "description": "로그인 페이지로 이동한다.",
+          "action": "note",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "이메일 입력 필드에 계정을 입력한다.",
+          "action": "note",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "비밀번호 입력 필드에 암호를 입력한다.",
+          "action": "note",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "로그인 버튼을 클릭한다.",
+          "action": "note",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "대시보드로 리다이렉션되는지 확인한다.",
+        "selector": "",
+        "condition": "note",
+        "params": []
+      }
+    }
+  ]
+}
