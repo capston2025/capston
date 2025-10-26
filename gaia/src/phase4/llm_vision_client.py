@@ -60,37 +60,28 @@ class LLMVisionClient:
                 "attributes": elem.attributes or {}
             })
 
-        prompt = f"""당신은 QA 자동화 에이전트입니다. 주어진 웹페이지에서 특정 작업을 수행하기 위해 어떤 DOM 요소를 사용해야 하는지 판단해야 합니다.
+        prompt = f"""Analyze this webpage and select a DOM element for test automation.
 
-**현재 페이지:**
-- URL: {url}
-- 스크린샷: 첨부됨
-- DOM 요소: {len(dom_elements)}개
+Page URL: {url}
+Task: {step_description}
 
-**수행할 작업:**
-{step_description}
-
-**사용 가능한 DOM 요소 목록:**
+Available elements (JSON):
 {json.dumps(dom_list, ensure_ascii=False, indent=2)}
 
-**요청사항:**
-1. 스크린샷을 보고 페이지 레이아웃을 이해하세요
-2. "{step_description}" 작업을 수행하기 위해 가장 적합한 DOM 요소를 선택하세요
-3. 선택한 요소의 selector를 반환하세요
+Instructions:
+- Respond with valid JSON only (no markdown, no explanations)
+- Choose selector from the elements list above
+- confidence: 0-100 (run if ≥60)
 
-**응답 형식 (JSON):**
+Required JSON format:
 {{
-    "selector": "실제 사용할 CSS selector",
-    "action": "click|fill|press",
-    "reasoning": "이 요소를 선택한 이유 (1-2문장)",
+    "selector": "css_selector_here",
+    "action": "click",
+    "reasoning": "brief explanation",
     "confidence": 85
 }}
 
-**중요:**
-- selector는 DOM 요소 목록에서 실제로 존재하는 것을 선택하세요
-- 스크린샷에서 시각적으로 확인 가능한 요소를 우선하세요
-- confidence는 0-100 사이의 숫자입니다 (80 이상이면 실행)
-"""
+JSON response:"""
 
         try:
             response = self.client.chat.completions.create(
@@ -128,8 +119,28 @@ class LLMVisionClient:
                 response_text = response_text[:-3]
             response_text = response_text.strip()
 
-            result = json.loads(response_text)
-            return result
+            # Handle empty response
+            if not response_text:
+                print("LLM element selection returned empty response")
+                return {
+                    "selector": "",
+                    "action": "skip",
+                    "reasoning": "LLM returned empty response",
+                    "confidence": 0
+                }
+
+            # Try to parse JSON
+            try:
+                result = json.loads(response_text)
+                return result
+            except json.JSONDecodeError:
+                print(f"LLM element selection returned non-JSON: {response_text[:200]}")
+                return {
+                    "selector": "",
+                    "action": "skip",
+                    "reasoning": f"LLM returned non-JSON: {response_text[:100]}",
+                    "confidence": 0
+                }
 
         except Exception as e:
             print(f"LLM vision analysis failed: {e}")
@@ -139,6 +150,61 @@ class LLMVisionClient:
                 "reasoning": f"Analysis failed: {e}",
                 "confidence": 0
             }
+
+    def analyze_with_vision(
+        self,
+        prompt: str,
+        screenshot_base64: str,
+    ) -> str:
+        """
+        General-purpose vision analysis with screenshot.
+
+        Args:
+            prompt: Text prompt for LLM
+            screenshot_base64: Base64-encoded screenshot
+
+        Returns:
+            LLM response as string
+        """
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=2048,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{screenshot_base64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            # Extract text from response
+            response_text = response.choices[0].message.content or ""
+
+            # Strip markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+
+            return response_text.strip()
+
+        except Exception as e:
+            print(f"LLM vision analysis failed: {e}")
+            raise
 
     def verify_action_result(
         self,
@@ -162,29 +228,23 @@ class LLMVisionClient:
                 - reasoning: Why it passed/failed
                 - confidence: Confidence score (0-100)
         """
-        prompt = f"""당신은 QA 자동화 에이전트입니다. 브라우저에서 작업을 수행한 후 결과를 검증해야 합니다.
+        prompt = f"""Compare these two screenshots to verify test results.
 
-**기대했던 결과:**
-{expected_result}
+Expected: {expected_result}
+Page: {url}
 
-**현재 페이지:** {url}
+Images: Before (first) and After (second)
 
-**스크린샷:**
-- 작업 전: 첫 번째 이미지
-- 작업 후: 두 번째 이미지
+Task: Did the expected result occur?
 
-**요청사항:**
-1. 두 스크린샷을 비교하세요
-2. "{expected_result}"가 달성되었는지 판단하세요
-3. 성공/실패 여부와 이유를 설명하세요
-
-**응답 형식 (JSON):**
+Required JSON format (no markdown):
 {{
     "success": true,
-    "reasoning": "로그인 후 대시보드 페이지가 보임",
+    "reasoning": "what changed",
     "confidence": 90
 }}
-"""
+
+JSON response:"""
 
         try:
             response = self.client.chat.completions.create(
@@ -227,8 +287,26 @@ class LLMVisionClient:
                 response_text = response_text[:-3]
             response_text = response_text.strip()
 
-            result = json.loads(response_text)
-            return result
+            # Handle empty response
+            if not response_text:
+                print("LLM verification returned empty response")
+                return {
+                    "success": False,
+                    "reasoning": "LLM returned empty response",
+                    "confidence": 0
+                }
+
+            # Try to parse JSON, with better error handling
+            try:
+                result = json.loads(response_text)
+                return result
+            except json.JSONDecodeError as json_err:
+                print(f"LLM verification returned non-JSON response: {response_text[:200]}")
+                return {
+                    "success": False,
+                    "reasoning": f"LLM returned non-JSON: {response_text[:100]}",
+                    "confidence": 0
+                }
 
         except Exception as e:
             print(f"LLM verification failed: {e}")

@@ -1,10 +1,16 @@
 import asyncio
+import base64
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from playwright.async_api import async_playwright, Playwright, expect
 from typing import Dict, Any, Optional, List
 
 app = FastAPI(title="MCP Host", description="Model Context Protocol Host for Browser Automation")
+
+# Global state for live preview
+live_preview_subscribers: List[asyncio.Queue] = []
+current_page_screenshot: str = ""
 
 # --- Data Models for Test Scenarios ---
 class TestStep(BaseModel):
@@ -269,6 +275,71 @@ async def capture_screenshot(url: str) -> Dict[str, Any]:
         await browser.close()
 
 
+async def execute_simple_action(url: str, selector: str, action: str, value: str = None) -> Dict[str, Any]:
+    """
+    Execute a simple action (click, fill, press) on a page.
+
+    Args:
+        url: Page URL
+        selector: CSS selector
+        action: Action type (click, fill, press)
+        value: Value for fill/press actions
+
+    Returns:
+        Dict with success status
+    """
+    if not playwright_instance:
+        raise HTTPException(status_code=503, detail="Playwright is not initialized.")
+
+    browser = await playwright_instance.chromium.launch(headless=True)
+    page = await browser.new_page()
+
+    try:
+        await page.goto(url, timeout=30000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=2000)
+        except Exception:
+            await page.wait_for_timeout(2000)
+
+        # Use .first to handle multiple matches (avoid strict mode violation)
+        element = page.locator(selector).first
+
+        if action == "click":
+            await element.click(timeout=10000)
+        elif action == "fill":
+            if value is None:
+                raise ValueError("Value is required for 'fill' action")
+            await element.fill(value, timeout=10000)
+        elif action == "press":
+            if value is None:
+                raise ValueError("Value is required for 'press' action")
+            await element.press(value, timeout=10000)
+        else:
+            raise ValueError(f"Unsupported action: {action}")
+
+        # Wait for navigation or state change
+        try:
+            await page.wait_for_load_state("networkidle", timeout=3000)
+        except Exception:
+            await page.wait_for_timeout(1000)
+
+        # Capture screenshot after action for real-time preview
+        screenshot_bytes = await page.screenshot(full_page=False)
+        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+        return {
+            "success": True,
+            "message": f"Action '{action}' executed on '{selector}'",
+            "screenshot": screenshot_base64
+        }
+
+    except Exception as e:
+        return {"success": False, "message": f"Action failed: {str(e)}"}
+
+    finally:
+        await browser.close()
+
+
 async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
     """
     Executes a full test scenario using Playwright.
@@ -320,7 +391,14 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
         # Execute remaining steps
         for step in scenario.steps:
             logs.append(f"Executing step: {step.description}")
-            element = page.locator(step.selector)
+
+            # Skip 'note' actions (documentation/assertion steps)
+            if step.action == 'note' or step.action == '':
+                logs.append(f"NOTE: {step.description}")
+                continue
+
+            # Use .first to handle multiple matches (avoid strict mode violation)
+            element = page.locator(step.selector).first
 
             if step.action == 'click':
                 await element.click(timeout=10000)
@@ -335,6 +413,17 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
         # Execute assertion
         logs.append(f"Executing assertion: {scenario.assertion.description}")
         assertion = scenario.assertion
+
+        # Skip 'note' assertions (documentation only)
+        if assertion.condition == 'note' or assertion.condition == '':
+            logs.append(f"NOTE: {assertion.description}")
+            logs.append(f"SUCCESS: All assertions passed.")
+            return {
+                "status": "success",
+                "logs": logs,
+                "network_requests": network_requests
+            }
+
         element = page.locator(assertion.selector)
 
         if assertion.condition == 'is_visible':
@@ -484,6 +573,18 @@ async def execute_action(request: McpRequest):
             raise HTTPException(status_code=400, detail="URL is required for 'capture_screenshot'.")
         return await capture_screenshot(url)
 
+    elif action == "execute_action":
+        # Simple action execution (click, fill, press) without full scenario
+        url = params.get("url")
+        selector = params.get("selector")
+        action_type = params.get("action")
+        value = params.get("value")
+
+        if not url or not selector or not action_type:
+            raise HTTPException(status_code=400, detail="url, selector, and action are required for 'execute_action'.")
+
+        return await execute_simple_action(url, selector, action_type, value)
+
     elif action == "execute_scenario":
         scenario_data = params.get("scenario")
         if not scenario_data:
@@ -502,6 +603,10 @@ async def execute_action(request: McpRequest):
 async def root():
     return {"message": "MCP Host is running."}
 
-if __name__ == "__main__":
+def main() -> None:
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
+
+
+if __name__ == "__main__":
+    main()

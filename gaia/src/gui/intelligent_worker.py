@@ -16,6 +16,7 @@ class IntelligentWorker(QObject):
     """Worker for executing IntelligentOrchestrator in background thread"""
 
     progress = Signal(str)
+    screenshot = Signal(str)  # base64 screenshot
     finished = Signal()
 
     def __init__(
@@ -34,6 +35,14 @@ class IntelligentWorker(QObject):
         """Execute scenarios using IntelligentOrchestrator"""
         try:
             self.progress.emit(f"🤖 Starting LLM-powered automation for {len(self.scenarios)} scenarios...")
+
+            # Set screenshot callback on orchestrator
+            if hasattr(self.orchestrator, '_screenshot_callback'):
+                self.orchestrator._screenshot_callback = self._on_screenshot
+
+            # For MasterOrchestrator, also set callback on internal IntelligentOrchestrator
+            if hasattr(self.orchestrator, 'intelligent_orch'):
+                self.orchestrator.intelligent_orch._screenshot_callback = self._on_screenshot
 
             # Execute scenarios with progress callback
             results = self.orchestrator.execute_scenarios(
@@ -72,6 +81,10 @@ class IntelligentWorker(QObject):
     def _on_progress(self, message: str) -> None:
         """Forward progress messages to GUI"""
         self.progress.emit(message)
+
+    def _on_screenshot(self, screenshot_base64: str) -> None:
+        """Forward screenshot to GUI for real-time preview"""
+        self.screenshot.emit(screenshot_base64)
 
     def request_cancel(self) -> None:
         """Request cancellation (not yet implemented)"""

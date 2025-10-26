@@ -13,6 +13,7 @@ from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase1.agent_client import AgentServiceClient
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.intelligent_orchestrator import IntelligentOrchestrator
+from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.models import Assertion, TestScenario, TestStep
 from gaia.src.utils.plan_repository import PlanRepository
@@ -45,6 +46,7 @@ class AppController(QObject):
             tracker=self._tracker,
         )
         self._intelligent_orchestrator = IntelligentOrchestrator(tracker=self._tracker)
+        self._master_orchestrator = MasterOrchestrator(tracker=self._tracker)
         self._plan_repository = PlanRepository()
 
         self._current_pdf_text: str | None = None
@@ -62,6 +64,7 @@ class AppController(QObject):
     # ------------------------------------------------------------------
     def _connect_signals(self) -> None:
         self._window.fileDropped.connect(self._on_file_dropped)
+        self._window.planFileSelected.connect(self._on_plan_file_selected)
         self._window.startRequested.connect(self._on_start_requested)
         self._window.cancelRequested.connect(self._on_cancel_requested)
         self._window.urlSubmitted.connect(self._on_url_submitted)
@@ -113,7 +116,7 @@ class AppController(QObject):
             return
 
         thread = QThread(self)
-        worker = AnalysisWorker(pdf_text)
+        worker = AnalysisWorker(pdf_text, analyzer=self._analyzer)
         worker.moveToThread(thread)
 
         # Connect signals
@@ -131,6 +134,47 @@ class AppController(QObject):
         self._analysis_worker = worker
         self._window.show_loading_overlay("AI가 체크리스트를 정리하고 있어요…")
         thread.start()
+
+    @Slot(str)
+    def _on_plan_file_selected(self, file_path: str) -> None:
+        path = Path(file_path)
+        if not path.exists():
+            self._window.append_log(f"⚠️ 저장된 플랜을 찾을 수 없습니다: {path}")
+            return
+
+        if self._analysis_thread and self._analysis_thread.isRunning():
+            self._window.append_log("⚠️ 현재 분석이 진행 중입니다. 잠시 후 다시 시도해주세요.")
+            return
+
+        try:
+            scenarios, metadata = self._plan_repository.load_plan_file(path)
+        except Exception as exc:
+            self._window.append_log(f"❌ 플랜을 불러오지 못했습니다: {exc}")
+            return
+
+        if not scenarios:
+            self._window.append_log("⚠️ 선택한 플랜에 실행 가능한 시나리오가 없습니다.")
+            return
+
+        self._analysis_plan = scenarios
+        self._plan = ()
+        self._current_pdf_text = None
+        self._current_pdf_hash = metadata.get("pdf_hash") if metadata else None
+        loaded_url = (metadata.get("url") if metadata else "") or ""
+
+        if loaded_url:
+            self._current_url = loaded_url
+            self._window.set_url_field(loaded_url)
+            self._window.append_log(f"🌐 플랜에 저장된 URL을 불러왔습니다: {loaded_url}")
+        else:
+            self._window.append_log("ℹ️ 플랜에 URL 정보가 없어 직접 입력이 필요합니다.")
+
+        self._window.show_scenarios(scenarios)
+        summary = self._summarize_scenarios(scenarios)
+        self._window.append_log(
+            f"📂 '{path.name}' 플랜 불러오기 완료 — 총 {summary['total']}개 "
+            f"(MUST {summary['must']}, SHOULD {summary['should']}, MAY {summary['may']})"
+        )
 
     @Slot(object)
     def _on_analysis_finished(self, analysis_result) -> None:
@@ -171,6 +215,19 @@ class AppController(QObject):
 
         self._analysis_thread = None
         self._analysis_worker = None
+
+    def _summarize_scenarios(self, scenarios: Sequence[TestScenario]) -> dict[str, int]:
+        summary = {"total": 0, "must": 0, "should": 0, "may": 0}
+        for scenario in scenarios:
+            summary["total"] += 1
+            priority = (scenario.priority or "").lower()
+            if priority in {"must", "high"}:
+                summary["must"] += 1
+            elif priority in {"should", "medium"}:
+                summary["should"] += 1
+            else:
+                summary["may"] += 1
+        return summary
 
     def _show_analysis_results_in_browser(self, analysis_result) -> None:
         """Display Agent Builder results in browser view with a glass aesthetic."""
@@ -451,22 +508,32 @@ class AppController(QObject):
             self._window.append_log("⚠️ 생성된 테스트 시나리오가 없습니다. PDF를 먼저 분석해주세요.")
             return
 
-        self._window.append_log(f"🤖 Starting LLM-powered automation for {len(candidate_plan)} scenarios...")
-        self._window.set_busy(True, message="GPT-4V가 페이지를 분석하고 테스트를 실행하는 중이에요…")
+        # Step 1: Analyze DOM and capture screenshot using MCP
+        self._window.append_log("📸 MCP로 DOM 분석 및 스크린샷 캡처 중...")
 
-        # Start intelligent orchestrator in background thread
+        # Step 2: LLM selects executable tests and creates priority queue
+        # Step 3: Execute tests with site exploration
+        self._plan = candidate_plan
+        self._window.append_log(f"🤖 Master Orchestrator 자동화를 시작합니다 ({len(candidate_plan)}개 시나리오)")
+        self._window.append_log("   🗺️  1️⃣ 사이트 구조 탐색 (네비게이션 링크 발견)")
+        self._window.append_log("   📄 2️⃣ 각 페이지별 DOM + 스크린샷 분석")
+        self._window.append_log("   🚀 3️⃣ 페이지별로 실행 가능한 테스트 자동 실행")
+        self._window.set_busy(True, message="AI가 사이트를 탐색하는 중이에요…")
+
         self._start_intelligent_worker(self._current_url, candidate_plan)
 
     def _start_intelligent_worker(self, url: str, plan: Sequence[TestScenario]) -> None:
-        """Start IntelligentOrchestrator in background thread"""
+        """Start MasterOrchestrator (with site exploration) in background thread"""
         from gaia.src.gui.intelligent_worker import IntelligentWorker
 
         thread = QThread(self)
-        worker = IntelligentWorker(url, plan, orchestrator=self._intelligent_orchestrator)
+        # Use MasterOrchestrator instead of IntelligentOrchestrator
+        worker = IntelligentWorker(url, plan, orchestrator=self._master_orchestrator)
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)
         worker.progress.connect(self._window.append_log)
+        worker.screenshot.connect(self._window.update_live_preview)
         worker.finished.connect(self._on_intelligent_worker_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)

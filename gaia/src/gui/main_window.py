@@ -1,7 +1,8 @@
 """Qt widgets composing the main application window."""
 from __future__ import annotations
 
-from typing import Callable, Iterable, Sequence
+from pathlib import Path
+from typing import Callable, Iterable, List, Sequence
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen
@@ -246,6 +247,7 @@ class MainWindow(QMainWindow):
     startRequested = Signal()
     cancelRequested = Signal()
     urlSubmitted = Signal(str)
+    planFileSelected = Signal(str)
 
     def __init__(self, *, controller_factory: Callable[["MainWindow"], object] | None = None) -> None:
         super().__init__()
@@ -473,10 +475,13 @@ class MainWindow(QMainWindow):
         self._start_button: QPushButton
         self._cancel_button: QPushButton
         self._back_to_setup_button: QPushButton
+        self._view_logs_button: QPushButton
         self._feedback_input: QTextEdit
         self._url_input: QLineEdit
         self._browser_view: QWebEngineView
         self._workflow_stage: str
+        self._full_execution_logs: List[str] = []
+        self._log_mode: str = "summary"  # "summary" or "full"
         self._is_busy: bool
         self._busy_overlay: BusyOverlay | None = None
 
@@ -554,6 +559,8 @@ class MainWindow(QMainWindow):
         self._busy_overlay.setGeometry(central.rect())
         self._busy_overlay.hide()
         self._busy_overlay.raise_()
+
+        self._last_plan_directory = Path.cwd() / "artifacts" / "plans"
         self.show_setup_stage()
 
     def _create_setup_stage(self, parent: QWidget) -> QWidget:
@@ -597,6 +604,11 @@ class MainWindow(QMainWindow):
         select_button.setObjectName("GhostButton")
         select_button.clicked.connect(self._open_file_dialog)
         button_row.addWidget(select_button)
+
+        self._load_plan_button = QPushButton("이전 테스트 불러오기", page)
+        self._load_plan_button.setObjectName("GhostButton")
+        self._load_plan_button.clicked.connect(self._open_plan_dialog)
+        button_row.addWidget(self._load_plan_button)
 
         self._start_button = QPushButton("자동화 시작", page)
         self._start_button.clicked.connect(self.startRequested.emit)
@@ -644,12 +656,21 @@ class MainWindow(QMainWindow):
         self._checklist_view.setSpacing(12)
         layout.addWidget(self._checklist_view, stretch=2)
 
-        logs_label = QLabel("라이브 로그", page)
+        # Logs header with "View Details" button
+        logs_header = QHBoxLayout()
+        logs_label = QLabel("실행 요약", page)
         logs_label.setObjectName("SectionLabel")
-        layout.addWidget(logs_label)
+        logs_header.addWidget(logs_label)
+        logs_header.addStretch()
+
+        self._view_logs_button = QPushButton("📋 상세 로그 보기", page)
+        self._view_logs_button.setEnabled(False)
+        self._view_logs_button.clicked.connect(self._show_detailed_logs)
+        logs_header.addWidget(self._view_logs_button)
+        layout.addLayout(logs_header)
 
         self._log_output = QTextEdit(page)
-        self._log_output.setPlaceholderText("실행 로그가 여기에 표시됩니다…")
+        self._log_output.setPlaceholderText("실행 요약이 여기에 표시됩니다…")
         self._log_output.setReadOnly(True)
         self._log_output.setMinimumHeight(140)
         layout.addWidget(self._log_output, stretch=1)
@@ -703,24 +724,58 @@ class MainWindow(QMainWindow):
             self._checklist_view.setItemWidget(list_item, card)
 
     def append_log(self, message: str) -> None:
-        self._log_output.append(message)
+        """Append log message. Shows summary in UI, stores full logs."""
+        # Always store full logs
+        self._full_execution_logs.append(message)
+
+        # In summary mode, only show important messages
+        if self._log_mode == "summary":
+            # Only show messages that start with emoji indicators
+            important_prefixes = ("🗺️", "📄", "✅", "❌", "⚠️", "🎉", "🚀", "🤖", "📊")
+            if message.strip().startswith(important_prefixes):
+                self._log_output.append(message)
+        else:
+            # In full mode, show everything
+            self._log_output.append(message)
 
     def set_busy(self, busy: bool, *, message: str | None = None) -> None:
         self._is_busy = busy
         if busy:
             self.show_review_stage()
+            # Start execution: clear logs and use summary mode
+            self._full_execution_logs = []
+            self._log_mode = "summary"
+            self._log_output.clear()
+            self._view_logs_button.setEnabled(False)
+            # Clear browser view and prepare for live preview
+            self._browser_view.setHtml('''
+                <html>
+                <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#666;">
+                    <div style="text-align:center;">
+                        <h2>🤖 AI 자동화 시작 중...</h2>
+                        <p>실시간 브라우저 화면이 곧 표시됩니다</p>
+                    </div>
+                </body>
+                </html>
+            ''')
+        else:
+            # Execution complete: enable detailed log view
+            self._view_logs_button.setEnabled(True)
 
         self._start_button.setEnabled(not busy)
         self._cancel_button.setEnabled(busy)
         self._back_to_setup_button.setEnabled(self._workflow_stage == "review" and not busy)
         self._drop_area.setEnabled(not busy)
         self._url_input.setEnabled(not busy)
+        if hasattr(self, "_load_plan_button"):
+            self._load_plan_button.setEnabled(not busy)
         if busy:
             self._drop_area.setText("자동화를 진행 중이에요… 잠시만 기다려 주세요 ☄️")
-            self.show_loading_overlay(message or "시나리오를 실행 중입니다…")
+            # Don't show loading overlay - we have live preview now!
+            # self.show_loading_overlay(message or "시나리오를 실행 중입니다…")
         else:
             self._drop_area.setText("체크리스트 PDF를 드래그하거나 선택해 주세요")
-            self.hide_loading_overlay()
+            # self.hide_loading_overlay()
 
     def load_url(self, url: str) -> None:
         self._browser_view.setUrl(QUrl(url))
@@ -731,6 +786,36 @@ class MainWindow(QMainWindow):
     def show_html_in_browser(self, html_content: str) -> None:
         """Display HTML content in the browser view"""
         self._browser_view.setHtml(html_content)
+
+    def update_live_preview(self, screenshot_base64: str) -> None:
+        """Update browser view with real-time screenshot from Playwright"""
+        import base64
+        from PySide6.QtCore import QByteArray
+        from PySide6.QtGui import QPixmap
+
+        try:
+            # Decode base64 to bytes
+            image_data = base64.b64decode(screenshot_base64)
+
+            # Convert to QPixmap
+            pixmap = QPixmap()
+            pixmap.loadFromData(QByteArray(image_data))
+
+            # Display as HTML img tag (scaled to fit)
+            html = f'''
+            <html>
+            <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center;">
+                <img src="data:image/png;base64,{screenshot_base64}"
+                     style="max-width:100%; max-height:100%; object-fit:contain;
+                            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+                            border: 2px solid rgba(59, 130, 246, 0.3);
+                            border-radius: 8px;">
+            </body>
+            </html>
+            '''
+            self._browser_view.setHtml(html)
+        except Exception as e:
+            print(f"Failed to update live preview: {e}")
 
     def show_loading_overlay(self, message: str) -> None:
         if self._busy_overlay:
@@ -745,6 +830,29 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _show_detailed_logs(self) -> None:
+        """Show detailed execution logs in a dialog."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("상세 실행 로그")
+        dialog.resize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        # Log text area
+        log_view = QTextEdit(dialog)
+        log_view.setReadOnly(True)
+        log_view.setPlainText("\n".join(self._full_execution_logs))
+        layout.addWidget(log_view)
+
+        # Close button
+        close_button = QPushButton("닫기", dialog)
+        close_button.clicked.connect(dialog.close)
+        layout.addWidget(close_button)
+
+        dialog.exec()
+
     def _open_file_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -754,6 +862,18 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             self.fileDropped.emit(file_path)
+
+    def _open_plan_dialog(self) -> None:
+        initial_dir = str(self._last_plan_directory) if self._last_plan_directory.exists() else ""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "이전 테스트 플랜 불러오기",
+            initial_dir,
+            "Plan Files (*.json);;All Files (*)",
+        )
+        if file_path:
+            self._last_plan_directory = Path(file_path).parent
+            self.planFileSelected.emit(file_path)
 
     # ------------------------------------------------------------------
     def resizeEvent(self, event) -> None:  # noqa: D401
