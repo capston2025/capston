@@ -145,23 +145,26 @@ class MasterOrchestrator:
                 progress_callback=progress_callback
             )
 
-            # Aggregate results
+            # Aggregate results and mark tests as executed
             for scenario_result in page_results["scenarios"]:
                 scenario_id = scenario_result["id"]
+                status = scenario_result["status"]
 
                 # Only count each scenario once (skip if already executed on another page)
                 if scenario_id not in self._executed_test_ids:
                     aggregated_results["scenarios"].append(scenario_result)
 
-                    status = scenario_result["status"]
                     if status == "passed":
                         aggregated_results["passed"] += 1
+                        # Mark passed tests as executed
                         self._executed_test_ids.add(scenario_id)
                     elif status == "failed":
                         aggregated_results["failed"] += 1
+                        # Mark failed tests as executed
                         self._executed_test_ids.add(scenario_id)
                     elif status == "skipped":
-                        # Don't mark as executed - might be executable on another page
+                        # Don't mark skipped tests as executed
+                        # They might be executable on another page
                         pass
 
             self._log(f"  📊 Page {page_idx} results: {page_results['passed']} passed, {page_results['failed']} failed, {page_results['skipped']} skipped", progress_callback)

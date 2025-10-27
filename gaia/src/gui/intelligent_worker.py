@@ -16,7 +16,7 @@ class IntelligentWorker(QObject):
     """Worker for executing IntelligentOrchestrator in background thread"""
 
     progress = Signal(str)
-    screenshot = Signal(str)  # base64 screenshot
+    screenshot = Signal(str, object)  # (base64, click_position dict or None)
     finished = Signal()
 
     def __init__(
@@ -82,9 +82,9 @@ class IntelligentWorker(QObject):
         """Forward progress messages to GUI"""
         self.progress.emit(message)
 
-    def _on_screenshot(self, screenshot_base64: str) -> None:
+    def _on_screenshot(self, screenshot_base64: str, click_position: dict = None) -> None:
         """Forward screenshot to GUI for real-time preview"""
-        self.screenshot.emit(screenshot_base64)
+        self.screenshot.emit(screenshot_base64, click_position)
 
     def request_cancel(self) -> None:
         """Request cancellation (not yet implemented)"""

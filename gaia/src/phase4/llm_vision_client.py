@@ -72,12 +72,15 @@ Instructions:
 - Respond with valid JSON only (no markdown, no explanations)
 - Choose selector from the elements list above
 - confidence: 0-100 (run if ≥60)
+- **IMPORTANT**: If multiple elements have same text/selector, use the "index" field to identify which one
+- **IMPORTANT**: If you see multiple "돌러보기" buttons, choose the MOST SPECIFIC one based on context
+- Prefer selectors that uniquely identify a single element (check if multiple elements share same selector)
 
 Required JSON format:
 {{
     "selector": "css_selector_here",
     "action": "click",
-    "reasoning": "brief explanation",
+    "reasoning": "brief explanation (mention if multiple matches exist and why you chose this one)",
     "confidence": 85
 }}
 

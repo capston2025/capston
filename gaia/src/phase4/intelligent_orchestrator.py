@@ -79,18 +79,54 @@ class IntelligentOrchestrator:
             "scenarios": []
         }
 
-        # Sort scenarios by priority: MUST > SHOULD > MAY
-        priority_order = {"MUST": 1, "SHOULD": 2, "MAY": 3}
-        sorted_scenarios = sorted(scenarios, key=lambda s: priority_order.get(s.priority, 4))
+        self._log(f"🚀 Starting LLM-powered automation: {len(scenarios)} scenarios", progress_callback)
 
-        self._log(f"🚀 Starting LLM-powered automation: {len(sorted_scenarios)} scenarios", progress_callback)
+        # Step 1: Analyze DOM once at the beginning
+        self._log(f"  📸 Analyzing page DOM to identify executable tests...", progress_callback)
+        dom_elements = self._analyze_dom(url)
+        screenshot = self._capture_screenshot(url, send_to_gui=True)  # Show initial page in GUI
 
-        # Execute each scenario (DOM analysis happens inside _execute_single_scenario)
-        for idx, scenario in enumerate(sorted_scenarios, start=1):
-            self._log(f"\n[{idx}/{len(sorted_scenarios)}] Testing: {scenario.scenario} (Priority: {scenario.priority})", progress_callback)
+        if not dom_elements:
+            self._log("⚠️ No DOM elements found, skipping all tests", progress_callback)
+            results["skipped"] = len(scenarios)
+            return results
+
+        # Step 2: Ask LLM to prioritize scenarios based on DOM
+        self._log(f"  🤖 LLM analyzing which tests are executable...", progress_callback)
+        prioritized_scenarios = self._prioritize_scenarios(
+            scenarios, dom_elements, screenshot, url, progress_callback
+        )
+
+        if not prioritized_scenarios:
+            self._log("⚠️ No executable tests found on this page", progress_callback)
+            results["skipped"] = len(scenarios)
+            return results
+
+        self._log(f"  ✅ Found {len(prioritized_scenarios)} executable tests (skipping {len(scenarios) - len(prioritized_scenarios)})", progress_callback)
+
+        # Mark non-prioritized scenarios as skipped
+        prioritized_ids = {s.id for s in prioritized_scenarios}
+        for scenario in scenarios:
+            if scenario.id not in prioritized_ids:
+                results["scenarios"].append({
+                    "id": scenario.id,
+                    "scenario": scenario.scenario,
+                    "status": "skipped",
+                    "logs": ["Not executable on current page (LLM prioritization)"]
+                })
+                results["skipped"] += 1
+
+        # Step 3: Execute prioritized scenarios (non-sequential based on DOM availability)
+        for idx, scenario in enumerate(prioritized_scenarios, start=1):
+            self._log(f"\n[{idx}/{len(prioritized_scenarios)}] Testing: {scenario.scenario} (Priority: {scenario.priority})", progress_callback)
 
             try:
-                result = self._execute_single_scenario(url, scenario, progress_callback)
+                # Pass pre-analyzed DOM to avoid re-analysis
+                result = self._execute_single_scenario(
+                    url, scenario, progress_callback,
+                    initial_dom_elements=dom_elements,
+                    initial_screenshot=screenshot
+                )
                 results["scenarios"].append(result)
 
                 if result["status"] == "passed":
@@ -112,7 +148,7 @@ class IntelligentOrchestrator:
                     "logs": []
                 })
 
-        self._log(f"\n✅ Execution complete: {results['passed']}/{results['total']} passed, {results['skipped']} skipped", progress_callback)
+        self._log(f"\n✅ Execution complete: {results['passed']}/{len(scenarios)} passed, {results['skipped']}/{len(scenarios)} skipped", progress_callback)
         return results
 
     def _prioritize_scenarios(
@@ -192,9 +228,18 @@ Return ONLY a JSON array with executable scenarios in priority order:
         url: str,
         scenario: TestScenario,
         progress_callback=None,
+        initial_dom_elements: List[DomElement] = None,
+        initial_screenshot: str = None,
     ) -> Dict[str, Any]:
         """
         Execute a single test scenario using LLM guidance.
+
+        Args:
+            url: Target URL
+            scenario: Test scenario to execute
+            progress_callback: Progress callback function
+            initial_dom_elements: Pre-analyzed DOM elements (optional, improves performance)
+            initial_screenshot: Pre-captured screenshot (optional)
 
         Returns:
             Dict with scenario execution result
@@ -203,10 +248,14 @@ Return ONLY a JSON array with executable scenarios in priority order:
         current_url = url
 
         try:
-            # Step 1: Analyze initial page state
-            self._log(f"  📸 Analyzing page: {url}", progress_callback)
-            dom_elements = self._analyze_dom(current_url)
-            screenshot = self._capture_screenshot(current_url)
+            # Step 1: Use pre-analyzed DOM or analyze now
+            if initial_dom_elements and initial_screenshot:
+                dom_elements = initial_dom_elements
+                screenshot = initial_screenshot
+            else:
+                self._log(f"  📸 Analyzing page: {url}", progress_callback)
+                dom_elements = self._analyze_dom(current_url)
+                screenshot = self._capture_screenshot(current_url, send_to_gui=True)
 
             if not dom_elements:
                 logs.append("⚠️ No DOM elements found")
@@ -232,10 +281,12 @@ Return ONLY a JSON array with executable scenarios in priority order:
                 logs.append(f"Step {step_idx}: {step.description}")
                 logs.append(f"  LLM Decision: {llm_decision['reasoning']}")
                 logs.append(f"  Confidence: {llm_decision['confidence']}%")
+                logs.append(f"  Target Element: {llm_decision['selector']}")
 
                 # If first step fails with low confidence, skip entire scenario
                 if step_idx == 1 and llm_decision["confidence"] < 60:
                     logs.append(f"  ⚠️ First step has low confidence, skipping entire scenario")
+                    self._log(f"    ⚠️ Skipping (low confidence: {llm_decision['confidence']}%)", progress_callback)
                     return {
                         "id": scenario.id,
                         "scenario": scenario.scenario,
@@ -247,11 +298,27 @@ Return ONLY a JSON array with executable scenarios in priority order:
                 # For subsequent steps, skip the step but continue scenario
                 if llm_decision["confidence"] < 60:
                     logs.append(f"  ⚠️ Low confidence, skipping this step")
+                    self._log(f"    ⚠️ Skipping step (low confidence: {llm_decision['confidence']}%)", progress_callback)
                     continue
 
                 if not llm_decision["selector"]:
                     logs.append(f"  ⚠️ No selector found, skipping this step")
+                    self._log(f"    ⚠️ Skipping step (no selector)", progress_callback)
                     continue
+
+                # Log which element will be clicked (IMPORTANT for debugging)
+                self._log(f"    🎯 Target: {llm_decision['action'].upper()} on '{llm_decision['selector']}'", progress_callback)
+
+                # Find element text to show in logs
+                target_element = next((e for e in dom_elements if e.selector == llm_decision['selector']), None)
+                if target_element and target_element.text:
+                    self._log(f"    📝 Element text: \"{target_element.text[:50]}\"", progress_callback)
+
+                # Check if selector matches multiple elements (warning)
+                matching_elements = [e for e in dom_elements if e.selector == llm_decision['selector']]
+                if len(matching_elements) > 1:
+                    self._log(f"    ⚠️ WARNING: Selector matches {len(matching_elements)} elements! Will click FIRST one.", progress_callback)
+                    self._log(f"    💡 Matched elements: {[e.text[:30] for e in matching_elements[:3]]}", progress_callback)
 
                 # Execute the action
                 before_screenshot = screenshot
@@ -263,7 +330,8 @@ Return ONLY a JSON array with executable scenarios in priority order:
                 )
 
                 if not success:
-                    logs.append(f"  ❌ Action failed")
+                    logs.append(f"  ❌ Action failed on {llm_decision['selector']}")
+                    self._log(f"    ❌ Action failed", progress_callback)
                     return {
                         "id": scenario.id,
                         "scenario": scenario.scenario,
@@ -272,16 +340,19 @@ Return ONLY a JSON array with executable scenarios in priority order:
                     }
 
                 logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+                self._log(f"    ✅ Action successful", progress_callback)
 
-                # Wait a bit for page to update
-                time.sleep(1)
+                # Wait a bit for page to update (reduced from 1s to 0.5s)
+                time.sleep(0.5)
 
-                # Capture new state (don't pass URL - use current page)
-                screenshot = self._capture_screenshot(None)
+                # Capture new state and send to GUI for smooth updates
+                screenshot = self._capture_screenshot(None, send_to_gui=True)
 
                 # If action changes page, re-analyze DOM (don't pass URL - use current page)
                 if llm_decision["action"] in ("click", "press"):
                     dom_elements = self._analyze_dom(None)
+                    # Send updated screenshot after DOM analysis
+                    screenshot = self._capture_screenshot(None, send_to_gui=True)
 
             # Step 3: Verify final result using LLM
             if scenario.assertion and scenario.assertion.description:
@@ -369,8 +440,13 @@ Return ONLY a JSON array with executable scenarios in priority order:
             print(f"DOM analysis failed: {e}")
             return []
 
-    def _capture_screenshot(self, url: str | None) -> str:
-        """Capture screenshot using MCP host. If url is None, captures current page."""
+    def _capture_screenshot(self, url: str | None, send_to_gui: bool = False) -> str:
+        """Capture screenshot using MCP host. If url is None, captures current page.
+
+        Args:
+            url: URL to capture, or None for current page
+            send_to_gui: If True, send screenshot to GUI without click animation
+        """
         params = {"session_id": self.session_id}
         if url:
             params["url"] = url
@@ -385,9 +461,9 @@ Return ONLY a JSON array with executable scenarios in priority order:
             data = response.json()
             screenshot = data.get("screenshot", "")
 
-            # Send screenshot to GUI if callback is set
-            if self._screenshot_callback and screenshot:
-                self._screenshot_callback(screenshot)
+            # Send screenshot to GUI if requested (without click animation)
+            if send_to_gui and self._screenshot_callback and screenshot:
+                self._screenshot_callback(screenshot, None)
 
             return screenshot
         except Exception as e:
@@ -426,8 +502,9 @@ Return ONLY a JSON array with executable scenarios in priority order:
             # Send screenshot to GUI if action succeeded and callback is set
             if success and self._screenshot_callback:
                 screenshot = data.get("screenshot", "")
+                click_position = data.get("click_position")
                 if screenshot:
-                    self._screenshot_callback(screenshot)
+                    self._screenshot_callback(screenshot, click_position)
 
             return success
 

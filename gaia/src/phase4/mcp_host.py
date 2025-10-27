@@ -123,7 +123,13 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 }
 
                 function getUniqueSelector(el) {
-                    if (el.id) return `#${el.id}`;
+                    // Use attribute selector for IDs with special characters (like :, ., [, ])
+                    if (el.id) {
+                        if (/[:\.\[\]\(\)]/.test(el.id)) {
+                            return `[id="${el.id}"]`;
+                        }
+                        return `#${el.id}`;
+                    }
 
                     if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
 
@@ -349,6 +355,18 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         # Use .first to handle multiple matches (avoid strict mode violation)
         element = page.locator(selector).first
 
+        # Get element position before action (for click animation)
+        click_position = None
+        try:
+            bounding_box = await element.bounding_box()
+            if bounding_box:
+                click_position = {
+                    "x": bounding_box["x"] + bounding_box["width"] / 2,
+                    "y": bounding_box["y"] + bounding_box["height"] / 2
+                }
+        except Exception:
+            pass
+
         if action == "click":
             await element.click(timeout=10000)
         elif action == "fill":
@@ -379,7 +397,8 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             "success": True,
             "message": f"Action '{action}' executed on '{selector}'",
             "screenshot": screenshot_base64,
-            "current_url": session.current_url
+            "current_url": session.current_url,
+            "click_position": click_position  # Add click position for animation
         }
 
     except Exception as e:
@@ -611,15 +630,11 @@ async def execute_action(request: McpRequest):
     session_id = params.get("session_id", "default")
 
     if action == "analyze_page":
-        url = params.get("url")
-        if not url:
-            raise HTTPException(status_code=400, detail="URL is required for 'analyze_page'.")
+        url = params.get("url")  # url can be None to use current page
         return await analyze_page(url, session_id)
 
     elif action == "capture_screenshot":
-        url = params.get("url")
-        if not url:
-            raise HTTPException(status_code=400, detail="URL is required for 'capture_screenshot'.")
+        url = params.get("url")  # url can be None to use current page
         return await capture_screenshot(url, session_id)
 
     elif action == "execute_action":

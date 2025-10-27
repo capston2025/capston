@@ -779,7 +779,7 @@ class MainWindow(QMainWindow):
         """Display HTML content in the browser view"""
         self._browser_view.setHtml(html_content)
 
-    def update_live_preview(self, screenshot_base64: str) -> None:
+    def update_live_preview(self, screenshot_base64: str, click_position: dict = None) -> None:
         """Update browser view with real-time screenshot from Playwright"""
         import base64
         from PySide6.QtCore import QByteArray
@@ -793,15 +793,62 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap()
             pixmap.loadFromData(QByteArray(image_data))
 
-            # Display as HTML img tag (scaled to fit)
+            # Build click animation overlay if position provided
+            click_overlay = ""
+            if click_position and "x" in click_position and "y" in click_position:
+                x = click_position["x"]
+                y = click_position["y"]
+                click_overlay = f'''
+                <div class="click-animation" style="
+                    position: absolute;
+                    left: {x}px;
+                    top: {y}px;
+                    width: 20px;
+                    height: 20px;
+                    margin-left: -10px;
+                    margin-top: -10px;
+                    border-radius: 50%;
+                    pointer-events: none;
+                    animation: ripple 0.8s ease-out;
+                "></div>
+                '''
+
+            # Display as HTML img tag (scaled to fit) with animation overlay
             html = f'''
             <html>
-            <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center;">
-                <img src="data:image/png;base64,{screenshot_base64}"
-                     style="max-width:100%; max-height:100%; object-fit:contain;
-                            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
-                            border: 2px solid rgba(59, 130, 246, 0.3);
-                            border-radius: 8px;">
+            <head>
+                <style>
+                    @keyframes ripple {{
+                        0% {{
+                            box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.8),
+                                        0 0 0 0 rgba(59, 130, 246, 0.6);
+                            transform: scale(0.5);
+                            opacity: 1;
+                        }}
+                        50% {{
+                            box-shadow: 0 0 0 10px rgba(59, 130, 246, 0.3),
+                                        0 0 0 20px rgba(59, 130, 246, 0.1);
+                            transform: scale(1.2);
+                            opacity: 0.8;
+                        }}
+                        100% {{
+                            box-shadow: 0 0 0 20px rgba(59, 130, 246, 0),
+                                        0 0 0 40px rgba(59, 130, 246, 0);
+                            transform: scale(1.5);
+                            opacity: 0;
+                        }}
+                    }}
+                </style>
+            </head>
+            <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center; position:relative;">
+                <div style="position:relative; display:inline-block;">
+                    <img src="data:image/png;base64,{screenshot_base64}"
+                         style="max-width:100%; max-height:100%; object-fit:contain;
+                                box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+                                border: 2px solid rgba(59, 130, 246, 0.3);
+                                border-radius: 8px;">
+                    {click_overlay}
+                </div>
             </body>
             </html>
             '''
