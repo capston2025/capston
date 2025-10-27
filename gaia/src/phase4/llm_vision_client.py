@@ -23,7 +23,7 @@ class LLMVisionClient:
             api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var)
         """
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-4o"  # GPT-4 with vision (faster and cheaper than gpt-4-turbo)
+        self.model = "gpt-5-mini"  # Multimodal reasoning model - 4x cheaper than o4-mini!
 
     def select_element_for_step(
         self,
@@ -68,19 +68,30 @@ Task: {step_description}
 Available elements (JSON):
 {json.dumps(dom_list, ensure_ascii=False, indent=2)}
 
-Instructions:
-- Respond with valid JSON only (no markdown, no explanations)
-- Choose selector from the elements list above
-- confidence: 0-100 (run if ≥60)
-- **IMPORTANT**: If multiple elements have same text/selector, use the "index" field to identify which one
-- **IMPORTANT**: If you see multiple "돌러보기" buttons, choose the MOST SPECIFIC one based on context
-- Prefer selectors that uniquely identify a single element (check if multiple elements share same selector)
+**Rules:**
+1. Choose a selector from the "Available elements" list above
+2. Look for elements that reasonably match the task description
+3. Use context clues - buttons near each other might be related
+4. If you can't find a good match, return LOW confidence (<60)
+5. Examples of GOOD matches:
+   - Task: "Click Share button" + Element: "공유하기" → confidence: 95
+   - Task: "Click Login" + Element: "로그인" → confidence: 90
+   - Task: "Open modal" + Element: "열기", "Dialog", "모달" → confidence: 85
+6. Examples of BAD matches:
+   - Task: "Click Filter" + Element: "공유하기" → confidence: 30 (wrong element!)
+   - Task: "Click Help" + ONLY "공유하기" exists → confidence: 40 (no good match)
 
-Required JSON format:
+**Matching tips:**
+- Look for exact text matches first
+- Then look for similar/related elements
+- Check element type (button for clicks, input for fill)
+- If truly no match exists, return confidence: 0-40
+
+Required JSON format (no markdown):
 {{
-    "selector": "css_selector_here",
+    "selector": "css_selector_from_list_above",
     "action": "click",
-    "reasoning": "brief explanation (mention if multiple matches exist and why you chose this one)",
+    "reasoning": "why this element matches the task (or why confidence is low)",
     "confidence": 85
 }}
 
@@ -89,7 +100,7 @@ JSON response:"""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=1024,
+                max_completion_tokens=1024,
                 messages=[
                     {
                         "role": "user",
@@ -172,7 +183,7 @@ JSON response:"""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=2048,
+                max_completion_tokens=2048,
                 messages=[
                     {
                         "role": "user",
@@ -252,7 +263,7 @@ JSON response:"""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=512,
+                max_completion_tokens=512,
                 messages=[
                     {
                         "role": "user",

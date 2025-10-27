@@ -174,7 +174,7 @@ class IntelligentOrchestrator:
             for idx, s in enumerate(scenarios, 1)
         ])
 
-        prompt = f"""Given the current page state, analyze which test scenarios are executable.
+        prompt = f"""Analyze which test scenarios are executable on this page.
 
 URL: {url}
 
@@ -184,28 +184,73 @@ Available DOM Elements:
 Test Scenarios:
 {scenarios_summary}
 
-For each scenario, determine:
-1. Is it executable with current DOM elements? (yes/no)
-2. Execution priority (1-5, where 1 is highest)
-3. Brief reason
+**Rules:**
+1. Mark a scenario as executable if you can reasonably infer the required elements exist
+2. Look for matching text, button types, or related UI components
+3. Use common sense - if a test needs a "login button", look for "로그인", "Login", "Sign in", etc.
+4. Examples:
+   - Test: "Click share button" + DOM: "공유하기" button → EXECUTABLE
+   - Test: "Test login" + DOM: "로그인" or "Login" button → EXECUTABLE
+   - Test: "Test modal" + DOM: "Modal", "Dialog", or "열기" button → EXECUTABLE
+   - Test: "Test filter" + DOM: "필터", "Filter", or search-related elements → EXECUTABLE
+   - Test: "Test drag-drop" + DOM: draggable elements or related text → EXECUTABLE
 
-Return ONLY a JSON array with executable scenarios in priority order:
+**When to SKIP:**
+- The test clearly requires elements that don't exist at all
+- Example: Test needs "shopping cart" but this is a documentation site
+
+For EXECUTABLE scenarios, provide:
+1. Execution priority (1-5, where 1 is highest)
+2. Brief reason
+
+Return ONLY a JSON array:
 [
-  {{"id": "TC001", "priority": 1, "reason": "Login button found"}},
-  {{"id": "TC002", "priority": 2, "reason": "..."}}
+  {{"id": "TC001", "priority": 1, "reason": "DOM has login button"}},
+  {{"id": "TC005", "priority": 2, "reason": "DOM has share button"}}
 ]
 """
 
         try:
-            # Call LLM with vision (screenshot + prompt)
+            # Call o4-mini (reasoning model with vision) for accurate scenario selection
             import json
-            response = self.llm_client.analyze_with_vision(
-                prompt=prompt,
-                screenshot_base64=screenshot
+            import openai
+
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
+                model="gpt-5-mini",  # Multimodal reasoning model - 4x cheaper than o4-mini!
+                max_completion_tokens=2048,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{screenshot}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ]
             )
 
+            response_text = response.choices[0].message.content or ""
+
+            # Strip markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
             # Parse LLM response
-            executable_ids = json.loads(response)
+            executable_ids = json.loads(response_text)
 
             # Build prioritized scenario list
             id_to_scenario = {s.id: s for s in scenarios}
@@ -423,7 +468,7 @@ Return ONLY a JSON array with executable scenarios in priority order:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=payload,
-                timeout=30
+                timeout=90  # Increased from 30s to 90s for complex operations
             )
             response.raise_for_status()
             data = response.json()
@@ -455,7 +500,7 @@ Return ONLY a JSON array with executable scenarios in priority order:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=payload,
-                timeout=30
+                timeout=90  # Increased from 30s to 90s for complex operations
             )
             response.raise_for_status()
             data = response.json()
@@ -490,7 +535,7 @@ Return ONLY a JSON array with executable scenarios in priority order:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=payload,
-                timeout=30
+                timeout=90  # Increased from 30s to 90s for complex operations
             )
             response.raise_for_status()
             data = response.json()

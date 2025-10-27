@@ -206,7 +206,7 @@ class MasterOrchestrator:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=dom_payload,
-                timeout=30
+                timeout=90  # Increased from 30s to 90s for complex operations
             )
             response.raise_for_status()
             dom_data = response.json()
@@ -216,7 +216,7 @@ class MasterOrchestrator:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=screenshot_payload,
-                timeout=30
+                timeout=90  # Increased from 30s to 90s for complex operations
             )
             response.raise_for_status()
             screenshot_data = response.json()
@@ -311,7 +311,7 @@ class MasterOrchestrator:
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=payload,
-                timeout=30
+                timeout=90  # Increased from 30s to 90s for complex operations
             )
             response.raise_for_status()
             data = response.json()

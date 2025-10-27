@@ -320,13 +320,13 @@ async def capture_screenshot(url: str = None, session_id: str = "default") -> Di
 
 async def execute_simple_action(url: str, selector: str, action: str, value: str = None, session_id: str = "default") -> Dict[str, Any]:
     """
-    Execute a simple action (click, fill, press) using persistent session.
+    Execute a simple action (click, fill, press, scroll, tab) using persistent session.
 
     Args:
         url: Page URL
-        selector: CSS selector
-        action: Action type (click, fill, press)
-        value: Value for fill/press actions
+        selector: CSS selector (not used for 'tab' action)
+        action: Action type (click, fill, press, scroll, tab)
+        value: Value for fill/press actions, or scroll amount for scroll action
         session_id: Browser session ID (default: "default")
 
     Returns:
@@ -345,46 +345,74 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
     try:
         # Navigate only if URL changed
         if session.current_url != url:
-            await page.goto(url, timeout=30000)
+            await page.goto(url, timeout=60000)  # Increased from 30s to 60s
             session.current_url = url
             try:
-                await page.wait_for_load_state("networkidle", timeout=2000)
+                await page.wait_for_load_state("networkidle", timeout=5000)  # Increased from 2s to 5s
             except Exception:
-                await page.wait_for_timeout(2000)
-
-        # Use .first to handle multiple matches (avoid strict mode violation)
-        element = page.locator(selector).first
+                await page.wait_for_timeout(3000)  # Increased from 2s to 3s
 
         # Get element position before action (for click animation)
         click_position = None
-        try:
-            bounding_box = await element.bounding_box()
-            if bounding_box:
-                click_position = {
-                    "x": bounding_box["x"] + bounding_box["width"] / 2,
-                    "y": bounding_box["y"] + bounding_box["height"] / 2
-                }
-        except Exception:
-            pass
 
-        if action == "click":
-            await element.click(timeout=10000)
-        elif action == "fill":
-            if value is None:
-                raise ValueError("Value is required for 'fill' action")
-            await element.fill(value, timeout=10000)
-        elif action == "press":
-            if value is None:
-                raise ValueError("Value is required for 'press' action")
-            await element.press(value, timeout=10000)
+        # Handle actions that don't require selector
+        if action == "tab":
+            # Press Tab key on the page (keyboard.press doesn't support timeout)
+            await page.keyboard.press("Tab")
+
+        elif action == "scroll":
+            # Scroll the page or element
+            if selector:
+                # Scroll specific element into view
+                element = page.locator(selector).first
+                try:
+                    bounding_box = await element.bounding_box()
+                    if bounding_box:
+                        click_position = {
+                            "x": bounding_box["x"] + bounding_box["width"] / 2,
+                            "y": bounding_box["y"] + bounding_box["height"] / 2
+                        }
+                except Exception:
+                    pass
+                await element.scroll_into_view_if_needed(timeout=10000)
+            else:
+                # Scroll the page by specified amount (default: one viewport height)
+                scroll_amount = int(value) if value else 500
+                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+
         else:
-            raise ValueError(f"Unsupported action: {action}")
+            # Actions that require selector
+            element = page.locator(selector).first
+
+            # Get element position for click animation
+            try:
+                bounding_box = await element.bounding_box()
+                if bounding_box:
+                    click_position = {
+                        "x": bounding_box["x"] + bounding_box["width"] / 2,
+                        "y": bounding_box["y"] + bounding_box["height"] / 2
+                    }
+            except Exception:
+                pass
+
+            if action == "click":
+                await element.click(timeout=30000)  # Increased from 10s to 30s
+            elif action == "fill":
+                if value is None:
+                    raise ValueError("Value is required for 'fill' action")
+                await element.fill(value, timeout=30000)  # Increased from 10s to 30s
+            elif action == "press":
+                if value is None:
+                    raise ValueError("Value is required for 'press' action")
+                await element.press(value, timeout=30000)  # Increased from 10s to 30s
+            else:
+                raise ValueError(f"Unsupported action: {action}")
 
         # Wait for state change
         try:
-            await page.wait_for_load_state("networkidle", timeout=3000)
+            await page.wait_for_load_state("networkidle", timeout=5000)  # Increased from 3s to 5s
         except Exception:
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(1500)  # Increased from 1s to 1.5s
 
         # Update current URL in case of navigation
         session.current_url = page.url
@@ -395,7 +423,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
 
         return {
             "success": True,
-            "message": f"Action '{action}' executed on '{selector}'",
+            "message": f"Action '{action}' executed on '{selector if selector else 'page'}'",
             "screenshot": screenshot_base64,
             "current_url": session.current_url,
             "click_position": click_position  # Add click position for animation
@@ -464,15 +492,31 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
                 logs.append(f"NOTE: {step.description}")
                 continue
 
+            # Handle actions that don't require selector
+            if step.action == 'tab':
+                await page.keyboard.press("Tab")  # keyboard.press doesn't support timeout
+                logs.append(f"SUCCESS: Tab key pressed")
+                continue
+            elif step.action == 'scroll':
+                if step.selector:
+                    element = page.locator(step.selector).first
+                    await element.scroll_into_view_if_needed(timeout=10000)
+                    logs.append(f"SUCCESS: Scrolled '{step.selector}' into view")
+                else:
+                    scroll_amount = int(step.params[0]) if step.params else 500
+                    await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                    logs.append(f"SUCCESS: Scrolled page by {scroll_amount}px")
+                continue
+
             # Use .first to handle multiple matches (avoid strict mode violation)
             element = page.locator(step.selector).first
 
             if step.action == 'click':
-                await element.click(timeout=10000)
+                await element.click(timeout=30000)  # Increased from 10s to 30s
             elif step.action == 'fill':
-                await element.fill(str(step.params[0]), timeout=10000)
+                await element.fill(str(step.params[0]), timeout=30000)  # Increased from 10s to 30s
             elif step.action == 'press':
-                await element.press(str(step.params[0]), timeout=10000)
+                await element.press(str(step.params[0]), timeout=30000)  # Increased from 10s to 30s
             else:
                 raise ValueError(f"Unsupported action: {step.action}")
             logs.append(f"SUCCESS: {step.action} on '{step.selector}'")
