@@ -82,8 +82,10 @@ Available elements (JSON):
    - Task: "Click Help" + ONLY "공유하기" exists → confidence: 40 (no good match)
 
 **Matching tips:**
-- Look for exact text matches first
-- Then look for similar/related elements
+- Look for exact text matches first (HIGHEST PRIORITY!)
+- **PREFER text-based selectors like 'button:has-text("폼과 피드백")' over generic class selectors**
+- **AVOID generic selectors like 'button.flex', '.items-center' that match multiple elements**
+- If the selector you choose would match multiple elements, LOWER your confidence to <60
 - Check element type (button for clicks, input for fill)
 - If truly no match exists, return confidence: 0-40
 

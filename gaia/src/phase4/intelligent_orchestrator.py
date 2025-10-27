@@ -475,6 +475,22 @@ Return ONLY a JSON array:
                         self._log(f"    ⚠️ WARNING: Selector matches {len(matching_elements)} elements! Will click FIRST one.", progress_callback)
                         self._log(f"    💡 Matched elements: {[e.text[:30] for e in matching_elements[:3]]}", progress_callback)
 
+                        # AUTO-FIX: Try to extract target text from step description and improve selector
+                        # Example: "Click button labeled 폼과 피드백" → extract "폼과 피드백"
+                        import re
+                        korean_text_match = re.search(r'[가-힣]+(?:\s+[가-힣]+)*', step.description)
+                        if korean_text_match:
+                            target_text = korean_text_match.group()
+                            # Check if any matching element has this text
+                            text_match = next((e for e in matching_elements if target_text in e.text), None)
+                            if text_match:
+                                # Found it! Use text-based selector instead
+                                better_selector = f'button:has-text("{target_text}")'
+                                self._log(f"    🔧 Auto-fix: Using text-based selector: {better_selector}", progress_callback)
+                                llm_decision['selector'] = better_selector
+                                # Update target_element for logging
+                                target_element = text_match
+
                     # Execute the action
                     before_screenshot = screenshot
                     success = self._execute_action(
