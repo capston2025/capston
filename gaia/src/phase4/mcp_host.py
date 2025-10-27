@@ -41,6 +41,72 @@ class BrowserSession:
 # Active sessions storage
 active_sessions: Dict[str, BrowserSession] = {}
 
+
+# --- Assertion Helper Functions ---
+async def _execute_assertion(page: Page, action: str, selector: str, value: Any) -> Dict[str, Any]:
+    """Execute assertion/validation actions and return results"""
+    try:
+        if action == "expectVisible":
+            # Check if element is visible
+            if not selector:
+                return {"success": False, "message": "Selector required for expectVisible"}
+            element = page.locator(selector).first
+            await element.wait_for(state="visible", timeout=30000)
+            return {"success": True, "message": f"Element {selector} is visible"}
+
+        elif action == "expectHidden":
+            # Check if element is hidden
+            if not selector:
+                return {"success": False, "message": "Selector required for expectHidden"}
+            element = page.locator(selector).first
+            await element.wait_for(state="hidden", timeout=30000)
+            return {"success": True, "message": f"Element {selector} is hidden"}
+
+        elif action == "expectTrue":
+            # Evaluate JavaScript expression and check if true
+            if value is None:
+                return {"success": False, "message": "Value (expression) required for expectTrue"}
+            result = await page.evaluate(value)
+            if result:
+                return {"success": True, "message": f"Expression '{value}' evaluated to true"}
+            else:
+                return {"success": False, "message": f"Expression '{value}' evaluated to false"}
+
+        elif action == "expectAttribute":
+            # Check element attribute value
+            if not selector or value is None:
+                return {"success": False, "message": "Selector and value [attr, expected] required"}
+            element = page.locator(selector).first
+            if isinstance(value, list) and len(value) >= 2:
+                attr_name, expected_value = value[0], value[1]
+            else:
+                return {"success": False, "message": "Value must be [attribute_name, expected_value]"}
+
+            actual_value = await element.get_attribute(attr_name)
+            if actual_value == expected_value:
+                return {"success": True, "message": f"Attribute {attr_name}={expected_value}"}
+            else:
+                return {"success": False, "message": f"Attribute {attr_name}={actual_value}, expected {expected_value}"}
+
+        elif action == "expectCountAtLeast":
+            # Check minimum element count
+            if not selector or value is None:
+                return {"success": False, "message": "Selector and value (min count) required"}
+            elements = page.locator(selector)
+            count = await elements.count()
+            min_count = int(value) if not isinstance(value, int) else value
+            if count >= min_count:
+                return {"success": True, "message": f"Found {count} elements (>= {min_count})"}
+            else:
+                return {"success": False, "message": f"Found {count} elements (< {min_count})"}
+
+        else:
+            return {"success": False, "message": f"Unknown assertion action: {action}"}
+
+    except Exception as e:
+        return {"success": False, "message": f"Assertion failed: {str(e)}"}
+
+
 # --- Data Models for Test Scenarios ---
 class TestStep(BaseModel):
     description: str
@@ -380,6 +446,104 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 scroll_amount = int(value) if value else 500
                 await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
 
+        elif action == "goto":
+            # Navigate to URL (value contains the URL)
+            if value is None:
+                raise ValueError("Value (URL) is required for 'goto' action")
+            await page.goto(value, timeout=60000, wait_until="networkidle")
+
+        elif action == "setViewport":
+            # Change viewport size (value should be JSON array [width, height] or [[width, height]])
+            if value is None:
+                raise ValueError("Value [width, height] is required for 'setViewport' action")
+            import json
+            if isinstance(value, str):
+                width, height = json.loads(value)
+            else:
+                # Handle both [width, height] and [[width, height]] formats
+                if isinstance(value, list) and len(value) > 0:
+                    if isinstance(value[0], list):
+                        # Double-nested: [[width, height]]
+                        width, height = value[0][0], value[0][1]
+                    else:
+                        # Single array: [width, height]
+                        width, height = value[0], value[1]
+                else:
+                    raise ValueError(f"Invalid viewport value format: {value}")
+            await page.set_viewport_size({"width": int(width), "height": int(height)})
+
+        elif action == "evaluate":
+            # Execute JavaScript (value contains the script)
+            if value is None:
+                raise ValueError("Value (script) is required for 'evaluate' action")
+            if selector:
+                # Evaluate on specific element
+                element = page.locator(selector).first
+                await element.evaluate(value)
+            else:
+                # Evaluate on page
+                await page.evaluate(value)
+
+        elif action == "hover":
+            # Hover over element
+            if not selector:
+                raise ValueError("Selector is required for 'hover' action")
+            element = page.locator(selector).first
+            try:
+                bounding_box = await element.bounding_box()
+                if bounding_box:
+                    click_position = {
+                        "x": bounding_box["x"] + bounding_box["width"] / 2,
+                        "y": bounding_box["y"] + bounding_box["height"] / 2
+                    }
+            except Exception:
+                pass
+            await element.hover(timeout=30000)
+
+        elif action == "dragAndDrop":
+            # Drag and drop (value contains target selector)
+            if not selector or not value:
+                raise ValueError("Both selector and value (target) required for 'dragAndDrop' action")
+            source = page.locator(selector).first
+            target = page.locator(value).first
+            await source.drag_to(target, timeout=30000)
+
+        elif action == "scrollIntoView":
+            # Scroll element into view
+            if not selector:
+                raise ValueError("Selector is required for 'scrollIntoView' action")
+            element = page.locator(selector).first
+            await element.scroll_into_view_if_needed(timeout=10000)
+
+        elif action == "focus":
+            # Focus element
+            if not selector:
+                raise ValueError("Selector is required for 'focus' action")
+            element = page.locator(selector).first
+            await element.focus(timeout=30000)
+
+        elif action == "select":
+            # Select option in dropdown (value contains option value)
+            if not selector or value is None:
+                raise ValueError("Selector and value required for 'select' action")
+            element = page.locator(selector).first
+            await element.select_option(value, timeout=30000)
+
+        elif action in ("expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"):
+            # Assertion actions - will be handled by returning result
+            # These don't execute actions, they return validation results
+            result = await _execute_assertion(page, action, selector, value)
+
+            # Capture screenshot for assertion result
+            screenshot_bytes = await page.screenshot(full_page=False)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+            return {
+                "success": result["success"],
+                "message": result["message"],
+                "screenshot": screenshot_base64
+            }
+
         else:
             # Actions that require selector
             element = page.locator(selector).first
@@ -684,12 +848,20 @@ async def execute_action(request: McpRequest):
     elif action == "execute_action":
         # Simple action execution (click, fill, press) without full scenario
         url = params.get("url")
-        selector = params.get("selector")
+        selector = params.get("selector", "")  # selector can be empty for some actions
         action_type = params.get("action")
         value = params.get("value")
 
-        if not url or not selector or not action_type:
-            raise HTTPException(status_code=400, detail="url, selector, and action are required for 'execute_action'.")
+        # Some actions don't need selector (goto, setViewport, evaluate, tab, scroll)
+        # Assertion actions also don't need selector (they use value parameter instead)
+        actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll",
+                                        "expectTrue", "expectAttribute", "expectCountAtLeast"]
+
+        if not action_type:
+            raise HTTPException(status_code=400, detail="action is required for 'execute_action'.")
+
+        if action_type not in actions_not_needing_selector and not selector:
+            raise HTTPException(status_code=400, detail=f"selector is required for action '{action_type}'.")
 
         return await execute_simple_action(url, selector, action_type, value, session_id)
 

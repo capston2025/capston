@@ -903,7 +903,20 @@ class MainWindow(QMainWindow):
             self.fileDropped.emit(file_path)
 
     def _open_plan_dialog(self) -> None:
-        initial_dir = str(self._last_plan_directory) if self._last_plan_directory.exists() else ""
+        # Try mock_data first (for manually created plans), then plans directory (for cached plans)
+        if self._last_plan_directory.exists():
+            initial_dir = str(self._last_plan_directory)
+        else:
+            mock_data_dir = Path.cwd() / "artifacts" / "mock_data"
+            plans_dir = Path.cwd() / "artifacts" / "plans"
+            # Prefer mock_data if it exists, otherwise try plans
+            if mock_data_dir.exists():
+                initial_dir = str(mock_data_dir)
+            elif plans_dir.exists():
+                initial_dir = str(plans_dir)
+            else:
+                initial_dir = ""
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "이전 테스트 플랜 불러오기",
