@@ -58,6 +58,21 @@ For MCP/Playwright execution:
 playwright install chromium
 ```
 
+### Quick Start Scripts
+
+Once dependencies are installed and `.env` is filled, you can use helper scripts:
+
+```bash
+# terminal 1 (Playwright MCP host)
+./scripts/run_mcp_host.sh
+
+# terminal 2 (PySide6 GUI)
+./scripts/run_gui.sh
+```
+
+GUI에서 과거 테스트 플랜을 재사용하려면 1단계 화면의 `이전 테스트 불러오기` 버튼을 눌러
+`artifacts/plans/*.json` 파일을 선택하면 됩니다. PDF 분석 없이 바로 자동화를 시작할 수 있습니다.
+
 ## 🧪 Tests
 
 ```bash

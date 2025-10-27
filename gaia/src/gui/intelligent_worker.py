@@ -16,6 +16,7 @@ class IntelligentWorker(QObject):
     """Worker for executing IntelligentOrchestrator in background thread"""
 
     progress = Signal(str)
+    screenshot = Signal(str, object)  # (base64, click_position dict or None)
     finished = Signal()
 
     def __init__(
@@ -35,6 +36,14 @@ class IntelligentWorker(QObject):
         try:
             self.progress.emit(f"🤖 Starting LLM-powered automation for {len(self.scenarios)} scenarios...")
 
+            # Set screenshot callback on orchestrator
+            if hasattr(self.orchestrator, '_screenshot_callback'):
+                self.orchestrator._screenshot_callback = self._on_screenshot
+
+            # For MasterOrchestrator, also set callback on internal IntelligentOrchestrator
+            if hasattr(self.orchestrator, 'intelligent_orch'):
+                self.orchestrator.intelligent_orch._screenshot_callback = self._on_screenshot
+
             # Execute scenarios with progress callback
             results = self.orchestrator.execute_scenarios(
                 url=self.url,
@@ -48,18 +57,18 @@ class IntelligentWorker(QObject):
             self.progress.emit(f"   ❌ Failed: {results['failed']}/{results['total']}")
             self.progress.emit(f"   ⏭️  Skipped: {results['skipped']}/{results['total']}")
 
-            # Log detailed results
-            for scenario_result in results["scenarios"]:
-                status_emoji = {"passed": "✅", "failed": "❌", "skipped": "⏭️"}.get(
-                    scenario_result["status"], "❓"
-                )
-                self.progress.emit(
-                    f"{status_emoji} {scenario_result['id']}: {scenario_result['scenario']}"
-                )
+            # Log detailed results with clear status
+            self.progress.emit("\n상세 결과:")
+            for idx, scenario_result in enumerate(results["scenarios"], 1):
+                status_text = {
+                    "passed": "PASS",
+                    "failed": "FAIL",
+                    "skipped": "SKIP"
+                }.get(scenario_result["status"], "UNKNOWN")
 
-                # Show logs if available
-                for log in scenario_result.get("logs", []):
-                    self.progress.emit(f"     {log}")
+                self.progress.emit(
+                    f"[{idx}/{results['total']}] {status_text} - {scenario_result['id']}: {scenario_result['scenario']}"
+                )
 
         except Exception as e:
             self.progress.emit(f"❌ Intelligent orchestrator failed: {e}")
@@ -72,6 +81,10 @@ class IntelligentWorker(QObject):
     def _on_progress(self, message: str) -> None:
         """Forward progress messages to GUI"""
         self.progress.emit(message)
+
+    def _on_screenshot(self, screenshot_base64: str, click_position: dict = None) -> None:
+        """Forward screenshot to GUI for real-time preview"""
+        self.screenshot.emit(screenshot_base64, click_position)
 
     def request_cancel(self) -> None:
         """Request cancellation (not yet implemented)"""

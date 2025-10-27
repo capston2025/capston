@@ -1,0 +1,37 @@
+{
+  "profile": "simple-test",
+  "url": "https://final-blog-25638597.figma.site",
+  "test_scenarios": [
+    {
+      "id": "SIMPLE001",
+      "priority": "MUST",
+      "scenario": "Simple viewport and goto test",
+      "steps": [
+        {
+          "description": "Set viewport to desktop",
+          "action": "setViewport",
+          "selector": "",
+          "params": [[1280, 900]]
+        },
+        {
+          "description": "Navigate to site",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Check no horizontal scroll",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1"]
+        }
+      ],
+      "assertion": {
+        "description": "Page loads without horizontal scroll",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    }
+  ]
+}

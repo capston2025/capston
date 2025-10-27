@@ -1,0 +1,556 @@
+{
+  "profile": "final-blog-25638597_figma_site",
+  "url": "https://final-blog-25638597.figma.site",
+  "pdf_hash": "4f8ad97d4648",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "Responsive layout at 400px breakpoint",
+      "steps": [
+        {
+          "description": "Set viewport to desktop size 1280x900",
+          "action": "setViewport",
+          "selector": "",
+          "params": [1280, 900]
+        },
+        {
+          "description": "Open the base URL",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}"]
+        },
+        {
+          "description": "Verify no horizontal scroll appears on desktop layout",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1"]
+        },
+        {
+          "description": "Resize viewport to mobile portrait 400x900",
+          "action": "setViewport",
+          "selector": "",
+          "params": [400, 900]
+        },
+        {
+          "description": "Check again that no horizontal scroll exists at 400px width",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1"]
+        },
+        {
+          "description": "Resize viewport to mobile landscape 640x360",
+          "action": "setViewport",
+          "selector": "",
+          "params": [640, 360]
+        },
+        {
+          "description": "Confirm layout stays usable in landscape (no horizontal scroll and header
+title visible)",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1 && !!
+document.querySelector('header h1')"]
+        }
+      ],
+      "assertion": {
+        "description": "Layout adapts without horizontal scroll or clipped content across desktop,
+portrait, and landscape breakpoints",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1"]
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "SHOULD",
+      "scenario": "Web Share API integration",
+      "steps": [
+        {
+          "description": "Set viewport to desktop size so the 공유하기 button label is visible",
+          "action": "setViewport",
+          "selector": "",
+          "params": [1280, 900]
+        },
+        {
+          "description": "Open the base URL",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}"]
+        },
+        {
+          "description": "Stub navigator.share to capture its payload before clicking 공유하기",
+          "action": "evaluate",
+          "selector": "",
+          "params": ["window.__sharedData = null; navigator.share = async data => { window.__sharedData
+= data; };"]
+        },
+        {
+          "description": "Click the 공유하기 button in the header",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Verify the stub captured the expected title and URL",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["window.__sharedData && window.__sharedData.title === 'UI Components Test Site' &&
+window.__sharedData.url === window.location.href"]
+        }
+      ],
+      "assertion": {
+        "description": "Clicking 공유하기 triggers navigator.share with title/text/url when available",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.__sharedData !== null"]
+      }
+    },
+    {
+      "id": "TC006",
+      "priority": "MUST",
+      "scenario": "Header and sidebar navigation",
+      "steps": [
+        {
+          "description": "Open the home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}"]
+        },
+        {
+          "description": "From the 홈 화면 카드, click the 둘러보기 button under 기본 기능",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Confirm the page header shows 기본 기능",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Use the sidebar button labeled 폼과 피드백 to navigate",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Verify the header title updates to 폼과 피드백",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click the 홈으로 back button in the header",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Ensure the 홈 hero heading UI 컴포넌트 테스트 사이트 is visible again",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Navigation controls change sections and update page headings correctly",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC008",
+      "priority": "MUST",
+      "scenario": "Search, filter, and sort list",
+      "steps": [
+        {
+          "description": "Navigate directly to 기본 기능 page (use #basics hash)",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#basics"]
+        },
+        {
+          "description": "Type 스마트워치 into the 검색어를 입력하세요... input field",
+          "action": "fill",
+          "selector": "",
+          "params": ["스마트워치"]
+        },
+        {
+          "description": "Wait until the 결과 카드 titled 스마트워치 앱 추천 appears",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click the 정렬 button to switch sorting to 제목순",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Verify the 정렬: 제목순 label updates accordingly",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Search results filter and sort toggles respond in the UI",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC011",
+      "priority": "MUST",
+      "scenario": "Modal behavior and accessibility",
+      "steps": [
+        {
+          "description": "Navigate to 인터랙션과 데이터 page (use #interactions hash)",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#interactions"]
+        },
+        {
+          "description": "Scroll until the 카드 titled 팝업 창 is in view",
+          "action": "scrollIntoView",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click the 모달 다이얼로그 열기 button",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Check that the 모달 다이얼로그 heading appears inside the dialog",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Press Escape to dismiss the dialog",
+          "action": "press",
+          "selector": "",
+          "params": ["Escape"]
+        },
+        {
+          "description": "Confirm the dialog overlay closes",
+          "action": "expectHidden",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Modal opens from trigger and closes via Escape without lingering overlays",
+        "selector": "",
+        "condition": "expectHidden",
+        "params": []
+      }
+    },
+    {
+      "id": "TC012",
+      "priority": "SHOULD",
+      "scenario": "Tabs and accordion interactions",
+      "steps": [
+        {
+          "description": "Open 기본 기능 page via #basics hash",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#basics"]
+        },
+        {
+          "description": "Select the 분석 tab in the 탭 메뉴",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Ensure the panel showing 분석 데이터 becomes visible",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Switch to the 보고서 tab",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Verify 보고서 관련 콘텐츠 is displayed",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Expand the 아코디언 item labelled 자주 묻는 질문 1",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Confirm the answer text about 서비스 이용 방법 is shown",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Tabs change visible panels and accordion item opens with aria-expanded true",
+        "selector": "",
+        "condition": "expectAttribute",
+        "params": ["aria-expanded", "true"]
+      }
+    },
+    {
+      "id": "TC013",
+      "priority": "SHOULD",
+      "scenario": "Tooltips on hover and focus",
+      "steps": [
+        {
+          "description": "Open 폼과 피드백 page via #forms hash",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#forms"]
+        },
+        {
+          "description": "Scroll until the 카드 titled 툴팁 is visible",
+          "action": "scrollIntoView",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Hover the 버튼 within the 도움말 tile to reveal tooltip",
+          "action": "hover",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Check the tooltip text 도움말을 확인하려면 클릭하세요 appears",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Focus the 버튼 in the 다운로드 tile (e.g., Tab navigation)",
+          "action": "focus",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Ensure the tooltip describing 파일을 다운로드합니다 is shown on focus",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Tooltips render on hover and keyboard focus",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC014",
+      "priority": "MUST",
+      "scenario": "Toast notifications types and duration",
+      "steps": [
+        {
+          "description": "Open 폼과 피드백 page via #forms hash",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#forms"]
+        },
+        {
+          "description": "Click the 성공 toast trigger button",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Verify the 성공! toast appears in the sonner toaster",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click the 오류 toast trigger button",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Confirm the 오류 발생! toast is shown",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Use the 모든 토스트 보기 button to trigger additional toast types",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Ensure subsequent toasts such as 새로운 업데이트가 있습니다 appear",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "At least four toast notifications display after triggering all buttons",
+        "selector": "",
+        "condition": "expectCountAtLeast",
+        "params": [4]
+      }
+    },
+    {
+      "id": "TC027",
+      "priority": "MUST",
+      "scenario": "Drag-and-drop reorder within a list",
+      "steps": [
+        {
+          "description": "Navigate to 인터랙션과 데이터 page via #interactions hash",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#interactions"]
+        },
+        {
+          "description": "Scroll until the 카드 titled 드래그 앤 드롭 is visible",
+          "action": "scrollIntoView",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Drag the 카드 labelled 작업 1 to the end of the list (after 작업 4)",
+          "action": "dragAndDrop",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Verify 작업 1 now appears last in the list ordering",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["(() => { const section =
+Array.from(document.querySelectorAll('section')).find(sec => sec.textContent.includes('드래그 앤 드
+롭')); if (!section) return false; const cards = Array.from(section.querySelectorAll('.space-y-3 >
+div')); return cards.length && cards[cards.length - 1].textContent.includes('작업 1'); })()"]
+        }
+      ],
+      "assertion": {
+        "description": "Card reorder completes successfully with 작업 1 at the end",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["(() => { const section = Array.from(document.querySelectorAll('section')).find(sec
+=> sec.textContent.includes('드래그 앤 드롭')); if (!section) return false; const cards =
+Array.from(section.querySelectorAll('.space-y-3 > div')); return cards.length && cards[cards.length -
+1].textContent.includes('작업 1'); })()"]
+      }
+    },
+    {
+      "id": "TC032",
+      "priority": "MUST",
+      "scenario": "Infinite scroll auto-loads more items",
+      "steps": [
+        {
+          "description": "Navigate to 인터랙션과 데이터 page via #interactions hash",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}#interactions"]
+        },
+        {
+          "description": "Scroll to the 카드 titled 무한 스크롤",
+          "action": "scrollIntoView",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Scroll the 무한 스크롤 리스트 컨테이너 to the bottom to trigger loading",
+          "action": "evaluate",
+          "selector": "",
+          "params": ["const container = document.querySelector('section:has(h2:contains(\"무한 스크롤
+\")) .max-h-96'); container && container.scrollTo(0, container.scrollHeight);"]
+        },
+        {
+          "description": "Wait for the 로딩 중... indicator inside the list to disappear",
+          "action": "expectHidden",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Confirm that a new item labelled 아이템 21 appears in the list",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "New items append once the sentinel triggers and loading finishes",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC038",
+      "priority": "MAY",
+      "scenario": "Web Share API fallback when unsupported",
+      "steps": [
+        {
+          "description": "Set viewport to desktop size 1280x900",
+          "action": "setViewport",
+          "selector": "",
+          "params": [1280, 900]
+        },
+        {
+          "description": "Open the base URL",
+          "action": "goto",
+          "selector": "",
+          "params": ["{{BASE_URL}}"]
+        },
+        {
+          "description": "Remove navigator.share and stub navigator.clipboard.writeText to capture
+copied link",
+          "action": "evaluate",
+          "selector": "",
+          "params": ["navigator.share = undefined; window.__copiedLink = null; if (!
+navigator.clipboard) { navigator.clipboard = {}; } navigator.clipboard.writeText = async text =>
+{ window.__copiedLink = text; };"]
+        },
+        {
+          "description": "Click the 공유하기 button to trigger fallback",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Assert the stub clipboard captured the current URL",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["window.__copiedLink === window.location.href"]
+        },
+        {
+          "description": "Verify the success toast 링크가 클립보드에 복사되었습니다! appears",
+          "action": "expectVisible",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Fallback copies the URL and shows success toast when Web Share API is
+unavailable",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.__copiedLink !== null"]
+      }
+    }
+  ]
+}

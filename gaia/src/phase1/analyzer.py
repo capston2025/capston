@@ -5,7 +5,7 @@ import json
 from typing import List, Sequence
 
 from gaia.src.phase1.adapters import checklist_to_scenarios
-from gaia.src.phase1.agent_runner import AgentWorkflowRunner
+from gaia.src.phase1.agent_client import AgentServiceClient
 from gaia.src.utils.config import CONFIG, LLMConfig
 from gaia.src.utils.models import DomElement, TestScenario
 
@@ -17,19 +17,23 @@ class SpecAnalyzer:
         self,
         config: LLMConfig | None = None,
         *,
-        agent_runner: AgentWorkflowRunner | None = None,
+        agent_client: AgentServiceClient | None = None,
     ) -> None:
         self.config = config or CONFIG.llm
-        self._agent_runner = agent_runner
+        self._agent_client = agent_client or AgentServiceClient()
 
     # ------------------------------------------------------------------
     def generate_from_spec(self, document_text: str) -> List[TestScenario]:
         try:
-            payload = self._invoke_agent(document_text)
-        except Exception:
+            # Use AgentServiceClient instead of AgentWorkflowRunner
+            result = self._agent_client.analyze_document(document_text)
+            # Convert to scenarios format
+            scenarios = self._convert_analysis_result(result)
+            return scenarios or self._fallback_plan()
+        except Exception as e:
+            # For errors, log and use fallback
+            print(f"Warning: Agent Builder failed, using fallback: {e}")
             return self._fallback_plan()
-        scenarios = checklist_to_scenarios(payload)
-        return scenarios or self._fallback_plan()
 
     def generate_from_context(
         self,
@@ -48,23 +52,52 @@ class SpecAnalyzer:
 
         combined_text = "\n\n".join(enriched_text_parts) if enriched_text_parts else ""
         try:
-            payload = self._invoke_agent(combined_text)
-        except Exception:
+            # Use AgentServiceClient instead of AgentWorkflowRunner
+            result = self._agent_client.analyze_document(combined_text)
+            # Convert to scenarios format
+            scenarios = self._convert_analysis_result(result)
+            return scenarios or self._fallback_plan()
+        except Exception as e:
+            # For errors, log and use fallback
+            print(f"Warning: Agent Builder failed, using fallback: {e}")
             return self._fallback_plan()
 
-        scenarios = checklist_to_scenarios(payload)
-        return scenarios or self._fallback_plan()
-
     # ------------------------------------------------------------------
-    def _invoke_agent(self, document_text: str) -> dict:
-        runner = self._agent_runner
-        if runner is None:
-            try:
-                runner = AgentWorkflowRunner()
-            except RuntimeError:
-                raise
-            self._agent_runner = runner
-        return runner.run(document_text)
+    def _convert_analysis_result(self, result) -> List[TestScenario]:
+        """Convert AgentServiceClient AnalysisResult to TestScenario list."""
+        from gaia.src.utils.models import Assertion, TestStep
+
+        scenarios = []
+        for test_case in result.checklist:
+            # Convert steps from strings to TestStep objects
+            steps = [
+                TestStep(
+                    description=step,
+                    action="",  # Will be auto-matched later
+                    selector="",  # Will be auto-matched later
+                    params=[],
+                )
+                for step in test_case.steps
+            ]
+
+            # Create assertion from expected_result
+            assertion = Assertion(
+                description=test_case.expected_result,
+                selector="",  # Will be auto-matched later
+                condition="is_visible",  # Default condition
+                params=[],
+            )
+
+            scenario = TestScenario(
+                id=test_case.id,
+                priority=test_case.priority,
+                scenario=test_case.name,
+                steps=steps,
+                assertion=assertion,
+            )
+            scenarios.append(scenario)
+
+        return scenarios
 
     def _fallback_plan(self) -> List[TestScenario]:
         fallback = {
