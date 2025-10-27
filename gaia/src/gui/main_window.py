@@ -476,7 +476,6 @@ class MainWindow(QMainWindow):
         self._cancel_button: QPushButton
         self._back_to_setup_button: QPushButton
         self._view_logs_button: QPushButton
-        self._feedback_input: QTextEdit
         self._url_input: QLineEdit
         self._browser_view: QWebEngineView
         self._workflow_stage: str
@@ -626,27 +625,27 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
+        # Title and control buttons at the top
+        title_row = QHBoxLayout()
         title_label = QLabel("2단계. 자동화 검증", page)
         title_label.setObjectName("SectionLabel")
-        layout.addWidget(title_label)
-
-        control_row = QHBoxLayout()
-        control_row.setSpacing(12)
+        title_row.addWidget(title_label)
+        title_row.addStretch()
 
         self._back_to_setup_button = QPushButton("입력 단계로", page)
         self._back_to_setup_button.setObjectName("GhostButton")
         self._back_to_setup_button.clicked.connect(self.show_setup_stage)
-        control_row.addWidget(self._back_to_setup_button)
+        title_row.addWidget(self._back_to_setup_button)
 
         self._cancel_button = QPushButton("중단", page)
         self._cancel_button.setObjectName("DangerButton")
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self.cancelRequested.emit)
-        control_row.addWidget(self._cancel_button)
+        title_row.addWidget(self._cancel_button)
 
-        control_row.addStretch()
-        layout.addLayout(control_row)
+        layout.addLayout(title_row)
 
+        # Scenario section (expanded)
         scenario_label = QLabel("자동화 시나리오", page)
         scenario_label.setObjectName("SectionLabel")
         layout.addWidget(scenario_label)
@@ -654,16 +653,17 @@ class MainWindow(QMainWindow):
         self._checklist_view = QListWidget(page)
         self._checklist_view.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self._checklist_view.setSpacing(12)
-        layout.addWidget(self._checklist_view, stretch=2)
+        layout.addWidget(self._checklist_view, stretch=3)  # Increased from 2 to 3
 
-        # Logs header with "View Details" button
+        # Logs section (expanded, no emoji)
         logs_header = QHBoxLayout()
         logs_label = QLabel("실행 요약", page)
         logs_label.setObjectName("SectionLabel")
         logs_header.addWidget(logs_label)
         logs_header.addStretch()
 
-        self._view_logs_button = QPushButton("📋 상세 로그 보기", page)
+        self._view_logs_button = QPushButton("상세 로그 보기", page)  # Removed emoji
+        self._view_logs_button.setObjectName("GhostButton")
         self._view_logs_button.setEnabled(False)
         self._view_logs_button.clicked.connect(self._show_detailed_logs)
         logs_header.addWidget(self._view_logs_button)
@@ -672,19 +672,10 @@ class MainWindow(QMainWindow):
         self._log_output = QTextEdit(page)
         self._log_output.setPlaceholderText("실행 요약이 여기에 표시됩니다…")
         self._log_output.setReadOnly(True)
-        self._log_output.setMinimumHeight(140)
-        layout.addWidget(self._log_output, stretch=1)
+        layout.addWidget(self._log_output, stretch=2)  # Increased from 1 to 2
 
-        feedback_label = QLabel("검증 피드백", page)
-        feedback_label.setObjectName("SectionLabel")
-        layout.addWidget(feedback_label)
+        # Feedback section removed - no longer needed
 
-        self._feedback_input = QTextEdit(page)
-        self._feedback_input.setPlaceholderText("발견한 오류나 보완이 필요한 내용을 입력해 주세요…")
-        self._feedback_input.setMinimumHeight(110)
-        layout.addWidget(self._feedback_input, stretch=1)
-
-        layout.addStretch(1)
         return page
 
     # ------------------------------------------------------------------
@@ -702,9 +693,6 @@ class MainWindow(QMainWindow):
             self._workflow_stack.setCurrentWidget(self._review_page)
         self._back_to_setup_button.setEnabled(not self._is_busy)
 
-    def get_feedback_text(self) -> str:
-        """Return the trimmed feedback message authored by the operator."""
-        return self._feedback_input.toPlainText().strip()
 
     # ------------------------------------------------------------------
     # Slots exposed to the controller
@@ -730,9 +718,13 @@ class MainWindow(QMainWindow):
 
         # In summary mode, only show important messages
         if self._log_mode == "summary":
-            # Only show messages that start with emoji indicators
-            important_prefixes = ("🗺️", "📄", "✅", "❌", "⚠️", "🎉", "🚀", "🤖", "📊")
-            if message.strip().startswith(important_prefixes):
+            # Show messages with status indicators or important keywords
+            important_keywords = (
+                "Step 1:", "Exploring", "Discovered", "Page ", "Executing",
+                "PASS", "FAIL", "SKIP", "Execution Results", "상세 결과",
+                "Passed:", "Failed:", "Skipped:", "complete"
+            )
+            if any(keyword in message for keyword in important_keywords):
                 self._log_output.append(message)
         else:
             # In full mode, show everything
@@ -752,7 +744,7 @@ class MainWindow(QMainWindow):
                 <html>
                 <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#666;">
                     <div style="text-align:center;">
-                        <h2>🤖 AI 자동화 시작 중...</h2>
+                        <h2>자동화 시작 중...</h2>
                         <p>실시간 브라우저 화면이 곧 표시됩니다</p>
                     </div>
                 </body>

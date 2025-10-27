@@ -57,18 +57,18 @@ class IntelligentWorker(QObject):
             self.progress.emit(f"   ❌ Failed: {results['failed']}/{results['total']}")
             self.progress.emit(f"   ⏭️  Skipped: {results['skipped']}/{results['total']}")
 
-            # Log detailed results
-            for scenario_result in results["scenarios"]:
-                status_emoji = {"passed": "✅", "failed": "❌", "skipped": "⏭️"}.get(
-                    scenario_result["status"], "❓"
-                )
-                self.progress.emit(
-                    f"{status_emoji} {scenario_result['id']}: {scenario_result['scenario']}"
-                )
+            # Log detailed results with clear status
+            self.progress.emit("\n상세 결과:")
+            for idx, scenario_result in enumerate(results["scenarios"], 1):
+                status_text = {
+                    "passed": "PASS",
+                    "failed": "FAIL",
+                    "skipped": "SKIP"
+                }.get(scenario_result["status"], "UNKNOWN")
 
-                # Show logs if available
-                for log in scenario_result.get("logs", []):
-                    self.progress.emit(f"     {log}")
+                self.progress.emit(
+                    f"[{idx}/{results['total']}] {status_text} - {scenario_result['id']}: {scenario_result['scenario']}"
+                )
 
         except Exception as e:
             self.progress.emit(f"❌ Intelligent orchestrator failed: {e}")
