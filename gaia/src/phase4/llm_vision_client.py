@@ -87,6 +87,7 @@ Available elements (JSON):
 - **AVOID generic selectors like 'button.flex', '.items-center' that match multiple elements**
 - If the selector you choose would match multiple elements, LOWER your confidence to <60
 - Check element type (button for clicks, input for fill)
+- **For scrollIntoView tasks**: Find the element mentioned in the description (e.g., "카드 titled 팝업 창" → look for element with text "팝업 창")
 - If truly no match exists, return confidence: 0-40
 
 Required JSON format (no markdown):

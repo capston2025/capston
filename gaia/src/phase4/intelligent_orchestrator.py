@@ -295,6 +295,16 @@ Return ONLY a JSON array:
         total_non_assertion_steps = 0   # Track total non-assertion steps
 
         try:
+            # Reset viewport to default (1280x900) at start of each scenario
+            # This ensures tests are independent and don't inherit viewport from previous tests
+            self._log(f"  🖥️  Resetting viewport to default (1280x900)", progress_callback)
+            self._execute_action(
+                action="setViewport",
+                selector="",
+                params=[[1280, 900]],
+                url=current_url
+            )
+
             # Step 1: Use pre-analyzed DOM or analyze now
             if initial_dom_elements and initial_screenshot:
                 dom_elements = initial_dom_elements
@@ -514,17 +524,17 @@ Return ONLY a JSON array:
                     logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
                     self._log(f"    ✅ Action successful", progress_callback)
 
-                    # Wait a bit for page to update (reduced from 1s to 0.5s)
-                    time.sleep(0.5)
+                    # Wait a bit for page to update (reduced to 0.2s for snappier GUI)
+                    time.sleep(0.2)
 
-                    # Capture new state and send to GUI for smooth updates
-                    screenshot = self._capture_screenshot(None, send_to_gui=True)
-
-                    # If action changes page, re-analyze DOM (don't pass URL - use current page)
+                    # If action changes page, re-analyze DOM and send updated screenshot
                     if llm_decision["action"] in ("click", "press"):
                         dom_elements = self._analyze_dom(None)
-                        # Send updated screenshot after DOM analysis
+                        # Send updated screenshot after DOM analysis for smooth visual feedback
                         screenshot = self._capture_screenshot(None, send_to_gui=True)
+                    else:
+                        # For non-navigation actions, just capture updated state
+                        screenshot = self._capture_screenshot(None, send_to_gui=False)
 
             # Step 3: Decide on pass/fail based on step execution
             # NEW POLICY: If all non-assertion steps succeeded, mark as passed
