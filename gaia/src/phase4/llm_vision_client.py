@@ -337,5 +337,72 @@ JSON response:"""
                 "confidence": 0
             }
 
+    def find_element_coordinates(
+        self,
+        screenshot_base64: str,
+        description: str,
+    ) -> Dict[str, Any]:
+        """
+        Find element coordinates from screenshot (vision-based fallback).
+
+        Args:
+            screenshot_base64: Base64-encoded screenshot
+            description: Element description (e.g., "Click submit button")
+
+        Returns:
+            Dict with x, y, confidence, reasoning
+        """
+        try:
+            prompt = f"""You are a UI element locator. Find the element described as: "{description}"
+
+**CRITICAL: Respond with ONLY valid JSON. No explanations, no markdown.**
+
+Analyze the screenshot and return the CENTER COORDINATES of the target element:
+
+{{
+  "x": <pixel x coordinate of element center>,
+  "y": <pixel y coordinate of element center>,
+  "confidence": <0.0 to 1.0>,
+  "reasoning": "<brief explanation>"
+}}
+
+If the element is not visible or unclear, set confidence to 0.0
+
+**JSON ONLY (no markdown):**"""
+
+            response_text = self.analyze_with_vision(prompt, screenshot_base64)
+
+            # Parse JSON response
+            result = json.loads(response_text.strip())
+
+            # Validate response structure
+            if not all(k in result for k in ["x", "y", "confidence"]):
+                return {
+                    "x": 0,
+                    "y": 0,
+                    "confidence": 0.0,
+                    "reasoning": "Invalid response structure"
+                }
+
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"LLM coordinate extraction failed (JSON parse error): {e}")
+            print(f"Response was: {response_text[:200]}")
+            return {
+                "x": 0,
+                "y": 0,
+                "confidence": 0.0,
+                "reasoning": f"JSON parse error: {e}"
+            }
+        except Exception as e:
+            print(f"LLM coordinate extraction failed: {e}")
+            return {
+                "x": 0,
+                "y": 0,
+                "confidence": 0.0,
+                "reasoning": f"Error: {e}"
+            }
+
 
 __all__ = ["LLMVisionClient"]

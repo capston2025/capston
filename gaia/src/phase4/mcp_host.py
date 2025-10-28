@@ -472,6 +472,36 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                     raise ValueError(f"Invalid viewport value format: {value}")
             await page.set_viewport_size({"width": int(width), "height": int(height)})
 
+        elif action == "wait":
+            # Wait for a specified time in milliseconds (value contains the wait time)
+            import asyncio
+            if value is None:
+                raise ValueError("Value (milliseconds) is required for 'wait' action")
+            wait_time_ms = int(value) if isinstance(value, (int, str)) else int(value[0])
+            await asyncio.sleep(wait_time_ms / 1000.0)
+
+        elif action == "clickAt":
+            # Click at specific coordinates (value contains [x, y])
+            if value is None:
+                raise ValueError("Value [x, y] is required for 'clickAt' action")
+
+            # Parse coordinates
+            if isinstance(value, str):
+                import json
+                coords = json.loads(value)
+            elif isinstance(value, list):
+                coords = value if len(value) == 2 else [value[0], value[1]]
+            else:
+                raise ValueError(f"Invalid coordinates format: {value}")
+
+            x, y = int(coords[0]), int(coords[1])
+
+            # Store click position for animation
+            click_position = {"x": x, "y": y}
+
+            # Click at coordinates
+            await page.mouse.click(x, y)
+
         elif action == "evaluate":
             # Execute JavaScript (value contains the script)
             if value is None:
@@ -544,7 +574,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 "screenshot": screenshot_base64
             }
 
-        else:
+        elif action in ("click", "fill", "press"):
             # Actions that require selector
             element = page.locator(selector).first
 
@@ -569,8 +599,9 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 if value is None:
                     raise ValueError("Value is required for 'press' action")
                 await element.press(value, timeout=30000)  # Increased from 10s to 30s
-            else:
-                raise ValueError(f"Unsupported action: {action}")
+
+        else:
+            raise ValueError(f"Unsupported action: {action}")
 
         # Wait for state change
         try:
@@ -852,9 +883,9 @@ async def execute_action(request: McpRequest):
         action_type = params.get("action")
         value = params.get("value")
 
-        # Some actions don't need selector (goto, setViewport, evaluate, tab, scroll)
+        # Some actions don't need selector (goto, setViewport, evaluate, tab, scroll, wait, clickAt)
         # Assertion actions also don't need selector (they use value parameter instead)
-        actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll",
+        actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll", "wait", "clickAt",
                                         "expectTrue", "expectAttribute", "expectCountAtLeast"]
 
         if not action_type:

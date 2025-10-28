@@ -331,7 +331,7 @@ Return ONLY a JSON array:
 
                 # Define action categories
                 actions_needing_llm = ["click", "fill", "press"]  # Actions that need LLM to find elements
-                actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab"]  # Actions that execute directly
+                actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab", "wait"]  # Actions that execute directly
                 assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"]  # Assertion actions
                 actions_with_explicit_selector = ["hover", "focus", "select", "dragAndDrop", "scrollIntoView"]  # Actions that can use explicit selector
 
@@ -515,8 +515,43 @@ Return ONLY a JSON array:
                     if not success:
                         logs.append(f"  ❌ Action failed on {llm_decision['selector']}")
                         self._log(f"    ❌ Action failed", progress_callback)
-                        failed_non_assertion_steps += 1
-                        return {
+
+                        # FALLBACK: Try coordinate-based click for click actions
+                        if llm_decision["action"] == "click":
+                            self._log(f"    🔄 Trying fallback: coordinate-based click", progress_callback)
+                            logs.append(f"  🔄 Fallback: Using vision-based coordinates")
+
+                            # Get coordinates from LLM Vision
+                            coords = self.llm_client.find_element_coordinates(
+                                screenshot_base64=screenshot,
+                                description=step.description
+                            )
+
+                            if coords["confidence"] > 0.5:
+                                self._log(f"    📍 Found at ({coords['x']}, {coords['y']}) - confidence: {coords['confidence']:.0%}", progress_callback)
+                                logs.append(f"  📍 Coordinates: ({coords['x']}, {coords['y']})")
+
+                                # Try clickAt action
+                                success = self._execute_action(
+                                    action="clickAt",
+                                    selector="",  # Not needed for clickAt
+                                    params=[[coords['x'], coords['y']]],
+                                    url=current_url
+                                )
+
+                                if success:
+                                    self._log(f"    ✅ Fallback succeeded!", progress_callback)
+                                    logs.append(f"  ✅ Coordinate-based click succeeded")
+                                else:
+                                    self._log(f"    ❌ Fallback also failed", progress_callback)
+                                    logs.append(f"  ❌ Coordinate-based click failed")
+                            else:
+                                self._log(f"    ❌ Low confidence ({coords['confidence']:.0%}), skipping fallback", progress_callback)
+                                logs.append(f"  ❌ Could not find element in screenshot")
+
+                        if not success:
+                            failed_non_assertion_steps += 1
+                            return {
                             "id": scenario.id,
                             "scenario": scenario.scenario,
                             "status": "failed",
