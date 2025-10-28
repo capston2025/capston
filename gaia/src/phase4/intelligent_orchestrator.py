@@ -166,7 +166,7 @@ class IntelligentOrchestrator:
         # Build prompt for LLM
         dom_summary = "\n".join([
             f"- {elem.tag} [{elem.element_type}]: {elem.selector} (text: {elem.text[:50]})"
-            for elem in dom_elements[:50]  # Limit to first 50 elements
+            for elem in dom_elements[:100]  # Limit to 100 for better coverage (increased from 50)
         ])
 
         scenarios_summary = "\n".join([
@@ -295,6 +295,16 @@ Return ONLY a JSON array:
         total_non_assertion_steps = 0   # Track total non-assertion steps
 
         try:
+            # Reset viewport to default (1280x900) at start of each scenario
+            # This ensures tests are independent and don't inherit viewport from previous tests
+            self._log(f"  🖥️  Resetting viewport to default (1280x900)", progress_callback)
+            self._execute_action(
+                action="setViewport",
+                selector="",
+                params=[[1280, 900]],
+                url=current_url
+            )
+
             # Step 1: Use pre-analyzed DOM or analyze now
             if initial_dom_elements and initial_screenshot:
                 dom_elements = initial_dom_elements
@@ -439,7 +449,8 @@ Return ONLY a JSON array:
                     logs.append(f"  Target Element: {llm_decision['selector']}")
 
                     # If first step fails with low confidence, skip entire scenario
-                    if step_idx == 1 and llm_decision["confidence"] < 60:
+                    # Lowered threshold from 60% to 45% to be more aggressive with testing
+                    if step_idx == 1 and llm_decision["confidence"] < 45:
                         logs.append(f"  ⚠️ First step has low confidence, skipping entire scenario")
                         self._log(f"    ⚠️ Skipping (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         return {
@@ -451,7 +462,8 @@ Return ONLY a JSON array:
                         }
 
                     # For subsequent steps, skip the step but continue scenario
-                    if llm_decision["confidence"] < 60:
+                    # Lowered threshold to 45% to allow more attempts
+                    if llm_decision["confidence"] < 45:
                         logs.append(f"  ⚠️ Low confidence, skipping this step")
                         self._log(f"    ⚠️ Skipping step (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         continue
@@ -474,6 +486,22 @@ Return ONLY a JSON array:
                     if len(matching_elements) > 1:
                         self._log(f"    ⚠️ WARNING: Selector matches {len(matching_elements)} elements! Will click FIRST one.", progress_callback)
                         self._log(f"    💡 Matched elements: {[e.text[:30] for e in matching_elements[:3]]}", progress_callback)
+
+                        # AUTO-FIX: Try to extract target text from step description and improve selector
+                        # Example: "Click button labeled 폼과 피드백" → extract "폼과 피드백"
+                        import re
+                        korean_text_match = re.search(r'[가-힣]+(?:\s+[가-힣]+)*', step.description)
+                        if korean_text_match:
+                            target_text = korean_text_match.group()
+                            # Check if any matching element has this text
+                            text_match = next((e for e in matching_elements if target_text in e.text), None)
+                            if text_match:
+                                # Found it! Use text-based selector instead
+                                better_selector = f'button:has-text("{target_text}")'
+                                self._log(f"    🔧 Auto-fix: Using text-based selector: {better_selector}", progress_callback)
+                                llm_decision['selector'] = better_selector
+                                # Update target_element for logging
+                                target_element = text_match
 
                     # Execute the action
                     before_screenshot = screenshot
@@ -498,17 +526,14 @@ Return ONLY a JSON array:
                     logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
                     self._log(f"    ✅ Action successful", progress_callback)
 
-                    # Wait a bit for page to update (reduced from 1s to 0.5s)
-                    time.sleep(0.5)
+                    # Wait a bit for page to update (reduced to 0.2s for snappier GUI)
+                    time.sleep(0.2)
 
-                    # Capture new state and send to GUI for smooth updates
-                    screenshot = self._capture_screenshot(None, send_to_gui=True)
-
-                    # If action changes page, re-analyze DOM (don't pass URL - use current page)
-                    if llm_decision["action"] in ("click", "press"):
+                    # Re-analyze DOM if page might have changed
+                    if llm_decision["action"] in ("click", "press", "goto"):
                         dom_elements = self._analyze_dom(None)
-                        # Send updated screenshot after DOM analysis
-                        screenshot = self._capture_screenshot(None, send_to_gui=True)
+
+                    # Screenshot is already sent by _execute_action with click_position
 
             # Step 3: Decide on pass/fail based on step execution
             # NEW POLICY: If all non-assertion steps succeeded, mark as passed

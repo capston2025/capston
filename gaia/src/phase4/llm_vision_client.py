@@ -50,7 +50,7 @@ class LLMVisionClient:
         """
         # Format DOM elements for LLM
         dom_list = []
-        for idx, elem in enumerate(dom_elements[:50]):  # Limit to 50 for token efficiency
+        for idx, elem in enumerate(dom_elements[:100]):  # Limit to 100 for better coverage (increased from 50)
             dom_list.append({
                 "index": idx,
                 "tag": elem.tag,
@@ -71,20 +71,27 @@ Available elements (JSON):
 **Rules:**
 1. Choose a selector from the "Available elements" list above
 2. Look for elements that reasonably match the task description
-3. Use context clues - buttons near each other might be related
-4. If you can't find a good match, return LOW confidence (<60)
-5. Examples of GOOD matches:
+3. **CRITICAL: If task mentions context like "under X" or "in Y section", find that context element FIRST**
+4. **For multiple identical buttons**:
+   - Task: "Click 둘러보기 under 기본 기능" → Find element with text "기본 기능", then find nearby "둘러보기"
+   - Use parent/sibling relationships to disambiguate
+   - If no context given, pick the FIRST matching element
+5. If you can't find a good match, return LOW confidence (<45)
+6. Examples of GOOD matches:
    - Task: "Click Share button" + Element: "공유하기" → confidence: 95
+   - Task: "Click 둘러보기 under 기본 기능" → Look for "기본 기능" text first, then nearby "둘러보기" → confidence: 85
    - Task: "Click Login" + Element: "로그인" → confidence: 90
-   - Task: "Open modal" + Element: "열기", "Dialog", "모달" → confidence: 85
-6. Examples of BAD matches:
+7. Examples of BAD matches:
+   - Task: "Click 둘러보기 under 기본 기능" + Only generic "둘러보기" found → confidence: 50 (ambiguous!)
    - Task: "Click Filter" + Element: "공유하기" → confidence: 30 (wrong element!)
-   - Task: "Click Help" + ONLY "공유하기" exists → confidence: 40 (no good match)
 
 **Matching tips:**
-- Look for exact text matches first
-- Then look for similar/related elements
+- Look for exact text matches first (HIGHEST PRIORITY!)
+- **PREFER text-based selectors like 'button:has-text("폼과 피드백")' over generic class selectors**
+- **AVOID generic selectors like 'button.flex', '.items-center' that match multiple elements**
+- If the selector you choose would match multiple elements, LOWER your confidence to <60
 - Check element type (button for clicks, input for fill)
+- **For scrollIntoView tasks**: Find the element mentioned in the description (e.g., "카드 titled 팝업 창" → look for element with text "팝업 창")
 - If truly no match exists, return confidence: 0-40
 
 Required JSON format (no markdown):
