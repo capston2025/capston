@@ -111,14 +111,14 @@ class MasterOrchestrator:
         for page_idx, page_info in enumerate(site_map, start=1):
             page_name = page_info["name"]
             page_url = page_info["url"]
-            nav_selector = page_info.get("selector")
+            page_hash = page_info.get("hash")
 
             self._log(f"\n📄 Page {page_idx}/{len(site_map)}: {page_name}", progress_callback)
 
-            # Navigate to page if needed
-            if nav_selector:
-                self._log(f"  🔗 Navigating via: {nav_selector}", progress_callback)
-                success = self._navigate_to_page(page_url, nav_selector)
+            # Navigate to page if needed (skip for home page)
+            if page_hash:
+                self._log(f"  🔗 Navigating to: {page_url}", progress_callback)
+                success = self._navigate_to_page_url(page_url)
                 if not success:
                     self._log(f"  ⚠️ Navigation failed, skipping page", progress_callback)
                     continue
@@ -229,7 +229,7 @@ class MasterOrchestrator:
             # Ask LLM to identify navigation links
             dom_summary = "\n".join([
                 f"- [{elem.get('element_type')}] {elem.get('tag')}: {elem.get('selector')} (text: {elem.get('text', '')[:50]})"
-                for elem in dom_elements[:50]
+                for elem in dom_elements[:100]  # Limit to 100 for better coverage (increased from 50)
             ])
 
             prompt = f"""You are a website navigation agent. Analyze this page to find navigation links/buttons to other pages.
@@ -241,22 +241,23 @@ class MasterOrchestrator:
 
 **Your Task:**
 1. Look at the screenshot to identify main navigation elements
-2. Infer which page each link/button leads to
+2. Infer which page each link/button leads to (especially hash-based routes like #basics, #forms, #interactions)
 3. Find category buttons, menu links, tabs, etc.
 
 **CRITICAL INSTRUCTIONS:**
 - You MUST respond with ONLY valid JSON array
 - Do NOT include any explanatory text outside the JSON
 - Do NOT use markdown code blocks (no ```)
-- First item is always current page (selector: null)
-- selector must exist in DOM elements list above
+- First item is always current page (hash: null)
+- For hash-based SPA routes, include the hash fragment (e.g., "basics", "forms", "interactions")
 - Only include important pages (login, search, cart, main features)
 
 **Response Format (JSON ONLY):**
 [
-  {{"name": "Home", "selector": null, "description": "Main homepage"}},
-  {{"name": "Basic Features", "selector": "button:has-text(\\"기본 기능\\")", "description": "Basic website features page"}},
-  {{"name": "Forms & Feedback", "selector": "button:has-text(\\"폼과 피드백\\")", "description": "Form inputs and feedback page"}}
+  {{"name": "Home", "hash": null, "description": "Main homepage"}},
+  {{"name": "Basic Features", "hash": "basics", "description": "Basic website features page"}},
+  {{"name": "Forms & Feedback", "hash": "forms", "description": "Form inputs and feedback page"}},
+  {{"name": "Interactions & Data", "hash": "interactions", "description": "Interactive components and data visualization"}}
 ]
 
 **Response (JSON array only, no other text):**"""
@@ -269,13 +270,20 @@ class MasterOrchestrator:
             # Parse LLM response
             pages = json.loads(response_text)
 
-            # Add current URL to each page
+            # Build full URL with hash for each page
             result = []
+            base_url = url.split('#')[0]  # Remove any existing hash
             for page in pages:
+                page_hash = page.get("hash")
+                if page_hash:
+                    page_url = f"{base_url}#{page_hash}"
+                else:
+                    page_url = base_url
+
                 result.append({
                     "name": page["name"],
-                    "url": url,  # For now, all pages use same URL (SPA)
-                    "selector": page.get("selector")
+                    "url": page_url,
+                    "hash": page_hash  # Keep hash for reference
                 })
 
             return result
@@ -284,13 +292,12 @@ class MasterOrchestrator:
             self._log(f"⚠️ Site exploration failed: {e}", progress_callback)
             return []
 
-    def _navigate_to_page(self, url: str, selector: str) -> bool:
+    def _navigate_to_page_url(self, url: str) -> bool:
         """
-        Navigate to a page by clicking a selector.
+        Navigate to a page by going directly to its URL.
 
         Args:
-            url: Current page URL
-            selector: CSS selector to click
+            url: Full URL to navigate to (including hash)
 
         Returns:
             True if navigation succeeded, False otherwise
@@ -300,9 +307,10 @@ class MasterOrchestrator:
         payload = {
             "action": "execute_action",
             "params": {
-                "url": url,
-                "selector": selector,
-                "action": "click",
+                "url": url,  # Current page URL (ignored for goto)
+                "selector": "",
+                "action": "goto",
+                "value": url,  # Target URL for goto action
                 "session_id": self.session_id
             }
         }
@@ -317,7 +325,7 @@ class MasterOrchestrator:
             data = response.json()
             success = data.get("success", False)
             if success:
-                self._log(f"  ✅ Navigation successful: clicked {selector}", None)
+                self._log(f"  ✅ Navigation successful: loaded {url}", None)
             else:
                 self._log(f"  ❌ Navigation returned success=false: {data.get('message', 'no message')}", None)
             return success

@@ -166,7 +166,7 @@ class IntelligentOrchestrator:
         # Build prompt for LLM
         dom_summary = "\n".join([
             f"- {elem.tag} [{elem.element_type}]: {elem.selector} (text: {elem.text[:50]})"
-            for elem in dom_elements[:50]  # Limit to first 50 elements
+            for elem in dom_elements[:100]  # Limit to 100 for better coverage (increased from 50)
         ])
 
         scenarios_summary = "\n".join([
@@ -449,7 +449,8 @@ Return ONLY a JSON array:
                     logs.append(f"  Target Element: {llm_decision['selector']}")
 
                     # If first step fails with low confidence, skip entire scenario
-                    if step_idx == 1 and llm_decision["confidence"] < 60:
+                    # Lowered threshold from 60% to 45% to be more aggressive with testing
+                    if step_idx == 1 and llm_decision["confidence"] < 45:
                         logs.append(f"  ⚠️ First step has low confidence, skipping entire scenario")
                         self._log(f"    ⚠️ Skipping (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         return {
@@ -461,7 +462,8 @@ Return ONLY a JSON array:
                         }
 
                     # For subsequent steps, skip the step but continue scenario
-                    if llm_decision["confidence"] < 60:
+                    # Lowered threshold to 45% to allow more attempts
+                    if llm_decision["confidence"] < 45:
                         logs.append(f"  ⚠️ Low confidence, skipping this step")
                         self._log(f"    ⚠️ Skipping step (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         continue
@@ -527,14 +529,11 @@ Return ONLY a JSON array:
                     # Wait a bit for page to update (reduced to 0.2s for snappier GUI)
                     time.sleep(0.2)
 
-                    # If action changes page, re-analyze DOM and send updated screenshot
-                    if llm_decision["action"] in ("click", "press"):
+                    # Re-analyze DOM if page might have changed
+                    if llm_decision["action"] in ("click", "press", "goto"):
                         dom_elements = self._analyze_dom(None)
-                        # Send updated screenshot after DOM analysis for smooth visual feedback
-                        screenshot = self._capture_screenshot(None, send_to_gui=True)
-                    else:
-                        # For non-navigation actions, just capture updated state
-                        screenshot = self._capture_screenshot(None, send_to_gui=False)
+
+                    # Screenshot is already sent by _execute_action with click_position
 
             # Step 3: Decide on pass/fail based on step execution
             # NEW POLICY: If all non-assertion steps succeeded, mark as passed
