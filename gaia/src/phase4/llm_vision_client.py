@@ -22,8 +22,8 @@ class LLMVisionClient:
         Args:
             api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var)
         """
-        self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-5-mini"  # Multimodal reasoning model - 4x cheaper than o4-mini!
+        self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
+        self.model = "gpt-5"  # Upgraded to GPT-5 for better reasoning and decision-making
 
     def select_element_for_step(
         self,
@@ -50,7 +50,7 @@ class LLMVisionClient:
         """
         # Format DOM elements for LLM
         dom_list = []
-        for idx, elem in enumerate(dom_elements[:100]):  # Limit to 100 for better coverage (increased from 50)
+        for idx, elem in enumerate(dom_elements[:150]):  # Limit to 150 for better coverage (increased from 100)
             dom_list.append({
                 "index": idx,
                 "tag": elem.tag,
@@ -68,7 +68,27 @@ Task: {step_description}
 Available elements (JSON):
 {json.dumps(dom_list, ensure_ascii=False, indent=2)}
 
-**Rules:**
+**CRITICAL RULES - SELECTOR GENERATION:**
+1. **NEVER use generic class selectors**: If you're tempted to use `.flex`, `.items-center`, `.gap-2`, or similar utility classes, set confidence to 0 instead
+2. **NEVER create invalid CSS**: Selectors like `input.file:text-foreground` are INVALID (you can't combine pseudo-classes with plain text)
+3. **ALWAYS prefer text-based selectors** for buttons/links: Use `button:has-text("exact text")` or `a:has-text("exact text")`
+4. **ONLY use selectors that appear in the JSON above**: Don't make up new selectors
+
+**Selector Priority (HIGHEST to LOWEST):**
+1. Text-based: `button:has-text("폼과 피드백")` ✅ BEST
+2. ID-based: `#submit-button` ✅ GOOD
+3. Data attribute: `[data-testid="login-btn"]` ✅ GOOD
+4. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
+5. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
+
+**Action Detection Rules:**
+- If task mentions "wait", "verify", "check", or "confirm" → action should be "waitForTimeout" or "expectVisible", NOT "click"
+- If task is "대기" or "확인용 대기" → action is "waitForTimeout", NOT "click"
+- If task is about filling forms → action is "fill"
+- If task involves keyboard input → action is "press"
+- If task involves navigation → action is "goto"
+
+**Matching Rules:**
 1. Choose a selector from the "Available elements" list above
 2. Look for elements that reasonably match the task description
 3. **CRITICAL: If task mentions context like "under X" or "in Y section", find that context element FIRST**
@@ -76,29 +96,25 @@ Available elements (JSON):
    - Task: "Click 둘러보기 under 기본 기능" → Find element with text "기본 기능", then find nearby "둘러보기"
    - Use parent/sibling relationships to disambiguate
    - If no context given, pick the FIRST matching element
-5. If you can't find a good match, return LOW confidence (<45)
-6. Examples of GOOD matches:
-   - Task: "Click Share button" + Element: "공유하기" → confidence: 95
-   - Task: "Click 둘러보기 under 기본 기능" → Look for "기본 기능" text first, then nearby "둘러보기" → confidence: 85
-   - Task: "Click Login" + Element: "로그인" → confidence: 90
-7. Examples of BAD matches:
-   - Task: "Click 둘러보기 under 기본 기능" + Only generic "둘러보기" found → confidence: 50 (ambiguous!)
-   - Task: "Click Filter" + Element: "공유하기" → confidence: 30 (wrong element!)
+5. If you can't find a good match, return LOW confidence (<30)
+6. **If your selector would match multiple elements**: Set confidence to 20 (ambiguous)
 
-**Matching tips:**
-- Look for exact text matches first (HIGHEST PRIORITY!)
-- **PREFER text-based selectors like 'button:has-text("폼과 피드백")' over generic class selectors**
-- **AVOID generic selectors like 'button.flex', '.items-center' that match multiple elements**
-- If the selector you choose would match multiple elements, LOWER your confidence to <60
-- Check element type (button for clicks, input for fill)
-- **For scrollIntoView tasks**: Find the element mentioned in the description (e.g., "카드 titled 팝업 창" → look for element with text "팝업 창")
-- If truly no match exists, return confidence: 0-40
+**Examples of GOOD decisions:**
+- Task: "Click Share button" + Element: `button:has-text("공유하기")` → confidence: 95 ✅
+- Task: "Wait for page title" + Action: "waitForTimeout" → confidence: 90 ✅
+- Task: "Fill email input" + Element: `input[type="email"]` → confidence: 85 ✅
+
+**Examples of BAD decisions (AVOID THESE):**
+- Task: "Click button" + Selector: `button.flex.items-center` → confidence: 0 ❌ (generic classes!)
+- Task: "Wait for animation" + Action: "click" → confidence: 0 ❌ (wrong action!)
+- Task: "Click filter" + Selector matching 4 elements → confidence: 0 ❌ (ambiguous!)
+- Selector: `input.file:text-foreground` → confidence: 0 ❌ (invalid CSS!)
 
 Required JSON format (no markdown):
 {{
-    "selector": "css_selector_from_list_above",
-    "action": "click",
-    "reasoning": "why this element matches the task (or why confidence is low)",
+    "selector": "css_selector_from_list_above_or_empty_if_bad_match",
+    "action": "click_or_fill_or_press_or_goto_or_waitForTimeout_or_expectVisible",
+    "reasoning": "why this element matches (or why confidence is 0)",
     "confidence": 85
 }}
 
@@ -107,7 +123,7 @@ JSON response:"""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_completion_tokens=1024,
+                max_completion_tokens=2048,  # Increased from 1024 for GPT-5
                 messages=[
                     {
                         "role": "user",
@@ -335,6 +351,73 @@ JSON response:"""
                 "success": False,
                 "reasoning": f"Verification failed: {e}",
                 "confidence": 0
+            }
+
+    def find_element_coordinates(
+        self,
+        screenshot_base64: str,
+        description: str,
+    ) -> Dict[str, Any]:
+        """
+        Find element coordinates from screenshot (vision-based fallback).
+
+        Args:
+            screenshot_base64: Base64-encoded screenshot
+            description: Element description (e.g., "Click submit button")
+
+        Returns:
+            Dict with x, y, confidence, reasoning
+        """
+        try:
+            prompt = f"""You are a UI element locator. Find the element described as: "{description}"
+
+**CRITICAL: Respond with ONLY valid JSON. No explanations, no markdown.**
+
+Analyze the screenshot and return the CENTER COORDINATES of the target element:
+
+{{
+  "x": <pixel x coordinate of element center>,
+  "y": <pixel y coordinate of element center>,
+  "confidence": <0.0 to 1.0>,
+  "reasoning": "<brief explanation>"
+}}
+
+If the element is not visible or unclear, set confidence to 0.0
+
+**JSON ONLY (no markdown):**"""
+
+            response_text = self.analyze_with_vision(prompt, screenshot_base64)
+
+            # Parse JSON response
+            result = json.loads(response_text.strip())
+
+            # Validate response structure
+            if not all(k in result for k in ["x", "y", "confidence"]):
+                return {
+                    "x": 0,
+                    "y": 0,
+                    "confidence": 0.0,
+                    "reasoning": "Invalid response structure"
+                }
+
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"LLM coordinate extraction failed (JSON parse error): {e}")
+            print(f"Response was: {response_text[:200]}")
+            return {
+                "x": 0,
+                "y": 0,
+                "confidence": 0.0,
+                "reasoning": f"JSON parse error: {e}"
+            }
+        except Exception as e:
+            print(f"LLM coordinate extraction failed: {e}")
+            return {
+                "x": 0,
+                "y": 0,
+                "confidence": 0.0,
+                "reasoning": f"Error: {e}"
             }
 
 

@@ -720,15 +720,26 @@ class MainWindow(QMainWindow):
         if self._log_mode == "summary":
             # Show messages with status indicators or important keywords
             important_keywords = (
-                "Step 1:", "Exploring", "Discovered", "Page ", "Executing",
+                "Step ", "Exploring", "Discovered", "Page ", "Executing",
                 "PASS", "FAIL", "SKIP", "Execution Results", "상세 결과",
-                "Passed:", "Failed:", "Skipped:", "complete"
+                "Passed:", "Failed:", "Skipped:", "complete",
+                # Real-time progress indicators (NEW for UI responsiveness)
+                "🤖 Step", "📜 Scroll", "⬇️", "📸 Re-analyzing",
+                "🎯 Trying", "✅ Found", "❌ Element not found",
+                "🔍 Low confidence", "💡 Reason:", "🌐 Current URL",
+                "📊 Available DOM", "🤖 Using GPT-5", "🤖 Asking GPT-5"
             )
             if any(keyword in message for keyword in important_keywords):
                 self._log_output.append(message)
+                # Force immediate UI update for real-time feedback
+                from PySide6.QtCore import QCoreApplication
+                QCoreApplication.processEvents()
         else:
             # In full mode, show everything
             self._log_output.append(message)
+            # Also force immediate UI update in full mode
+            from PySide6.QtCore import QCoreApplication
+            QCoreApplication.processEvents()
 
     def set_busy(self, busy: bool, *, message: str | None = None) -> None:
         self._is_busy = busy
@@ -793,12 +804,32 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap()
             pixmap.loadFromData(QByteArray(image_data))
 
-            # Build click animation overlay if position provided
+            # Build click animation + mouse cursor overlay if position provided
             click_overlay = ""
             if click_position and "x" in click_position and "y" in click_position:
                 x = click_position["x"]
                 y = click_position["y"]
                 click_overlay = f'''
+                <!-- Mouse cursor (always visible) -->
+                <div class="mouse-cursor" style="
+                    position: absolute;
+                    left: {x}px;
+                    top: {y}px;
+                    width: 24px;
+                    height: 24px;
+                    margin-left: -2px;
+                    margin-top: -2px;
+                    pointer-events: none;
+                    z-index: 9999;
+                    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.8));
+                ">
+                    <!-- SVG cursor icon -->
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M3 3L10.07 19.97L12.58 12.58L19.97 10.07L3 3Z" fill="white" stroke="black" stroke-width="1.5"/>
+                    </svg>
+                </div>
+
+                <!-- Click animation (ripple effect) -->
                 <div class="click-animation" style="
                     position: absolute;
                     left: {x}px;

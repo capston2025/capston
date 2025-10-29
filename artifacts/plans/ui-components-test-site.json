@@ -1,0 +1,244 @@
+{
+  "profile": "ui-components-test-site",
+  "url": "https://final-blog-25638597.figma.site",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "홈 네비게이션 - 카테고리 카드/시작하기 버튼으로 페이지 이동",
+      "steps": [
+        {
+          "description": "홈 페이지 접속",
+          "action": "goto",
+          "params": [
+            "https://final-blog-25638597.figma.site"
+          ],
+          "selector": ""
+        },
+        {
+          "description": "홈이 보이는지 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='home-page']"
+        },
+        {
+          "description": "기본 기능 카드 클릭으로 /basics 이동",
+          "action": "click",
+          "selector": "[data-testid='card-basics']"
+        },
+        {
+          "description": "기본 기능 페이지 로드 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='basics-page']"
+        },
+        {
+          "description": "헤더 홈 버튼 클릭으로 홈 이동",
+          "action": "click",
+          "selector": "[data-testid='btn-home']"
+        },
+        {
+          "description": "시작하기-폼과 피드백 버튼 클릭으로 /forms 이동",
+          "action": "click",
+          "selector": "[data-testid='start-forms']"
+        }
+      ],
+      "assertion": {
+        "description": "폼과 피드백 페이지가 표시되어야 한다",
+        "selector": "[data-testid='forms-page']",
+        "condition": "expectVisible"
+      }
+    },
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "실시간 검색 - 디바운스/필터/정렬",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ],
+          "selector": ""
+        },
+        {
+          "description": "검색 입력에 키워드 입력",
+          "action": "fill",
+          "selector": "[data-testid='search-input']",
+          "params": [
+            "맥북"
+          ]
+        },
+        {
+          "description": "필터 버튼 클릭",
+          "action": "click",
+          "selector": "[data-testid='filter-button']"
+        },
+        {
+          "description": "카테고리 필터 선택",
+          "action": "click",
+          "selector": "[data-testid='filter-option-electronics']"
+        },
+        {
+          "description": "정렬 버튼 클릭",
+          "action": "click",
+          "selector": "[data-testid='sort-button']"
+        },
+        {
+          "description": "정렬 - 제목순 선택",
+          "action": "click",
+          "selector": "[data-testid='sort-title']"
+        },
+        {
+          "description": "검색 결과 영역 표시 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='search-results']"
+        }
+      ],
+      "assertion": {
+        "description": "결과 리스트 아이템과 결과 카운트가 보여야 한다",
+        "selector": "[data-testid='result-count']",
+        "condition": "expectVisible"
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "사용자 인증 - 회원가입/로그인/로그아웃",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ],
+          "selector": ""
+        },
+        {
+          "description": "회원가입 탭 클릭",
+          "action": "click",
+          "selector": "[data-testid='tab-signup']"
+        },
+        {
+          "description": "회원가입 이름 입력",
+          "action": "fill",
+          "selector": "[data-testid='signup-name']",
+          "params": [
+            "홍길동"
+          ]
+        },
+        {
+          "description": "회원가입 이메일 입력",
+          "action": "fill",
+          "selector": "[data-testid='signup-email']",
+          "params": [
+            "hong@test.com"
+          ]
+        },
+        {
+          "description": "회원가입 비밀번호 입력",
+          "action": "fill",
+          "selector": "[data-testid='signup-password']",
+          "params": [
+            "Password!23"
+          ]
+        },
+        {
+          "description": "회원가입 제출",
+          "action": "click",
+          "selector": "[data-testid='signup-submit']"
+        },
+        {
+          "description": "프로필 표시 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='user-profile']"
+        },
+        {
+          "description": "로그아웃 버튼 클릭",
+          "action": "click",
+          "selector": "[data-testid='btn-logout']"
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "[data-testid='tab-login']"
+        },
+        {
+          "description": "로그인 이메일 입력",
+          "action": "fill",
+          "selector": "[data-testid='login-email']",
+          "params": [
+            "hong@test.com"
+          ]
+        },
+        {
+          "description": "로그인 비밀번호 입력",
+          "action": "fill",
+          "selector": "[data-testid='login-password']",
+          "params": [
+            "Password!23"
+          ]
+        },
+        {
+          "description": "로그인 제출",
+          "action": "click",
+          "selector": "[data-testid='login-submit']"
+        }
+      ],
+      "assertion": {
+        "description": "로그인 후 프로필 UI가 보여야 한다",
+        "selector": "[data-testid='user-profile']",
+        "condition": "expectVisible"
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "MUST",
+      "scenario": "장바구니 - 추가/수량 조절/삭제/총액 갱신",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ],
+          "selector": ""
+        },
+        {
+          "description": "첫 번째 상품 장바구니 추가 클릭",
+          "action": "click",
+          "selector": "[data-testid='product-0-add']"
+        },
+        {
+          "description": "같은 상품 다시 추가 클릭",
+          "action": "click",
+          "selector": "[data-testid='product-0-add']"
+        },
+        {
+          "description": "장바구니 열기",
+          "action": "click",
+          "selector": "[data-testid='cart-open']"
+        },
+        {
+          "description": "수량 + 클릭",
+          "action": "click",
+          "selector": "[data-testid='cart-item-0-increment']"
+        },
+        {
+          "description": "아이템 삭제 클릭",
+          "action": "click",
+          "selector": "[data-testid='cart-item-0-remove']"
+        },
+        {
+          "description": "총액 표시 영역 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='cart-total']"
+        }
+      ],
+      "assertion": {
+        "description": "장바구니 목록과 총액이 올바르게 반영되어야 한다",
+        "selector": "[data-testid='cart-dialog']",
+        "condition": "expectVisible"
+      }
+    }
+  ]
+}

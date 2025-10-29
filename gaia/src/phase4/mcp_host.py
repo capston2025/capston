@@ -181,9 +181,11 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
 
                 function isVisible(el) {
                     const style = window.getComputedStyle(el);
+                    // More lenient visibility check for React SPAs
+                    // Allow elements that are in DOM but might be off-screen or animating
                     return style.display !== 'none' &&
                         style.visibility !== 'hidden' &&
-                        style.opacity !== '0' &&
+                        parseFloat(style.opacity) > 0.1 &&  // Allow fade-in animations (changed from strict '0' check)
                         el.offsetWidth > 0 &&
                         el.offsetHeight > 0;
                 }
@@ -249,7 +251,23 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     });
                 });
 
-                document.querySelectorAll('button, [role="button"], [type="submit"], input[type="button"]').forEach(el => {
+                // Collect buttons and interactive role elements
+                // Common ARIA roles for interactive UI elements
+                document.querySelectorAll(`
+                    button,
+                    [role="button"],
+                    [role="tab"],
+                    [role="menuitem"],
+                    [role="menuitemcheckbox"],
+                    [role="menuitemradio"],
+                    [role="option"],
+                    [role="radio"],
+                    [role="switch"],
+                    [role="treeitem"],
+                    [role="link"],
+                    [type="submit"],
+                    input[type="button"]
+                `.replace(/\s+/g, '')).forEach(el => {
                     if (!isVisible(el)) return;
 
                     let text = el.innerText?.trim() || el.value || '';
@@ -409,14 +427,21 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
     page = await session.get_or_create_page()
 
     try:
-        # Navigate only if URL changed
-        if session.current_url != url:
+        # Navigate only if URL changed (and URL is not empty)
+        # Compare with actual browser URL, not cached session URL
+        current_page_url = page.url
+        if url and current_page_url != url:
             await page.goto(url, timeout=60000)  # Increased from 30s to 60s
             session.current_url = url
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)  # Increased from 2s to 5s
+                # Wait for network to be idle (no ongoing requests)
+                await page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
-                await page.wait_for_timeout(3000)  # Increased from 2s to 3s
+                pass  # Continue even if networkidle times out
+
+            # Additional wait for React SPA hydration/rendering
+            # This ensures DOM is fully populated before analysis
+            await page.wait_for_timeout(3000)  # Wait 3 seconds for React to render (increased for hash navigation)
 
         # Get element position before action (for click animation)
         click_position = None
@@ -428,8 +453,8 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
 
         elif action == "scroll":
             # Scroll the page or element
-            if selector:
-                # Scroll specific element into view
+            if selector and selector != "body":
+                # Scroll specific element into view (only if selector is not "body")
                 element = page.locator(selector).first
                 try:
                     bounding_box = await element.bounding_box()
@@ -442,9 +467,22 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                     pass
                 await element.scroll_into_view_if_needed(timeout=10000)
             else:
-                # Scroll the page by specified amount (default: one viewport height)
-                scroll_amount = int(value) if value else 500
-                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                # Scroll the page by specified amount or direction
+                if value in ["down", "up", "bottom", "top"]:
+                    # Direction-based scrolling
+                    if value == "down":
+                        scroll_amount = 800  # Scroll down by 800px
+                    elif value == "up":
+                        scroll_amount = -800  # Scroll up by 800px
+                    elif value == "bottom":
+                        scroll_amount = 999999  # Scroll to bottom
+                    elif value == "top":
+                        scroll_amount = -999999  # Scroll to top
+                    await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                else:
+                    # Numeric scrolling
+                    scroll_amount = int(value) if value else 500
+                    await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
 
         elif action == "goto":
             # Navigate to URL (value contains the URL)
@@ -471,6 +509,36 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 else:
                     raise ValueError(f"Invalid viewport value format: {value}")
             await page.set_viewport_size({"width": int(width), "height": int(height)})
+
+        elif action == "wait" or action == "waitForTimeout":
+            # Wait for a specified time in milliseconds (value contains the wait time)
+            import asyncio
+            if value is None:
+                raise ValueError("Value (milliseconds) is required for 'wait' action")
+            wait_time_ms = int(value) if isinstance(value, (int, str)) else int(value[0])
+            await asyncio.sleep(wait_time_ms / 1000.0)
+
+        elif action == "clickAt" or action == "click_at_coordinates":
+            # Click at specific coordinates (value contains [x, y])
+            if value is None:
+                raise ValueError("Value [x, y] is required for 'clickAt' action")
+
+            # Parse coordinates
+            if isinstance(value, str):
+                import json
+                coords = json.loads(value)
+            elif isinstance(value, list):
+                coords = value if len(value) == 2 else [value[0], value[1]]
+            else:
+                raise ValueError(f"Invalid coordinates format: {value}")
+
+            x, y = int(coords[0]), int(coords[1])
+
+            # Store click position for animation
+            click_position = {"x": x, "y": y}
+
+            # Click at coordinates
+            await page.mouse.click(x, y)
 
         elif action == "evaluate":
             # Execute JavaScript (value contains the script)
@@ -544,7 +612,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 "screenshot": screenshot_base64
             }
 
-        else:
+        elif action in ("click", "fill", "press"):
             # Actions that require selector
             element = page.locator(selector).first
 
@@ -569,8 +637,9 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 if value is None:
                     raise ValueError("Value is required for 'press' action")
                 await element.press(value, timeout=30000)  # Increased from 10s to 30s
-            else:
-                raise ValueError(f"Unsupported action: {action}")
+
+        else:
+            raise ValueError(f"Unsupported action: {action}")
 
         # Wait for state change
         try:
@@ -852,9 +921,9 @@ async def execute_action(request: McpRequest):
         action_type = params.get("action")
         value = params.get("value")
 
-        # Some actions don't need selector (goto, setViewport, evaluate, tab, scroll)
+        # Some actions don't need selector (goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates)
         # Assertion actions also don't need selector (they use value parameter instead)
-        actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll",
+        actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll", "wait", "waitForTimeout", "clickAt", "click_at_coordinates",
                                         "expectTrue", "expectAttribute", "expectCountAtLeast"]
 
         if not action_type:

@@ -90,3 +90,68 @@ pytest gaia/tests
 - GPT is the default LLM for all automated planning in this repo.
 - Update `gaia/docs/PROGRESS.md` after each milestone.
 - Keep checklist coverage visible during demos using the GUI log output.
+
+## 🔧 Recent Improvements (Issue #25)
+
+### LLM Model Upgrade
+- **GPT-5 Integration**: Upgraded from `gpt-5-mini` to `gpt-5` for better reasoning and decision-making
+  - File: `gaia/src/phase4/llm_vision_client.py:26`
+  - Added 60-second timeout to prevent hanging on API calls
+  - Increased token limit from 1024 to 2048 for complex responses
+
+### Auto-fix Logic Enhancement
+- **Smart Fallback Skip**: Auto-fix now sets confidence to 95% and includes clear reasoning
+  - When auto-fix finds exact text match, fallback mechanisms are skipped
+  - Prevents unnecessary scroll and vision-based detection attempts
+  - File: `gaia/src/phase4/intelligent_orchestrator.py:481`
+
+### Enhanced Debugging
+- **Page State Visibility**: Added current URL and DOM element count logging
+  - Helps diagnose why elements aren't found
+  - Shows reasoning for low confidence decisions
+  - Added vision fallback reasoning output
+  - Files: `gaia/src/phase4/intelligent_orchestrator.py:502-517`
+
+### Real-time UI Feedback (Critical for Demos)
+- **Immediate Progress Updates**: Added `QCoreApplication.processEvents()` for real-time UI responsiveness
+  - Expanded `important_keywords` to include progress indicators like "🤖 Step", "📜 Scroll", "📸 Re-analyzing"
+  - Forces immediate UI updates so investors can see system activity in real-time
+  - File: `gaia/src/gui/main_window.py:722-742`
+
+### Mouse Cursor Visibility (Critical for Demos)
+- **SVG Cursor Overlay**: Added visible white arrow cursor at click positions
+  - White arrow with black stroke and drop shadow (z-index 9999)
+  - Always visible over screenshots for investor presentations
+  - File: `gaia/src/gui/main_window.py:807-845`
+
+### DOM Detection Improvements
+- **Lenient Opacity Check**: Fixed `isVisible` function to allow fade-in animations
+  - Changed from `style.opacity !== '0'` (string) to `parseFloat(style.opacity) > 0.1` (numeric)
+  - Allows detection of React elements with animation effects
+  - File: `gaia/src/phase4/mcp_host.py:182-191`
+- **React SPA Wait Time**: Increased from 2 seconds to 3 seconds for hash navigation
+  - Ensures DOM fully populates before analysis
+  - File: `gaia/src/phase4/mcp_host.py:428`
+- **DOM Coverage**: Increased element limit from 100 to 150 for better detection
+  - File: `gaia/src/phase4/llm_vision_client.py:53`
+- **Comprehensive ARIA Role Support**: Added all common interactive ARIA roles
+  - Now includes: tab, menuitem, menuitemcheckbox, menuitemradio, option, radio, switch, treeitem, link
+  - Fixes missing tab elements and other UI components
+  - File: `gaia/src/phase4/mcp_host.py:254-270`
+- **URL Comparison Fix**: Fixed hash navigation detection (#basics, #features, etc.)
+  - Changed to compare with actual `page.url` instead of cached `session.current_url`
+  - File: `gaia/src/phase4/mcp_host.py:416-417`
+
+### Bug Fixes
+- **MCPConfig Attribute**: Fixed `'IntelligentOrchestrator' object has no attribute 'mcp_url'`
+  - Changed from `self.mcp_url` to `self.mcp_config.host_url`
+  - File: `gaia/src/phase4/intelligent_orchestrator.py:988`
+- **400 Bad Request Fix**: Fixed `_get_page_state()` using non-existent `get_dom_elements` action
+  - Changed to correct `analyze_page` action
+  - File: `gaia/src/phase4/intelligent_orchestrator.py:989-992`
+- **waitForTimeout**: Added to actions not requiring selector
+  - Files: `intelligent_orchestrator.py:334`, `mcp_host.py:888`
+- **Scroll Direction**: Added support for "up", "down", "top", "bottom" strings
+  - File: `gaia/src/phase4/mcp_host.py:446-460`
+- **Empty URL Navigation**: Fixed bug causing unwanted page refreshes
+  - File: `gaia/src/phase4/mcp_host.py:413`

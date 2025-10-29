@@ -1,0 +1,1174 @@
+{
+  "profile": "comprehensive-test",
+  "url": "https://final-blog-25638597.figma.site",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "Click logo to navigate home",
+      "steps": [
+        {
+          "description": "Click logo",
+          "action": "click",
+          "selector": "button:has-text('UI 컴포넌트')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should stay on home page",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.location.hash === '' || window.location.hash === '#'"]
+      }
+    },
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "Click 홈으로 button to navigate home",
+      "steps": [
+        {
+          "description": "Navigate to basics page first",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#basics"]
+        },
+        {
+          "description": "Click 홈으로 button",
+          "action": "click",
+          "selector": "button:has-text('홈으로')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should navigate to home page",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.location.hash === '' || window.location.hash === '#'"]
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "Click 둘러보기 button under 기본 기능",
+      "steps": [
+        {
+          "description": "Scroll to 기본 기능 card",
+          "action": "scrollIntoView",
+          "selector": "h3:has-text('기본 기능')",
+          "params": []
+        },
+        {
+          "description": "Click 둘러보기 button under 기본 기능",
+          "action": "click",
+          "selector": "button:has-text('둘러보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should navigate to basics page",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.location.hash === '#basics'"]
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "MUST",
+      "scenario": "Click 둘러보기 button under 폼과 피드백",
+      "steps": [
+        {
+          "description": "Navigate to home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Scroll to 폼과 피드백 card",
+          "action": "scrollIntoView",
+          "selector": "h3:has-text('폼과 피드백')",
+          "params": []
+        },
+        {
+          "description": "Click 둘러보기 button under 폼과 피드백",
+          "action": "click",
+          "selector": "button:has-text('둘러보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should navigate to forms page",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.location.hash === '#forms'"]
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "MUST",
+      "scenario": "Click 둘러보기 button under 인터랙션과 데이터",
+      "steps": [
+        {
+          "description": "Navigate to home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Scroll to 인터랙션과 데이터 card",
+          "action": "scrollIntoView",
+          "selector": "h3:has-text('인터랙션과 데이터')",
+          "params": []
+        },
+        {
+          "description": "Click 둘러보기 button under 인터랙션과 데이터",
+          "action": "click",
+          "selector": "button:has-text('둘러보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should navigate to interactions page",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.location.hash === '#interactions'"]
+      }
+    },
+    {
+      "id": "TC006",
+      "priority": "SHOULD",
+      "scenario": "Scroll to top button functionality",
+      "steps": [
+        {
+          "description": "Navigate to home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Scroll down to bottom",
+          "action": "scrollIntoView",
+          "selector": "footer",
+          "params": []
+        },
+        {
+          "description": "Wait for scroll to top button to appear",
+          "action": "wait",
+          "selector": "",
+          "params": [1000]
+        },
+        {
+          "description": "Click scroll to top button",
+          "action": "click",
+          "selector": "button[class*='rounded-full']:has(svg)",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should scroll to top",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.scrollY < 100"]
+      }
+    },
+    {
+      "id": "TC007",
+      "priority": "MUST",
+      "scenario": "Share button functionality",
+      "steps": [
+        {
+          "description": "Navigate to home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Click share button",
+          "action": "click",
+          "selector": "button:has-text('공유하기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Share action should be triggered (Web Share API or clipboard)",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC008",
+      "priority": "SHOULD",
+      "scenario": "Search functionality on basics page",
+      "steps": [
+        {
+          "description": "Navigate to basics page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#basics"]
+        },
+        {
+          "description": "Scroll to search input",
+          "action": "scrollIntoView",
+          "selector": "input[placeholder*='검색']",
+          "params": []
+        },
+        {
+          "description": "Fill search input",
+          "action": "fill",
+          "selector": "input[placeholder*='검색']",
+          "params": ["스마트워치"]
+        }
+      ],
+      "assertion": {
+        "description": "Search input should contain text",
+        "selector": "input[placeholder*='검색']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"input[placeholder*='검색']\")?.value === '스마트워치'"]
+      }
+    },
+    {
+      "id": "TC009",
+      "priority": "MUST",
+      "scenario": "Email input on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to email input",
+          "action": "scrollIntoView",
+          "selector": "input[type='email']",
+          "params": []
+        },
+        {
+          "description": "Fill email input",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": ["test@example.com"]
+        }
+      ],
+      "assertion": {
+        "description": "Email input should contain test@example.com",
+        "selector": "input[type='email']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"input[type='email']\")?.value === 'test@example.com'"]
+      }
+    },
+    {
+      "id": "TC010",
+      "priority": "MUST",
+      "scenario": "Checkbox selection on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to first checkbox",
+          "action": "scrollIntoView",
+          "selector": "button[role='checkbox']",
+          "params": []
+        },
+        {
+          "description": "Click first checkbox",
+          "action": "click",
+          "selector": "button[role='checkbox']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Checkbox should be checked",
+        "selector": "button[role='checkbox']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"button[role='checkbox']\")?.getAttribute('data-state') === 'checked'"]
+      }
+    },
+    {
+      "id": "TC011",
+      "priority": "MUST",
+      "scenario": "Radio button selection on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to radio button group",
+          "action": "scrollIntoView",
+          "selector": "button[role='radio']",
+          "params": []
+        },
+        {
+          "description": "Click first radio button",
+          "action": "click",
+          "selector": "button[role='radio']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Radio button should be selected",
+        "selector": "button[role='radio']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"button[role='radio']\")?.getAttribute('data-state') === 'checked'"]
+      }
+    },
+    {
+      "id": "TC012",
+      "priority": "SHOULD",
+      "scenario": "Tab navigation on basics page",
+      "steps": [
+        {
+          "description": "Navigate to basics page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#basics"]
+        },
+        {
+          "description": "Scroll to tabs section",
+          "action": "scrollIntoView",
+          "selector": "button[role='tab']:has-text('개요')",
+          "params": []
+        },
+        {
+          "description": "Click 분석 tab",
+          "action": "click",
+          "selector": "button[role='tab']:has-text('분석')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "분석 tab should be selected",
+        "selector": "button[role='tab']:has-text('분석')",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"button[role='tab'][data-state='active']\")?.textContent?.includes('분석')"]
+      }
+    },
+    {
+      "id": "TC013",
+      "priority": "COULD",
+      "scenario": "Hover effect on card",
+      "steps": [
+        {
+          "description": "Navigate to home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Hover over 기본 기능 card",
+          "action": "hover",
+          "selector": "h3:has-text('기본 기능')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Card should show hover effect",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC014",
+      "priority": "SHOULD",
+      "scenario": "Toast notification on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to toast buttons",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('성공')",
+          "params": []
+        },
+        {
+          "description": "Click success toast button",
+          "action": "click",
+          "selector": "button:has-text('성공')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Success toast should appear",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('[data-sonner-toast]') !== null"]
+      }
+    },
+    {
+      "id": "TC015",
+      "priority": "SHOULD",
+      "scenario": "Date picker on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to date picker",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('날짜 선택')",
+          "params": []
+        },
+        {
+          "description": "Click date picker button",
+          "action": "click",
+          "selector": "button:has-text('날짜 선택')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Date picker calendar should open",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('[role=\"dialog\"]') !== null"]
+      }
+    },
+    {
+      "id": "TC016",
+      "priority": "SHOULD",
+      "scenario": "Accordion expand on basics page",
+      "steps": [
+        {
+          "description": "Navigate to basics page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#basics"]
+        },
+        {
+          "description": "Scroll to accordion section",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('자주 묻는 질문 1')",
+          "params": []
+        },
+        {
+          "description": "Click first accordion item",
+          "action": "click",
+          "selector": "button:has-text('자주 묻는 질문 1')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Accordion content should be visible",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('[data-state=\"open\"]') !== null"]
+      }
+    },
+    {
+      "id": "TC017",
+      "priority": "SHOULD",
+      "scenario": "Breadcrumb navigation on basics page",
+      "steps": [
+        {
+          "description": "Navigate to basics page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#basics"]
+        },
+        {
+          "description": "Scroll to breadcrumb section",
+          "action": "scrollIntoView",
+          "selector": "nav[aria-label='breadcrumb']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Breadcrumb should be visible",
+        "selector": "nav[aria-label='breadcrumb']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"nav[aria-label='breadcrumb']\") !== null"]
+      }
+    },
+    {
+      "id": "TC018",
+      "priority": "SHOULD",
+      "scenario": "Sidebar toggle on basics page (desktop)",
+      "steps": [
+        {
+          "description": "Navigate to basics page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#basics"]
+        },
+        {
+          "description": "Click sidebar toggle button",
+          "action": "click",
+          "selector": "button[data-sidebar='trigger']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Sidebar should toggle state",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC019",
+      "priority": "SHOULD",
+      "scenario": "Slider interaction on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to slider component",
+          "action": "scrollIntoView",
+          "selector": "span[role='slider']",
+          "params": []
+        },
+        {
+          "description": "Click on slider track to adjust value",
+          "action": "click",
+          "selector": "span[role='slider']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Slider should be interactive",
+        "selector": "span[role='slider']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"span[role='slider']\") !== null"]
+      }
+    },
+    {
+      "id": "TC020",
+      "priority": "SHOULD",
+      "scenario": "Switch toggle on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to switch component",
+          "action": "scrollIntoView",
+          "selector": "button[role='switch']",
+          "params": []
+        },
+        {
+          "description": "Click switch to toggle",
+          "action": "click",
+          "selector": "button[role='switch']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Switch should toggle state",
+        "selector": "button[role='switch']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"button[role='switch']\")?.getAttribute('data-state') === 'checked'"]
+      }
+    },
+    {
+      "id": "TC021",
+      "priority": "SHOULD",
+      "scenario": "Select dropdown on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to select component",
+          "action": "scrollIntoView",
+          "selector": "button[role='combobox']",
+          "params": []
+        },
+        {
+          "description": "Click select to open dropdown",
+          "action": "click",
+          "selector": "button[role='combobox']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Select dropdown should open",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"button[role='combobox'][aria-expanded='true']\") !== null"]
+      }
+    },
+    {
+      "id": "TC022",
+      "priority": "SHOULD",
+      "scenario": "Textarea input on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to textarea",
+          "action": "scrollIntoView",
+          "selector": "textarea",
+          "params": []
+        },
+        {
+          "description": "Fill textarea with test content",
+          "action": "fill",
+          "selector": "textarea",
+          "params": ["This is a test message for the textarea component."]
+        }
+      ],
+      "assertion": {
+        "description": "Textarea should contain test text",
+        "selector": "textarea",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('textarea')?.value.includes('test message')"]
+      }
+    },
+    {
+      "id": "TC023",
+      "priority": "SHOULD",
+      "scenario": "Password input visibility toggle on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to password input",
+          "action": "scrollIntoView",
+          "selector": "input[type='password']",
+          "params": []
+        },
+        {
+          "description": "Fill password input",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": ["TestPassword123!"]
+        }
+      ],
+      "assertion": {
+        "description": "Password input should contain value",
+        "selector": "input[type='password']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"input[type='password']\")?.value.length > 0"]
+      }
+    },
+    {
+      "id": "TC024",
+      "priority": "SHOULD",
+      "scenario": "Data table search on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to data table search input",
+          "action": "scrollIntoView",
+          "selector": "input[placeholder*='이름']",
+          "params": []
+        },
+        {
+          "description": "Search for 김철수",
+          "action": "fill",
+          "selector": "input[placeholder*='이름']",
+          "params": ["김철수"]
+        }
+      ],
+      "assertion": {
+        "description": "Table should filter results",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"input[placeholder*='이름']\")?.value === '김철수'"]
+      }
+    },
+    {
+      "id": "TC025",
+      "priority": "SHOULD",
+      "scenario": "Data table sort on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to table sort button",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('이름')",
+          "params": []
+        },
+        {
+          "description": "Click name column to sort",
+          "action": "click",
+          "selector": "button:has-text('정렬')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Table should be sortable",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC026",
+      "priority": "SHOULD",
+      "scenario": "Data table filter by status on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to filter button",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('필터')",
+          "params": []
+        },
+        {
+          "description": "Click filter button",
+          "action": "click",
+          "selector": "button:has-text('필터')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Filter dropdown should open",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC027",
+      "priority": "SHOULD",
+      "scenario": "View mode toggle (grid/list) on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to view mode buttons",
+          "action": "scrollIntoView",
+          "selector": "button[aria-label*='Grid']",
+          "params": []
+        },
+        {
+          "description": "Click list view button",
+          "action": "click",
+          "selector": "button[aria-label*='List']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "View mode should switch to list",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC028",
+      "priority": "COULD",
+      "scenario": "Badge display on data table",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to data table with badges",
+          "action": "scrollIntoView",
+          "selector": "table",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Badges should be visible in table",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('table') !== null"]
+      }
+    },
+    {
+      "id": "TC029",
+      "priority": "SHOULD",
+      "scenario": "Avatar display on data table",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to table with avatars",
+          "action": "scrollIntoView",
+          "selector": "span[class*='avatar']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Avatars should be visible",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"span[class*='avatar']\") !== null"]
+      }
+    },
+    {
+      "id": "TC030",
+      "priority": "COULD",
+      "scenario": "Chart rendering on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to chart section",
+          "action": "scrollIntoView",
+          "selector": "svg.recharts-surface",
+          "params": []
+        },
+        {
+          "description": "Wait for chart to render",
+          "action": "wait",
+          "selector": "",
+          "params": [1000]
+        }
+      ],
+      "assertion": {
+        "description": "Chart should be rendered",
+        "selector": "svg.recharts-surface",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('svg.recharts-surface') !== null"]
+      }
+    },
+    {
+      "id": "TC031",
+      "priority": "COULD",
+      "scenario": "Context menu on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to context menu trigger area",
+          "action": "scrollIntoView",
+          "selector": "div[data-radix-context-menu-trigger]",
+          "params": []
+        },
+        {
+          "description": "Right click to open context menu",
+          "action": "click",
+          "selector": "div[data-radix-context-menu-trigger]",
+          "params": [{"button": "right"}]
+        }
+      ],
+      "assertion": {
+        "description": "Context menu should open",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC032",
+      "priority": "COULD",
+      "scenario": "Infinite scroll or pagination on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to bottom of page",
+          "action": "scrollIntoView",
+          "selector": "footer",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Should reach end of page",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["window.scrollY > 0"]
+      }
+    },
+    {
+      "id": "TC033",
+      "priority": "SHOULD",
+      "scenario": "Tooltip display on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to tooltip trigger",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('도움말')",
+          "params": []
+        },
+        {
+          "description": "Hover over tooltip trigger",
+          "action": "hover",
+          "selector": "button:has-text('도움말')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Tooltip should appear on hover",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC034",
+      "priority": "SHOULD",
+      "scenario": "Multiple toast notifications display",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to toast section",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('모든 토스트 보기')",
+          "params": []
+        },
+        {
+          "description": "Click show all toasts button",
+          "action": "click",
+          "selector": "button:has-text('모든 토스트 보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Multiple toasts should appear",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelectorAll('[data-sonner-toast]').length > 0"]
+      }
+    },
+    {
+      "id": "TC035",
+      "priority": "COULD",
+      "scenario": "Double click interaction on interactions page",
+      "steps": [
+        {
+          "description": "Navigate to interactions page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#interactions"]
+        },
+        {
+          "description": "Scroll to double-click area",
+          "action": "scrollIntoView",
+          "selector": "div:has-text('더블클릭')",
+          "params": []
+        },
+        {
+          "description": "Double click the element",
+          "action": "click",
+          "selector": "div:has-text('더블클릭')",
+          "params": [{"clickCount": 2}]
+        }
+      ],
+      "assertion": {
+        "description": "Double click event should trigger",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC036",
+      "priority": "SHOULD",
+      "scenario": "Progress bar display on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to progress bar",
+          "action": "scrollIntoView",
+          "selector": "div[role='progressbar']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Progress bar should be visible",
+        "selector": "div[role='progressbar']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"div[role='progressbar']\") !== null"]
+      }
+    },
+    {
+      "id": "TC037",
+      "priority": "SHOULD",
+      "scenario": "Alert/Dialog display on forms page",
+      "steps": [
+        {
+          "description": "Navigate to forms page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site#forms"]
+        },
+        {
+          "description": "Scroll to alert dialog trigger",
+          "action": "scrollIntoView",
+          "selector": "button:has-text('알림')",
+          "params": []
+        },
+        {
+          "description": "Click to show alert dialog",
+          "action": "click",
+          "selector": "button:has-text('알림')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Alert dialog should open",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('[role=\"alertdialog\"]') !== null"]
+      }
+    },
+    {
+      "id": "TC038",
+      "priority": "MUST",
+      "scenario": "Responsive viewport - Mobile view",
+      "steps": [
+        {
+          "description": "Set viewport to mobile size",
+          "action": "setViewport",
+          "selector": "",
+          "params": [[375, 667]]
+        },
+        {
+          "description": "Navigate to site",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Check no horizontal scroll",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1"]
+        }
+      ],
+      "assertion": {
+        "description": "Page should be responsive on mobile",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC039",
+      "priority": "MUST",
+      "scenario": "Responsive viewport - Tablet view",
+      "steps": [
+        {
+          "description": "Set viewport to tablet size",
+          "action": "setViewport",
+          "selector": "",
+          "params": [[768, 1024]]
+        },
+        {
+          "description": "Navigate to site",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Check no horizontal scroll",
+          "action": "expectTrue",
+          "selector": "",
+          "params": ["document.documentElement.scrollWidth <= window.innerWidth + 1"]
+        }
+      ],
+      "assertion": {
+        "description": "Page should be responsive on tablet",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["true"]
+      }
+    },
+    {
+      "id": "TC040",
+      "priority": "SHOULD",
+      "scenario": "Scroll progress indicator",
+      "steps": [
+        {
+          "description": "Navigate to home page",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://final-blog-25638597.figma.site"]
+        },
+        {
+          "description": "Scroll halfway down",
+          "action": "scrollIntoView",
+          "selector": "h3:has-text('폼과 피드백')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Scroll progress bar should update",
+        "selector": "div[class*='bg-primary']",
+        "condition": "expectTrue",
+        "params": ["document.querySelector(\"div[class*='bg-primary']\") !== null"]
+      }
+    }
+  ]
+}
