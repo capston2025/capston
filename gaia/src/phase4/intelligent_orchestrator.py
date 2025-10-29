@@ -46,6 +46,10 @@ class IntelligentOrchestrator:
         self._screenshot_callback = screenshot_callback
         self.session_id = session_id
 
+        # Smart navigation: Track which elements exist on which pages
+        self.page_element_map: Dict[str, Dict[str, str]] = {}  # {url: {text: selector}}
+        self.home_url: str = ""  # Base URL for smart navigation
+
     def execute_scenarios(
         self,
         url: str,
@@ -81,6 +85,9 @@ class IntelligentOrchestrator:
 
         self._log(f"🚀 Starting LLM-powered automation: {len(scenarios)} scenarios", progress_callback)
 
+        # Remember home URL for smart navigation
+        self.home_url = url
+
         # Step 1: Analyze DOM once at the beginning
         self._log(f"  📸 Analyzing page DOM to identify executable tests...", progress_callback)
         dom_elements = self._analyze_dom(url)
@@ -90,6 +97,9 @@ class IntelligentOrchestrator:
             self._log("⚠️ No DOM elements found, skipping all tests", progress_callback)
             results["skipped"] = len(scenarios)
             return results
+
+        # Record home page elements for smart navigation
+        self._record_page_elements(url, dom_elements)
 
         # Step 2: Ask LLM to prioritize scenarios based on DOM
         self._log(f"  🤖 LLM analyzing which tests are executable...", progress_callback)
@@ -504,6 +514,23 @@ Return ONLY a JSON array:
                     self._log(f"    🌐 Current URL: {current_url}", progress_callback)
                     self._log(f"    📊 Available DOM elements: {len(dom_elements)}", progress_callback)
 
+                    # RECOVERY LOGIC: If DOM is empty, try to recover
+                    if len(dom_elements) == 0:
+                        self._log(f"    ⚠️ WARNING: DOM is empty! Attempting recovery...", progress_callback)
+                        recovery_success = self._try_recover_from_empty_dom(
+                            current_url=current_url,
+                            progress_callback=progress_callback
+                        )
+
+                        if recovery_success:
+                            # Re-fetch page state after recovery
+                            screenshot, dom_elements, current_url = self._get_page_state()
+                            self._log(f"    ✅ Recovery succeeded! Now {len(dom_elements)} DOM elements available", progress_callback)
+                        else:
+                            self._log(f"    ❌ Recovery failed - skipping this step", progress_callback)
+                            logs.append(f"  ❌ Skipped: DOM empty and recovery failed")
+                            continue
+
                     # Check if auto-fix was successful (confidence = 95)
                     auto_fix_succeeded = (llm_decision["confidence"] == 95 and
                                          llm_decision.get("reasoning", "").startswith("Auto-fix"))
@@ -517,8 +544,53 @@ Return ONLY a JSON array:
                         self._log(f"    🔍 Low confidence ({llm_decision['confidence']}%), trying scroll + vision fallback...", progress_callback)
                         self._log(f"    💡 Reason: {llm_decision.get('reasoning', 'Unknown')}", progress_callback)
 
-                        # Try scrolling to find element
-                        self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
+                        # SMART NAVIGATION: Check if element exists on another page (e.g., home)
+                        smart_nav = self._find_element_on_other_pages(step.description, current_url)
+                        if smart_nav.get("found"):
+                            self._log(f"    💡 Smart navigation: Found '{smart_nav['element_text']}' on {smart_nav['target_url']}", progress_callback)
+                            self._log(f"    🏠 Navigating to: {smart_nav['target_url']}", progress_callback)
+
+                            # Navigate to the page where element exists
+                            goto_success = self._execute_action(
+                                action="goto",
+                                selector="",
+                                params=[smart_nav['target_url']],
+                                url=smart_nav['target_url'],
+                                screenshot=screenshot,
+                                progress_callback=progress_callback
+                            )
+
+                            if goto_success:
+                                # Update page state after navigation
+                                screenshot, dom_elements, current_url = self._get_page_state()
+                                self._log(f"    ✅ Navigation successful, now at: {current_url}", progress_callback)
+
+                                # Try clicking the element on the new page
+                                click_success = self._execute_action(
+                                    action=llm_decision["action"],
+                                    selector=smart_nav["selector"],
+                                    params=step.params,
+                                    url=current_url,
+                                    screenshot=screenshot,
+                                    progress_callback=progress_callback
+                                )
+
+                                if click_success:
+                                    logs.append(f"  ✅ Action executed via smart navigation")
+                                    self._log(f"    ✅ Smart navigation succeeded!", progress_callback)
+
+                                    # Update state after successful click
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    self._record_page_elements(current_url, dom_elements)
+                                    continue  # Move to next step
+                                else:
+                                    self._log(f"    ❌ Click failed after navigation", progress_callback)
+                            else:
+                                self._log(f"    ❌ Navigation failed", progress_callback)
+
+                        # If smart navigation didn't work, try scrolling to find element
+                        if not smart_nav.get("found"):
+                            self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
                         scroll_success = self._try_scroll_to_find_element(
                             description=step.description,
                             screenshot=screenshot,
@@ -633,8 +705,13 @@ Return ONLY a JSON array:
                                     # Continue to next step
                                     logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
                                     time.sleep(0.2)
-                                    if llm_decision["action"] in ("click", "press", "goto"):
-                                        dom_elements = self._analyze_dom(None)
+                                    # Update current_url after navigation
+                                    if llm_decision["action"].lower() in ("click", "press", "goto"):
+                                        screenshot_new, dom_elements_new, current_url_new = self._get_page_state()
+                                        dom_elements = dom_elements_new
+                                        if current_url_new:
+                                            current_url = current_url_new
+                                            self._log(f"    🔄 Browser navigated to: {current_url}", progress_callback)
                                     continue
 
                         # Stage 2: Try vision-based coordinate click
@@ -693,8 +770,16 @@ Return ONLY a JSON array:
                     time.sleep(0.2)
 
                     # Re-analyze DOM if page might have changed
-                    if llm_decision["action"] in ("click", "press", "goto"):
-                        dom_elements = self._analyze_dom(None)
+                    # CRITICAL: Also update current_url with actual browser URL to handle hash navigation
+                    if llm_decision["action"].lower() in ("click", "press", "goto"):
+                        screenshot_new, dom_elements_new, current_url_new = self._get_page_state()
+                        dom_elements = dom_elements_new
+                        # Update current_url to reflect actual browser state (e.g., #basics)
+                        if current_url_new:
+                            current_url = current_url_new
+                            self._log(f"    🔄 Browser navigated to: {current_url}", progress_callback)
+                            # Record elements on the new page for smart navigation
+                            self._record_page_elements(current_url, dom_elements)
 
                     # Screenshot is already sent by _execute_action with click_position
 
@@ -896,10 +981,11 @@ Return ONLY a JSON array:
 
             # Execute scroll action
             self._log(f"      ⬇️  Scrolling page down...", progress_callback)
+            # Don't send empty URL - use None to let MCP use current page
             payload = {
                 "action": "execute_action",
                 "params": {
-                    "url": url,
+                    "url": url if url else None,  # Don't send empty string
                     "selector": "body",
                     "action": "scroll",
                     "value": "down",
@@ -1008,6 +1094,64 @@ Return ONLY a JSON array:
 
         return screenshot, dom_elements, current_url
 
+    def _try_recover_from_empty_dom(
+        self,
+        current_url: str,
+        progress_callback=None
+    ) -> bool:
+        """
+        Try to recover from empty DOM by navigating back to base URL and re-analyzing.
+
+        Args:
+            current_url: The URL that returned empty DOM
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            True if recovery succeeded (DOM now has elements), False otherwise
+        """
+        self._log(f"      🔄 Attempting recovery: Navigating to base URL...", progress_callback)
+
+        # Extract base URL (remove hash fragments)
+        base_url = current_url.split('#')[0] if current_url else self.mcp_config.base_url
+
+        try:
+            # Navigate to base URL
+            payload = {
+                "action": "execute_action",
+                "params": {
+                    "url": base_url,
+                    "selector": None,
+                    "action": "goto",
+                    "value": None,
+                    "session_id": self.session_id
+                }
+            }
+
+            response = requests.post(
+                f"{self.mcp_config.host_url}/execute",
+                json=payload,
+                timeout=90
+            )
+            response.raise_for_status()
+
+            # Wait for page to load
+            time.sleep(2)
+
+            # Check if we have DOM elements now
+            self._log(f"      📊 Re-analyzing page after recovery...", progress_callback)
+            screenshot, dom_elements, new_url = self._get_page_state()
+
+            if len(dom_elements) > 0:
+                self._log(f"      ✅ Recovery successful! Found {len(dom_elements)} DOM elements", progress_callback)
+                return True
+            else:
+                self._log(f"      ❌ Recovery failed - still 0 DOM elements", progress_callback)
+                return False
+
+        except Exception as e:
+            self._log(f"      ❌ Recovery navigation failed: {e}", progress_callback)
+            return False
+
     def _log(self, message: str, callback=None) -> None:
         """Log a message and optionally call progress callback."""
         self._execution_logs.append(message)
@@ -1019,6 +1163,71 @@ Return ONLY a JSON array:
     def execution_logs(self) -> List[str]:
         """Get execution logs."""
         return list(self._execution_logs)
+
+    def _record_page_elements(self, url: str, dom_elements: List[DomElement]) -> None:
+        """
+        Record elements found on a page for smart navigation.
+        Only records home page and navigation-like elements to minimize memory.
+
+        Args:
+            url: Page URL
+            dom_elements: List of DOM elements found on the page
+        """
+        # Optimization: Only record home page + first 3 pages visited
+        # This covers 90% of use cases while minimizing memory
+        if len(self.page_element_map) >= 4 and url != self.home_url:
+            return  # Skip recording after 4 pages
+
+        if url not in self.page_element_map:
+            self.page_element_map[url] = {}
+
+        # Record interactive elements with text (buttons, links)
+        # Focus on navigation-like elements (short text, common keywords)
+        nav_keywords = ['기본', '폼', '인터랙션', '홈', 'home', 'menu', '메뉴',
+                       '카테고리', 'category', '페이지', 'page', '시작', 'start']
+
+        recorded_count = 0
+        for elem in dom_elements:
+            if elem.text and elem.tag in ['button', 'a']:
+                text_lower = elem.text.lower()
+                # Only record if text is short (likely navigation) or contains keywords
+                if len(elem.text) < 30 or any(keyword in text_lower for keyword in nav_keywords):
+                    self.page_element_map[url][text_lower] = elem.selector
+                    recorded_count += 1
+
+        print(f"[Smart Navigation] Recorded {recorded_count} navigation elements for {url} (total pages: {len(self.page_element_map)})")
+
+    def _find_element_on_other_pages(self, target_text: str, current_url: str) -> Dict[str, Any]:
+        """
+        Search for an element in previously visited pages.
+
+        Args:
+            target_text: Text content of the element to find
+            current_url: Current page URL
+
+        Returns:
+            Dict with navigation info if found, empty dict otherwise
+        """
+        target_lower = target_text.lower()
+
+        # Search in all recorded pages (prioritize home page)
+        search_order = [self.home_url] + [url for url in self.page_element_map.keys() if url != self.home_url]
+
+        for page_url in search_order:
+            if page_url == current_url:
+                continue  # Skip current page
+
+            elements = self.page_element_map.get(page_url, {})
+            for elem_text, selector in elements.items():
+                if target_lower in elem_text or elem_text in target_lower:
+                    return {
+                        "found": True,
+                        "target_url": page_url,
+                        "selector": selector,
+                        "element_text": elem_text
+                    }
+
+        return {}
 
 
 __all__ = ["IntelligentOrchestrator"]

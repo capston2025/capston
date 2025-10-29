@@ -42,6 +42,27 @@ class BrowserSession:
 active_sessions: Dict[str, BrowserSession] = {}
 
 
+# --- URL Normalization Helper ---
+def normalize_url(url: str) -> str:
+    """
+    Normalize URL for consistent comparison.
+    Handles hash navigation and trailing slash differences.
+
+    Examples:
+        "https://example.com/#hash" -> "https://example.com#hash"
+        "https://example.com/" -> "https://example.com"
+        "https://example.com/#basics" -> "https://example.com#basics"
+    """
+    if not url:
+        return url
+    # Replace "/#" with "#" for consistent comparison
+    normalized = url.replace("/#", "#")
+    # Remove trailing slash unless it's the only character after the protocol
+    if normalized.endswith("/") and not normalized.endswith("://"):
+        normalized = normalized.rstrip("/")
+    return normalized
+
+
 # --- Assertion Helper Functions ---
 async def _execute_assertion(page: Page, action: str, selector: str, value: Any) -> Dict[str, Any]:
     """Execute assertion/validation actions and return results"""
@@ -207,6 +228,11 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         return `${el.tagName.toLowerCase()}[aria-label="${el.getAttribute('aria-label')}"]`;
                     }
 
+                    // For inputs, check placeholder before falling back to text/class
+                    if (el.tagName === 'INPUT' && el.placeholder) {
+                        return `${el.tagName.toLowerCase()}[placeholder="${el.placeholder}"]`;
+                    }
+
                     const text = el.innerText?.trim();
                     if (text && text.length < 50) {
                         return `${el.tagName.toLowerCase()}:has-text("${text}")`;
@@ -342,6 +368,10 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
         ''')
 
         print(f"Found {len(elements_data)} interactive elements")
+        # Debug: Print first 10 elements for troubleshooting
+        if len(elements_data) <= 10:
+            element_strs = [f"{e.get('tag', '')}:{e.get('text', '')[:20]}" for e in elements_data]
+            print(f"  Elements: {element_strs}")
         return {"elements": elements_data}
 
     except Exception as e:
@@ -362,12 +392,38 @@ async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str
     session = active_sessions[session_id]
     page = await session.get_or_create_page()
 
-    # Navigate only if URL is provided AND different from current
-    if url and session.current_url != url:
-        await page.goto(url, timeout=30000)
-        session.current_url = url
+    # Navigate only if URL is provided AND different from actual browser URL
+    if url:
+        current_browser_url = page.url
+        current_normalized = normalize_url(current_browser_url)
+        requested_normalized = normalize_url(url)
 
-    return await analyze_page_elements(page)
+        print(f"[analyze_page] Current browser URL: {current_browser_url} (normalized: {current_normalized})")
+        print(f"[analyze_page] Requested URL: {url} (normalized: {requested_normalized})")
+
+        if current_normalized != requested_normalized:
+            print(f"[analyze_page] URLs differ, navigating to: {url}")
+            await page.goto(url, timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            # Wait for React/Figma SPA to hydrate after navigation
+            await page.wait_for_timeout(3000)
+
+        # Always sync session.current_url with actual browser URL
+        session.current_url = page.url
+        print(f"[analyze_page] Synced session.current_url to: {session.current_url}")
+
+    # Get elements and add current URL to response
+    result = await analyze_page_elements(page)
+    result["url"] = page.url  # Add current browser URL to response
+
+    # Also provide dom_elements key for backwards compatibility with orchestrator
+    if "elements" in result:
+        result["dom_elements"] = result["elements"]
+
+    return result
 
 
 async def capture_screenshot(url: str = None, session_id: str = "default") -> Dict[str, Any]:
@@ -382,14 +438,21 @@ async def capture_screenshot(url: str = None, session_id: str = "default") -> Di
     session = active_sessions[session_id]
     page = await session.get_or_create_page()
 
-    # Navigate only if URL is provided AND different from current
-    if url and session.current_url != url:
-        await page.goto(url, timeout=30000)
-        session.current_url = url
-        try:
-            await page.wait_for_load_state("networkidle", timeout=2000)
-        except Exception:
-            await page.wait_for_timeout(2000)
+    # Navigate only if URL is provided AND different from actual browser URL
+    if url:
+        current_browser_url = page.url
+        current_normalized = normalize_url(current_browser_url)
+        requested_normalized = normalize_url(url)
+
+        if current_normalized != requested_normalized:
+            await page.goto(url, timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=2000)
+            except Exception:
+                await page.wait_for_timeout(2000)
+
+        # Always sync session.current_url with actual browser URL
+        session.current_url = page.url
 
     # Capture screenshot of current page (wherever it is)
     screenshot_bytes = await page.screenshot(full_page=False)
@@ -430,7 +493,14 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         # Navigate only if URL changed (and URL is not empty)
         # Compare with actual browser URL, not cached session URL
         current_page_url = page.url
-        if url and current_page_url != url:
+        current_normalized = normalize_url(current_page_url)
+        requested_normalized = normalize_url(url) if url else None
+
+        print(f"[execute_simple_action] Current page URL: {current_page_url} (normalized: {current_normalized})")
+        print(f"[execute_simple_action] Requested URL: {url} (normalized: {requested_normalized})")
+
+        if requested_normalized and current_normalized != requested_normalized:
+            print(f"[execute_simple_action] URLs differ, navigating to: {url}")
             await page.goto(url, timeout=60000)  # Increased from 30s to 60s
             session.current_url = url
             try:
@@ -441,7 +511,8 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
 
             # Additional wait for React SPA hydration/rendering
             # This ensures DOM is fully populated before analysis
-            await page.wait_for_timeout(3000)  # Wait 3 seconds for React to render (increased for hash navigation)
+            # Figma sites need extra time for hash navigation
+            await page.wait_for_timeout(5000)  # Wait 5 seconds for React/Figma to render (increased for hash navigation)
 
         # Get element position before action (for click animation)
         click_position = None
