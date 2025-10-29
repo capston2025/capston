@@ -11,8 +11,9 @@
           "description": "홈 페이지 접속",
           "action": "goto",
           "params": [
-            "/"
-          ]
+            "https://final-blog-25638597.figma.site"
+          ],
+          "selector": ""
         },
         {
           "description": "홈이 보이는지 확인",
@@ -55,8 +56,9 @@
           "description": "기본 기능 페이지 접속",
           "action": "goto",
           "params": [
-            "/basics"
-          ]
+            "https://final-blog-25638597.figma.site#basics"
+          ],
+          "selector": ""
         },
         {
           "description": "검색 입력에 키워드 입력",
@@ -107,8 +109,9 @@
           "description": "기본 기능 페이지 접속",
           "action": "goto",
           "params": [
-            "/basics"
-          ]
+            "https://final-blog-25638597.figma.site#basics"
+          ],
+          "selector": ""
         },
         {
           "description": "회원가입 탭 클릭",
@@ -196,8 +199,9 @@
           "description": "기본 기능 페이지 접속",
           "action": "goto",
           "params": [
-            "/basics"
-          ]
+            "https://final-blog-25638597.figma.site#basics"
+          ],
+          "selector": ""
         },
         {
           "description": "첫 번째 상품 장바구니 추가 클릭",

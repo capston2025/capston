@@ -1,0 +1,478 @@
+{
+  "profile": "test-site-profile",
+  "url": "https://final-blog-25638597.figma.site",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "홈 카테고리 카드로 페이지 네비게이션",
+      "steps": [
+        {
+          "description": "홈 접속",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site"
+          ]
+        },
+        {
+          "description": "'기본 기능' 카드 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "페이지 제목 표시 확인용 대기(애니메이션 마감)",
+          "action": "waitForTimeout",
+          "selector": "",
+          "params": [
+            "300"
+          ]
+        },
+        {
+          "description": "'폼과 피드백' 카드 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "페이지 제목 표시 확인용 대기",
+          "action": "waitForTimeout",
+          "selector": "",
+          "params": [
+            "300"
+          ]
+        },
+        {
+          "description": "'인터랙션과 데이터' 카드 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "인터랙션 페이지 제목 표시 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC002",
+      "priority": "SHOULD",
+      "scenario": "키보드 단축키로 사이드바 토글",
+      "steps": [
+        {
+          "description": "홈 접속",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site"
+          ]
+        },
+        {
+          "description": "사이드바 토글 단축키 입력 (Cmd+/ 또는 Ctrl+/)",
+          "action": "press",
+          "selector": "body",
+          "params": [
+            "Meta+/"
+          ]
+        },
+        {
+          "description": "윈도우용 단축키 보조 입력 (Ctrl+/)",
+          "action": "press",
+          "selector": "body",
+          "params": [
+            "Control+/"
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "사이드바가 열려 있는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "실시간 검색(디바운스/필터/정렬)",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "검색어 입력",
+          "action": "fill",
+          "selector": "",
+          "params": [
+            "button"
+          ]
+        },
+        {
+          "description": "디바운스 대기 300ms",
+          "action": "waitForTimeout",
+          "selector": "",
+          "params": [
+            "300"
+          ]
+        },
+        {
+          "description": "필터 버튼 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "카테고리 'forms' 선택",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "정렬 버튼 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "정렬 '제목순' 선택",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "검색 결과 아이템이 표시되는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "MUST",
+      "scenario": "회원가입 성공 후 프로필 표시",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속(인증 섹션)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "회원가입 탭으로 전환",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "이름 입력",
+          "action": "fill",
+          "selector": "",
+          "params": [
+            "홍길동"
+          ]
+        },
+        {
+          "description": "이메일 입력",
+          "action": "fill",
+          "selector": "",
+          "params": [
+            "test@example.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력",
+          "action": "fill",
+          "selector": "",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "회원가입 제출 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "프로필 패널이 표시되는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "MUST",
+      "scenario": "장바구니 추가/수량 조절/삭제",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속(상품 목록)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "첫 번째 상품의 '장바구니 추가' 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 열기",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "수량 + 1",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "수량 - 1",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "상품 삭제",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "장바구니 다이얼로그가 표시되고(비어있을 수 있음) 총액 영역이 보이는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC006",
+      "priority": "MUST",
+      "scenario": "페이지네이션 이동 및 범위 표시",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속(상품 목록)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "다음 페이지 이동",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "페이지 전환 대기",
+          "action": "waitForTimeout",
+          "selector": "",
+          "params": [
+            "200"
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "범위 표시가 '4-6 / 6개'로 보이는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC007",
+      "priority": "SHOULD",
+      "scenario": "파일 업로드 유효성(형식/용량) 및 삭제",
+      "steps": [
+        {
+          "description": "폼 페이지 접속(파일 업로드)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#forms"
+          ]
+        },
+        {
+          "description": "유효 파일 업로드(PNG, 10MB 이하)",
+          "action": "setInputFiles",
+          "selector": "",
+          "params": [
+            "./fixtures/sample.png"
+          ]
+        },
+        {
+          "description": "미지원 형식 업로드 시도",
+          "action": "setInputFiles",
+          "selector": "",
+          "params": [
+            "./fixtures/invalid.exe"
+          ]
+        },
+        {
+          "description": "업로드된 아이템의 삭제 버튼 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "업로드 목록이 표시되며 유효 파일 항목이 렌더링되는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC008",
+      "priority": "SHOULD",
+      "scenario": "드래그 앤 드롭으로 카드 순서 변경",
+      "steps": [
+        {
+          "description": "인터랙션 페이지 접속(드래그 앤 드롭)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#interactions"
+          ]
+        },
+        {
+          "description": "1번 카드를 3번 카드 위치로 드래그 앤 드롭",
+          "action": "dragAndDrop",
+          "selector": "",
+          "params": [
+            "[data-testid='task-3']"
+          ]
+        },
+        {
+          "description": "드래그 효과 확인 대기",
+          "action": "waitForTimeout",
+          "selector": "",
+          "params": [
+            "200"
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "새로운 순서가 적용된 리스트가 표시되는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC009",
+      "priority": "SHOULD",
+      "scenario": "무한 스크롤로 추가 로드 및 완료 메시지",
+      "steps": [
+        {
+          "description": "인터랙션 페이지 접속(무한 스크롤)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#interactions"
+          ]
+        },
+        {
+          "description": "리스트 하단으로 스크롤",
+          "action": "scroll",
+          "selector": "",
+          "params": [
+            "bottom"
+          ]
+        },
+        {
+          "description": "로딩 인디케이터 표시 대기",
+          "action": "waitForTimeout",
+          "selector": "",
+          "params": [
+            "500"
+          ]
+        },
+        {
+          "description": "최대까지 여러 번 스크롤 반복",
+          "action": "scroll",
+          "selector": "",
+          "params": [
+            "bottom"
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "모든 아이템 로드 완료 메시지 표시 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC010",
+      "priority": "MAY",
+      "scenario": "동영상 플레이어 재생/일시정지/음소거/탐색",
+      "steps": [
+        {
+          "description": "인터랙션 페이지 접속(동영상 플레이어)",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#interactions"
+          ]
+        },
+        {
+          "description": "재생 버튼 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "일시정지 버튼 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "음소거 토글 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "10초 앞으로 이동 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "10초 뒤로 이동 클릭",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "현재 시간/전체 시간 레이블이 표시되는지 확인",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": []
+      }
+    }
+  ]
+}

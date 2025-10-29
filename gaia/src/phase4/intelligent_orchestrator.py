@@ -331,7 +331,7 @@ Return ONLY a JSON array:
 
                 # Define action categories
                 actions_needing_llm = ["click", "fill", "press"]  # Actions that need LLM to find elements
-                actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab", "wait"]  # Actions that execute directly
+                actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab", "wait", "waitForTimeout"]  # Actions that execute directly
                 assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"]  # Assertion actions
                 actions_with_explicit_selector = ["hover", "focus", "select", "dragAndDrop", "scrollIntoView"]  # Actions that can use explicit selector
 
@@ -448,9 +448,48 @@ Return ONLY a JSON array:
                     logs.append(f"  Confidence: {llm_decision['confidence']}%")
                     logs.append(f"  Target Element: {llm_decision['selector']}")
 
+                    # EARLY CHECK: Detect multi-element matches and force fallback if needed
+                    if llm_decision['selector']:
+                        matching_elements = [e for e in dom_elements if e.selector == llm_decision['selector']]
+                        if len(matching_elements) > 1:
+                            self._log(f"    ⚠️ WARNING: Selector matches {len(matching_elements)} elements!", progress_callback)
+                            self._log(f"    💡 Matched elements: {[e.text[:30] for e in matching_elements[:3]]}", progress_callback)
+
+                            # AUTO-FIX: Try to extract target text from step description and improve selector
+                            import re
+                            korean_text_match = re.search(r'[가-힣]+(?:\s+[가-힣]+)*', step.description)
+                            english_text_match = re.search(r'\b[A-Za-z]+(?:\s+[A-Za-z]+)*\b', step.description)
+
+                            auto_fix_worked = False
+                            target_text = None
+
+                            if korean_text_match:
+                                target_text = korean_text_match.group()
+                            elif english_text_match:
+                                target_text = english_text_match.group()
+
+                            if target_text:
+                                # Check if any matching element has this text
+                                text_match = next((e for e in matching_elements if target_text in e.text), None)
+                                if text_match:
+                                    # Found it! Use text-based selector instead
+                                    element_type = text_match.tag if text_match.tag in ['button', 'a', 'input'] else 'button'
+                                    better_selector = f'{element_type}:has-text("{target_text}")'
+                                    self._log(f"    🔧 Auto-fix: Using text-based selector: {better_selector}", progress_callback)
+                                    llm_decision['selector'] = better_selector
+                                    llm_decision['confidence'] = 95  # High confidence for exact text match
+                                    llm_decision['reasoning'] = f"Auto-fix: Found exact text match '{target_text}' in element"
+                                    auto_fix_worked = True
+
+                            # If auto-fix didn't work, force confidence to 0 to trigger fallback
+                            if not auto_fix_worked:
+                                self._log(f"    🔄 Ambiguous selector! Forcing vision fallback...", progress_callback)
+                                logs.append(f"  ⚠️ Selector matches multiple elements, forcing fallback")
+                                llm_decision['confidence'] = 0
+
                     # If first step fails with low confidence, skip entire scenario
-                    # Lowered threshold from 60% to 45% to be more aggressive with testing
-                    if step_idx == 1 and llm_decision["confidence"] < 45:
+                    # Lowered threshold from 60% to 30% to be more aggressive with testing
+                    if step_idx == 1 and llm_decision["confidence"] < 30:
                         logs.append(f"  ⚠️ First step has low confidence, skipping entire scenario")
                         self._log(f"    ⚠️ Skipping (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         return {
@@ -461,12 +500,77 @@ Return ONLY a JSON array:
                             "reason": "Not executable on current page"
                         }
 
-                    # For subsequent steps, skip the step but continue scenario
-                    # Lowered threshold to 45% to allow more attempts
-                    if llm_decision["confidence"] < 45:
-                        logs.append(f"  ⚠️ Low confidence, skipping this step")
-                        self._log(f"    ⚠️ Skipping step (low confidence: {llm_decision['confidence']}%)", progress_callback)
-                        continue
+                    # Debug: Show current page state
+                    self._log(f"    🌐 Current URL: {current_url}", progress_callback)
+                    self._log(f"    📊 Available DOM elements: {len(dom_elements)}", progress_callback)
+
+                    # Check if auto-fix was successful (confidence = 95)
+                    auto_fix_succeeded = (llm_decision["confidence"] == 95 and
+                                         llm_decision.get("reasoning", "").startswith("Auto-fix"))
+
+                    if auto_fix_succeeded:
+                        self._log(f"    ✅ Auto-fix found reliable selector, skipping fallback", progress_callback)
+                        # Skip fallback - auto-fix already found a good selector
+                    elif llm_decision["confidence"] < 30:
+                        # Only trigger fallback if auto-fix didn't succeed
+                        logs.append(f"  ⚠️ Low confidence ({llm_decision['confidence']}%), trying aggressive search...")
+                        self._log(f"    🔍 Low confidence ({llm_decision['confidence']}%), trying scroll + vision fallback...", progress_callback)
+                        self._log(f"    💡 Reason: {llm_decision.get('reasoning', 'Unknown')}", progress_callback)
+
+                        # Try scrolling to find element
+                        self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
+                        scroll_success = self._try_scroll_to_find_element(
+                            description=step.description,
+                            screenshot=screenshot,
+                            dom_elements=dom_elements,
+                            url=current_url,
+                            progress_callback=progress_callback
+                        )
+
+                        if scroll_success:
+                            # Re-analyze page after scrolling
+                            screenshot, dom_elements, current_url = self._get_page_state()
+                            self._log(f"    📊 After scroll - DOM elements: {len(dom_elements)}", progress_callback)
+                            llm_decision = self.llm_client.select_element_for_step(
+                                step_description=step.description,
+                                dom_elements=dom_elements,
+                                screenshot_base64=screenshot,
+                                url=current_url
+                            )
+                            self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
+
+                        # If still low confidence, try vision-based coordinate click
+                        if llm_decision["confidence"] < 30:
+                            self._log(f"    🎯 Trying vision-based coordinate detection...", progress_callback)
+                            self._log(f"    🤖 Asking GPT-5 to find element coordinates in screenshot...", progress_callback)
+                            coord_result = self.llm_client.find_element_coordinates(
+                                screenshot_base64=screenshot,
+                                description=step.description
+                            )
+
+                            if coord_result.get("confidence", 0) > 0.5:
+                                self._log(f"    ✅ Found element at ({coord_result['x']}, {coord_result['y']}) with {coord_result['confidence']*100:.0f}% confidence", progress_callback)
+                                # Execute click at coordinates
+                                click_success = self._execute_coordinate_click(
+                                    x=coord_result["x"],
+                                    y=coord_result["y"],
+                                    url=current_url
+                                )
+                                if click_success:
+                                    self._log(f"    ✅ Coordinate-based click successful!", progress_callback)
+                                    time.sleep(0.5)
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    continue
+                                else:
+                                    self._log(f"    ❌ Coordinate click failed", progress_callback)
+                            else:
+                                self._log(f"    ❌ Vision fallback failed (confidence: {coord_result.get('confidence', 0)*100:.0f}%)", progress_callback)
+                                self._log(f"    💭 Vision reasoning: {coord_result.get('reasoning', 'Unknown')}", progress_callback)
+
+                            # If we reach here, all fallbacks failed
+                            logs.append(f"  ⚠️ All fallback attempts failed, skipping step")
+                            self._log(f"    ⚠️ Skipping step after fallback attempts", progress_callback)
+                            continue
 
                     if not llm_decision["selector"]:
                         logs.append(f"  ⚠️ No selector found, skipping this step")
@@ -481,28 +585,6 @@ Return ONLY a JSON array:
                     if target_element and target_element.text:
                         self._log(f"    📝 Element text: \"{target_element.text[:50]}\"", progress_callback)
 
-                    # Check if selector matches multiple elements (warning)
-                    matching_elements = [e for e in dom_elements if e.selector == llm_decision['selector']]
-                    if len(matching_elements) > 1:
-                        self._log(f"    ⚠️ WARNING: Selector matches {len(matching_elements)} elements! Will click FIRST one.", progress_callback)
-                        self._log(f"    💡 Matched elements: {[e.text[:30] for e in matching_elements[:3]]}", progress_callback)
-
-                        # AUTO-FIX: Try to extract target text from step description and improve selector
-                        # Example: "Click button labeled 폼과 피드백" → extract "폼과 피드백"
-                        import re
-                        korean_text_match = re.search(r'[가-힣]+(?:\s+[가-힣]+)*', step.description)
-                        if korean_text_match:
-                            target_text = korean_text_match.group()
-                            # Check if any matching element has this text
-                            text_match = next((e for e in matching_elements if target_text in e.text), None)
-                            if text_match:
-                                # Found it! Use text-based selector instead
-                                better_selector = f'button:has-text("{target_text}")'
-                                self._log(f"    🔧 Auto-fix: Using text-based selector: {better_selector}", progress_callback)
-                                llm_decision['selector'] = better_selector
-                                # Update target_element for logging
-                                target_element = text_match
-
                     # Execute the action
                     before_screenshot = screenshot
                     success = self._execute_action(
@@ -514,11 +596,50 @@ Return ONLY a JSON array:
 
                     if not success:
                         logs.append(f"  ❌ Action failed on {llm_decision['selector']}")
-                        self._log(f"    ❌ Action failed", progress_callback)
+                        self._log(f"    ❌ Action failed, triggering aggressive fallback...", progress_callback)
 
-                        # FALLBACK: Try coordinate-based click for click actions
-                        if llm_decision["action"] == "click":
-                            self._log(f"    🔄 Trying fallback: coordinate-based click", progress_callback)
+                        # AGGRESSIVE FALLBACK: Trigger regardless of initial confidence
+                        # Stage 1: Try scrolling to find element
+                        self._log(f"    📜 Fallback Stage 1: Scroll to find element...", progress_callback)
+                        scroll_success = self._try_scroll_to_find_element(
+                            description=step.description,
+                            screenshot=screenshot,
+                            dom_elements=dom_elements,
+                            url=current_url,
+                            progress_callback=progress_callback
+                        )
+
+                        if scroll_success:
+                            # Re-analyze after scroll
+                            screenshot, dom_elements, current_url = self._get_page_state()
+                            # Retry action with new selector
+                            llm_decision = self.llm_client.select_element_for_step(
+                                step_description=step.description,
+                                dom_elements=dom_elements,
+                                screenshot_base64=screenshot,
+                                url=current_url
+                            )
+                            if llm_decision["selector"]:
+                                self._log(f"    🔄 Retrying with new selector: {llm_decision['selector']}", progress_callback)
+                                success = self._execute_action(
+                                    action=llm_decision["action"],
+                                    selector=llm_decision["selector"],
+                                    params=step.params or [],
+                                    url=current_url
+                                )
+                                if success:
+                                    self._log(f"    ✅ Scroll fallback succeeded!", progress_callback)
+                                    logs.append(f"  ✅ Found element after scrolling")
+                                    # Continue to next step
+                                    logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+                                    time.sleep(0.2)
+                                    if llm_decision["action"] in ("click", "press", "goto"):
+                                        dom_elements = self._analyze_dom(None)
+                                    continue
+
+                        # Stage 2: Try vision-based coordinate click
+                        if llm_decision["action"] in ["click", "press"]:
+                            self._log(f"    🎯 Fallback Stage 2: Vision-based coordinate click...", progress_callback)
                             logs.append(f"  🔄 Fallback: Using vision-based coordinates")
 
                             # Get coordinates from LLM Vision
@@ -531,25 +652,32 @@ Return ONLY a JSON array:
                                 self._log(f"    📍 Found at ({coords['x']}, {coords['y']}) - confidence: {coords['confidence']:.0%}", progress_callback)
                                 logs.append(f"  📍 Coordinates: ({coords['x']}, {coords['y']})")
 
-                                # Try clickAt action
-                                success = self._execute_action(
-                                    action="clickAt",
-                                    selector="",  # Not needed for clickAt
-                                    params=[[coords['x'], coords['y']]],
+                                # Try coordinate click
+                                success = self._execute_coordinate_click(
+                                    x=coords['x'],
+                                    y=coords['y'],
                                     url=current_url
                                 )
 
                                 if success:
-                                    self._log(f"    ✅ Fallback succeeded!", progress_callback)
+                                    self._log(f"    ✅ Vision fallback succeeded!", progress_callback)
                                     logs.append(f"  ✅ Coordinate-based click succeeded")
+                                    # Continue to next step
+                                    logs.append(f"  ✅ Action executed via coordinates")
+                                    time.sleep(0.5)
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    continue
                                 else:
-                                    self._log(f"    ❌ Fallback also failed", progress_callback)
+                                    self._log(f"    ❌ Coordinate click failed", progress_callback)
                                     logs.append(f"  ❌ Coordinate-based click failed")
                             else:
-                                self._log(f"    ❌ Low confidence ({coords['confidence']:.0%}), skipping fallback", progress_callback)
+                                self._log(f"    ❌ Low confidence ({coords['confidence']:.0%}), cannot locate element visually", progress_callback)
                                 logs.append(f"  ❌ Could not find element in screenshot")
 
+                        # All fallbacks failed
                         if not success:
+                            self._log(f"    ❌ All fallback stages failed", progress_callback)
+                            logs.append(f"  ❌ All fallback attempts exhausted")
                             failed_non_assertion_steps += 1
                             return {
                             "id": scenario.id,
@@ -747,6 +875,138 @@ Return ONLY a JSON array:
         except Exception as e:
             print(f"Action execution error: {e}")
             return False
+
+    def _try_scroll_to_find_element(
+        self,
+        description: str,
+        screenshot: str,
+        dom_elements: List[DomElement],
+        url: str,
+        progress_callback=None
+    ) -> bool:
+        """
+        Try scrolling the page to find an element that matches the description.
+
+        Returns:
+            True if scroll was performed (element might now be visible), False otherwise
+        """
+        # Scroll down a few times to try to find the element
+        for scroll_attempt in range(3):  # Try scrolling 3 times
+            self._log(f"      📜 Scroll attempt {scroll_attempt + 1}/3...", progress_callback)
+
+            # Execute scroll action
+            self._log(f"      ⬇️  Scrolling page down...", progress_callback)
+            payload = {
+                "action": "execute_action",
+                "params": {
+                    "url": url,
+                    "selector": "body",
+                    "action": "scroll",
+                    "value": "down",
+                    "session_id": self.session_id
+                }
+            }
+
+            try:
+                response = requests.post(
+                    f"{self.mcp_config.host_url}/execute",
+                    json=payload,
+                    timeout=90
+                )
+                response.raise_for_status()
+
+                # Wait for page to settle
+                time.sleep(0.5)
+
+                # Check if element is now visible using vision
+                self._log(f"      📸 Re-analyzing DOM after scroll...", progress_callback)
+                new_screenshot = self._capture_screenshot(url=None, send_to_gui=False)
+
+                self._log(f"      🤖 Using GPT-5 vision to detect element...", progress_callback)
+                coord_result = self.llm_client.find_element_coordinates(
+                    screenshot_base64=new_screenshot,
+                    description=description
+                )
+
+                if coord_result.get("confidence", 0) > 0.6:
+                    self._log(f"      ✅ Found element after scroll! Confidence: {coord_result['confidence']*100:.0f}%", progress_callback)
+                    return True
+
+            except Exception as e:
+                self._log(f"      ⚠️ Scroll failed: {e}", progress_callback)
+                continue
+
+        self._log(f"      ❌ Element not found after scrolling", progress_callback)
+        return False
+
+    def _execute_coordinate_click(self, x: int, y: int, url: str) -> bool:
+        """
+        Execute a click at specific coordinates.
+
+        Args:
+            x: X coordinate (pixels from left)
+            y: Y coordinate (pixels from top)
+            url: Current page URL
+
+        Returns:
+            True if click succeeded, False otherwise
+        """
+        payload = {
+            "action": "execute_action",
+            "params": {
+                "url": url,
+                "selector": "",  # No selector needed for coordinate click
+                "action": "click_at_coordinates",
+                "value": [x, y],  # Pass as array [x, y]
+                "session_id": self.session_id
+            }
+        }
+
+        try:
+            response = requests.post(
+                f"{self.mcp_config.host_url}/execute",
+                json=payload,
+                timeout=90
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("success", False)
+        except Exception as e:
+            print(f"Coordinate click failed: {e}")
+            return False
+
+    def _get_page_state(self) -> tuple[str, List[DomElement], str]:
+        """
+        Get current page state: screenshot, DOM, and URL.
+
+        Returns:
+            Tuple of (screenshot_base64, dom_elements, current_url)
+        """
+        screenshot = self._capture_screenshot(url=None, send_to_gui=True)
+
+        # Get DOM - this also fetches current URL from browser
+        # Use analyze_page action (not get_dom_elements, which doesn't exist)
+        payload = {
+            "action": "analyze_page",
+            "params": {"session_id": self.session_id, "url": None}  # None = use current page
+        }
+        try:
+            response = requests.post(f"{self.mcp_config.host_url}/execute", json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract DOM elements
+            dom_elements = [DomElement(**elem) for elem in data.get("dom_elements", [])]
+
+            # Extract current URL from page.url
+            current_url = data.get("url", "")
+
+        except Exception as e:
+            print(f"Failed to get page state: {e}")
+            dom_elements = []
+            current_url = ""
+
+        return screenshot, dom_elements, current_url
 
     def _log(self, message: str, callback=None) -> None:
         """Log a message and optionally call progress callback."""
