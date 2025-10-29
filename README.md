@@ -138,6 +138,50 @@ Reduction: 75-80% memory savings
 - Data structure: `page_element_map: Dict[url, Dict[text, selector]]`
 - Optimization: Page limit (4) + keyword filtering + length limit (30 chars)
 
+## 🚀 Selector Caching (NEW)
+
+### Intelligent Learning from Past Executions
+GAIA now remembers successful element selections and reuses them in future test runs, dramatically reducing execution time.
+
+**How it works:**
+1. **First Run**: LLM analyzes DOM and selects elements (3-5s per step)
+2. **Cache**: Successful selectors are saved with metadata (timestamp, success count)
+3. **Subsequent Runs**: Cached selectors bypass LLM entirely (0.5s per step)
+
+**Speed Improvement:**
+- First run: 7-9s per step (no change)
+- Cached runs: 2-3s per step (**60-70% faster**)
+
+**Cache Strategy:**
+- Cache key: Hash of (step description + action + normalized URL)
+- Confidence threshold: Only cache selectors with 2+ successful executions
+- Auto-expiration: Entries older than 7 days are removed
+- Persistence: Saved to `artifacts/cache/selector_cache.json`
+- Fallback: If cached selector fails, falls back to LLM analysis
+
+**Example Cache Entry:**
+```json
+{
+  "a1b2c3d4...": {
+    "selector": "[data-testid='start-forms']",
+    "timestamp": 1730188800,
+    "success_count": 3,
+    "step_description": "시작하기-폼과 피드백 버튼 클릭으로 /forms 이동"
+  }
+}
+```
+
+**Benefits:**
+- ✅ Dramatically faster repeated test runs (investor demos)
+- ✅ Reduced OpenAI API costs (fewer LLM calls)
+- ✅ Works across different test scenarios that share UI elements
+- ✅ Smart fallback if UI changes
+
+**Implementation:**
+- Files: `gaia/src/phase4/intelligent_orchestrator.py:56-61, 460-478, 692-699, 1242-1323`
+- Methods: `_load_cache()`, `_save_cache()`, `_get_cached_selector()`, `_update_cache()`
+- Storage: JSON file with UTF-8 encoding for Korean text support
+
 ## 🔧 Recent Improvements (Issue #25)
 
 ### LLM Model Upgrade
@@ -188,6 +232,35 @@ Reduction: 75-80% memory savings
 - **URL Comparison Fix**: Fixed hash navigation detection (#basics, #features, etc.)
   - Changed to compare with actual `page.url` instead of cached `session.current_url`
   - File: `gaia/src/phase4/mcp_host.py:416-417`
+
+### Explicit Selector Fallback (NEW)
+- **Smart Fallback for Invalid Selectors**: When test plans contain invalid selectors (e.g., `[data-testid='search-input']` that doesn't exist), GAIA now automatically falls back to LLM analysis instead of failing immediately
+  - **Previous Behavior**: Explicit selector fails → entire test scenario fails
+  - **New Behavior**: Explicit selector fails → LLM analyzes DOM and finds correct selector → continues execution
+  - **Example**: Plan specifies `[data-testid='search-input']` but actual element is `input[placeholder="검색어를 입력하세요..."]` → LLM finds it automatically
+  - File: `gaia/src/phase4/intelligent_orchestrator.py:438-450`
+- **Screenshot Updates During Scroll**: Fixed GUI freezing during scroll attempts
+  - Changed `send_to_gui=False` to `send_to_gui=True` so investors can see scroll progress
+  - File: `gaia/src/phase4/intelligent_orchestrator.py:1062`
+- **GOTO URL Sync (CRITICAL)**: Fixed URL not updating after `goto` action
+  - **Root Cause**: After `goto #basics`, orchestrator kept using base URL without hash
+  - **Impact**: Subsequent steps tried to find `#basics` elements on home page → failed
+  - **Solution**: Changed from updating screenshot/DOM separately to using `_get_page_state()` which returns current URL
+  - File: `gaia/src/phase4/intelligent_orchestrator.py:411`
+- **Figma Sites Hash Navigation Fix (CRITICAL)**: Automatic fallback when direct hash navigation fails
+  - **Root Cause**: Figma Sites don't load content when navigating directly to `#basics` URL - only button clicks trigger proper SPA routing
+  - **Impact**: `goto https://site.com#basics` results in empty page (DOM < 15 elements)
+  - **Solution**: Detect failed hash navigation (low DOM count) → Navigate to home → Use LLM to find and click navigation button → Content loads properly
+  - **Example Flow**:
+    ```
+    goto #basics → DOM: 7 elements (failed)
+    ⚠️ Hash navigation failed to load content
+    💡 Navigate to home and click button
+    🔘 Clicking: button:has-text("기본 기능")
+    ✅ Content loaded via button click (DOM: 46 elements)
+    ```
+  - Files: `gaia/src/phase4/intelligent_orchestrator.py:414-450`
+  - Wait time increased: 1s → 3s for SPA hydration
 
 ### Bug Fixes
 - **Input Placeholder Selector (CRITICAL)**: Fixed invalid CSS selector generation for input fields

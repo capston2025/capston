@@ -1,0 +1,92 @@
+{
+  "69822f50939f153e0ab71297d1fc91ee": {
+    "selector": "button:has-text(\"기본 기능\")",
+    "timestamp": 1761737208.940083,
+    "success_count": 4,
+    "step_description": "'기본 기능' 카드 클릭"
+  },
+  "feb8be0878396699576e782e9f17bf39": {
+    "selector": "button:has-text(\"폼과 피드백\")",
+    "timestamp": 1761737209.74683,
+    "success_count": 4,
+    "step_description": "'폼과 피드백' 카드 클릭"
+  },
+  "71cfb793c7f209916f6e6c581f5ee69d": {
+    "selector": "button:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1761737257.2575932,
+    "success_count": 2,
+    "step_description": "'인터랙션과 데이터' 카드 클릭"
+  },
+  "52db07219a99bc97340556e2b0f58a6d": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1761737388.000038,
+    "success_count": 1,
+    "step_description": "검색어 입력"
+  },
+  "46191a7c31d255f8cfea2a02e60405ae": {
+    "selector": "[id=\"radix-:r0:-trigger-signup\"]",
+    "timestamp": 1761737600.9098,
+    "success_count": 1,
+    "step_description": "회원가입 탭으로 전환"
+  },
+  "25f5b0c181eeb8df8858ca3350b09cca": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1761737332.587587,
+    "success_count": 1,
+    "step_description": "사이드바 토글 단축키 입력 (Cmd+/ 또는 Ctrl+/)"
+  },
+  "8c50954e790b6682687a320b384ced68": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1761737370.441252,
+    "success_count": 1,
+    "step_description": "윈도우용 단축키 보조 입력 (Ctrl+/)"
+  },
+  "4098f1ff3f5d2052382b8deb45c7e9f9": {
+    "selector": "button:has-text(\"필터\")",
+    "timestamp": 1761737401.601721,
+    "success_count": 1,
+    "step_description": "필터 버튼 클릭"
+  },
+  "73efb77017adf9c4fad915491c179a3c": {
+    "selector": "button:has-text(\"정렬\")",
+    "timestamp": 1761737562.0419729,
+    "success_count": 1,
+    "step_description": "정렬 버튼 클릭"
+  },
+  "72ebb24590764eb7becba71182df2e9a": {
+    "selector": "button:has-text(\"정렬\")",
+    "timestamp": 1761737583.28028,
+    "success_count": 1,
+    "step_description": "정렬 '제목순' 선택"
+  },
+  "827523ed2e02061647c79a3e955444d9": {
+    "selector": "#signup-name",
+    "timestamp": 1761737609.8582,
+    "success_count": 1,
+    "step_description": "이름 입력"
+  },
+  "e32c1a15481b6546b996f29d3f856a2f": {
+    "selector": "#signup-email",
+    "timestamp": 1761737621.7446342,
+    "success_count": 1,
+    "step_description": "이메일 입력"
+  },
+  "8ea22224f712fa203915e6faefe4e419": {
+    "selector": "#signup-password",
+    "timestamp": 1761737631.5178602,
+    "success_count": 1,
+    "step_description": "비밀번호 입력"
+  },
+  "04acbba3fde188ec949d1a82be6e731e": {
+    "selector": "button:has-text(\"회원가입\")",
+    "timestamp": 1761737648.010373,
+    "success_count": 1,
+    "step_description": "회원가입 제출 클릭"
+  },
+  "c61514d1fe9ef85f9e1b2bb810a231db": {
+    "selector": "button:has-text(\"자동재생 끄기\")",
+    "timestamp": 1761738385.645992,
+    "success_count": 1,
+    "step_description": "재생 버튼 클릭"
+  }
+}

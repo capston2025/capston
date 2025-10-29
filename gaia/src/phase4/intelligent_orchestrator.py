@@ -4,6 +4,9 @@ Uses GPT-4V to analyze DOM + screenshots and make decisions.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import time
 from typing import Any, Dict, List, Sequence
 
@@ -49,6 +52,13 @@ class IntelligentOrchestrator:
         # Smart navigation: Track which elements exist on which pages
         self.page_element_map: Dict[str, Dict[str, str]] = {}  # {url: {text: selector}}
         self.home_url: str = ""  # Base URL for smart navigation
+
+        # Selector cache: Maps (step_description, action, page_url) -> selector
+        self.selector_cache: Dict[str, Dict[str, Any]] = {}  # {cache_key: {selector, timestamp, success_count}}
+        self.cache_file = os.path.join(
+            os.path.dirname(__file__), "../../../artifacts/cache/selector_cache.json"
+        )
+        self._load_cache()
 
     def execute_scenarios(
         self,
@@ -159,6 +169,10 @@ class IntelligentOrchestrator:
                 })
 
         self._log(f"\n✅ Execution complete: {results['passed']}/{len(scenarios)} passed, {results['skipped']}/{len(scenarios)} skipped", progress_callback)
+
+        # Save cache to disk at end of execution
+        self._save_cache()
+
         return results
 
     def _prioritize_scenarios(
@@ -393,11 +407,47 @@ Return ONLY a JSON array:
                     # Get new screenshot and DOM if needed
                     if step.action in ["goto", "scroll"] or getattr(step, 'auto_analyze', False):
                         try:
-                            time.sleep(1.0)  # Wait for page to stabilize
-                            screenshot = self._capture_screenshot(None, send_to_gui=True)
-                            dom_elements = self._analyze_dom(None)
-                            # current_url stays the same
-                            self._log(f"    🔄 Page state refreshed", progress_callback)
+                            time.sleep(3.0)  # Wait longer for SPA hash navigation
+                            screenshot, dom_elements, current_url = self._get_page_state()
+                            self._log(f"    🔄 Page state refreshed (URL: {current_url}, DOM: {len(dom_elements)})", progress_callback)
+
+                            # FIGMA SITES FIX: Hash navigation doesn't load content properly
+                            # If goto to #hash URL but DOM is too small (< 15), use button click instead
+                            if step.action == "goto" and len(step.params) > 0 and '#' in step.params[0] and len(dom_elements) < 15:
+                                hash_part = step.params[0].split('#')[1]  # e.g., "basics"
+                                self._log(f"    ⚠️ Hash navigation failed to load content (DOM: {len(dom_elements)})", progress_callback)
+                                self._log(f"    💡 Trying alternative: Navigate to home and click button", progress_callback)
+
+                                # Navigate to home
+                                base_url = step.params[0].split('#')[0]
+                                goto_success = self._execute_action(action="goto", selector="", params=[base_url], url=base_url)
+
+                                if goto_success:
+                                    time.sleep(2.0)
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+
+                                    # Find button with text matching hash (e.g., "기본 기능" for "basics")
+                                    # Use LLM to find the right button
+                                    llm_decision = self.llm_client.select_element_for_step(
+                                        step_description=f"{hash_part} 페이지로 이동하는 버튼 클릭",
+                                        dom_elements=dom_elements,
+                                        screenshot_base64=screenshot,
+                                        url=current_url
+                                    )
+
+                                    if llm_decision['selector']:
+                                        self._log(f"    🔘 Clicking navigation button: {llm_decision['selector']}", progress_callback)
+                                        click_success = self._execute_action(
+                                            action="click",
+                                            selector=llm_decision['selector'],
+                                            params=[],
+                                            url=current_url
+                                        )
+
+                                        if click_success:
+                                            time.sleep(3.0)
+                                            screenshot, dom_elements, current_url = self._get_page_state()
+                                            self._log(f"    ✅ Content loaded via button click (DOM: {len(dom_elements)})", progress_callback)
                         except Exception as e:
                             self._log(f"    ⚠️ Failed to refresh page state: {e}", progress_callback)
                             # Continue anyway - screenshot and DOM from before action
@@ -422,37 +472,44 @@ Return ONLY a JSON array:
                     )
 
                     if not success:
-                        logs.append(f"  ❌ Action {step.action} failed on {step.selector}")
-                        self._log(f"    ❌ Action failed", progress_callback)
-                        failed_non_assertion_steps += 1
-                        return {
-                            "id": scenario.id,
-                            "scenario": scenario.scenario,
-                            "status": "failed",
-                            "logs": logs
-                        }
+                        logs.append(f"  ❌ Explicit selector failed: {step.selector}")
+                        self._log(f"    ⚠️ Explicit selector failed, falling back to LLM...", progress_callback)
+                        # Don't fail immediately - fall through to LLM section below
+                    else:
+                        logs.append(f"  ✅ Action executed: {step.action} on {step.selector}")
+                        self._log(f"    ✅ Action successful", progress_callback)
 
-                    logs.append(f"  ✅ Action executed: {step.action} on {step.selector}")
-                    self._log(f"    ✅ Action successful", progress_callback)
+                        # Get new screenshot if needed
+                        time.sleep(0.5)
+                        screenshot, dom_elements, current_url = self._get_page_state()
 
-                    # Get new screenshot if needed
-                    time.sleep(0.5)
-                    screenshot, dom_elements, current_url = self._get_page_state()
+                        continue
 
-                    continue
-
-                # Otherwise, use LLM to find the element
-                else:
+                # If explicit selector failed or no selector provided, use LLM
+                if step.action in actions_with_explicit_selector or True:
                     # Track non-assertion step
                     total_non_assertion_steps += 1
 
-                    # Ask LLM to select element
-                    llm_decision = self.llm_client.select_element_for_step(
-                        step_description=step.description,
-                        dom_elements=dom_elements,
-                        screenshot_base64=screenshot,
-                        url=current_url
-                    )
+                    # CACHE CHECK: Try to get cached selector first
+                    cached_selector = self._get_cached_selector(step.description, step.action, current_url)
+
+                    if cached_selector:
+                        # Use cached selector
+                        llm_decision = {
+                            "selector": cached_selector,
+                            "reasoning": "Using cached selector from previous successful execution",
+                            "confidence": 95,
+                            "action": step.action
+                        }
+                        self._log(f"  💾 Cache hit! Using cached selector", progress_callback)
+                    else:
+                        # Ask LLM to select element
+                        llm_decision = self.llm_client.select_element_for_step(
+                            step_description=step.description,
+                            dom_elements=dom_elements,
+                            screenshot_base64=screenshot,
+                            url=current_url
+                        )
 
                     logs.append(f"  LLM Decision: {llm_decision['reasoning']}")
                     logs.append(f"  Confidence: {llm_decision['confidence']}%")
@@ -579,6 +636,15 @@ Return ONLY a JSON array:
                                     logs.append(f"  ✅ Action executed via smart navigation")
                                     self._log(f"    ✅ Smart navigation succeeded!", progress_callback)
 
+                                    # Update cache with successful smart navigation selector
+                                    self._update_cache(
+                                        step_description=step.description,
+                                        action=step.action,
+                                        page_url=current_url,
+                                        selector=smart_nav["selector"],
+                                        success=True
+                                    )
+
                                     # Update state after successful click
                                     screenshot, dom_elements, current_url = self._get_page_state()
                                     self._record_page_elements(current_url, dom_elements)
@@ -666,6 +732,15 @@ Return ONLY a JSON array:
                         url=current_url
                     )
 
+                    # UPDATE CACHE: Record execution result
+                    self._update_cache(
+                        step_description=step.description,
+                        action=step.action,
+                        page_url=current_url,
+                        selector=llm_decision["selector"],
+                        success=success
+                    )
+
                     if not success:
                         logs.append(f"  ❌ Action failed on {llm_decision['selector']}")
                         self._log(f"    ❌ Action failed, triggering aggressive fallback...", progress_callback)
@@ -704,6 +779,14 @@ Return ONLY a JSON array:
                                     logs.append(f"  ✅ Found element after scrolling")
                                     # Continue to next step
                                     logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+                                    # Update cache with successful selector
+                                    self._update_cache(
+                                        step_description=step.description,
+                                        action=step.action,
+                                        page_url=current_url,
+                                        selector=llm_decision["selector"],
+                                        success=True
+                                    )
                                     time.sleep(0.2)
                                     # Update current_url after navigation
                                     if llm_decision["action"].lower() in ("click", "press", "goto"):
@@ -1006,7 +1089,7 @@ Return ONLY a JSON array:
 
                 # Check if element is now visible using vision
                 self._log(f"      📸 Re-analyzing DOM after scroll...", progress_callback)
-                new_screenshot = self._capture_screenshot(url=None, send_to_gui=False)
+                new_screenshot = self._capture_screenshot(url=None, send_to_gui=True)
 
                 self._log(f"      🤖 Using GPT-5 vision to detect element...", progress_callback)
                 coord_result = self.llm_client.find_element_coordinates(
@@ -1228,6 +1311,89 @@ Return ONLY a JSON array:
                     }
 
         return {}
+
+    def _load_cache(self) -> None:
+        """Load selector cache from disk."""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    self.selector_cache = json.load(f)
+                # Clean old entries (older than 7 days)
+                current_time = time.time()
+                self.selector_cache = {
+                    k: v for k, v in self.selector_cache.items()
+                    if current_time - v.get("timestamp", 0) < 7 * 24 * 3600
+                }
+                print(f"[Cache] Loaded {len(self.selector_cache)} cached selectors")
+        except Exception as e:
+            print(f"[Cache] Failed to load cache: {e}")
+            self.selector_cache = {}
+
+    def _save_cache(self) -> None:
+        """Save selector cache to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.selector_cache, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Cache] Failed to save cache: {e}")
+
+    def _get_cache_key(self, step_description: str, action: str, page_url: str) -> str:
+        """Generate cache key for a step."""
+        # Normalize URL (remove hash and trailing slash for consistency)
+        normalized_url = page_url.split('#')[0].rstrip('/')
+        # Create hash of (description + action + url)
+        key_string = f"{step_description}|{action}|{normalized_url}"
+        return hashlib.md5(key_string.encode('utf-8')).hexdigest()
+
+    def _get_cached_selector(self, step_description: str, action: str, page_url: str) -> str | None:
+        """
+        Try to get cached selector for this step.
+
+        Returns:
+            Cached selector if found and still valid, None otherwise
+        """
+        cache_key = self._get_cache_key(step_description, action, page_url)
+        cached = self.selector_cache.get(cache_key)
+
+        if cached:
+            # Prefer high-confidence cache entries (success_count >= 2)
+            if cached.get("success_count", 0) >= 2:
+                print(f"[Cache HIT] Using cached selector for '{step_description}'")
+                return cached["selector"]
+
+        return None
+
+    def _update_cache(self, step_description: str, action: str, page_url: str,
+                     selector: str, success: bool) -> None:
+        """
+        Update cache with execution result.
+
+        Args:
+            step_description: Human-readable step description
+            action: Action type (click, fill, etc.)
+            page_url: Current page URL
+            selector: Selector that was used
+            success: Whether the action succeeded
+        """
+        cache_key = self._get_cache_key(step_description, action, page_url)
+
+        if cache_key not in self.selector_cache:
+            self.selector_cache[cache_key] = {
+                "selector": selector,
+                "timestamp": time.time(),
+                "success_count": 1 if success else 0,
+                "step_description": step_description  # For debugging
+            }
+        else:
+            # Update existing entry
+            if success:
+                self.selector_cache[cache_key]["success_count"] += 1
+            self.selector_cache[cache_key]["timestamp"] = time.time()
+
+        # Save to disk periodically
+        if len(self.selector_cache) % 5 == 0:  # Save every 5 updates
+            self._save_cache()
 
 
 __all__ = ["IntelligentOrchestrator"]
