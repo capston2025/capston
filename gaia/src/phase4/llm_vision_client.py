@@ -23,7 +23,9 @@ class LLMVisionClient:
             api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var)
         """
         self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
-        self.model = "gpt-5"  # Upgraded to GPT-5 for better reasoning and decision-making
+        # Use GPT-5-mini for vision tasks (cost optimization)
+        # Master orchestrator still uses GPT-5 for critical DOM analysis
+        self.model = "gpt-5-mini"
 
     def select_element_for_step(
         self,

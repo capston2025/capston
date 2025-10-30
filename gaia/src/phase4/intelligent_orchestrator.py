@@ -87,9 +87,10 @@ class IntelligentOrchestrator:
         self._execution_logs = []
         results = {
             "total": len(scenarios),
-            "passed": 0,
-            "failed": 0,
-            "skipped": 0,
+            "success": 0,  # 100% completion
+            "partial": 0,  # Some steps skipped
+            "failed": 0,   # Critical failures
+            "skipped": 0,  # Not executed
             "scenarios": []
         }
 
@@ -149,9 +150,12 @@ class IntelligentOrchestrator:
                 )
                 results["scenarios"].append(result)
 
-                if result["status"] == "passed":
-                    results["passed"] += 1
+                if result["status"] == "success":
+                    results["success"] += 1
                     self.tracker.mark_found(scenario.id, evidence=result.get("logs", ""))
+                elif result["status"] == "partial":
+                    results["partial"] += 1
+                    self.tracker.mark_found(scenario.id, evidence=result.get("logs", "") + " (partial)")
                 elif result["status"] == "failed":
                     results["failed"] += 1
                 elif result["status"] == "skipped":
@@ -168,7 +172,7 @@ class IntelligentOrchestrator:
                     "logs": []
                 })
 
-        self._log(f"\n✅ Execution complete: {results['passed']}/{len(scenarios)} passed, {results['skipped']}/{len(scenarios)} skipped", progress_callback)
+        self._log(f"\n📊 Execution complete: ✅{results['success']} success, ⚠️{results['partial']} partial, ❌{results['failed']} failed, ⏭️{results['skipped']} skipped", progress_callback)
 
         # Save cache to disk at end of execution
         self._save_cache()
@@ -317,6 +321,7 @@ Return ONLY a JSON array:
         current_url = url
         failed_non_assertion_steps = 0  # Track failed steps (excluding assertions)
         total_non_assertion_steps = 0   # Track total non-assertion steps
+        skipped_steps = 0  # Track skipped steps (fallback failures)
 
         try:
             # Reset viewport to default (1280x900) at start of each scenario
@@ -601,86 +606,116 @@ Return ONLY a JSON array:
                         self._log(f"    🔍 Low confidence ({llm_decision['confidence']}%), trying scroll + vision fallback...", progress_callback)
                         self._log(f"    💡 Reason: {llm_decision.get('reasoning', 'Unknown')}", progress_callback)
 
-                        # SMART NAVIGATION: Check if element exists on another page (e.g., home)
-                        smart_nav = self._find_element_on_other_pages(step.description, current_url)
-                        if smart_nav.get("found"):
-                            self._log(f"    💡 Smart navigation: Found '{smart_nav['element_text']}' on {smart_nav['target_url']}", progress_callback)
-                            self._log(f"    🏠 Navigating to: {smart_nav['target_url']}", progress_callback)
+                        # STEP 1: Try aggressive text matching on CURRENT PAGE first
+                        import re
+                        # Extract ALL Korean/English text from description
+                        all_korean = re.findall(r'[가-힣]+', step.description)
+                        all_english = re.findall(r'[A-Za-z]+', step.description)
 
-                            # Navigate to the page where element exists
-                            goto_success = self._execute_action(
-                                action="goto",
-                                selector="",
-                                params=[smart_nav['target_url']],
-                                url=smart_nav['target_url'],
-                                screenshot=screenshot,
-                                progress_callback=progress_callback
-                            )
+                        found_by_text = False
+                        for target_text in all_korean + all_english:
+                            # Search in ALL DOM elements (not just matching ones)
+                            text_match = next((e for e in dom_elements if target_text in e.text), None)
+                            if text_match:
+                                element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
+                                better_selector = f'{element_type}:has-text("{target_text}")'
+                                self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                llm_decision['selector'] = better_selector
+                                llm_decision['confidence'] = 85
+                                llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                found_by_text = True
+                                break
 
-                            if goto_success:
-                                # Update page state after navigation
-                                screenshot, dom_elements, current_url = self._get_page_state()
-                                self._log(f"    ✅ Navigation successful, now at: {current_url}", progress_callback)
+                        if found_by_text:
+                            self._log(f"    ✅ Found element by aggressive text matching, skipping navigation", progress_callback)
+                            # Continue to action execution below
+                        # STEP 2: SMART NAVIGATION (only if text matching failed)
+                        if not found_by_text:
+                            self._log(f"    🌍 Trying Smart Navigation (last resort)...", progress_callback)
+                            smart_nav = self._find_element_on_other_pages(step.description, current_url)
+                            if smart_nav.get("found"):
+                                self._log(f"    💡 Smart navigation: Found '{smart_nav['element_text']}' on {smart_nav['target_url']}", progress_callback)
+                                self._log(f"    🏠 Navigating to: {smart_nav['target_url']}", progress_callback)
 
-                                # Try clicking the element on the new page
-                                click_success = self._execute_action(
-                                    action=llm_decision["action"],
-                                    selector=smart_nav["selector"],
-                                    params=step.params,
-                                    url=current_url,
+                                # Navigate to the page where element exists
+                                goto_success = self._execute_action(
+                                    action="goto",
+                                    selector="",
+                                    params=[smart_nav['target_url']],
+                                    url=smart_nav['target_url'],
                                     screenshot=screenshot,
                                     progress_callback=progress_callback
                                 )
 
-                                if click_success:
-                                    logs.append(f"  ✅ Action executed via smart navigation")
-                                    self._log(f"    ✅ Smart navigation succeeded!", progress_callback)
+                                if goto_success:
+                                    # Update page state after navigation
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    self._log(f"    ✅ Navigation successful, now at: {current_url}", progress_callback)
 
-                                    # Update cache with successful smart navigation selector
-                                    self._update_cache(
-                                        step_description=step.description,
-                                        action=step.action,
-                                        page_url=current_url,
+                                    # Try clicking the element on the new page
+                                    click_success = self._execute_action(
+                                        action=llm_decision["action"],
                                         selector=smart_nav["selector"],
-                                        success=True
+                                        params=step.params,
+                                        url=current_url,
+                                        screenshot=screenshot,
+                                        progress_callback=progress_callback
                                     )
 
-                                    # Update state after successful click
-                                    screenshot, dom_elements, current_url = self._get_page_state()
-                                    self._record_page_elements(current_url, dom_elements)
-                                    continue  # Move to next step
+                                    if click_success:
+                                        logs.append(f"  ✅ Action executed via smart navigation")
+                                        self._log(f"    ✅ Smart navigation succeeded!", progress_callback)
+
+                                        # Update cache with successful smart navigation selector
+                                        self._update_cache(
+                                            step_description=step.description,
+                                            action=step.action,
+                                            page_url=current_url,
+                                            selector=smart_nav["selector"],
+                                            success=True
+                                        )
+
+                                        # Update state after successful click
+                                        screenshot, dom_elements, current_url = self._get_page_state()
+                                        self._record_page_elements(current_url, dom_elements)
+                                        continue  # Move to next step
+                                    else:
+                                        self._log(f"    ❌ Click failed after navigation", progress_callback)
                                 else:
-                                    self._log(f"    ❌ Click failed after navigation", progress_callback)
-                            else:
-                                self._log(f"    ❌ Navigation failed", progress_callback)
+                                    self._log(f"    ❌ Navigation failed", progress_callback)
 
-                        # If smart navigation didn't work, try scrolling to find element
-                        if not smart_nav.get("found"):
-                            self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
-                        scroll_success = self._try_scroll_to_find_element(
-                            description=step.description,
-                            screenshot=screenshot,
-                            dom_elements=dom_elements,
-                            url=current_url,
-                            progress_callback=progress_callback
-                        )
+                        # STEP 3: Try scrolling (only if both text matching and smart nav failed)
+                        if not found_by_text:
+                            smart_nav_worked = False
+                            if 'smart_nav' in locals() and smart_nav.get("found"):
+                                smart_nav_worked = True
 
-                        if scroll_success:
-                            # Re-analyze page after scrolling
-                            screenshot, dom_elements, current_url = self._get_page_state()
-                            self._log(f"    📊 After scroll - DOM elements: {len(dom_elements)}", progress_callback)
-                            llm_decision = self.llm_client.select_element_for_step(
-                                step_description=step.description,
-                                dom_elements=dom_elements,
-                                screenshot_base64=screenshot,
-                                url=current_url
-                            )
-                            self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
+                            if not smart_nav_worked:
+                                self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
+                                scroll_success = self._try_scroll_to_find_element(
+                                    description=step.description,
+                                    screenshot=screenshot,
+                                    dom_elements=dom_elements,
+                                    url=current_url,
+                                    progress_callback=progress_callback
+                                )
 
-                        # If still low confidence, try vision-based coordinate click
-                        if llm_decision["confidence"] < 30:
+                                if scroll_success:
+                                    # Re-analyze page after scrolling
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    self._log(f"    📊 After scroll - DOM elements: {len(dom_elements)}", progress_callback)
+                                    llm_decision = self.llm_client.select_element_for_step(
+                                        step_description=step.description,
+                                        dom_elements=dom_elements,
+                                        screenshot_base64=screenshot,
+                                        url=current_url
+                                    )
+                                    self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
+
+                        # STEP 4: If still low confidence, try vision-based coordinate click
+                        if not found_by_text and llm_decision["confidence"] < 30:
                             self._log(f"    🎯 Trying vision-based coordinate detection...", progress_callback)
-                            self._log(f"    🤖 Asking GPT-5 to find element coordinates in screenshot...", progress_callback)
+                            self._log(f"    🤖 Asking {self.llm_client.model} to find element coordinates in screenshot...", progress_callback)
                             coord_result = self.llm_client.find_element_coordinates(
                                 screenshot_base64=screenshot,
                                 description=step.description
@@ -708,11 +743,13 @@ Return ONLY a JSON array:
                             # If we reach here, all fallbacks failed
                             logs.append(f"  ⚠️ All fallback attempts failed, skipping step")
                             self._log(f"    ⚠️ Skipping step after fallback attempts", progress_callback)
+                            skipped_steps += 1
                             continue
 
                     if not llm_decision["selector"]:
                         logs.append(f"  ⚠️ No selector found, skipping this step")
                         self._log(f"    ⚠️ Skipping step (no selector)", progress_callback)
+                        skipped_steps += 1
                         continue
 
                     # Log which element will be clicked (IMPORTANT for debugging)
@@ -867,19 +904,34 @@ Return ONLY a JSON array:
                     # Screenshot is already sent by _execute_action with click_position
 
             # Step 3: Decide on pass/fail based on step execution
-            # NEW POLICY: If all non-assertion steps succeeded, mark as passed
-            # This makes verification more flexible and practical for real-world testing
+            # 4-tier status system:
+            # - success: 100% steps completed, no skips
+            # - partial: Some steps skipped but core functionality worked
+            # - failed: Critical steps failed
+            # - skipped: Test not executed
 
             if failed_non_assertion_steps == 0 and total_non_assertion_steps > 0:
-                # All critical steps passed! Test is considered successful
-                logs.append(f"  ✅ All {total_non_assertion_steps} action steps executed successfully")
-                self._log(f"  ✅ Test PASSED: All actions completed", progress_callback)
-                return {
-                    "id": scenario.id,
-                    "scenario": scenario.scenario,
-                    "status": "passed",
-                    "logs": logs
-                }
+                if skipped_steps == 0:
+                    # Perfect execution!
+                    logs.append(f"  ✅ All {total_non_assertion_steps} action steps executed successfully")
+                    self._log(f"  ✅ Test SUCCESS: 100% completion", progress_callback)
+                    return {
+                        "id": scenario.id,
+                        "scenario": scenario.scenario,
+                        "status": "success",
+                        "logs": logs
+                    }
+                else:
+                    # Some steps skipped but didn't fail
+                    skip_rate = (skipped_steps / total_non_assertion_steps) * 100
+                    logs.append(f"  ⚠️ {total_non_assertion_steps - skipped_steps}/{total_non_assertion_steps} steps completed ({skipped_steps} skipped)")
+                    self._log(f"  ⚠️ Test PARTIAL: {skip_rate:.0f}% steps skipped", progress_callback)
+                    return {
+                        "id": scenario.id,
+                        "scenario": scenario.scenario,
+                        "status": "partial",
+                        "logs": logs
+                    }
 
             # Optional: Still try LLM verification for additional confidence
             if scenario.assertion and scenario.assertion.description:
@@ -1091,7 +1143,7 @@ Return ONLY a JSON array:
                 self._log(f"      📸 Re-analyzing DOM after scroll...", progress_callback)
                 new_screenshot = self._capture_screenshot(url=None, send_to_gui=True)
 
-                self._log(f"      🤖 Using GPT-5 vision to detect element...", progress_callback)
+                self._log(f"      🤖 Using {self.llm_client.model} vision to detect element...", progress_callback)
                 coord_result = self.llm_client.find_element_coordinates(
                     screenshot_base64=new_screenshot,
                     description=description
