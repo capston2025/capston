@@ -5,6 +5,8 @@ Uses GPT-4V for DOM + screenshot analysis.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 import openai
@@ -20,10 +22,27 @@ class LLMVisionClient:
         Initialize the LLM vision client.
 
         Args:
-            api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var)
+            api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var or .env file)
         """
+        # Load .env file if it exists
+        if api_key is None:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key is None:
+                # Try loading from .env file
+                env_file = Path(__file__).parent.parent.parent / ".env"
+                if env_file.exists():
+                    with open(env_file) as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("OPENAI_API_KEY="):
+                                api_key = line.split("=", 1)[1].strip()
+                                os.environ["OPENAI_API_KEY"] = api_key
+                                break
+
         self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
-        self.model = "gpt-5"  # Upgraded to GPT-5 for better reasoning and decision-making
+        # Use GPT-5-mini for vision tasks (cost optimization)
+        # Master orchestrator still uses GPT-5 for critical DOM analysis
+        self.model = "gpt-5-mini"
 
     def select_element_for_step(
         self,
@@ -49,8 +68,18 @@ class LLMVisionClient:
                 - confidence: Confidence score (0-100)
         """
         # Format DOM elements for LLM
+        # Filter out disabled elements first
+        enabled_elements = [
+            elem for elem in dom_elements
+            if not (elem.attributes and (
+                elem.attributes.get("aria-disabled") == "true" or
+                elem.attributes.get("disabled") == "true" or
+                elem.attributes.get("disabled") == True
+            ))
+        ]
+
         dom_list = []
-        for idx, elem in enumerate(dom_elements[:150]):  # Limit to 150 for better coverage (increased from 100)
+        for idx, elem in enumerate(enabled_elements[:150]):  # Limit to 150 for better coverage (increased from 100)
             dom_list.append({
                 "index": idx,
                 "tag": elem.tag,
@@ -76,10 +105,11 @@ Available elements (JSON):
 
 **Selector Priority (HIGHEST to LOWEST):**
 1. Text-based: `button:has-text("폼과 피드백")` ✅ BEST
-2. ID-based: `#submit-button` ✅ GOOD
-3. Data attribute: `[data-testid="login-btn"]` ✅ GOOD
-4. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
-5. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
+2. ARIA role-based: `[role="switch"]`, `[role="slider"]` ✅ BEST (for custom components)
+3. Data attribute: `[data-slot="switch"]`, `[data-slot="slider"]` ✅ EXCELLENT (for Radix UI)
+4. ID-based: `#submit-button` ✅ GOOD
+5. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
+6. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
 
 **Action Detection Rules:**
 - If task mentions "wait", "verify", "check", or "confirm" → action should be "waitForTimeout" or "expectVisible", NOT "click"
@@ -88,21 +118,61 @@ Available elements (JSON):
 - If task involves keyboard input → action is "press"
 - If task involves navigation → action is "goto"
 
+**Custom Component Detection (CRITICAL FOR RADIX UI / ARIA):**
+**ALWAYS check ARIA roles FIRST before using class/id selectors!**
+
+- **Switch/Toggle**: `role="switch"` → Selector: `[role="switch"]`, Action: click, Confidence: 90+
+- **Slider/Range**: `role="slider"` → Selector: `[role="slider"]`, Action: click, Confidence: 90+
+- **Dialog/Modal**: `role="dialog"` or `role="alertdialog"` → Selector: `[role="dialog"]`, Confidence: 90+
+- **Checkbox**: `role="checkbox"` → Selector: `[role="checkbox"]`, Action: click, Confidence: 90+
+- **Radio**: `role="radio"` → Selector: `[role="radio"]`, Action: click, Confidence: 90+
+- **Tab**: `role="tab"` → Selector: `[role="tab"]`, Action: click, Confidence: 90+
+- **Menu/Dropdown**: `role="menu"` or `role="menuitem"` → Selector: `[role="menu"]`, Confidence: 90+
+- **Combobox/Select**: `role="combobox"` → Selector: `[role="combobox"]`, Confidence: 90+
+- **Search**: `role="searchbox"` → Selector: `[role="searchbox"]`, Action: fill, Confidence: 90+
+
+**Keywords to ARIA mapping:**
+- toggle, switch, 스위치, 토글 → `[role="switch"]`
+- slider, range, 슬라이더 → `[role="slider"]`
+- dialog, modal, 다이얼로그, 모달, popup, 팝업 → `[role="dialog"]`
+- checkbox, 체크박스 → `[role="checkbox"]`
+- radio, 라디오 → `[role="radio"]`
+- tab, 탭 → `[role="tab"]`
+- menu, 메뉴, dropdown, 드롭다운 → `[role="menu"]`
+- search, 검색 → `[role="searchbox"]`
+
+**CRITICAL**: Custom components may NOT be standard HTML inputs. Look for ARIA roles first!
+
+**Fuzzy Matching Rules (CRITICAL FOR NAVIGATION):**
+When task uses vague terms, match to similar Korean/English equivalents:
+- "forms section" / "폼" → matches "폼과 피드백", "Forms & Feedback", or similar
+- "feedback section" / "피드백" → matches "폼과 피드백", "Feedback", or similar
+- "interactions" / "인터랙션" → matches "인터랙션과 데이터", "Interactions", or similar
+- "basics" / "기본" → matches "기본 기능", "Basic Features", or similar
+- "home" / "홈" → matches "홈", "홈으로", "Home", or similar
+- Be FLEXIBLE: If task says "navigate to X section", look for buttons containing related keywords
+- HIGH CONFIDENCE (70-90) for partial matches that are semantically similar
+
 **Matching Rules:**
 1. Choose a selector from the "Available elements" list above
 2. Look for elements that reasonably match the task description
-3. **CRITICAL: If task mentions context like "under X" or "in Y section", find that context element FIRST**
-4. **For multiple identical buttons**:
+3. **USE FUZZY/SEMANTIC MATCHING**: "forms section" should match "폼과 피드백" with HIGH confidence
+4. **CRITICAL: If task mentions context like "under X" or "in Y section", find that context element FIRST**
+5. **For multiple identical buttons**:
    - Task: "Click 둘러보기 under 기본 기능" → Find element with text "기본 기능", then find nearby "둘러보기"
    - Use parent/sibling relationships to disambiguate
    - If no context given, pick the FIRST matching element
-5. If you can't find a good match, return LOW confidence (<30)
-6. **If your selector would match multiple elements**: Set confidence to 20 (ambiguous)
+6. If you can't find ANY reasonable semantic match, return LOW confidence (<30)
+7. **If your selector would match multiple elements**: Set confidence to 20 (ambiguous)
 
 **Examples of GOOD decisions:**
+- Task: "Navigate to forms section" + Element: `button:has-text("폼과 피드백")` → confidence: 85 ✅ (fuzzy match!)
 - Task: "Click Share button" + Element: `button:has-text("공유하기")` → confidence: 95 ✅
 - Task: "Wait for page title" + Action: "waitForTimeout" → confidence: 90 ✅
 - Task: "Fill email input" + Element: `input[type="email"]` → confidence: 85 ✅
+- Task: "Click on home or 홈" + Element: `button:has-text("홈으로")` → confidence: 80 ✅ (partial match OK!)
+- Task: "Toggle switch on and off" + Element has `role="switch"` → Selector: `[role="switch"]`, confidence: 90 ✅ (ARIA role!)
+- Task: "Use slider control" + Element has `role="slider"` → Selector: `[role="slider"]`, confidence: 90 ✅ (ARIA role!)
 
 **Examples of BAD decisions (AVOID THESE):**
 - Task: "Click button" + Selector: `button.flex.items-center` → confidence: 0 ❌ (generic classes!)
@@ -419,6 +489,119 @@ If the element is not visible or unclear, set confidence to 0.0
                 "confidence": 0.0,
                 "reasoning": f"Error: {e}"
             }
+
+    def aggregate_matching_results(
+        self,
+        step_description: str,
+        aria_result: Dict[str, Any] | None,
+        semantic_result: Dict[str, Any] | None,
+        vision_result: Dict[str, Any],
+        url: str,
+    ) -> Dict[str, Any]:
+        """
+        병렬로 실행된 3가지 매칭 결과를 LLM이 분석해서 최종 결정.
+
+        Args:
+            step_description: 스텝 설명
+            aria_result: ARIA 탐지 결과 (None 가능)
+            semantic_result: 시맨틱 매칭 결과 (None 가능)
+            vision_result: LLM 비전 분석 결과
+            url: 현재 페이지 URL
+
+        Returns:
+            최종 선택된 selector/action/confidence
+        """
+        # 결과를 JSON 형식으로 정리
+        results_summary = {
+            "aria": aria_result if aria_result else {"status": "no_match", "confidence": 0},
+            "semantic": semantic_result if semantic_result else {"status": "no_match", "confidence": 0},
+            "vision": vision_result
+        }
+
+        prompt = f"""You are a test automation expert deciding which element selector to use.
+
+Task: {step_description}
+Page URL: {url}
+
+Three different methods analyzed the page:
+
+**1. ARIA Role Detection:**
+{json.dumps(results_summary['aria'], ensure_ascii=False, indent=2)}
+
+**2. Semantic Text Matching (embedding-based):**
+{json.dumps(results_summary['semantic'], ensure_ascii=False, indent=2)}
+
+**3. Vision + DOM Analysis (your previous analysis):**
+{json.dumps(results_summary['vision'], ensure_ascii=False, indent=2)}
+
+**Decision Rules (in priority order):**
+1. **Confidence-first approach**: If one method has significantly higher confidence (5+ points difference), prefer it UNLESS there's strong evidence it's wrong
+2. **Selector validity**: ARIA selectors like `[role="radio"]:has-text("text")` are ONLY valid if the text is actually INSIDE the role element. If the text is in a separate label, the selector won't work - prefer Semantic in this case
+3. **Agreement bonus**: If 2+ methods agree on the same element → HIGH confidence boost (+10)
+4. **Method reliability** (use as tiebreaker only):
+   - ARIA: Best for custom components (React, Radix UI) IF the selector is valid
+   - Semantic: Best for text-based matching, very reliable for buttons/links with visible text
+   - Vision: Can hallucinate, use as last resort
+5. **Single method**: If only 1 method succeeded → use it but keep original confidence
+
+**CRITICAL: Practical validation**
+- ARIA `[role="X"]:has-text("Y")` requires Y to be INSIDE the role element (not in a sibling label)
+- If ARIA and Semantic both found the element but with different selectors, check if the text is actually in the ARIA element
+- When in doubt between ARIA and Semantic, prefer the one with higher confidence
+
+Required JSON format (no markdown):
+{{
+    "selector": "final_css_selector",
+    "action": "click_or_fill_or_press_etc",
+    "reasoning": "why this was chosen (method agreement, confidence comparison, etc)",
+    "confidence": 85,
+    "method_used": "aria" or "semantic" or "vision" or "consensus"
+}}
+
+JSON response:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+
+            response_text = response.choices[0].message.content or ""
+
+            # Debug: Print raw LLM response
+            print(f"[Aggregator] Raw LLM response: {response_text[:300]}")
+
+            # Strip markdown
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            if not response_text:
+                print("[Aggregator] LLM returned empty response after stripping, using vision result")
+                return vision_result
+
+            try:
+                result = json.loads(response_text)
+                print(f"[Aggregator] ✓ Successfully parsed JSON: {result.get('selector', 'N/A')} (conf: {result.get('confidence', 0)})")
+                return result
+            except json.JSONDecodeError as e:
+                print(f"[Aggregator] JSON parse failed: {e}")
+                print(f"[Aggregator] Response text was: {response_text[:300]}")
+                return vision_result
+
+        except Exception as e:
+            print(f"[Aggregator] Failed: {e}, using vision result")
+            return vision_result
 
 
 __all__ = ["LLMVisionClient"]

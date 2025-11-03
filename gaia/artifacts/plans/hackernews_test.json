@@ -1,0 +1,203 @@
+{
+  "test_scenarios": [
+    {
+      "id": "hn-001",
+      "priority": "MUST",
+      "scenario": "Navigate to Hacker News homepage and verify title",
+      "steps": [],
+      "assertion": {
+        "description": "Page title contains 'Hacker News'",
+        "selector": "title",
+        "condition": "contains:Hacker News"
+      }
+    },
+    {
+      "id": "hn-002",
+      "priority": "MUST",
+      "scenario": "Click on 'new' link to see newest stories",
+      "steps": [
+        {
+          "action": "click",
+          "step_description": "Click on 'new' link in header"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain '/newest'",
+        "selector": "url",
+        "condition": "contains:/newest"
+      }
+    },
+    {
+      "id": "hn-003",
+      "priority": "MUST",
+      "scenario": "Navigate to ask HN page",
+      "steps": [
+        {
+          "action": "goto",
+          "params": ["https://news.ycombinator.com"]
+        },
+        {
+          "action": "wait",
+          "params": [1000]
+        },
+        {
+          "action": "click",
+          "step_description": "Click on 'ask' link in header"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain '/ask'",
+        "selector": "url",
+        "condition": "contains:/ask"
+      }
+    },
+    {
+      "id": "hn-004",
+      "priority": "MUST",
+      "scenario": "Click More link for pagination",
+      "steps": [
+        {
+          "action": "goto",
+          "params": ["https://news.ycombinator.com"]
+        },
+        {
+          "action": "wait",
+          "params": [1000]
+        },
+        {
+          "action": "click",
+          "step_description": "Click on 'More' link at the bottom"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain 'p=2'",
+        "selector": "url",
+        "condition": "contains:p=2"
+      }
+    },
+    {
+      "id": "hn-005",
+      "priority": "SHOULD",
+      "scenario": "Navigate to show HN stories",
+      "steps": [
+        {
+          "action": "goto",
+          "params": ["https://news.ycombinator.com"]
+        },
+        {
+          "action": "wait",
+          "params": [1000]
+        },
+        {
+          "action": "click",
+          "step_description": "Click on 'show' link in header"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain '/show'",
+        "selector": "url",
+        "condition": "contains:/show"
+      }
+    },
+    {
+      "id": "hn-006",
+      "priority": "SHOULD",
+      "scenario": "Navigate to jobs page",
+      "steps": [
+        {
+          "action": "goto",
+          "params": ["https://news.ycombinator.com"]
+        },
+        {
+          "action": "wait",
+          "params": [1000]
+        },
+        {
+          "action": "click",
+          "step_description": "Click on 'jobs' link in header"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain '/jobs'",
+        "selector": "url",
+        "condition": "contains:/jobs"
+      }
+    },
+    {
+      "id": "hn-007",
+      "priority": "MUST",
+      "scenario": "Click on first story comments link",
+      "steps": [
+        {
+          "action": "goto",
+          "params": ["https://news.ycombinator.com"]
+        },
+        {
+          "action": "wait",
+          "params": [1500]
+        },
+        {
+          "action": "click",
+          "step_description": "Click on comments link for first story"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain '/item?id='",
+        "selector": "url",
+        "condition": "contains:/item?id="
+      }
+    },
+    {
+      "id": "hn-008",
+      "priority": "SHOULD",
+      "scenario": "Navigate through past stories",
+      "steps": [
+        {
+          "action": "goto",
+          "params": ["https://news.ycombinator.com"]
+        },
+        {
+          "action": "wait",
+          "params": [1000]
+        },
+        {
+          "action": "click",
+          "step_description": "Click on 'past' link in header"
+        },
+        {
+          "action": "wait",
+          "params": [2000]
+        }
+      ],
+      "assertion": {
+        "description": "URL should contain '/front'",
+        "selector": "url",
+        "condition": "contains:/front"
+      }
+    }
+  ]
+}

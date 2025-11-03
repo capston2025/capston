@@ -1,0 +1,354 @@
+{
+  "profile": "comprehensive_ui_test",
+  "description": "Comprehensive test plan for Test Site with UI Elements - covers all major UI components WITHOUT hardcoded selectors",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "Navigate to home page and verify title",
+      "steps": [
+        {
+          "description": "Look for and click on a link or button that says home or 홈",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify main heading is visible",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "Select radio button option",
+      "steps": [
+        {
+          "description": "Navigate to the forms section by clicking a button that mentions forms or 폼",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click on a radio button option for express delivery or 빠른 배송",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify the radio button is selected",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "Toggle switch on and off",
+      "steps": [
+        {
+          "description": "Navigate to forms section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Find and click a toggle switch for notifications or similar",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify switch state changed",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "SHOULD",
+      "scenario": "Use dropdown select menu",
+      "steps": [
+        {
+          "description": "Navigate to forms section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click on a dropdown or select menu for choosing country or similar option",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Select an option from the dropdown like Korea or 대한민국",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify selection was made",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "SHOULD",
+      "scenario": "Use slider control",
+      "steps": [
+        {
+          "description": "Navigate to forms section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Find and interact with a slider control for price or volume",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify slider is interactive",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC006",
+      "priority": "MUST",
+      "scenario": "Trigger success notification",
+      "steps": [
+        {
+          "description": "Navigate to forms or feedback section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click a button that triggers a success message or toast notification",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify success message appears",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC007",
+      "priority": "SHOULD",
+      "scenario": "Trigger error notification",
+      "steps": [
+        {
+          "description": "Navigate to feedback section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click a button that shows an error message or notification",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify error message appears",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC008",
+      "priority": "SHOULD",
+      "scenario": "Open and close dialog or modal",
+      "steps": [
+        {
+          "description": "Find and click a button that opens a dialog or modal popup",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click the close button or X to close the dialog",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify dialog opened and closed",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC009",
+      "priority": "SHOULD",
+      "scenario": "Navigate through tabs",
+      "steps": [
+        {
+          "description": "Find tab navigation and click on the second or third tab",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify tab content changed",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC010",
+      "priority": "MAY",
+      "scenario": "Test accordion expand and collapse",
+      "steps": [
+        {
+          "description": "Find and click on an accordion header or expandable section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click again to collapse the section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify accordion toggled",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC011",
+      "priority": "MAY",
+      "scenario": "Hover over element to show tooltip or hover card",
+      "steps": [
+        {
+          "description": "Move mouse over an element that shows additional information on hover",
+          "action": "hover",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify tooltip or additional content appears",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC012",
+      "priority": "MAY",
+      "scenario": "Test scroll area or scrollable content",
+      "steps": [
+        {
+          "description": "Find a scrollable area and scroll within it",
+          "action": "scroll",
+          "selector": "",
+          "params": ["down", 300]
+        },
+        {
+          "description": "Scroll back up",
+          "action": "scroll",
+          "selector": "",
+          "params": ["up", 300]
+        }
+      ],
+      "assertion": {
+        "description": "Verify scrolling works",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC013",
+      "priority": "SHOULD",
+      "scenario": "Test progress bar or loading indicator",
+      "steps": [
+        {
+          "description": "Navigate to a section with progress bars or loading indicators",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify progress indicator is visible",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC014",
+      "priority": "MAY",
+      "scenario": "Navigate through main sections using navigation menu",
+      "steps": [
+        {
+          "description": "Click on basics or 기본 기능 navigation link",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click on interactions or 인터랙션 navigation link",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify navigation works between sections",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC015",
+      "priority": "MAY",
+      "scenario": "Test keyboard navigation with Tab key",
+      "steps": [
+        {
+          "description": "Press Tab key to navigate between focusable elements",
+          "action": "press",
+          "selector": "",
+          "params": ["Tab"]
+        },
+        {
+          "description": "Press Tab again",
+          "action": "press",
+          "selector": "",
+          "params": ["Tab"]
+        },
+        {
+          "description": "Press Enter on focused element",
+          "action": "press",
+          "selector": "",
+          "params": ["Enter"]
+        }
+      ],
+      "assertion": {
+        "description": "Verify keyboard navigation works",
+        "selector": "",
+        "condition": "visible"
+      }
+    }
+  ]
+}

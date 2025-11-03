@@ -1,0 +1,264 @@
+{
+  "profile": "figma_blog_no_selectors",
+  "description": "Test plan with ONLY natural language descriptions - no hardcoded selectors. GAIA must use AI to find all elements.",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "Navigate to main page and verify blog title",
+      "steps": [
+        {
+          "description": "Click on the main blog title or home link at the top of the page",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify that the page title or heading contains text about a blog",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "Navigate to form submission section",
+      "steps": [
+        {
+          "description": "Find and click the navigation menu item that talks about forms or feedback",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify that a form with input fields is visible on the page",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "Fill out a contact form",
+      "steps": [
+        {
+          "description": "Navigate to the form section by clicking the forms menu item",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Type a name into the name input field",
+          "action": "fill",
+          "selector": "",
+          "params": ["Test User"]
+        },
+        {
+          "description": "Type an email address into the email input field",
+          "action": "fill",
+          "selector": "",
+          "params": ["test@example.com"]
+        },
+        {
+          "description": "Type a message into the message or comment text area",
+          "action": "fill",
+          "selector": "",
+          "params": ["This is a test message from GAIA automation"]
+        }
+      ],
+      "assertion": {
+        "description": "Verify that all form fields contain the entered values",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "SHOULD",
+      "scenario": "Submit the contact form",
+      "steps": [
+        {
+          "description": "Navigate to the form section",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Fill in the name field",
+          "action": "fill",
+          "selector": "",
+          "params": ["Submit Test"]
+        },
+        {
+          "description": "Fill in the email field",
+          "action": "fill",
+          "selector": "",
+          "params": ["submit@test.com"]
+        },
+        {
+          "description": "Fill in the message field",
+          "action": "fill",
+          "selector": "",
+          "params": ["Testing form submission"]
+        },
+        {
+          "description": "Click the submit or send button",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify that a success message or confirmation appears",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "SHOULD",
+      "scenario": "Navigate through all main navigation links",
+      "steps": [
+        {
+          "description": "Click on the first navigation link in the menu",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click on the second navigation link in the menu",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Click on the third navigation link in the menu",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify that the page has changed and shows different content",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC006",
+      "priority": "SHOULD",
+      "scenario": "Search or filter blog posts",
+      "steps": [
+        {
+          "description": "Find and click on a search input or filter option",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "Type a search term into the search box",
+          "action": "fill",
+          "selector": "",
+          "params": ["blog"]
+        }
+      ],
+      "assertion": {
+        "description": "Verify search results or filtered content is displayed",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC007",
+      "priority": "MAY",
+      "scenario": "Interact with a blog post",
+      "steps": [
+        {
+          "description": "Click on a blog post title or read more link",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify that the full blog post content is displayed",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC008",
+      "priority": "MAY",
+      "scenario": "Scroll through the page content",
+      "steps": [
+        {
+          "description": "Scroll down the page to view more content",
+          "action": "scroll",
+          "selector": "",
+          "params": ["down", 500]
+        },
+        {
+          "description": "Scroll back up to the top",
+          "action": "scroll",
+          "selector": "",
+          "params": ["up", 500]
+        }
+      ],
+      "assertion": {
+        "description": "Verify page has scrollable content",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC009",
+      "priority": "MAY",
+      "scenario": "Test keyboard navigation",
+      "steps": [
+        {
+          "description": "Press Tab key to navigate through interactive elements",
+          "action": "press",
+          "selector": "",
+          "params": ["Tab"]
+        },
+        {
+          "description": "Press Enter key to activate focused element",
+          "action": "press",
+          "selector": "",
+          "params": ["Enter"]
+        }
+      ],
+      "assertion": {
+        "description": "Verify that keyboard navigation works",
+        "selector": "",
+        "condition": "visible"
+      }
+    },
+    {
+      "id": "TC010",
+      "priority": "MAY",
+      "scenario": "Verify footer links",
+      "steps": [
+        {
+          "description": "Scroll to the bottom of the page",
+          "action": "scroll",
+          "selector": "",
+          "params": ["down", 1000]
+        },
+        {
+          "description": "Click on a footer link",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "Verify footer links are functional",
+        "selector": "",
+        "condition": "visible"
+      }
+    }
+  ]
+}

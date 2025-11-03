@@ -150,24 +150,39 @@ class MasterOrchestrator:
                 scenario_id = scenario_result["id"]
                 status = scenario_result["status"]
 
+                # DEBUG: Log each result
+                self._log(f"  🔍 DEBUG: Processing {scenario_id} with status={status}", progress_callback)
+
                 # Only count each scenario once (skip if already executed on another page)
                 if scenario_id not in self._executed_test_ids:
                     aggregated_results["scenarios"].append(scenario_result)
 
-                    if status == "passed":
+                    if status in ("passed", "success"):  # IntelligentOrchestrator returns "success"
                         aggregated_results["passed"] += 1
                         # Mark passed tests as executed
                         self._executed_test_ids.add(scenario_id)
-                    elif status == "failed":
+                        self._log(f"  ✅ DEBUG: Marked {scenario_id} as executed", progress_callback)
+                    elif status in ("failed", "partial"):  # Also handle "partial" status
                         aggregated_results["failed"] += 1
                         # Mark failed tests as executed
                         self._executed_test_ids.add(scenario_id)
+                        self._log(f"  ❌ DEBUG: Marked {scenario_id} as executed (failed)", progress_callback)
                     elif status == "skipped":
                         # Don't mark skipped tests as executed
                         # They might be executable on another page
+                        self._log(f"  ⏭️ DEBUG: {scenario_id} skipped, NOT marking as executed", progress_callback)
                         pass
+                else:
+                    self._log(f"  🔁 DEBUG: {scenario_id} already executed, skipping", progress_callback)
 
-            self._log(f"  📊 Page {page_idx} results: {page_results['passed']} passed, {page_results['failed']} failed, {page_results['skipped']} skipped", progress_callback)
+            # IntelligentOrchestrator returns "success"/"partial"/"failed"/"skipped", not "passed"
+            success_count = page_results.get('success', 0)
+            partial_count = page_results.get('partial', 0)
+            failed_count = page_results.get('failed', 0)
+            skipped_count = page_results.get('skipped', 0)
+            self._log(f"  📊 Page {page_idx} results: ✅{success_count} success, ⚠️{partial_count} partial, ❌{failed_count} failed, ⏭️{skipped_count} skipped", progress_callback)
+            self._log(f"  🗂️ DEBUG: Currently executed test IDs: {self._executed_test_ids}", progress_callback)
+            self._log(f"  📝 DEBUG: Remaining tests: {len(scenarios) - len(self._executed_test_ids)}", progress_callback)
 
         # Calculate final skip count
         aggregated_results["skipped"] = (

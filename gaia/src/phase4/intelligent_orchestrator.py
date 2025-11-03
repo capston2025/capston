@@ -4,6 +4,9 @@ Uses GPT-4V to analyze DOM + screenshots and make decisions.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import time
 from typing import Any, Dict, List, Sequence
 
@@ -46,6 +49,24 @@ class IntelligentOrchestrator:
         self._screenshot_callback = screenshot_callback
         self.session_id = session_id
 
+        # Smart navigation: Track which elements exist on which pages
+        self.page_element_map: Dict[str, Dict[str, str]] = {}  # {url: {text: selector}}
+        self.home_url: str = ""  # Base URL for smart navigation
+
+        # Selector cache: Maps (step_description, action, page_url) -> selector
+        self.selector_cache: Dict[str, Dict[str, Any]] = {}  # {cache_key: {selector, timestamp, success_count}}
+        self.cache_file = os.path.join(
+            os.path.dirname(__file__), "../../../artifacts/cache/selector_cache.json"
+        )
+        self._load_cache()
+
+        # Embedding cache: Maps text -> embedding vector
+        self.embedding_cache: Dict[str, List[float]] = {}
+        self.embedding_cache_file = os.path.join(
+            os.path.dirname(__file__), "../../../artifacts/cache/embedding_cache.json"
+        )
+        self._load_embedding_cache()
+
     def execute_scenarios(
         self,
         url: str,
@@ -73,13 +94,17 @@ class IntelligentOrchestrator:
         self._execution_logs = []
         results = {
             "total": len(scenarios),
-            "passed": 0,
-            "failed": 0,
-            "skipped": 0,
+            "success": 0,  # 100% completion
+            "partial": 0,  # Some steps skipped
+            "failed": 0,   # Critical failures
+            "skipped": 0,  # Not executed
             "scenarios": []
         }
 
         self._log(f"🚀 Starting LLM-powered automation: {len(scenarios)} scenarios", progress_callback)
+
+        # Remember home URL for smart navigation
+        self.home_url = url
 
         # Step 1: Analyze DOM once at the beginning
         self._log(f"  📸 Analyzing page DOM to identify executable tests...", progress_callback)
@@ -90,6 +115,9 @@ class IntelligentOrchestrator:
             self._log("⚠️ No DOM elements found, skipping all tests", progress_callback)
             results["skipped"] = len(scenarios)
             return results
+
+        # Record home page elements for smart navigation
+        self._record_page_elements(url, dom_elements)
 
         # Step 2: Ask LLM to prioritize scenarios based on DOM
         self._log(f"  🤖 LLM analyzing which tests are executable...", progress_callback)
@@ -129,9 +157,18 @@ class IntelligentOrchestrator:
                 )
                 results["scenarios"].append(result)
 
-                if result["status"] == "passed":
-                    results["passed"] += 1
-                    self.tracker.mark_found(scenario.id, evidence=result.get("logs", ""))
+                if result["status"] == "success":
+                    results["success"] += 1
+                    logs_evidence = result.get("logs", "")
+                    if isinstance(logs_evidence, list):
+                        logs_evidence = "\n".join(logs_evidence)
+                    self.tracker.mark_found(scenario.id, evidence=logs_evidence)
+                elif result["status"] == "partial":
+                    results["partial"] += 1
+                    logs_evidence = result.get("logs", "")
+                    if isinstance(logs_evidence, list):
+                        logs_evidence = "\n".join(logs_evidence)
+                    self.tracker.mark_found(scenario.id, evidence=logs_evidence + " (partial)")
                 elif result["status"] == "failed":
                     results["failed"] += 1
                 elif result["status"] == "skipped":
@@ -148,7 +185,11 @@ class IntelligentOrchestrator:
                     "logs": []
                 })
 
-        self._log(f"\n✅ Execution complete: {results['passed']}/{len(scenarios)} passed, {results['skipped']}/{len(scenarios)} skipped", progress_callback)
+        self._log(f"\n📊 Execution complete: ✅{results['success']} success, ⚠️{results['partial']} partial, ❌{results['failed']} failed, ⏭️{results['skipped']} skipped", progress_callback)
+
+        # Save cache to disk at end of execution
+        self._save_cache()
+
         return results
 
     def _prioritize_scenarios(
@@ -293,6 +334,7 @@ Return ONLY a JSON array:
         current_url = url
         failed_non_assertion_steps = 0  # Track failed steps (excluding assertions)
         total_non_assertion_steps = 0   # Track total non-assertion steps
+        skipped_steps = 0  # Track skipped steps (fallback failures)
 
         try:
             # Reset viewport to default (1280x900) at start of each scenario
@@ -383,11 +425,47 @@ Return ONLY a JSON array:
                     # Get new screenshot and DOM if needed
                     if step.action in ["goto", "scroll"] or getattr(step, 'auto_analyze', False):
                         try:
-                            time.sleep(1.0)  # Wait for page to stabilize
-                            screenshot = self._capture_screenshot(None, send_to_gui=True)
-                            dom_elements = self._analyze_dom(None)
-                            # current_url stays the same
-                            self._log(f"    🔄 Page state refreshed", progress_callback)
+                            time.sleep(3.0)  # Wait longer for SPA hash navigation
+                            screenshot, dom_elements, current_url = self._get_page_state()
+                            self._log(f"    🔄 Page state refreshed (URL: {current_url}, DOM: {len(dom_elements)})", progress_callback)
+
+                            # FIGMA SITES FIX: Hash navigation doesn't load content properly
+                            # If goto to #hash URL but DOM is too small (< 15), use button click instead
+                            if step.action == "goto" and len(step.params) > 0 and '#' in step.params[0] and len(dom_elements) < 15:
+                                hash_part = step.params[0].split('#')[1]  # e.g., "basics"
+                                self._log(f"    ⚠️ Hash navigation failed to load content (DOM: {len(dom_elements)})", progress_callback)
+                                self._log(f"    💡 Trying alternative: Navigate to home and click button", progress_callback)
+
+                                # Navigate to home
+                                base_url = step.params[0].split('#')[0]
+                                goto_success = self._execute_action(action="goto", selector="", params=[base_url], url=base_url)
+
+                                if goto_success:
+                                    time.sleep(2.0)
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+
+                                    # Find button with text matching hash (e.g., "기본 기능" for "basics")
+                                    # Use LLM to find the right button
+                                    llm_decision = self.llm_client.select_element_for_step(
+                                        step_description=f"{hash_part} 페이지로 이동하는 버튼 클릭",
+                                        dom_elements=dom_elements,
+                                        screenshot_base64=screenshot,
+                                        url=current_url
+                                    )
+
+                                    if llm_decision['selector']:
+                                        self._log(f"    🔘 Clicking navigation button: {llm_decision['selector']}", progress_callback)
+                                        click_success = self._execute_action(
+                                            action="click",
+                                            selector=llm_decision['selector'],
+                                            params=[],
+                                            url=current_url
+                                        )
+
+                                        if click_success:
+                                            time.sleep(3.0)
+                                            screenshot, dom_elements, current_url = self._get_page_state()
+                                            self._log(f"    ✅ Content loaded via button click (DOM: {len(dom_elements)})", progress_callback)
                         except Exception as e:
                             self._log(f"    ⚠️ Failed to refresh page state: {e}", progress_callback)
                             # Continue anyway - screenshot and DOM from before action
@@ -412,37 +490,58 @@ Return ONLY a JSON array:
                     )
 
                     if not success:
-                        logs.append(f"  ❌ Action {step.action} failed on {step.selector}")
-                        self._log(f"    ❌ Action failed", progress_callback)
-                        failed_non_assertion_steps += 1
-                        return {
-                            "id": scenario.id,
-                            "scenario": scenario.scenario,
-                            "status": "failed",
-                            "logs": logs
-                        }
+                        logs.append(f"  ❌ Explicit selector failed: {step.selector}")
+                        self._log(f"    ⚠️ Explicit selector failed, falling back to LLM...", progress_callback)
+                        # Don't fail immediately - fall through to LLM section below
+                    else:
+                        logs.append(f"  ✅ Action executed: {step.action} on {step.selector}")
+                        self._log(f"    ✅ Action successful", progress_callback)
 
-                    logs.append(f"  ✅ Action executed: {step.action} on {step.selector}")
-                    self._log(f"    ✅ Action successful", progress_callback)
+                        # Get new screenshot if needed
+                        time.sleep(0.5)
+                        screenshot, dom_elements, current_url = self._get_page_state()
 
-                    # Get new screenshot if needed
-                    time.sleep(0.5)
-                    screenshot, dom_elements, current_url = self._get_page_state()
+                        continue
 
-                    continue
-
-                # Otherwise, use LLM to find the element
-                else:
+                # If explicit selector failed or no selector provided, use LLM
+                if step.action in actions_with_explicit_selector or True:
                     # Track non-assertion step
                     total_non_assertion_steps += 1
 
-                    # Ask LLM to select element
-                    llm_decision = self.llm_client.select_element_for_step(
-                        step_description=step.description,
-                        dom_elements=dom_elements,
-                        screenshot_base64=screenshot,
-                        url=current_url
-                    )
+                    # CACHE CHECK: Try to get cached selector first
+                    cached_selector = self._get_cached_selector(step.description, step.action, current_url)
+
+                    if cached_selector:
+                        # Use cached selector
+                        llm_decision = {
+                            "selector": cached_selector,
+                            "reasoning": "Using cached selector from previous successful execution",
+                            "confidence": 95,
+                            "action": step.action
+                        }
+                        self._log(f"  💾 Cache hit! Using cached selector", progress_callback)
+                    else:
+                        # PARALLEL MATCHING: ARIA + Semantic 병렬 실행, 필요시 LLM Aggregator
+                        parallel_match = self._try_semantic_matching(
+                            step.description,
+                            dom_elements,
+                            step.action,
+                            current_url=current_url,
+                            screenshot=screenshot
+                        )
+
+                        if parallel_match:
+                            # Found good match from ARIA/Semantic/Aggregator
+                            llm_decision = parallel_match
+                            self._log(f"  🎯 Parallel match succeeded!", progress_callback)
+                        else:
+                            # All fast methods failed, use full LLM Vision
+                            llm_decision = self.llm_client.select_element_for_step(
+                                step_description=step.description,
+                                dom_elements=dom_elements,
+                                screenshot_base64=screenshot,
+                                url=current_url
+                            )
 
                     logs.append(f"  LLM Decision: {llm_decision['reasoning']}")
                     logs.append(f"  Confidence: {llm_decision['confidence']}%")
@@ -488,8 +587,8 @@ Return ONLY a JSON array:
                                 llm_decision['confidence'] = 0
 
                     # If first step fails with low confidence, skip entire scenario
-                    # Lowered threshold from 60% to 30% to be more aggressive with testing
-                    if step_idx == 1 and llm_decision["confidence"] < 30:
+                    # Lowered threshold from 30% to 20% for better fuzzy matching support
+                    if step_idx == 1 and llm_decision["confidence"] < 20:
                         logs.append(f"  ⚠️ First step has low confidence, skipping entire scenario")
                         self._log(f"    ⚠️ Skipping (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         return {
@@ -504,6 +603,23 @@ Return ONLY a JSON array:
                     self._log(f"    🌐 Current URL: {current_url}", progress_callback)
                     self._log(f"    📊 Available DOM elements: {len(dom_elements)}", progress_callback)
 
+                    # RECOVERY LOGIC: If DOM is empty, try to recover
+                    if len(dom_elements) == 0:
+                        self._log(f"    ⚠️ WARNING: DOM is empty! Attempting recovery...", progress_callback)
+                        recovery_success = self._try_recover_from_empty_dom(
+                            current_url=current_url,
+                            progress_callback=progress_callback
+                        )
+
+                        if recovery_success:
+                            # Re-fetch page state after recovery
+                            screenshot, dom_elements, current_url = self._get_page_state()
+                            self._log(f"    ✅ Recovery succeeded! Now {len(dom_elements)} DOM elements available", progress_callback)
+                        else:
+                            self._log(f"    ❌ Recovery failed - skipping this step", progress_callback)
+                            logs.append(f"  ❌ Skipped: DOM empty and recovery failed")
+                            continue
+
                     # Check if auto-fix was successful (confidence = 95)
                     auto_fix_succeeded = (llm_decision["confidence"] == 95 and
                                          llm_decision.get("reasoning", "").startswith("Auto-fix"))
@@ -511,38 +627,129 @@ Return ONLY a JSON array:
                     if auto_fix_succeeded:
                         self._log(f"    ✅ Auto-fix found reliable selector, skipping fallback", progress_callback)
                         # Skip fallback - auto-fix already found a good selector
-                    elif llm_decision["confidence"] < 30:
-                        # Only trigger fallback if auto-fix didn't succeed
+                    elif llm_decision["confidence"] < 50:
+                        # Trigger fallback for confidence < 50% (increased from 30% to catch more edge cases)
+                        # Fallback includes: aggressive text matching, smart navigation, scroll+vision
                         logs.append(f"  ⚠️ Low confidence ({llm_decision['confidence']}%), trying aggressive search...")
                         self._log(f"    🔍 Low confidence ({llm_decision['confidence']}%), trying scroll + vision fallback...", progress_callback)
                         self._log(f"    💡 Reason: {llm_decision.get('reasoning', 'Unknown')}", progress_callback)
 
-                        # Try scrolling to find element
-                        self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
-                        scroll_success = self._try_scroll_to_find_element(
-                            description=step.description,
-                            screenshot=screenshot,
-                            dom_elements=dom_elements,
-                            url=current_url,
-                            progress_callback=progress_callback
-                        )
+                        # STEP 1: Try aggressive text matching on CURRENT PAGE first
+                        import re
+                        # Extract ALL Korean/English text from description (minimum 2 chars to avoid false matches)
+                        all_korean = re.findall(r'[가-힣]{2,}', step.description)  # Min 2 Korean chars
+                        all_english = re.findall(r'[A-Za-z]{3,}', step.description)  # Min 3 English chars
 
-                        if scroll_success:
-                            # Re-analyze page after scrolling
-                            screenshot, dom_elements, current_url = self._get_page_state()
-                            self._log(f"    📊 After scroll - DOM elements: {len(dom_elements)}", progress_callback)
-                            llm_decision = self.llm_client.select_element_for_step(
-                                step_description=step.description,
-                                dom_elements=dom_elements,
-                                screenshot_base64=screenshot,
-                                url=current_url
-                            )
-                            self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
+                        found_by_text = False
+                        # Try longest matches first to avoid substring issues
+                        for target_text in sorted(all_korean + all_english, key=len, reverse=True):
+                            # Search in ALL DOM elements - use exact match or word boundary
+                            text_match = next((e for e in dom_elements
+                                             if target_text == e.text or  # Exact match first
+                                                f' {target_text} ' in f' {e.text} ' or  # Word boundary
+                                                e.text.startswith(target_text) or
+                                                e.text.endswith(target_text)), None)
+                            if text_match:
+                                element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
+                                better_selector = f'{element_type}:has-text("{target_text}")'
+                                self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                llm_decision['selector'] = better_selector
+                                llm_decision['confidence'] = 85
+                                llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                found_by_text = True
+                                break
 
-                        # If still low confidence, try vision-based coordinate click
-                        if llm_decision["confidence"] < 30:
+                        if found_by_text:
+                            self._log(f"    ✅ Found element by aggressive text matching, skipping navigation", progress_callback)
+                            # Continue to action execution below
+                        # STEP 2: SMART NAVIGATION (only if text matching failed)
+                        if not found_by_text:
+                            self._log(f"    🌍 Trying Smart Navigation (last resort)...", progress_callback)
+                            smart_nav = self._find_element_on_other_pages(step.description, current_url)
+                            if smart_nav.get("found"):
+                                self._log(f"    💡 Smart navigation: Found '{smart_nav['element_text']}' on {smart_nav['target_url']}", progress_callback)
+                                self._log(f"    🏠 Navigating to: {smart_nav['target_url']}", progress_callback)
+
+                                # Navigate to the page where element exists
+                                goto_success = self._execute_action(
+                                    action="goto",
+                                    selector="",
+                                    params=[smart_nav['target_url']],
+                                    url=smart_nav['target_url'],
+                                    screenshot=screenshot,
+                                    progress_callback=progress_callback
+                                )
+
+                                if goto_success:
+                                    # Update page state after navigation
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    self._log(f"    ✅ Navigation successful, now at: {current_url}", progress_callback)
+
+                                    # Try clicking the element on the new page
+                                    click_success = self._execute_action(
+                                        action=llm_decision["action"],
+                                        selector=smart_nav["selector"],
+                                        params=step.params,
+                                        url=current_url,
+                                        screenshot=screenshot,
+                                        progress_callback=progress_callback
+                                    )
+
+                                    if click_success:
+                                        logs.append(f"  ✅ Action executed via smart navigation")
+                                        self._log(f"    ✅ Smart navigation succeeded!", progress_callback)
+
+                                        # Update cache with successful smart navigation selector
+                                        self._update_cache(
+                                            step_description=step.description,
+                                            action=step.action,
+                                            page_url=current_url,
+                                            selector=smart_nav["selector"],
+                                            success=True
+                                        )
+
+                                        # Update state after successful click
+                                        screenshot, dom_elements, current_url = self._get_page_state()
+                                        self._record_page_elements(current_url, dom_elements)
+                                        continue  # Move to next step
+                                    else:
+                                        self._log(f"    ❌ Click failed after navigation", progress_callback)
+                                else:
+                                    self._log(f"    ❌ Navigation failed", progress_callback)
+
+                        # STEP 3: Try scrolling (only if both text matching and smart nav failed)
+                        if not found_by_text:
+                            smart_nav_worked = False
+                            if 'smart_nav' in locals() and smart_nav.get("found"):
+                                smart_nav_worked = True
+
+                            if not smart_nav_worked:
+                                self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
+                                scroll_success = self._try_scroll_to_find_element(
+                                    description=step.description,
+                                    screenshot=screenshot,
+                                    dom_elements=dom_elements,
+                                    url=current_url,
+                                    progress_callback=progress_callback
+                                )
+
+                                if scroll_success:
+                                    # Re-analyze page after scrolling
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+                                    self._log(f"    📊 After scroll - DOM elements: {len(dom_elements)}", progress_callback)
+                                    llm_decision = self.llm_client.select_element_for_step(
+                                        step_description=step.description,
+                                        dom_elements=dom_elements,
+                                        screenshot_base64=screenshot,
+                                        url=current_url
+                                    )
+                                    self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
+
+                        # STEP 4: If still low confidence, try vision-based coordinate click
+                        # Increased threshold from 30 to 50 to trigger vision more aggressively
+                        if not found_by_text and llm_decision["confidence"] < 50:
                             self._log(f"    🎯 Trying vision-based coordinate detection...", progress_callback)
-                            self._log(f"    🤖 Asking GPT-5 to find element coordinates in screenshot...", progress_callback)
+                            self._log(f"    🤖 Asking {self.llm_client.model} to find element coordinates in screenshot...", progress_callback)
                             coord_result = self.llm_client.find_element_coordinates(
                                 screenshot_base64=screenshot,
                                 description=step.description
@@ -570,11 +777,13 @@ Return ONLY a JSON array:
                             # If we reach here, all fallbacks failed
                             logs.append(f"  ⚠️ All fallback attempts failed, skipping step")
                             self._log(f"    ⚠️ Skipping step after fallback attempts", progress_callback)
+                            skipped_steps += 1
                             continue
 
                     if not llm_decision["selector"]:
                         logs.append(f"  ⚠️ No selector found, skipping this step")
                         self._log(f"    ⚠️ Skipping step (no selector)", progress_callback)
+                        skipped_steps += 1
                         continue
 
                     # Log which element will be clicked (IMPORTANT for debugging)
@@ -592,6 +801,15 @@ Return ONLY a JSON array:
                         selector=llm_decision["selector"],
                         params=step.params or [],
                         url=current_url
+                    )
+
+                    # UPDATE CACHE: Record execution result
+                    self._update_cache(
+                        step_description=step.description,
+                        action=step.action,
+                        page_url=current_url,
+                        selector=llm_decision["selector"],
+                        success=success
                     )
 
                     if not success:
@@ -632,9 +850,22 @@ Return ONLY a JSON array:
                                     logs.append(f"  ✅ Found element after scrolling")
                                     # Continue to next step
                                     logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+                                    # Update cache with successful selector
+                                    self._update_cache(
+                                        step_description=step.description,
+                                        action=step.action,
+                                        page_url=current_url,
+                                        selector=llm_decision["selector"],
+                                        success=True
+                                    )
                                     time.sleep(0.2)
-                                    if llm_decision["action"] in ("click", "press", "goto"):
-                                        dom_elements = self._analyze_dom(None)
+                                    # Update current_url after navigation
+                                    if llm_decision["action"].lower() in ("click", "press", "goto"):
+                                        screenshot_new, dom_elements_new, current_url_new = self._get_page_state()
+                                        dom_elements = dom_elements_new
+                                        if current_url_new:
+                                            current_url = current_url_new
+                                            self._log(f"    🔄 Browser navigated to: {current_url}", progress_callback)
                                     continue
 
                         # Stage 2: Try vision-based coordinate click
@@ -693,25 +924,48 @@ Return ONLY a JSON array:
                     time.sleep(0.2)
 
                     # Re-analyze DOM if page might have changed
-                    if llm_decision["action"] in ("click", "press", "goto"):
-                        dom_elements = self._analyze_dom(None)
+                    # CRITICAL: Also update current_url with actual browser URL to handle hash navigation
+                    if llm_decision["action"].lower() in ("click", "press", "goto"):
+                        screenshot_new, dom_elements_new, current_url_new = self._get_page_state()
+                        dom_elements = dom_elements_new
+                        # Update current_url to reflect actual browser state (e.g., #basics)
+                        if current_url_new:
+                            current_url = current_url_new
+                            self._log(f"    🔄 Browser navigated to: {current_url}", progress_callback)
+                            # Record elements on the new page for smart navigation
+                            self._record_page_elements(current_url, dom_elements)
 
                     # Screenshot is already sent by _execute_action with click_position
 
             # Step 3: Decide on pass/fail based on step execution
-            # NEW POLICY: If all non-assertion steps succeeded, mark as passed
-            # This makes verification more flexible and practical for real-world testing
+            # 4-tier status system:
+            # - success: 100% steps completed, no skips
+            # - partial: Some steps skipped but core functionality worked
+            # - failed: Critical steps failed
+            # - skipped: Test not executed
 
             if failed_non_assertion_steps == 0 and total_non_assertion_steps > 0:
-                # All critical steps passed! Test is considered successful
-                logs.append(f"  ✅ All {total_non_assertion_steps} action steps executed successfully")
-                self._log(f"  ✅ Test PASSED: All actions completed", progress_callback)
-                return {
-                    "id": scenario.id,
-                    "scenario": scenario.scenario,
-                    "status": "passed",
-                    "logs": logs
-                }
+                if skipped_steps == 0:
+                    # Perfect execution!
+                    logs.append(f"  ✅ All {total_non_assertion_steps} action steps executed successfully")
+                    self._log(f"  ✅ Test SUCCESS: 100% completion", progress_callback)
+                    return {
+                        "id": scenario.id,
+                        "scenario": scenario.scenario,
+                        "status": "success",
+                        "logs": logs
+                    }
+                else:
+                    # Some steps skipped but didn't fail
+                    skip_rate = (skipped_steps / total_non_assertion_steps) * 100
+                    logs.append(f"  ⚠️ {total_non_assertion_steps - skipped_steps}/{total_non_assertion_steps} steps completed ({skipped_steps} skipped)")
+                    self._log(f"  ⚠️ Test PARTIAL: {skip_rate:.0f}% steps skipped", progress_callback)
+                    return {
+                        "id": scenario.id,
+                        "scenario": scenario.scenario,
+                        "status": "partial",
+                        "logs": logs
+                    }
 
             # Optional: Still try LLM verification for additional confidence
             if scenario.assertion and scenario.assertion.description:
@@ -896,10 +1150,11 @@ Return ONLY a JSON array:
 
             # Execute scroll action
             self._log(f"      ⬇️  Scrolling page down...", progress_callback)
+            # Don't send empty URL - use None to let MCP use current page
             payload = {
                 "action": "execute_action",
                 "params": {
-                    "url": url,
+                    "url": url if url else None,  # Don't send empty string
                     "selector": "body",
                     "action": "scroll",
                     "value": "down",
@@ -920,9 +1175,9 @@ Return ONLY a JSON array:
 
                 # Check if element is now visible using vision
                 self._log(f"      📸 Re-analyzing DOM after scroll...", progress_callback)
-                new_screenshot = self._capture_screenshot(url=None, send_to_gui=False)
+                new_screenshot = self._capture_screenshot(url=None, send_to_gui=True)
 
-                self._log(f"      🤖 Using GPT-5 vision to detect element...", progress_callback)
+                self._log(f"      🤖 Using {self.llm_client.model} vision to detect element...", progress_callback)
                 coord_result = self.llm_client.find_element_coordinates(
                     screenshot_base64=new_screenshot,
                     description=description
@@ -1008,6 +1263,64 @@ Return ONLY a JSON array:
 
         return screenshot, dom_elements, current_url
 
+    def _try_recover_from_empty_dom(
+        self,
+        current_url: str,
+        progress_callback=None
+    ) -> bool:
+        """
+        Try to recover from empty DOM by navigating back to base URL and re-analyzing.
+
+        Args:
+            current_url: The URL that returned empty DOM
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            True if recovery succeeded (DOM now has elements), False otherwise
+        """
+        self._log(f"      🔄 Attempting recovery: Navigating to base URL...", progress_callback)
+
+        # Extract base URL (remove hash fragments)
+        base_url = current_url.split('#')[0] if current_url else self.mcp_config.base_url
+
+        try:
+            # Navigate to base URL
+            payload = {
+                "action": "execute_action",
+                "params": {
+                    "url": base_url,
+                    "selector": None,
+                    "action": "goto",
+                    "value": None,
+                    "session_id": self.session_id
+                }
+            }
+
+            response = requests.post(
+                f"{self.mcp_config.host_url}/execute",
+                json=payload,
+                timeout=90
+            )
+            response.raise_for_status()
+
+            # Wait for page to load
+            time.sleep(2)
+
+            # Check if we have DOM elements now
+            self._log(f"      📊 Re-analyzing page after recovery...", progress_callback)
+            screenshot, dom_elements, new_url = self._get_page_state()
+
+            if len(dom_elements) > 0:
+                self._log(f"      ✅ Recovery successful! Found {len(dom_elements)} DOM elements", progress_callback)
+                return True
+            else:
+                self._log(f"      ❌ Recovery failed - still 0 DOM elements", progress_callback)
+                return False
+
+        except Exception as e:
+            self._log(f"      ❌ Recovery navigation failed: {e}", progress_callback)
+            return False
+
     def _log(self, message: str, callback=None) -> None:
         """Log a message and optionally call progress callback."""
         self._execution_logs.append(message)
@@ -1019,6 +1332,668 @@ Return ONLY a JSON array:
     def execution_logs(self) -> List[str]:
         """Get execution logs."""
         return list(self._execution_logs)
+
+    def _record_page_elements(self, url: str, dom_elements: List[DomElement]) -> None:
+        """
+        Record elements found on a page for smart navigation.
+        Only records home page and navigation-like elements to minimize memory.
+
+        Args:
+            url: Page URL
+            dom_elements: List of DOM elements found on the page
+        """
+        # Optimization: Only record home page + first 3 pages visited
+        # This covers 90% of use cases while minimizing memory
+        if len(self.page_element_map) >= 4 and url != self.home_url:
+            return  # Skip recording after 4 pages
+
+        if url not in self.page_element_map:
+            self.page_element_map[url] = {}
+
+        # Record interactive elements with text (buttons, links)
+        # Focus on navigation-like elements (short text, common keywords)
+        nav_keywords = ['기본', '폼', '인터랙션', '홈', 'home', 'menu', '메뉴',
+                       '카테고리', 'category', '페이지', 'page', '시작', 'start']
+
+        recorded_count = 0
+        for elem in dom_elements:
+            if elem.text and elem.tag in ['button', 'a']:
+                text_lower = elem.text.lower()
+                # Only record if text is short (likely navigation) or contains keywords
+                if len(elem.text) < 30 or any(keyword in text_lower for keyword in nav_keywords):
+                    self.page_element_map[url][text_lower] = elem.selector
+                    recorded_count += 1
+
+        print(f"[Smart Navigation] Recorded {recorded_count} navigation elements for {url} (total pages: {len(self.page_element_map)})")
+
+    def _find_element_on_other_pages(self, target_text: str, current_url: str) -> Dict[str, Any]:
+        """
+        Search for an element in previously visited pages.
+
+        Args:
+            target_text: Text content of the element to find
+            current_url: Current page URL
+
+        Returns:
+            Dict with navigation info if found, empty dict otherwise
+        """
+        target_lower = target_text.lower()
+
+        # Search in all recorded pages (prioritize home page)
+        search_order = [self.home_url] + [url for url in self.page_element_map.keys() if url != self.home_url]
+
+        for page_url in search_order:
+            if page_url == current_url:
+                continue  # Skip current page
+
+            elements = self.page_element_map.get(page_url, {})
+            for elem_text, selector in elements.items():
+                if target_lower in elem_text or elem_text in target_lower:
+                    return {
+                        "found": True,
+                        "target_url": page_url,
+                        "selector": selector,
+                        "element_text": elem_text
+                    }
+
+        return {}
+
+    def _load_cache(self) -> None:
+        """Load selector cache from disk."""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    self.selector_cache = json.load(f)
+                # Clean old entries (older than 7 days)
+                current_time = time.time()
+                self.selector_cache = {
+                    k: v for k, v in self.selector_cache.items()
+                    if current_time - v.get("timestamp", 0) < 7 * 24 * 3600
+                }
+                print(f"[Cache] Loaded {len(self.selector_cache)} cached selectors")
+        except Exception as e:
+            print(f"[Cache] Failed to load cache: {e}")
+            self.selector_cache = {}
+
+    def _save_cache(self) -> None:
+        """Save selector cache to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.selector_cache, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[Cache] Failed to save cache: {e}")
+
+    def _get_cache_key(self, step_description: str, action: str, page_url: str) -> str:
+        """Generate cache key for a step."""
+        # Normalize URL (keep hash for SPA, just remove trailing slash)
+        # SPA에서 해시가 다르면 완전히 다른 페이지이므로 해시 유지 필요!
+        normalized_url = page_url.rstrip('/')
+        # Create hash of (description + action + url)
+        key_string = f"{step_description}|{action}|{normalized_url}"
+        return hashlib.md5(key_string.encode('utf-8')).hexdigest()
+
+    def _detect_aria_roles(self, step_description: str, dom_elements: List[DomElement]) -> Dict[str, List[DomElement]]:
+        """
+        Detect ALL elements matching ARIA roles mentioned in step description.
+        Returns ALL matches, not just the first one (for disambiguation).
+
+        Args:
+            step_description: Natural language step description
+            dom_elements: Available DOM elements
+
+        Returns:
+            Dict mapping role names to lists of matching elements
+        """
+        desc_lower = step_description.lower()
+        matches = {}
+
+        # Define ARIA role keywords and their corresponding roles
+        role_keywords = {
+            'switch': (['toggle', 'switch', '스위치', '토글'], 'switch'),
+            'slider': (['slider', 'range', '슬라이더'], 'slider'),
+            'dialog': (['dialog', 'modal', '다이얼로그', '모달', 'popup', '팝업'], 'dialog'),
+            'checkbox': (['checkbox', '체크박스', 'check'], 'checkbox'),
+            'radio': (['radio', '라디오'], 'radio'),
+            'tab': (['tab', '탭'], 'tab'),
+            'menu': (['menu', '메뉴', 'dropdown', '드롭다운'], 'menu'),
+            'combobox': (['combobox', 'autocomplete', 'select', '선택', '자동완성'], 'combobox'),
+            'searchbox': (['search', '검색'], 'searchbox'),
+        }
+
+        # Check each role type
+        for role_name, (keywords, aria_role) in role_keywords.items():
+            if any(keyword in desc_lower for keyword in keywords):
+                # Find ALL elements with this ARIA role
+                matching_elements = [
+                    elem for elem in dom_elements
+                    if elem.attributes and elem.attributes.get('role') == aria_role
+                ]
+                if matching_elements:
+                    matches[role_name] = matching_elements
+
+        return matches
+
+    def _disambiguate_aria_matches(self, role_name: str, matches: List[DomElement],
+                                   step_description: str, action: str) -> Dict[str, Any] | None:
+        """
+        Disambiguate when multiple elements match the same ARIA role.
+        Uses text matching → semantic matching → returns candidates for LLM.
+
+        Args:
+            role_name: ARIA role type (e.g., 'switch', 'slider')
+            matches: List of elements with this ARIA role
+            step_description: Step description
+            action: Action type
+
+        Returns:
+            Dict with selector/confidence/reasoning if disambiguated, None if needs LLM
+        """
+        import numpy as np
+
+        # Single match - check if navigation is needed
+        if len(matches) == 1:
+            # Check if step mentions navigation keywords
+            nav_keywords = ['navigate', 'go to', 'open', '이동', '가기', '열기']
+            needs_navigation = any(kw in step_description.lower() for kw in nav_keywords)
+
+            # If navigation mentioned, let LLM handle the full context
+            if needs_navigation:
+                return None
+
+            # Otherwise, safe to use the single match
+            selector = f'[role="{matches[0].attributes.get("role")}"]'
+            return {
+                "selector": selector,
+                "action": "click" if action != "fill" else "fill",
+                "reasoning": f"ARIA role match: Single {role_name} found (role='{matches[0].attributes.get('role')}')",
+                "confidence": 95
+            }
+
+        # Multiple matches - try text-based disambiguation
+        print(f"[ARIA Disambiguate] Found {len(matches)} {role_name} elements")
+
+        # Stage 1: Exact text match
+        for elem in matches:
+            if elem.text and elem.text.strip() in step_description:
+                selector = f'[role="{elem.attributes.get("role")}"]:has-text("{elem.text}")'
+                return {
+                    "selector": selector,
+                    "action": "click" if action != "fill" else "fill",
+                    "reasoning": f"ARIA + text match: {role_name} with text '{elem.text}'",
+                    "confidence": 90
+                }
+
+        # Stage 2: Semantic matching on elements with text
+        elements_with_text = [elem for elem in matches if elem.text and elem.text.strip()]
+
+        if elements_with_text:
+            desc_embedding = self._get_embedding(step_description)
+            if desc_embedding is not None:
+                best_match = None
+                best_similarity = 0.0
+
+                for elem in elements_with_text:
+                    elem_embedding = self._get_embedding(elem.text)
+                    if elem_embedding is None:
+                        continue
+
+                    similarity = np.dot(desc_embedding, elem_embedding) / (
+                        np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
+                    )
+
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match = elem
+
+                # If high similarity, use it
+                if best_match and best_similarity >= 0.80:
+                    selector = f'[role="{best_match.attributes.get("role")}"]:has-text("{best_match.text}")'
+                    return {
+                        "selector": selector,
+                        "action": "click" if action != "fill" else "fill",
+                        "reasoning": f"ARIA + semantic match: {role_name} '{best_match.text}' (similarity: {best_similarity:.2f})",
+                        "confidence": int(best_similarity * 100)
+                    }
+
+        # Stage 3: Unable to disambiguate - return None to fall back to LLM
+        # LLM will receive the filtered list via vision + DOM analysis
+        print(f"[ARIA Disambiguate] Unable to disambiguate {len(matches)} {role_name} elements, falling back to LLM")
+        return None
+
+    def _try_aria_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
+        """
+        ARIA role-based matching (병렬 실행용 분리 함수).
+        """
+        try:
+            aria_matches = self._detect_aria_roles(step_description, dom_elements)
+
+            if aria_matches:
+                for role_name, elements in aria_matches.items():
+                    result = self._disambiguate_aria_matches(role_name, elements, step_description, action)
+                    if result:
+                        return result
+            return None
+        except Exception as e:
+            print(f"[ARIA Match] Error: {e}")
+            return None
+
+    def _try_pure_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
+        """
+        Embedding-based semantic matching (병렬 실행용 분리 함수).
+        """
+        try:
+            try:
+                import numpy as np
+            except ImportError:
+                print("[Semantic Match] Warning: numpy not available, skipping semantic matching")
+                return None
+
+            desc_embedding = self._get_embedding(step_description)
+            if desc_embedding is None:
+                return self._offline_fuzzy_semantic_match(step_description, dom_elements, action)
+
+            best_match = None
+            best_similarity = 0.0
+            SIMILARITY_THRESHOLD = 0.82
+
+            for elem in dom_elements:
+                elem_text = elem.text.strip()
+                if not elem_text or len(elem_text) < 2:
+                    continue
+
+                elem_embedding = self._get_embedding(elem_text)
+                if elem_embedding is None:
+                    continue
+
+                similarity = np.dot(desc_embedding, elem_embedding) / (
+                    np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
+                )
+
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = elem
+
+            if best_match and best_similarity >= SIMILARITY_THRESHOLD:
+                element_type = best_match.tag if best_match.tag in ['button', 'a', 'input', 'select', 'textarea'] else 'button'
+                selector = f'{element_type}:has-text("{best_match.text}")'
+                confidence = int(best_similarity * 100)
+
+                return {
+                    "selector": selector,
+                    "action": action,
+                    "reasoning": f"Semantic match: '{step_description[:50]}' → '{best_match.text}' (similarity: {best_similarity:.2f})",
+                    "confidence": confidence
+                }
+
+            return self._offline_fuzzy_semantic_match(step_description, dom_elements, action)
+
+        except Exception as e:
+            print(f"[Semantic Match] Error: {e}")
+            return None
+
+    def _try_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str,
+                                current_url: str = "", screenshot: str = "") -> Dict[str, Any] | None:
+        """
+        병렬 매칭 시스템: ARIA + Semantic을 동시 실행 후, 둘 다 성공하면 LLM이 결과 통합.
+
+        병렬 실행 흐름:
+        1. ARIA detection (빠름, 무료)
+        2. Semantic matching (빠름, 저렴)
+        3. 둘 다 성공하면 → LLM Aggregator가 최종 판단 (교차 검증)
+        4. 하나만 성공하면 → 그 결과 사용
+        5. 둘 다 실패하면 → None (메인 로직이 LLM Vision 호출)
+
+        Returns:
+            최종 선택된 셀렉터 결과 또는 None
+        """
+        print("[Parallel Match] Starting ARIA + Semantic parallel execution...")
+
+        # 병렬 실행 (Python은 진짜 병렬이 아니지만 I/O 바운드라 충분히 빠름)
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            aria_future = executor.submit(self._try_aria_matching, step_description, dom_elements, action)
+            semantic_future = executor.submit(self._try_pure_semantic_matching, step_description, dom_elements, action)
+
+            # 결과 기다리기
+            aria_result = aria_future.result()
+            semantic_result = semantic_future.result()
+
+        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: {semantic_result is not None}")
+
+        # Case 1: 둘 다 성공 → LLM Aggregator가 최종 판단
+        if aria_result and semantic_result:
+            print(f"[Parallel Match] Both succeeded! ARIA conf={aria_result['confidence']}, Semantic conf={semantic_result['confidence']}")
+
+            # 셀렉터가 같으면 LLM 호출 생략 (확실함)
+            if aria_result['selector'] == semantic_result['selector']:
+                print(f"[Parallel Match] ✅ Both agree on same selector! Using it with high confidence.")
+                aria_result['confidence'] = min(95, aria_result['confidence'] + 10)  # Boost confidence
+                return aria_result
+
+            # 셀렉터가 다르면 LLM에게 물어보기 (교차 검증 필요)
+            print(f"[Parallel Match] ⚠️ Disagreement detected! Calling LLM Aggregator...")
+            print(f"  ARIA: {aria_result['selector']}")
+            print(f"  Semantic: {semantic_result['selector']}")
+
+            # LLM Vision도 실행해서 3-way 교차 검증
+            vision_result = self.llm_client.select_element_for_step(
+                step_description=step_description,
+                dom_elements=dom_elements,
+                screenshot_base64=screenshot,
+                url=current_url
+            )
+
+            # LLM Aggregator 호출
+            final_decision = self.llm_client.aggregate_matching_results(
+                step_description=step_description,
+                aria_result=aria_result,
+                semantic_result=semantic_result,
+                vision_result=vision_result,
+                url=current_url
+            )
+
+            print(f"[Parallel Match] LLM Aggregator decision: {final_decision['selector']} (conf: {final_decision['confidence']})")
+            return final_decision
+
+        # Case 2: ARIA만 성공
+        elif aria_result:
+            print(f"[Parallel Match] Using ARIA only (conf: {aria_result['confidence']})")
+            return aria_result
+
+        # Case 3: Semantic만 성공
+        elif semantic_result:
+            print(f"[Parallel Match] Using Semantic only (conf: {semantic_result['confidence']})")
+            return semantic_result
+
+        # Case 4: 둘 다 실패 → None 리턴 (메인 로직이 LLM Vision 호출)
+        print("[Parallel Match] Both ARIA and Semantic failed, will use LLM Vision")
+        return None
+
+    def _offline_fuzzy_semantic_match(
+        self,
+        step_description: str,
+        dom_elements: List[DomElement],
+        action: str
+    ) -> Dict[str, Any] | None:
+        """
+        Lightweight semantic fallback using text similarity when embeddings are unavailable.
+
+        Enhanced with:
+        - Minimum text length filtering (very short texts penalized)
+        - Position-aware matching (first, second, last)
+        - Interactive element filtering for click/select actions
+        - Stricter confidence thresholds
+        """
+        from difflib import SequenceMatcher
+
+        normalized_desc = self._normalize_text(step_description)
+        if not normalized_desc:
+            return None
+
+        # Extract position keywords
+        position_keywords = ["first", "second", "third", "last"]
+        has_position = any(kw in normalized_desc for kw in position_keywords)
+
+        # Check if action is interactive
+        is_interactive_action = action.lower() in ["click", "select", "choose", "pick"]
+
+        best_match = None
+        best_score = 0.0
+        candidates = []
+
+        for idx, elem in enumerate(dom_elements):
+            elem_text = (elem.text or "").strip()
+
+            # Skip elements with very short text (likely not semantic targets)
+            if len(elem_text) < 3:
+                continue
+
+            normalized_elem = self._normalize_text(elem_text)
+            if not normalized_elem:
+                continue
+
+            # For interactive actions, prefer interactive elements
+            if is_interactive_action:
+                if elem.tag not in ["button", "a", "input", "select", "textarea"]:
+                    continue
+
+            # Sequence similarity baseline
+            score = SequenceMatcher(None, normalized_desc, normalized_elem).ratio()
+
+            # Token overlap bonus
+            overlap = self._token_overlap(normalized_desc, normalized_elem)
+            if overlap:
+                score = max(score, min(0.95, 0.6 + 0.35 * overlap))
+
+            # Boost if text appears verbatim inside the description
+            # But only if element text is substantial (5+ chars)
+            if len(elem_text) >= 5:
+                if normalized_elem in normalized_desc or normalized_desc in normalized_elem:
+                    score = max(score, 0.85)
+
+            # Penalize very short text matches (3-4 chars)
+            if len(elem_text) <= 4:
+                score *= 0.7  # 30% penalty
+
+            if score > best_score:
+                best_score = score
+                best_match = elem
+                candidates.append((score, idx, elem))
+
+        # If position keyword detected, try to respect it
+        if has_position and candidates:
+            candidates.sort(key=lambda x: (-x[0], x[1]))  # Sort by score desc, then by DOM order
+
+            if "first" in normalized_desc and len(candidates) > 0:
+                # Pick first occurrence with decent score (>0.7)
+                for score, idx, elem in candidates:
+                    if score >= 0.7:
+                        best_match = elem
+                        best_score = score
+                        break
+            elif "last" in normalized_desc and len(candidates) > 0:
+                # Pick last occurrence
+                best_match = candidates[-1][2]
+                best_score = candidates[-1][0]
+
+        # Only return if score meets minimum threshold
+        # Balanced threshold (0.70) - strict enough to avoid false positives, flexible enough for valid matches
+        if best_match and best_score >= 0.70:
+            element_type = (
+                best_match.tag
+                if best_match.tag in ["button", "a", "input", "select", "textarea"]
+                else "button"
+            )
+            selector = f'{element_type}:has-text("{best_match.text}")'
+            confidence = max(50, int(best_score * 100))
+
+            print(f"[Semantic Match] Using offline fuzzy fallback (score: {best_score:.2f}, text: '{best_match.text[:30]}')")
+            return {
+                "selector": selector,
+                "action": action,
+                "reasoning": f"Offline fuzzy match: '{step_description[:50]}' → '{best_match.text}'",
+                "confidence": confidence
+            }
+
+        print(f"[Semantic Match] No reliable offline match (best score: {best_score:.2f})")
+        return None
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        """Normalize text for similarity matching."""
+        import re
+
+        value = value.strip().lower()
+        # Replace punctuation with spaces to keep token boundaries
+        value = re.sub(r"[^\w\s\u3131-\u318E\uAC00-\uD7A3]", " ", value)
+        # Collapse consecutive whitespace
+        return " ".join(value.split())
+
+    @staticmethod
+    def _token_overlap(desc: str, elem: str) -> float:
+        """Compute token overlap between description and element text."""
+        desc_tokens = set(desc.split())
+        elem_tokens = set(elem.split())
+        if not desc_tokens or not elem_tokens:
+            return 0.0
+        return len(desc_tokens & elem_tokens) / len(elem_tokens)
+
+    @staticmethod
+    def _local_embedding(text: str) -> List[float] | None:
+        """
+        Deterministic local embedding fallback using token hashing.
+        """
+        if not text or not text.strip():
+            return [0.0] * 128
+
+        try:
+            import numpy as np
+        except ImportError:
+            return None
+
+        normalized = IntelligentOrchestrator._normalize_text(text)
+        tokens = normalized.split()
+        if not tokens:
+            return [0.0] * 128
+
+        dim = 128
+        vector = np.zeros(dim, dtype=float)
+
+        for token in tokens:
+            for i in range(4):  # spread token across multiple dimensions
+                digest = hashlib.sha256(f"{token}:{i}".encode("utf-8")).digest()
+                index = int.from_bytes(digest[i:i+4], "big") % dim
+                vector[index] += 1.0
+
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector /= norm
+
+        return vector.tolist()
+
+    def _get_cached_selector(self, step_description: str, action: str, page_url: str) -> str | None:
+        """
+        Try to get cached selector for this step.
+
+        Returns:
+            Cached selector if found and still valid, None otherwise
+        """
+        cache_key = self._get_cache_key(step_description, action, page_url)
+        cached = self.selector_cache.get(cache_key)
+
+        if cached:
+            # Prefer high-confidence cache entries (success_count >= 2)
+            if cached.get("success_count", 0) >= 2:
+                print(f"[Cache HIT] Using cached selector for '{step_description}'")
+                return cached["selector"]
+
+        return None
+
+    def _update_cache(self, step_description: str, action: str, page_url: str,
+                     selector: str, success: bool) -> None:
+        """
+        Update cache with execution result.
+
+        Args:
+            step_description: Human-readable step description
+            action: Action type (click, fill, etc.)
+            page_url: Current page URL
+            selector: Selector that was used
+            success: Whether the action succeeded
+        """
+        # 동적 ID 패턴 감지 - Radix UI 등의 프레임워크가 생성하는 동적 ID는 캐싱하지 않음
+        import re
+        if re.search(r'radix-:[a-z0-9]+:', selector, re.IGNORECASE):
+            print(f"[Cache] Skipping cache for dynamic ID selector: {selector}")
+            return
+
+        cache_key = self._get_cache_key(step_description, action, page_url)
+
+        if cache_key not in self.selector_cache:
+            self.selector_cache[cache_key] = {
+                "selector": selector,
+                "timestamp": time.time(),
+                "success_count": 1 if success else 0,
+                "step_description": step_description  # For debugging
+            }
+        else:
+            # Update existing entry
+            if success:
+                self.selector_cache[cache_key]["success_count"] += 1
+            self.selector_cache[cache_key]["timestamp"] = time.time()
+
+        # Save to disk periodically
+        if len(self.selector_cache) % 5 == 0:  # Save every 5 updates
+            self._save_cache()
+
+    def _get_embedding(self, text: str) -> List[float] | None:
+        """
+        Get embedding vector for text using OpenAI text-embedding-3-small.
+        Uses cache to avoid redundant API calls.
+
+        Args:
+            text: Text to embed
+
+        Returns:
+            Embedding vector or None if error
+        """
+        # Check cache first
+        cache_key = hashlib.md5(text.encode('utf-8')).hexdigest()
+        if cache_key in self.embedding_cache:
+            return self.embedding_cache[cache_key]
+
+        try:
+            # Call OpenAI embedding API
+            response = self.llm_client.client.embeddings.create(
+                model="text-embedding-3-small",
+                input=text
+            )
+
+            embedding = response.data[0].embedding
+
+            # Cache the result
+            self.embedding_cache[cache_key] = embedding
+
+            # Save cache periodically
+            if len(self.embedding_cache) % 20 == 0:
+                self._save_embedding_cache()
+
+            return embedding
+
+        except Exception as e:
+            print(f"[Embedding] Error getting embedding for '{text[:50]}': {e}")
+            local_embedding = self._local_embedding(text)
+            if local_embedding is not None:
+                print("[Embedding] Using local deterministic embedding fallback")
+                self.embedding_cache[cache_key] = local_embedding
+
+                if len(self.embedding_cache) % 20 == 0:
+                    self._save_embedding_cache()
+
+                return local_embedding
+            return None
+
+    def _load_embedding_cache(self) -> None:
+        """Load embedding cache from disk."""
+        try:
+            if os.path.exists(self.embedding_cache_file):
+                with open(self.embedding_cache_file, 'r', encoding='utf-8') as f:
+                    self.embedding_cache = json.load(f)
+                print(f"[Embedding Cache] Loaded {len(self.embedding_cache)} cached embeddings")
+        except Exception as e:
+            print(f"[Embedding Cache] Failed to load cache: {e}")
+            self.embedding_cache = {}
+
+    def _save_embedding_cache(self) -> None:
+        """Save embedding cache to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.embedding_cache_file), exist_ok=True)
+            with open(self.embedding_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.embedding_cache, f, indent=2)
+        except Exception as e:
+            print(f"[Embedding Cache] Failed to save cache: {e}")
 
 
 __all__ = ["IntelligentOrchestrator"]

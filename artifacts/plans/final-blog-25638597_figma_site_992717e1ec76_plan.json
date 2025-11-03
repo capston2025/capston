@@ -1,632 +1,271 @@
 {
-    "profile": "final-blog-25638597_figma_site",
-    "url": "https://final-blog-25638597.figma.site",
-    "pdf_hash": "4f8ad97d4648",
-    "test_scenarios": [
-      {
-        "id": "TC001",
-        "priority": "MUST",
-        "scenario": "Responsive layout at 400px breakpoint",
-        "steps": [
-          {
-            "description": "Set desktop viewport to 1280x900",
-            "action": "setViewport",
-            "selector": "",
-            "params": [
-              1280,
-              900
-            ]
-          },
-          {
-            "description": "Open the base URL",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}"
-            ]
-          },
-          {
-            "description": "Verify the desktop layout does not introduce horizontal scrolling",
-            "action": "expectTrue",
-            "selector": "",
-            "params": [
-              "document.documentElement.scrollWidth <= window.innerWidth + 1"
-            ]
-          },
-          {
-            "description": "Resize viewport to 400x900 (mobile portrait)",
-            "action": "setViewport",
-            "selector": "",
-            "params": [
-              400,
-              900
-            ]
-          },
-          {
-            "description": "Validate no horizontal scroll at 400px width",
-            "action": "expectTrue",
-            "selector": "",
-            "params": [
-              "document.documentElement.scrollWidth <= window.innerWidth + 1"
-            ]
-          },
-          {
-            "description": "Resize viewport to 640x360 (mobile landscape)",
-            "action": "setViewport",
-            "selector": "",
-            "params": [
-              640,
-              360
-            ]
-          },
-          {
-            "description": "Confirm layout remains usable in landscape (no horizontal scroll, header
-  visible)",
-            "action": "expectTrue",
-            "selector": "",
-            "params": [
-              "document.documentElement.scrollWidth <= window.innerWidth + 1 && !!
-  document.querySelector('header h1')"
-            ]
-          }
-        ],
-        "assertion": {
-          "description": "Layout adapts without horizontal scroll or clipped content across desktop,
-  400px portrait, and landscape breakpoints",
+  "profile": "final-blog-25638597_figma_site",
+  "url": "https://final-blog-25638597.figma.site",
+  "pdf_hash": null,
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "홈 네비게이션 - 카테고리 카드/시작하기 버튼으로 페이지 이동",
+      "steps": [
+        {
+          "description": "홈 페이지 접속",
+          "action": "goto",
           "selector": "",
-          "condition": "expectTrue",
           "params": [
-            "document.documentElement.scrollWidth <= window.innerWidth + 1"
+            "https://final-blog-25638597.figma.site"
           ]
-        }
-      },
-      {
-        "id": "TC005",
-        "priority": "SHOULD",
-        "scenario": "Web Share API integration",
-        "steps": [
-          {
-            "description": "Ensure viewport wide enough to show 공유하기 label",
-            "action": "setViewport",
-            "selector": "",
-            "params": [
-              1280,
-              900
-            ]
-          },
-          {
-            "description": "Navigate to the base URL",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}"
-            ]
-          },
-          {
-            "description": "Stub navigator.share before invoking the button",
-            "action": "evaluate",
-            "selector": "",
-            "params": [
-              "window.__sharedData = null; navigator.share = async data => { window.__sharedData =
-  data; };"
-            ]
-          },
-          {
-            "description": "Click the 공유하기 button in the header",
-            "action": "click",
-            "selector": "button:has-text(\"공유하기\")",
-            "params": []
-          },
-          {
-            "description": "Verify the stub received the expected payload (title and url)",
-            "action": "expectTrue",
-            "selector": "",
-            "params": [
-              "window.__sharedData && window.__sharedData.title === 'UI Components Test Site' &&
-  window.__sharedData.url === window.location.href"
-            ]
-          }
-        ],
-        "assertion": {
-          "description": "Clicking 공유하기 calls navigator.share with title/text/url when the API is
-  available",
-          "selector": "",
-          "condition": "expectTrue",
-          "params": [
-            "window.__sharedData !== null"
-          ]
-        }
-      },
-      {
-        "id": "TC006",
-        "priority": "MUST",
-        "scenario": "Header and sidebar navigation",
-        "steps": [
-          {
-            "description": "Open the home page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}"
-            ]
-          },
-          {
-            "description": "From the home hero card, click 둘러보기 under 기본 기능",
-            "action": "click",
-            "selector": "section:has-text(\"기본 기능\") button:has-text(\"둘러보기\")",
-            "params": []
-          },
-          {
-            "description": "Confirm the page header updates to 기본 기능",
-            "action": "expectVisible",
-            "selector": "header h1:text-is(\"기본 기능\")",
-            "params": []
-          },
-          {
-            "description": "Use the sidebar to switch to 폼과 피드백",
-            "action": "click",
-            "selector": "nav button:has-text(\"폼과 피드백\")",
-            "params": []
-          },
-          {
-            "description": "Verify the header title is 폼과 피드백",
-            "action": "expectVisible",
-            "selector": "header h1:text-is(\"폼과 피드백\")",
-            "params": []
-          },
-          {
-            "description": "Click 홈으로 button in the header to return",
-            "action": "click",
-            "selector": "button:has-text(\"홈으로\")",
-            "params": []
-          },
-          {
-            "description": "Ensure the hero heading UI 컴포넌트 테스트 사이트 is visible again",
-            "action": "expectVisible",
-            "selector": "main:has-text(\"UI 컴포넌트 테스트 사이트\")",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Navigation controls switch sections and update page headings appropriately",
-          "selector": "header h1",
-          "condition": "expectVisible",
+        },
+        {
+          "description": "홈이 보이는지 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='home-page']",
+          "params": []
+        },
+        {
+          "description": "기본 기능 카드 클릭으로 /basics 이동",
+          "action": "click",
+          "selector": "[data-testid='card-basics']",
+          "params": []
+        },
+        {
+          "description": "기본 기능 페이지 로드 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='basics-page']",
+          "params": []
+        },
+        {
+          "description": "헤더 홈 버튼 클릭으로 홈 이동",
+          "action": "click",
+          "selector": "[data-testid='btn-home']",
+          "params": []
+        },
+        {
+          "description": "시작하기-폼과 피드백 버튼 클릭으로 /forms 이동",
+          "action": "click",
+          "selector": "[data-testid='start-forms']",
           "params": []
         }
-      },
-      {
-        "id": "TC008",
-        "priority": "MUST",
-        "scenario": "Search, filter, and sort list",
-        "steps": [
-          {
-            "description": "Navigate directly to 기본 기능 page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#basics"
-            ]
-          },
-          {
-            "description": "Focus the 검색어를 입력하세요... input and type 스마트워치",
-            "action": "fill",
-            "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
-            "params": [
-              "스마트워치"
-            ]
-          },
-          {
-            "description": "Wait for 검색 결과 카드 스마트워치 앱 추천 to appear",
-            "action": "expectVisible",
-            "selector": "div:has-text(\"스마트워치 앱 추천\")",
-            "params": []
-          },
-          {
-            "description": "Toggle the 정렬 button to switch to 제목순",
-            "action": "click",
-            "selector": "button:has-text(\"정렬\")",
-            "params": []
-          },
-          {
-            "description": "Verify 정렬: 제목순 label updates",
-            "action": "expectVisible",
-            "selector": "text=정렬: 제목순",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Search results filter live and react to sort order toggles",
-          "selector": "div:has-text(\"스마트워치 앱 추천\")",
-          "condition": "expectVisible",
-          "params": []
-        }
-      },
-      {
-        "id": "TC011",
-        "priority": "MUST",
-        "scenario": "Modal behavior and accessibility",
-        "steps": [
-          {
-            "description": "Navigate to 인터랙션과 데이터 page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#interactions"
-            ]
-          },
-          {
-            "description": "Scroll to the 팝업 창 card",
-            "action": "scrollIntoView",
-            "selector": "section:has-text(\"팝업 창\")",
-            "params": []
-          },
-          {
-            "description": "Open the 모달 다이얼로그 열기 trigger",
-            "action": "click",
-            "selector": "button:has-text(\"모달 다이얼로그 열기\")",
-            "params": []
-          },
-          {
-            "description": "Assert the dialog with heading 모달 다이얼로그 is visible",
-            "action": "expectVisible",
-            "selector": "[role=dialog] h2:has-text(\"모달 다이얼로그\")",
-            "params": []
-          },
-          {
-            "description": "Press Escape to close the dialog",
-            "action": "press",
-            "selector": "body",
-            "params": [
-              "Escape"
-            ]
-          },
-          {
-            "description": "Confirm the dialog is dismissed",
-            "action": "expectHidden",
-            "selector": "[role=dialog]",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Modals open from triggers and close via Escape without leaving overlays",
-          "selector": "[role=dialog]",
-          "condition": "expectHidden",
-          "params": []
-        }
-      },
-      {
-        "id": "TC012",
-        "priority": "SHOULD",
-        "scenario": "Tabs and accordion interactions",
-        "steps": [
-          {
-            "description": "Go to 기본 기능 page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#basics"
-            ]
-          },
-          {
-            "description": "Click the 분석 tab",
-            "action": "click",
-            "selector": "[role=tab]:has-text(\"분석\")",
-            "params": []
-          },
-          {
-            "description": "Ensure 분석 데이터 panel is shown",
-            "action": "expectVisible",
-            "selector": "div:has-text(\"분석 데이터\")",
-            "params": []
-          },
-          {
-            "description": "Switch to 보고서 tab",
-            "action": "click",
-            "selector": "[role=tab]:has-text(\"보고서\")",
-            "params": []
-          },
-          {
-            "description": "Verify 보고서 콘텐츠 표시",
-            "action": "expectVisible",
-            "selector": "div:has-text(\"보고서를 확인\")",
-            "params": []
-          },
-          {
-            "description": "Expand 자주 묻는 질문 1 아코디언",
-            "action": "click",
-            "selector": "button:has-text(\"자주 묻는 질문 1\")",
-            "params": []
-          },
-          {
-            "description": "Confirm 해당 답변 문장이 노출",
-            "action": "expectVisible",
-            "selector": "div:has-text(\"서비스 이용을 위해서는 먼저 회원가입\")",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Tabs swap visible panels and accordion items expand to show content",
-          "selector": "button:has-text(\"자주 묻는 질문 1\")",
-          "condition": "expectAttribute",
-          "params": [
-            "aria-expanded",
-            "true"
-          ]
-        }
-      },
-      {
-        "id": "TC013",
-        "priority": "SHOULD",
-        "scenario": "Tooltips on hover and focus",
-        "steps": [
-          {
-            "description": "Navigate to 폼과 피드백 page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#forms"
-            ]
-          },
-          {
-            "description": "Scroll to the 툴팁 card",
-            "action": "scrollIntoView",
-            "selector": "section:has-text(\"툴팁\")",
-            "params": []
-          },
-          {
-            "description": "Hover the button in the 도움말 tile",
-            "action": "hover",
-            "selector": "div:has(p:text-is(\"도움말\")) button",
-            "params": []
-          },
-          {
-            "description": "Check tooltip text 도움말을 확인하려면 클릭하세요 appears",
-            "action": "expectVisible",
-            "selector": "[role=tooltip]:has-text(\"도움말을 확인하려면 클릭하세요\")",
-            "params": []
-          },
-          {
-            "description": "Focus the 다운로드 tile button",
-            "action": "focus",
-            "selector": "div:has(p:text-is(\"다운로드\")) button",
-            "params": []
-          },
-          {
-            "description": "Validate tooltip describing 지원 형식 appears on focus",
-            "action": "expectVisible",
-            "selector": "[role=tooltip]:has-text(\"파일을 다운로드합니다\")",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Tooltip content renders on both hover and keyboard focus",
-          "selector": "[role=tooltip]",
-          "condition": "expectVisible",
-          "params": []
-        }
-      },
-      {
-        "id": "TC014",
-        "priority": "MUST",
-        "scenario": "Toast notifications types and duration",
-        "steps": [
-          {
-            "description": "Open 폼과 피드백 page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#forms"
-            ]
-          },
-          {
-            "description": "Click 성공 toast trigger",
-            "action": "click",
-            "selector": "section:has-text(\"토스트 알림\") button:has-text(\"성공\")",
-            "params": []
-          },
-          {
-            "description": "Verify 성공! toast message appears",
-            "action": "expectVisible",
-            "selector": "[data-sonner-toast]:has-text(\"성공!\")",
-            "params": []
-          },
-          {
-            "description": "Click 오류 toast trigger",
-            "action": "click",
-            "selector": "section:has-text(\"토스트 알림\") button:has-text(\"오류\")",
-            "params": []
-          },
-          {
-            "description": "Confirm 오류 발생! toast rendered",
-            "action": "expectVisible",
-            "selector": "[data-sonner-toast]:has-text(\"오류 발생!\")",
-            "params": []
-          },
-          {
-            "description": "Trigger 모든 토스트 보기 to queue multiple types",
-            "action": "click",
-            "selector": "section:has-text(\"토스트 알림\") button:has-text(\"모든 토스트 보기\")",
-            "params": []
-          },
-          {
-            "description": "Ensure 추가 토스트 예: 새로운 업데이트가 있습니다",
-            "action": "expectVisible",
-            "selector": "[data-sonner-toast]:has-text(\"새로운 업데이트가 있습니다\")",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Each toast variant appears when triggered and uses the shared toaster",
-          "selector": "[data-sonner-toast]",
-          "condition": "expectCountAtLeast",
-          "params": [
-            4
-          ]
-        }
-      },
-      {
-        "id": "TC027",
-        "priority": "MUST",
-        "scenario": "Drag-and-drop reorder within a list",
-        "steps": [
-          {
-            "description": "Navigate to 인터랙션과 데이터 page",
-
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#interactions"
-            ]
-          },
-          {
-            "description": "Scroll to 드래그 앤 드롭 card",
-            "action": "scrollIntoView",
-            "selector": "section:has-text(\"드래그 앤 드롭\")",
-            "params": []
-          },
-          {
-            "description": "Drag 카드 '작업 1' to position after '작업 4'",
-            "action": "dragAndDrop",
-            "selector": "section:has-text(\"드래그 앤 드롭\") div:has-text(\"작업 1\")",
-            "params": [
-              "section:has-text(\"드래그 앤 드롭\") div:has-text(\"작업 4\")"
-            ]
-          },
-          {
-            "description": "Verify the list order updates (작업 1 now last)",
-            "action": "expectTrue",
-            "selector": "",
-            "params": [
-              "(() => { const section = Array.from(document.querySelectorAll('section')).find(sec
-  => sec.textContent.includes('드래그 앤 드롭')); if (!section) return false; const cards =
-  Array.from(section.querySelectorAll('.space-y-3 > div')); return cards.length && cards[cards.length -
-  1].textContent.includes('작업 1'); })()"
-            ]
-          }
-        ],
-        "assertion": {
-          "description": "Cards reorder within the list after drag-and-drop",
-          "selector": "",
-          "condition": "expectTrue",
-          "params": [
-            "(() => { const section = Array.from(document.querySelectorAll('section')).find(sec
-  => sec.textContent.includes('드래그 앤 드롭')); if (!section) return false; const cards =
-  Array.from(section.querySelectorAll('.space-y-3 > div')); return cards.length && cards[cards.length -
-  1].textContent.includes('작업 1'); })()"
-          ]
-        }
-      },
-      {
-        "id": "TC032",
-        "priority": "MUST",
-        "scenario": "Infinite scroll auto-loads more items",
-        "steps": [
-          {
-            "description": "Navigate to 인터랙션과 데이터 page",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}#interactions"
-            ]
-          },
-          {
-            "description": "Scroll into the 무한 스크롤 card",
-            "action": "scrollIntoView",
-            "selector": "section:has-text(\"무한 스크롤\")",
-            "params": []
-          },
-          {
-            "description": "Scroll the 목록 컨테이너 to the bottom",
-            "action": "evaluate",
-            "selector": "section:has-text(\"무한 스크롤\") .max-h-96",
-            "params": [
-              "el.scrollTo(0, el.scrollHeight);"
-            ]
-          },
-          {
-            "description": "Wait for the 로딩 중... indicator to disappear",
-            "action": "expectHidden",
-            "selector": "section:has-text(\"무한 스크롤\") :text(\"로딩 중...\")",
-            "params": []
-          },
-          {
-            "description": "Confirm new item 아이템 21 appears after loading",
-            "action": "expectVisible",
-            "selector": "section:has-text(\"무한 스크롤\") div:has-text(\"아이템 21\")",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "New items append when the sentinel enters view and loader completes",
-          "selector": "section:has-text(\"무한 스크롤\")",
-          "condition": "expectVisible",
-          "params": [
-            "div:has-text(\"아이템 21\")"
-          ]
-        }
-      },
-      {
-        "id": "TC038",
-        "priority": "MAY",
-        "scenario": "Web Share API fallback when unsupported",
-        "steps": [
-          {
-            "description": "Use desktop viewport and open the site",
-            "action": "setViewport",
-            "selector": "",
-            "params": [
-              1280,
-              900
-            ]
-          },
-          {
-            "description": "Navigate to the base URL",
-            "action": "goto",
-            "selector": "",
-            "params": [
-              "{{BASE_URL}}"
-            ]
-          },
-          {
-            "description": "Remove navigator.share and stub clipboard writeText",
-            "action": "evaluate",
-            "selector": "",
-            "params": [
-              "navigator.share = undefined; window.__copiedLink = null; if (!navigator.clipboard)
-  { navigator.clipboard = {}; } navigator.clipboard.writeText = async text => { window.__copiedLink
-  = text; };"
-            ]
-          },
-          {
-            "description": "Click the 공유하기 button",
-            "action": "click",
-            "selector": "button:has-text(\"공유하기\")",
-            "params": []
-          },
-          {
-            "description": "Assert clipboard stub captured the current URL",
-            "action": "expectTrue",
-            "selector": "",
-            "params": [
-              "window.__copiedLink === window.location.href"
-            ]
-          },
-          {
-            "description": "Verify success toast appears about 링크가 클립보드에 복사되었습니다!",
-            "action": "expectVisible",
-            "selector": "[data-sonner-toast]:has-text(\"링크가 클립보드에 복사되었습니다!\")",
-            "params": []
-          }
-        ],
-        "assertion": {
-          "description": "Fallback copies the URL to clipboard and shows a success toast when
-  navigator.share is unavailable",
-          "selector": "",
-          "condition": "expectTrue",
-          "params": [
-            "window.__copiedLink !== null"
-          ]
-        }
+      ],
+      "assertion": {
+        "description": "폼과 피드백 페이지가 표시되어야 한다",
+        "selector": "[data-testid='forms-page']",
+        "condition": "expectVisible",
+        "params": []
       }
-    ]
-  }
+    },
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "실시간 검색 - 디바운스/필터/정렬",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "검색 입력에 키워드 입력",
+          "action": "fill",
+          "selector": "[data-testid='search-input']",
+          "params": [
+            "맥북"
+          ]
+        },
+        {
+          "description": "필터 버튼 클릭",
+          "action": "click",
+          "selector": "[data-testid='filter-button']",
+          "params": []
+        },
+        {
+          "description": "카테고리 필터 선택",
+          "action": "click",
+          "selector": "[data-testid='filter-option-electronics']",
+          "params": []
+        },
+        {
+          "description": "정렬 버튼 클릭",
+          "action": "click",
+          "selector": "[data-testid='sort-button']",
+          "params": []
+        },
+        {
+          "description": "정렬 - 제목순 선택",
+          "action": "click",
+          "selector": "[data-testid='sort-title']",
+          "params": []
+        },
+        {
+          "description": "검색 결과 영역 표시 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='search-results']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "결과 리스트 아이템과 결과 카운트가 보여야 한다",
+        "selector": "[data-testid='result-count']",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "사용자 인증 - 회원가입/로그인/로그아웃",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "회원가입 탭 클릭",
+          "action": "click",
+          "selector": "[data-testid='tab-signup']",
+          "params": []
+        },
+        {
+          "description": "회원가입 이름 입력",
+          "action": "fill",
+          "selector": "[data-testid='signup-name']",
+          "params": [
+            "홍길동"
+          ]
+        },
+        {
+          "description": "회원가입 이메일 입력",
+          "action": "fill",
+          "selector": "[data-testid='signup-email']",
+          "params": [
+            "hong@test.com"
+          ]
+        },
+        {
+          "description": "회원가입 비밀번호 입력",
+          "action": "fill",
+          "selector": "[data-testid='signup-password']",
+          "params": [
+            "Password!23"
+          ]
+        },
+        {
+          "description": "회원가입 제출",
+          "action": "click",
+          "selector": "[data-testid='signup-submit']",
+          "params": []
+        },
+        {
+          "description": "프로필 표시 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='user-profile']",
+          "params": []
+        },
+        {
+          "description": "로그아웃 버튼 클릭",
+          "action": "click",
+          "selector": "[data-testid='btn-logout']",
+          "params": []
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "[data-testid='tab-login']",
+          "params": []
+        },
+        {
+          "description": "로그인 이메일 입력",
+          "action": "fill",
+          "selector": "[data-testid='login-email']",
+          "params": [
+            "hong@test.com"
+          ]
+        },
+        {
+          "description": "로그인 비밀번호 입력",
+          "action": "fill",
+          "selector": "[data-testid='login-password']",
+          "params": [
+            "Password!23"
+          ]
+        },
+        {
+          "description": "로그인 제출",
+          "action": "click",
+          "selector": "[data-testid='login-submit']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "로그인 후 프로필 UI가 보여야 한다",
+        "selector": "[data-testid='user-profile']",
+        "condition": "expectVisible",
+        "params": []
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "MUST",
+      "scenario": "장바구니 - 추가/수량 조절/삭제/총액 갱신",
+      "steps": [
+        {
+          "description": "기본 기능 페이지 접속",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://final-blog-25638597.figma.site#basics"
+          ]
+        },
+        {
+          "description": "첫 번째 상품 장바구니 추가 클릭",
+          "action": "click",
+          "selector": "[data-testid='product-0-add']",
+          "params": []
+        },
+        {
+          "description": "같은 상품 다시 추가 클릭",
+          "action": "click",
+          "selector": "[data-testid='product-0-add']",
+          "params": []
+        },
+        {
+          "description": "장바구니 열기",
+          "action": "click",
+          "selector": "[data-testid='cart-open']",
+          "params": []
+        },
+        {
+          "description": "수량 + 클릭",
+          "action": "click",
+          "selector": "[data-testid='cart-item-0-increment']",
+          "params": []
+        },
+        {
+          "description": "아이템 삭제 클릭",
+          "action": "click",
+          "selector": "[data-testid='cart-item-0-remove']",
+          "params": []
+        },
+        {
+          "description": "총액 표시 영역 확인",
+          "action": "expectVisible",
+          "selector": "[data-testid='cart-total']",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "장바구니 목록과 총액이 올바르게 반영되어야 한다",
+        "selector": "[data-testid='cart-dialog']",
+        "condition": "expectVisible",
+        "params": []
+      }
+    }
+  ]
+}
