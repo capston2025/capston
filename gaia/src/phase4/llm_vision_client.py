@@ -5,6 +5,8 @@ Uses GPT-4V for DOM + screenshot analysis.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 import openai
@@ -20,8 +22,23 @@ class LLMVisionClient:
         Initialize the LLM vision client.
 
         Args:
-            api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var)
+            api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var or .env file)
         """
+        # Load .env file if it exists
+        if api_key is None:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key is None:
+                # Try loading from .env file
+                env_file = Path(__file__).parent.parent.parent / ".env"
+                if env_file.exists():
+                    with open(env_file) as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("OPENAI_API_KEY="):
+                                api_key = line.split("=", 1)[1].strip()
+                                os.environ["OPENAI_API_KEY"] = api_key
+                                break
+
         self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
         # Use GPT-5-mini for vision tasks (cost optimization)
         # Master orchestrator still uses GPT-5 for critical DOM analysis
@@ -517,16 +534,20 @@ Three different methods analyzed the page:
 **3. Vision + DOM Analysis (your previous analysis):**
 {json.dumps(results_summary['vision'], ensure_ascii=False, indent=2)}
 
-**Decision Rules:**
-1. If 2+ methods agree on the same element → HIGH confidence
-2. If ARIA + Semantic agree (even if different from Vision) → prefer them (Vision might hallucinate)
-3. If only 1 method succeeded → use it (but lower confidence)
-4. If all 3 point to different elements → pick the one with highest confidence BUT penalize confidence by 20%
-5. Consider method reliability: ARIA (most reliable for custom components) > Semantic (good for text) > Vision (can hallucinate)
+**Decision Rules (in priority order):**
+1. **Confidence-first approach**: If one method has significantly higher confidence (5+ points difference), prefer it UNLESS there's strong evidence it's wrong
+2. **Selector validity**: ARIA selectors like `[role="radio"]:has-text("text")` are ONLY valid if the text is actually INSIDE the role element. If the text is in a separate label, the selector won't work - prefer Semantic in this case
+3. **Agreement bonus**: If 2+ methods agree on the same element → HIGH confidence boost (+10)
+4. **Method reliability** (use as tiebreaker only):
+   - ARIA: Best for custom components (React, Radix UI) IF the selector is valid
+   - Semantic: Best for text-based matching, very reliable for buttons/links with visible text
+   - Vision: Can hallucinate, use as last resort
+5. **Single method**: If only 1 method succeeded → use it but keep original confidence
 
-**CRITICAL: Cross-validation**
-- If ARIA found multiple elements but didn't disambiguate → Vision/Semantic can help choose
-- If Vision selector doesn't match any ARIA/Semantic results → be suspicious (낮은 confidence)
+**CRITICAL: Practical validation**
+- ARIA `[role="X"]:has-text("Y")` requires Y to be INSIDE the role element (not in a sibling label)
+- If ARIA and Semantic both found the element but with different selectors, check if the text is actually in the ARIA element
+- When in doubt between ARIA and Semantic, prefer the one with higher confidence
 
 Required JSON format (no markdown):
 {{
@@ -553,6 +574,9 @@ JSON response:"""
 
             response_text = response.choices[0].message.content or ""
 
+            # Debug: Print raw LLM response
+            print(f"[Aggregator] Raw LLM response: {response_text[:300]}")
+
             # Strip markdown
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
@@ -563,14 +587,16 @@ JSON response:"""
             response_text = response_text.strip()
 
             if not response_text:
-                print("[Aggregator] LLM returned empty response, using vision result")
+                print("[Aggregator] LLM returned empty response after stripping, using vision result")
                 return vision_result
 
             try:
                 result = json.loads(response_text)
+                print(f"[Aggregator] ✓ Successfully parsed JSON: {result.get('selector', 'N/A')} (conf: {result.get('confidence', 0)})")
                 return result
-            except json.JSONDecodeError:
-                print(f"[Aggregator] JSON parse failed, using vision result: {response_text[:100]}")
+            except json.JSONDecodeError as e:
+                print(f"[Aggregator] JSON parse failed: {e}")
+                print(f"[Aggregator] Response text was: {response_text[:300]}")
                 return vision_result
 
         except Exception as e:

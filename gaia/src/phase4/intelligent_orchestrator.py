@@ -1591,7 +1591,7 @@ Return ONLY a JSON array:
 
             desc_embedding = self._get_embedding(step_description)
             if desc_embedding is None:
-                return None
+                return self._offline_fuzzy_semantic_match(step_description, dom_elements, action)
 
             best_match = None
             best_similarity = 0.0
@@ -1626,7 +1626,7 @@ Return ONLY a JSON array:
                     "confidence": confidence
                 }
 
-            return None
+            return self._offline_fuzzy_semantic_match(step_description, dom_elements, action)
 
         except Exception as e:
             print(f"[Semantic Match] Error: {e}")
@@ -1710,6 +1710,168 @@ Return ONLY a JSON array:
         # Case 4: 둘 다 실패 → None 리턴 (메인 로직이 LLM Vision 호출)
         print("[Parallel Match] Both ARIA and Semantic failed, will use LLM Vision")
         return None
+
+    def _offline_fuzzy_semantic_match(
+        self,
+        step_description: str,
+        dom_elements: List[DomElement],
+        action: str
+    ) -> Dict[str, Any] | None:
+        """
+        Lightweight semantic fallback using text similarity when embeddings are unavailable.
+
+        Enhanced with:
+        - Minimum text length filtering (very short texts penalized)
+        - Position-aware matching (first, second, last)
+        - Interactive element filtering for click/select actions
+        - Stricter confidence thresholds
+        """
+        from difflib import SequenceMatcher
+
+        normalized_desc = self._normalize_text(step_description)
+        if not normalized_desc:
+            return None
+
+        # Extract position keywords
+        position_keywords = ["first", "second", "third", "last"]
+        has_position = any(kw in normalized_desc for kw in position_keywords)
+
+        # Check if action is interactive
+        is_interactive_action = action.lower() in ["click", "select", "choose", "pick"]
+
+        best_match = None
+        best_score = 0.0
+        candidates = []
+
+        for idx, elem in enumerate(dom_elements):
+            elem_text = (elem.text or "").strip()
+
+            # Skip elements with very short text (likely not semantic targets)
+            if len(elem_text) < 3:
+                continue
+
+            normalized_elem = self._normalize_text(elem_text)
+            if not normalized_elem:
+                continue
+
+            # For interactive actions, prefer interactive elements
+            if is_interactive_action:
+                if elem.tag not in ["button", "a", "input", "select", "textarea"]:
+                    continue
+
+            # Sequence similarity baseline
+            score = SequenceMatcher(None, normalized_desc, normalized_elem).ratio()
+
+            # Token overlap bonus
+            overlap = self._token_overlap(normalized_desc, normalized_elem)
+            if overlap:
+                score = max(score, min(0.95, 0.6 + 0.35 * overlap))
+
+            # Boost if text appears verbatim inside the description
+            # But only if element text is substantial (5+ chars)
+            if len(elem_text) >= 5:
+                if normalized_elem in normalized_desc or normalized_desc in normalized_elem:
+                    score = max(score, 0.85)
+
+            # Penalize very short text matches (3-4 chars)
+            if len(elem_text) <= 4:
+                score *= 0.7  # 30% penalty
+
+            if score > best_score:
+                best_score = score
+                best_match = elem
+                candidates.append((score, idx, elem))
+
+        # If position keyword detected, try to respect it
+        if has_position and candidates:
+            candidates.sort(key=lambda x: (-x[0], x[1]))  # Sort by score desc, then by DOM order
+
+            if "first" in normalized_desc and len(candidates) > 0:
+                # Pick first occurrence with decent score (>0.7)
+                for score, idx, elem in candidates:
+                    if score >= 0.7:
+                        best_match = elem
+                        best_score = score
+                        break
+            elif "last" in normalized_desc and len(candidates) > 0:
+                # Pick last occurrence
+                best_match = candidates[-1][2]
+                best_score = candidates[-1][0]
+
+        # Only return if score meets minimum threshold
+        # Balanced threshold (0.70) - strict enough to avoid false positives, flexible enough for valid matches
+        if best_match and best_score >= 0.70:
+            element_type = (
+                best_match.tag
+                if best_match.tag in ["button", "a", "input", "select", "textarea"]
+                else "button"
+            )
+            selector = f'{element_type}:has-text("{best_match.text}")'
+            confidence = max(50, int(best_score * 100))
+
+            print(f"[Semantic Match] Using offline fuzzy fallback (score: {best_score:.2f}, text: '{best_match.text[:30]}')")
+            return {
+                "selector": selector,
+                "action": action,
+                "reasoning": f"Offline fuzzy match: '{step_description[:50]}' → '{best_match.text}'",
+                "confidence": confidence
+            }
+
+        print(f"[Semantic Match] No reliable offline match (best score: {best_score:.2f})")
+        return None
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        """Normalize text for similarity matching."""
+        import re
+
+        value = value.strip().lower()
+        # Replace punctuation with spaces to keep token boundaries
+        value = re.sub(r"[^\w\s\u3131-\u318E\uAC00-\uD7A3]", " ", value)
+        # Collapse consecutive whitespace
+        return " ".join(value.split())
+
+    @staticmethod
+    def _token_overlap(desc: str, elem: str) -> float:
+        """Compute token overlap between description and element text."""
+        desc_tokens = set(desc.split())
+        elem_tokens = set(elem.split())
+        if not desc_tokens or not elem_tokens:
+            return 0.0
+        return len(desc_tokens & elem_tokens) / len(elem_tokens)
+
+    @staticmethod
+    def _local_embedding(text: str) -> List[float] | None:
+        """
+        Deterministic local embedding fallback using token hashing.
+        """
+        if not text or not text.strip():
+            return [0.0] * 128
+
+        try:
+            import numpy as np
+        except ImportError:
+            return None
+
+        normalized = IntelligentOrchestrator._normalize_text(text)
+        tokens = normalized.split()
+        if not tokens:
+            return [0.0] * 128
+
+        dim = 128
+        vector = np.zeros(dim, dtype=float)
+
+        for token in tokens:
+            for i in range(4):  # spread token across multiple dimensions
+                digest = hashlib.sha256(f"{token}:{i}".encode("utf-8")).digest()
+                index = int.from_bytes(digest[i:i+4], "big") % dim
+                vector[index] += 1.0
+
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector /= norm
+
+        return vector.tolist()
 
     def _get_cached_selector(self, step_description: str, action: str, page_url: str) -> str | None:
         """
@@ -1802,6 +1964,15 @@ Return ONLY a JSON array:
 
         except Exception as e:
             print(f"[Embedding] Error getting embedding for '{text[:50]}': {e}")
+            local_embedding = self._local_embedding(text)
+            if local_embedding is not None:
+                print("[Embedding] Using local deterministic embedding fallback")
+                self.embedding_cache[cache_key] = local_embedding
+
+                if len(self.embedding_cache) % 20 == 0:
+                    self._save_embedding_cache()
+
+                return local_embedding
             return None
 
     def _load_embedding_cache(self) -> None:
