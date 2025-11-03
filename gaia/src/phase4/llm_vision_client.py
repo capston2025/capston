@@ -51,8 +51,18 @@ class LLMVisionClient:
                 - confidence: Confidence score (0-100)
         """
         # Format DOM elements for LLM
+        # Filter out disabled elements first
+        enabled_elements = [
+            elem for elem in dom_elements
+            if not (elem.attributes and (
+                elem.attributes.get("aria-disabled") == "true" or
+                elem.attributes.get("disabled") == "true" or
+                elem.attributes.get("disabled") == True
+            ))
+        ]
+
         dom_list = []
-        for idx, elem in enumerate(dom_elements[:150]):  # Limit to 150 for better coverage (increased from 100)
+        for idx, elem in enumerate(enabled_elements[:150]):  # Limit to 150 for better coverage (increased from 100)
             dom_list.append({
                 "index": idx,
                 "tag": elem.tag,
@@ -78,10 +88,11 @@ Available elements (JSON):
 
 **Selector Priority (HIGHEST to LOWEST):**
 1. Text-based: `button:has-text("폼과 피드백")` ✅ BEST
-2. ID-based: `#submit-button` ✅ GOOD
-3. Data attribute: `[data-testid="login-btn"]` ✅ GOOD
-4. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
-5. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
+2. ARIA role-based: `[role="switch"]`, `[role="slider"]` ✅ BEST (for custom components)
+3. Data attribute: `[data-slot="switch"]`, `[data-slot="slider"]` ✅ EXCELLENT (for Radix UI)
+4. ID-based: `#submit-button` ✅ GOOD
+5. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
+6. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
 
 **Action Detection Rules:**
 - If task mentions "wait", "verify", "check", or "confirm" → action should be "waitForTimeout" or "expectVisible", NOT "click"
@@ -90,21 +101,61 @@ Available elements (JSON):
 - If task involves keyboard input → action is "press"
 - If task involves navigation → action is "goto"
 
+**Custom Component Detection (CRITICAL FOR RADIX UI / ARIA):**
+**ALWAYS check ARIA roles FIRST before using class/id selectors!**
+
+- **Switch/Toggle**: `role="switch"` → Selector: `[role="switch"]`, Action: click, Confidence: 90+
+- **Slider/Range**: `role="slider"` → Selector: `[role="slider"]`, Action: click, Confidence: 90+
+- **Dialog/Modal**: `role="dialog"` or `role="alertdialog"` → Selector: `[role="dialog"]`, Confidence: 90+
+- **Checkbox**: `role="checkbox"` → Selector: `[role="checkbox"]`, Action: click, Confidence: 90+
+- **Radio**: `role="radio"` → Selector: `[role="radio"]`, Action: click, Confidence: 90+
+- **Tab**: `role="tab"` → Selector: `[role="tab"]`, Action: click, Confidence: 90+
+- **Menu/Dropdown**: `role="menu"` or `role="menuitem"` → Selector: `[role="menu"]`, Confidence: 90+
+- **Combobox/Select**: `role="combobox"` → Selector: `[role="combobox"]`, Confidence: 90+
+- **Search**: `role="searchbox"` → Selector: `[role="searchbox"]`, Action: fill, Confidence: 90+
+
+**Keywords to ARIA mapping:**
+- toggle, switch, 스위치, 토글 → `[role="switch"]`
+- slider, range, 슬라이더 → `[role="slider"]`
+- dialog, modal, 다이얼로그, 모달, popup, 팝업 → `[role="dialog"]`
+- checkbox, 체크박스 → `[role="checkbox"]`
+- radio, 라디오 → `[role="radio"]`
+- tab, 탭 → `[role="tab"]`
+- menu, 메뉴, dropdown, 드롭다운 → `[role="menu"]`
+- search, 검색 → `[role="searchbox"]`
+
+**CRITICAL**: Custom components may NOT be standard HTML inputs. Look for ARIA roles first!
+
+**Fuzzy Matching Rules (CRITICAL FOR NAVIGATION):**
+When task uses vague terms, match to similar Korean/English equivalents:
+- "forms section" / "폼" → matches "폼과 피드백", "Forms & Feedback", or similar
+- "feedback section" / "피드백" → matches "폼과 피드백", "Feedback", or similar
+- "interactions" / "인터랙션" → matches "인터랙션과 데이터", "Interactions", or similar
+- "basics" / "기본" → matches "기본 기능", "Basic Features", or similar
+- "home" / "홈" → matches "홈", "홈으로", "Home", or similar
+- Be FLEXIBLE: If task says "navigate to X section", look for buttons containing related keywords
+- HIGH CONFIDENCE (70-90) for partial matches that are semantically similar
+
 **Matching Rules:**
 1. Choose a selector from the "Available elements" list above
 2. Look for elements that reasonably match the task description
-3. **CRITICAL: If task mentions context like "under X" or "in Y section", find that context element FIRST**
-4. **For multiple identical buttons**:
+3. **USE FUZZY/SEMANTIC MATCHING**: "forms section" should match "폼과 피드백" with HIGH confidence
+4. **CRITICAL: If task mentions context like "under X" or "in Y section", find that context element FIRST**
+5. **For multiple identical buttons**:
    - Task: "Click 둘러보기 under 기본 기능" → Find element with text "기본 기능", then find nearby "둘러보기"
    - Use parent/sibling relationships to disambiguate
    - If no context given, pick the FIRST matching element
-5. If you can't find a good match, return LOW confidence (<30)
-6. **If your selector would match multiple elements**: Set confidence to 20 (ambiguous)
+6. If you can't find ANY reasonable semantic match, return LOW confidence (<30)
+7. **If your selector would match multiple elements**: Set confidence to 20 (ambiguous)
 
 **Examples of GOOD decisions:**
+- Task: "Navigate to forms section" + Element: `button:has-text("폼과 피드백")` → confidence: 85 ✅ (fuzzy match!)
 - Task: "Click Share button" + Element: `button:has-text("공유하기")` → confidence: 95 ✅
 - Task: "Wait for page title" + Action: "waitForTimeout" → confidence: 90 ✅
 - Task: "Fill email input" + Element: `input[type="email"]` → confidence: 85 ✅
+- Task: "Click on home or 홈" + Element: `button:has-text("홈으로")` → confidence: 80 ✅ (partial match OK!)
+- Task: "Toggle switch on and off" + Element has `role="switch"` → Selector: `[role="switch"]`, confidence: 90 ✅ (ARIA role!)
+- Task: "Use slider control" + Element has `role="slider"` → Selector: `[role="slider"]`, confidence: 90 ✅ (ARIA role!)
 
 **Examples of BAD decisions (AVOID THESE):**
 - Task: "Click button" + Selector: `button.flex.items-center` → confidence: 0 ❌ (generic classes!)

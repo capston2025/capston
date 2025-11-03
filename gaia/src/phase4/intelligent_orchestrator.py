@@ -60,6 +60,13 @@ class IntelligentOrchestrator:
         )
         self._load_cache()
 
+        # Embedding cache: Maps text -> embedding vector
+        self.embedding_cache: Dict[str, List[float]] = {}
+        self.embedding_cache_file = os.path.join(
+            os.path.dirname(__file__), "../../../artifacts/cache/embedding_cache.json"
+        )
+        self._load_embedding_cache()
+
     def execute_scenarios(
         self,
         url: str,
@@ -152,10 +159,16 @@ class IntelligentOrchestrator:
 
                 if result["status"] == "success":
                     results["success"] += 1
-                    self.tracker.mark_found(scenario.id, evidence=result.get("logs", ""))
+                    logs_evidence = result.get("logs", "")
+                    if isinstance(logs_evidence, list):
+                        logs_evidence = "\n".join(logs_evidence)
+                    self.tracker.mark_found(scenario.id, evidence=logs_evidence)
                 elif result["status"] == "partial":
                     results["partial"] += 1
-                    self.tracker.mark_found(scenario.id, evidence=result.get("logs", "") + " (partial)")
+                    logs_evidence = result.get("logs", "")
+                    if isinstance(logs_evidence, list):
+                        logs_evidence = "\n".join(logs_evidence)
+                    self.tracker.mark_found(scenario.id, evidence=logs_evidence + " (partial)")
                 elif result["status"] == "failed":
                     results["failed"] += 1
                 elif result["status"] == "skipped":
@@ -508,13 +521,21 @@ Return ONLY a JSON array:
                         }
                         self._log(f"  💾 Cache hit! Using cached selector", progress_callback)
                     else:
-                        # Ask LLM to select element
-                        llm_decision = self.llm_client.select_element_for_step(
-                            step_description=step.description,
-                            dom_elements=dom_elements,
-                            screenshot_base64=screenshot,
-                            url=current_url
-                        )
+                        # SEMANTIC PRE-MATCHING: Try fast semantic matching before expensive LLM call
+                        semantic_match = self._try_semantic_matching(step.description, dom_elements, step.action)
+
+                        if semantic_match:
+                            # Found good semantic match, skip LLM
+                            llm_decision = semantic_match
+                            self._log(f"  🎯 Semantic match! Skipping LLM (saving cost)", progress_callback)
+                        else:
+                            # Ask LLM to select element
+                            llm_decision = self.llm_client.select_element_for_step(
+                                step_description=step.description,
+                                dom_elements=dom_elements,
+                                screenshot_base64=screenshot,
+                                url=current_url
+                            )
 
                     logs.append(f"  LLM Decision: {llm_decision['reasoning']}")
                     logs.append(f"  Confidence: {llm_decision['confidence']}%")
@@ -560,8 +581,8 @@ Return ONLY a JSON array:
                                 llm_decision['confidence'] = 0
 
                     # If first step fails with low confidence, skip entire scenario
-                    # Lowered threshold from 60% to 30% to be more aggressive with testing
-                    if step_idx == 1 and llm_decision["confidence"] < 30:
+                    # Lowered threshold from 30% to 20% for better fuzzy matching support
+                    if step_idx == 1 and llm_decision["confidence"] < 20:
                         logs.append(f"  ⚠️ First step has low confidence, skipping entire scenario")
                         self._log(f"    ⚠️ Skipping (low confidence: {llm_decision['confidence']}%)", progress_callback)
                         return {
@@ -600,22 +621,28 @@ Return ONLY a JSON array:
                     if auto_fix_succeeded:
                         self._log(f"    ✅ Auto-fix found reliable selector, skipping fallback", progress_callback)
                         # Skip fallback - auto-fix already found a good selector
-                    elif llm_decision["confidence"] < 30:
-                        # Only trigger fallback if auto-fix didn't succeed
+                    elif llm_decision["confidence"] < 50:
+                        # Trigger fallback for confidence < 50% (increased from 30% to catch more edge cases)
+                        # Fallback includes: aggressive text matching, smart navigation, scroll+vision
                         logs.append(f"  ⚠️ Low confidence ({llm_decision['confidence']}%), trying aggressive search...")
                         self._log(f"    🔍 Low confidence ({llm_decision['confidence']}%), trying scroll + vision fallback...", progress_callback)
                         self._log(f"    💡 Reason: {llm_decision.get('reasoning', 'Unknown')}", progress_callback)
 
                         # STEP 1: Try aggressive text matching on CURRENT PAGE first
                         import re
-                        # Extract ALL Korean/English text from description
-                        all_korean = re.findall(r'[가-힣]+', step.description)
-                        all_english = re.findall(r'[A-Za-z]+', step.description)
+                        # Extract ALL Korean/English text from description (minimum 2 chars to avoid false matches)
+                        all_korean = re.findall(r'[가-힣]{2,}', step.description)  # Min 2 Korean chars
+                        all_english = re.findall(r'[A-Za-z]{3,}', step.description)  # Min 3 English chars
 
                         found_by_text = False
-                        for target_text in all_korean + all_english:
-                            # Search in ALL DOM elements (not just matching ones)
-                            text_match = next((e for e in dom_elements if target_text in e.text), None)
+                        # Try longest matches first to avoid substring issues
+                        for target_text in sorted(all_korean + all_english, key=len, reverse=True):
+                            # Search in ALL DOM elements - use exact match or word boundary
+                            text_match = next((e for e in dom_elements
+                                             if target_text == e.text or  # Exact match first
+                                                f' {target_text} ' in f' {e.text} ' or  # Word boundary
+                                                e.text.startswith(target_text) or
+                                                e.text.endswith(target_text)), None)
                             if text_match:
                                 element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
                                 better_selector = f'{element_type}:has-text("{target_text}")'
@@ -713,7 +740,8 @@ Return ONLY a JSON array:
                                     self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
 
                         # STEP 4: If still low confidence, try vision-based coordinate click
-                        if not found_by_text and llm_decision["confidence"] < 30:
+                        # Increased threshold from 30 to 50 to trigger vision more aggressively
+                        if not found_by_text and llm_decision["confidence"] < 50:
                             self._log(f"    🎯 Trying vision-based coordinate detection...", progress_callback)
                             self._log(f"    🤖 Asking {self.llm_client.model} to find element coordinates in screenshot...", progress_callback)
                             coord_result = self.llm_client.find_element_coordinates(
@@ -1398,6 +1426,240 @@ Return ONLY a JSON array:
         key_string = f"{step_description}|{action}|{normalized_url}"
         return hashlib.md5(key_string.encode('utf-8')).hexdigest()
 
+    def _try_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
+        """
+        Embedding-based semantic pre-matching before expensive LLM call.
+        Uses OpenAI text-embedding-3-small for true semantic similarity.
+        Also includes ARIA role-based detection for custom components.
+
+        Args:
+            step_description: Natural language step description
+            dom_elements: Available DOM elements
+            action: Action type (click, fill, etc.)
+
+        Returns:
+            Dict with selector/confidence/reasoning if good match found, None otherwise
+        """
+        try:
+            import numpy as np
+            import re
+
+            # STEP 1: ARIA Role-based detection (highest priority for custom components)
+            # Check if description mentions toggle/switch/slider
+            desc_lower = step_description.lower()
+
+            # Toggle/Switch detection
+            if any(keyword in desc_lower for keyword in ['toggle', 'switch', '스위치', '토글']):
+                # Look for elements with role="switch" or data-slot="switch"
+                switch_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and (
+                         e.attributes.get('role') == 'switch' or
+                         e.attributes.get('data-slot') == 'switch'
+                     )),
+                    None
+                )
+                if switch_elem:
+                    # Use ARIA role selector (Playwright supports this)
+                    selector = '[role="switch"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",  # Toggle switches use click
+                        "reasoning": "ARIA role match: Found switch component with role='switch'",
+                        "confidence": 95
+                    }
+
+            # Slider detection
+            if any(keyword in desc_lower for keyword in ['slider', 'range', '슬라이더']):
+                # Look for elements with role="slider" or data-slot="slider"
+                slider_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and (
+                         e.attributes.get('role') == 'slider' or
+                         e.attributes.get('data-slot') == 'slider'
+                     )),
+                    None
+                )
+                if slider_elem:
+                    # Use ARIA role selector
+                    selector = '[role="slider"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",  # Interact with slider via click
+                        "reasoning": "ARIA role match: Found slider component with role='slider'",
+                        "confidence": 95
+                    }
+
+            # Dialog/Modal detection
+            if any(keyword in desc_lower for keyword in ['dialog', 'modal', '다이얼로그', '모달', 'popup', '팝업']):
+                dialog_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and (
+                         e.attributes.get('role') == 'dialog' or
+                         e.attributes.get('role') == 'alertdialog'
+                     )),
+                    None
+                )
+                if dialog_elem:
+                    selector = '[role="dialog"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",
+                        "reasoning": "ARIA role match: Found dialog/modal component with role='dialog'",
+                        "confidence": 95
+                    }
+
+            # Checkbox detection
+            if any(keyword in desc_lower for keyword in ['checkbox', '체크박스', 'check']):
+                checkbox_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and e.attributes.get('role') == 'checkbox'),
+                    None
+                )
+                if checkbox_elem:
+                    selector = '[role="checkbox"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",
+                        "reasoning": "ARIA role match: Found checkbox component with role='checkbox'",
+                        "confidence": 95
+                    }
+
+            # Radio button detection
+            if any(keyword in desc_lower for keyword in ['radio', '라디오']):
+                radio_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and e.attributes.get('role') == 'radio'),
+                    None
+                )
+                if radio_elem:
+                    selector = '[role="radio"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",
+                        "reasoning": "ARIA role match: Found radio button with role='radio'",
+                        "confidence": 95
+                    }
+
+            # Tab detection
+            if any(keyword in desc_lower for keyword in ['tab', '탭']):
+                tab_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and e.attributes.get('role') == 'tab'),
+                    None
+                )
+                if tab_elem:
+                    selector = '[role="tab"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",
+                        "reasoning": "ARIA role match: Found tab component with role='tab'",
+                        "confidence": 95
+                    }
+
+            # Menu detection
+            if any(keyword in desc_lower for keyword in ['menu', '메뉴', 'dropdown', '드롭다운']):
+                menu_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and (
+                         e.attributes.get('role') == 'menu' or
+                         e.attributes.get('role') == 'menuitem'
+                     )),
+                    None
+                )
+                if menu_elem:
+                    selector = '[role="menu"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",
+                        "reasoning": "ARIA role match: Found menu component with role='menu'",
+                        "confidence": 95
+                    }
+
+            # Combobox detection (autocomplete/select)
+            if any(keyword in desc_lower for keyword in ['combobox', 'autocomplete', 'select', '선택', '자동완성']):
+                combobox_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and e.attributes.get('role') == 'combobox'),
+                    None
+                )
+                if combobox_elem:
+                    selector = '[role="combobox"]'
+                    return {
+                        "selector": selector,
+                        "action": "click",
+                        "reasoning": "ARIA role match: Found combobox/select with role='combobox'",
+                        "confidence": 95
+                    }
+
+            # Searchbox detection
+            if any(keyword in desc_lower for keyword in ['search', '검색']):
+                search_elem = next(
+                    (e for e in dom_elements
+                     if e.attributes and e.attributes.get('role') == 'searchbox'),
+                    None
+                )
+                if search_elem:
+                    selector = '[role="searchbox"]'
+                    return {
+                        "selector": selector,
+                        "action": "fill",  # Search inputs use fill
+                        "reasoning": "ARIA role match: Found search input with role='searchbox'",
+                        "confidence": 95
+                    }
+
+            # STEP 2: Embedding-based semantic matching (fallback for text-based elements)
+            # Get embedding for step description
+            desc_embedding = self._get_embedding(step_description)
+            if desc_embedding is None:
+                return None
+
+            # Find best matching element
+            best_match = None
+            best_similarity = 0.0
+            SIMILARITY_THRESHOLD = 0.82  # High threshold for semantic matching
+
+            for elem in dom_elements:
+                elem_text = elem.text.strip()
+                if not elem_text or len(elem_text) < 2:
+                    continue
+
+                # Get embedding for element text
+                elem_embedding = self._get_embedding(elem_text)
+                if elem_embedding is None:
+                    continue
+
+                # Calculate cosine similarity
+                similarity = np.dot(desc_embedding, elem_embedding) / (
+                    np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
+                )
+
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = elem
+
+            # If we found a good semantic match, use it
+            if best_match and best_similarity >= SIMILARITY_THRESHOLD:
+                element_type = best_match.tag if best_match.tag in ['button', 'a', 'input', 'select', 'textarea'] else 'button'
+                selector = f'{element_type}:has-text("{best_match.text}")'
+
+                # Convert similarity to confidence percentage
+                confidence = int(best_similarity * 100)
+
+                return {
+                    "selector": selector,
+                    "action": action,
+                    "reasoning": f"Embedding semantic match: '{step_description[:50]}' → '{best_match.text}' (similarity: {best_similarity:.2f})",
+                    "confidence": confidence
+                }
+
+            # No good semantic match found
+            return None
+
+        except Exception as e:
+            print(f"[Semantic Match] Error: {e}")
+            return None
+
     def _get_cached_selector(self, step_description: str, action: str, page_url: str) -> str | None:
         """
         Try to get cached selector for this step.
@@ -1446,6 +1708,64 @@ Return ONLY a JSON array:
         # Save to disk periodically
         if len(self.selector_cache) % 5 == 0:  # Save every 5 updates
             self._save_cache()
+
+    def _get_embedding(self, text: str) -> List[float] | None:
+        """
+        Get embedding vector for text using OpenAI text-embedding-3-small.
+        Uses cache to avoid redundant API calls.
+
+        Args:
+            text: Text to embed
+
+        Returns:
+            Embedding vector or None if error
+        """
+        # Check cache first
+        cache_key = hashlib.md5(text.encode('utf-8')).hexdigest()
+        if cache_key in self.embedding_cache:
+            return self.embedding_cache[cache_key]
+
+        try:
+            # Call OpenAI embedding API
+            response = self.llm_client.client.embeddings.create(
+                model="text-embedding-3-small",
+                input=text
+            )
+
+            embedding = response.data[0].embedding
+
+            # Cache the result
+            self.embedding_cache[cache_key] = embedding
+
+            # Save cache periodically
+            if len(self.embedding_cache) % 20 == 0:
+                self._save_embedding_cache()
+
+            return embedding
+
+        except Exception as e:
+            print(f"[Embedding] Error getting embedding for '{text[:50]}': {e}")
+            return None
+
+    def _load_embedding_cache(self) -> None:
+        """Load embedding cache from disk."""
+        try:
+            if os.path.exists(self.embedding_cache_file):
+                with open(self.embedding_cache_file, 'r', encoding='utf-8') as f:
+                    self.embedding_cache = json.load(f)
+                print(f"[Embedding Cache] Loaded {len(self.embedding_cache)} cached embeddings")
+        except Exception as e:
+            print(f"[Embedding Cache] Failed to load cache: {e}")
+            self.embedding_cache = {}
+
+    def _save_embedding_cache(self) -> None:
+        """Save embedding cache to disk."""
+        try:
+            os.makedirs(os.path.dirname(self.embedding_cache_file), exist_ok=True)
+            with open(self.embedding_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.embedding_cache, f, indent=2)
+        except Exception as e:
+            print(f"[Embedding Cache] Failed to save cache: {e}")
 
 
 __all__ = ["IntelligentOrchestrator"]
