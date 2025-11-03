@@ -473,5 +473,109 @@ If the element is not visible or unclear, set confidence to 0.0
                 "reasoning": f"Error: {e}"
             }
 
+    def aggregate_matching_results(
+        self,
+        step_description: str,
+        aria_result: Dict[str, Any] | None,
+        semantic_result: Dict[str, Any] | None,
+        vision_result: Dict[str, Any],
+        url: str,
+    ) -> Dict[str, Any]:
+        """
+        병렬로 실행된 3가지 매칭 결과를 LLM이 분석해서 최종 결정.
+
+        Args:
+            step_description: 스텝 설명
+            aria_result: ARIA 탐지 결과 (None 가능)
+            semantic_result: 시맨틱 매칭 결과 (None 가능)
+            vision_result: LLM 비전 분석 결과
+            url: 현재 페이지 URL
+
+        Returns:
+            최종 선택된 selector/action/confidence
+        """
+        # 결과를 JSON 형식으로 정리
+        results_summary = {
+            "aria": aria_result if aria_result else {"status": "no_match", "confidence": 0},
+            "semantic": semantic_result if semantic_result else {"status": "no_match", "confidence": 0},
+            "vision": vision_result
+        }
+
+        prompt = f"""You are a test automation expert deciding which element selector to use.
+
+Task: {step_description}
+Page URL: {url}
+
+Three different methods analyzed the page:
+
+**1. ARIA Role Detection:**
+{json.dumps(results_summary['aria'], ensure_ascii=False, indent=2)}
+
+**2. Semantic Text Matching (embedding-based):**
+{json.dumps(results_summary['semantic'], ensure_ascii=False, indent=2)}
+
+**3. Vision + DOM Analysis (your previous analysis):**
+{json.dumps(results_summary['vision'], ensure_ascii=False, indent=2)}
+
+**Decision Rules:**
+1. If 2+ methods agree on the same element → HIGH confidence
+2. If ARIA + Semantic agree (even if different from Vision) → prefer them (Vision might hallucinate)
+3. If only 1 method succeeded → use it (but lower confidence)
+4. If all 3 point to different elements → pick the one with highest confidence BUT penalize confidence by 20%
+5. Consider method reliability: ARIA (most reliable for custom components) > Semantic (good for text) > Vision (can hallucinate)
+
+**CRITICAL: Cross-validation**
+- If ARIA found multiple elements but didn't disambiguate → Vision/Semantic can help choose
+- If Vision selector doesn't match any ARIA/Semantic results → be suspicious (낮은 confidence)
+
+Required JSON format (no markdown):
+{{
+    "selector": "final_css_selector",
+    "action": "click_or_fill_or_press_etc",
+    "reasoning": "why this was chosen (method agreement, confidence comparison, etc)",
+    "confidence": 85,
+    "method_used": "aria" or "semantic" or "vision" or "consensus"
+}}
+
+JSON response:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+
+            response_text = response.choices[0].message.content or ""
+
+            # Strip markdown
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            if not response_text:
+                print("[Aggregator] LLM returned empty response, using vision result")
+                return vision_result
+
+            try:
+                result = json.loads(response_text)
+                return result
+            except json.JSONDecodeError:
+                print(f"[Aggregator] JSON parse failed, using vision result: {response_text[:100]}")
+                return vision_result
+
+        except Exception as e:
+            print(f"[Aggregator] Failed: {e}, using vision result")
+            return vision_result
+
 
 __all__ = ["LLMVisionClient"]

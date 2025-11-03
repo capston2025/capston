@@ -521,15 +521,21 @@ Return ONLY a JSON array:
                         }
                         self._log(f"  💾 Cache hit! Using cached selector", progress_callback)
                     else:
-                        # SEMANTIC PRE-MATCHING: Try fast semantic matching before expensive LLM call
-                        semantic_match = self._try_semantic_matching(step.description, dom_elements, step.action)
+                        # PARALLEL MATCHING: ARIA + Semantic 병렬 실행, 필요시 LLM Aggregator
+                        parallel_match = self._try_semantic_matching(
+                            step.description,
+                            dom_elements,
+                            step.action,
+                            current_url=current_url,
+                            screenshot=screenshot
+                        )
 
-                        if semantic_match:
-                            # Found good semantic match, skip LLM
-                            llm_decision = semantic_match
-                            self._log(f"  🎯 Semantic match! Skipping LLM (saving cost)", progress_callback)
+                        if parallel_match:
+                            # Found good match from ARIA/Semantic/Aggregator
+                            llm_decision = parallel_match
+                            self._log(f"  🎯 Parallel match succeeded!", progress_callback)
                         else:
-                            # Ask LLM to select element
+                            # All fast methods failed, use full LLM Vision
                             llm_decision = self.llm_client.select_element_for_step(
                                 step_description=step.description,
                                 dom_elements=dom_elements,
@@ -1420,216 +1426,186 @@ Return ONLY a JSON array:
 
     def _get_cache_key(self, step_description: str, action: str, page_url: str) -> str:
         """Generate cache key for a step."""
-        # Normalize URL (remove hash and trailing slash for consistency)
-        normalized_url = page_url.split('#')[0].rstrip('/')
+        # Normalize URL (keep hash for SPA, just remove trailing slash)
+        # SPA에서 해시가 다르면 완전히 다른 페이지이므로 해시 유지 필요!
+        normalized_url = page_url.rstrip('/')
         # Create hash of (description + action + url)
         key_string = f"{step_description}|{action}|{normalized_url}"
         return hashlib.md5(key_string.encode('utf-8')).hexdigest()
 
-    def _try_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
+    def _detect_aria_roles(self, step_description: str, dom_elements: List[DomElement]) -> Dict[str, List[DomElement]]:
         """
-        Embedding-based semantic pre-matching before expensive LLM call.
-        Uses OpenAI text-embedding-3-small for true semantic similarity.
-        Also includes ARIA role-based detection for custom components.
+        Detect ALL elements matching ARIA roles mentioned in step description.
+        Returns ALL matches, not just the first one (for disambiguation).
 
         Args:
             step_description: Natural language step description
             dom_elements: Available DOM elements
-            action: Action type (click, fill, etc.)
 
         Returns:
-            Dict with selector/confidence/reasoning if good match found, None otherwise
+            Dict mapping role names to lists of matching elements
+        """
+        desc_lower = step_description.lower()
+        matches = {}
+
+        # Define ARIA role keywords and their corresponding roles
+        role_keywords = {
+            'switch': (['toggle', 'switch', '스위치', '토글'], 'switch'),
+            'slider': (['slider', 'range', '슬라이더'], 'slider'),
+            'dialog': (['dialog', 'modal', '다이얼로그', '모달', 'popup', '팝업'], 'dialog'),
+            'checkbox': (['checkbox', '체크박스', 'check'], 'checkbox'),
+            'radio': (['radio', '라디오'], 'radio'),
+            'tab': (['tab', '탭'], 'tab'),
+            'menu': (['menu', '메뉴', 'dropdown', '드롭다운'], 'menu'),
+            'combobox': (['combobox', 'autocomplete', 'select', '선택', '자동완성'], 'combobox'),
+            'searchbox': (['search', '검색'], 'searchbox'),
+        }
+
+        # Check each role type
+        for role_name, (keywords, aria_role) in role_keywords.items():
+            if any(keyword in desc_lower for keyword in keywords):
+                # Find ALL elements with this ARIA role
+                matching_elements = [
+                    elem for elem in dom_elements
+                    if elem.attributes and elem.attributes.get('role') == aria_role
+                ]
+                if matching_elements:
+                    matches[role_name] = matching_elements
+
+        return matches
+
+    def _disambiguate_aria_matches(self, role_name: str, matches: List[DomElement],
+                                   step_description: str, action: str) -> Dict[str, Any] | None:
+        """
+        Disambiguate when multiple elements match the same ARIA role.
+        Uses text matching → semantic matching → returns candidates for LLM.
+
+        Args:
+            role_name: ARIA role type (e.g., 'switch', 'slider')
+            matches: List of elements with this ARIA role
+            step_description: Step description
+            action: Action type
+
+        Returns:
+            Dict with selector/confidence/reasoning if disambiguated, None if needs LLM
+        """
+        import numpy as np
+
+        # Single match - check if navigation is needed
+        if len(matches) == 1:
+            # Check if step mentions navigation keywords
+            nav_keywords = ['navigate', 'go to', 'open', '이동', '가기', '열기']
+            needs_navigation = any(kw in step_description.lower() for kw in nav_keywords)
+
+            # If navigation mentioned, let LLM handle the full context
+            if needs_navigation:
+                return None
+
+            # Otherwise, safe to use the single match
+            selector = f'[role="{matches[0].attributes.get("role")}"]'
+            return {
+                "selector": selector,
+                "action": "click" if action != "fill" else "fill",
+                "reasoning": f"ARIA role match: Single {role_name} found (role='{matches[0].attributes.get('role')}')",
+                "confidence": 95
+            }
+
+        # Multiple matches - try text-based disambiguation
+        print(f"[ARIA Disambiguate] Found {len(matches)} {role_name} elements")
+
+        # Stage 1: Exact text match
+        for elem in matches:
+            if elem.text and elem.text.strip() in step_description:
+                selector = f'[role="{elem.attributes.get("role")}"]:has-text("{elem.text}")'
+                return {
+                    "selector": selector,
+                    "action": "click" if action != "fill" else "fill",
+                    "reasoning": f"ARIA + text match: {role_name} with text '{elem.text}'",
+                    "confidence": 90
+                }
+
+        # Stage 2: Semantic matching on elements with text
+        elements_with_text = [elem for elem in matches if elem.text and elem.text.strip()]
+
+        if elements_with_text:
+            desc_embedding = self._get_embedding(step_description)
+            if desc_embedding is not None:
+                best_match = None
+                best_similarity = 0.0
+
+                for elem in elements_with_text:
+                    elem_embedding = self._get_embedding(elem.text)
+                    if elem_embedding is None:
+                        continue
+
+                    similarity = np.dot(desc_embedding, elem_embedding) / (
+                        np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
+                    )
+
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match = elem
+
+                # If high similarity, use it
+                if best_match and best_similarity >= 0.80:
+                    selector = f'[role="{best_match.attributes.get("role")}"]:has-text("{best_match.text}")'
+                    return {
+                        "selector": selector,
+                        "action": "click" if action != "fill" else "fill",
+                        "reasoning": f"ARIA + semantic match: {role_name} '{best_match.text}' (similarity: {best_similarity:.2f})",
+                        "confidence": int(best_similarity * 100)
+                    }
+
+        # Stage 3: Unable to disambiguate - return None to fall back to LLM
+        # LLM will receive the filtered list via vision + DOM analysis
+        print(f"[ARIA Disambiguate] Unable to disambiguate {len(matches)} {role_name} elements, falling back to LLM")
+        return None
+
+    def _try_aria_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
+        """
+        ARIA role-based matching (병렬 실행용 분리 함수).
         """
         try:
-            import numpy as np
-            import re
+            aria_matches = self._detect_aria_roles(step_description, dom_elements)
 
-            # STEP 1: ARIA Role-based detection (highest priority for custom components)
-            # Check if description mentions toggle/switch/slider
-            desc_lower = step_description.lower()
+            if aria_matches:
+                for role_name, elements in aria_matches.items():
+                    result = self._disambiguate_aria_matches(role_name, elements, step_description, action)
+                    if result:
+                        return result
+            return None
+        except Exception as e:
+            print(f"[ARIA Match] Error: {e}")
+            return None
 
-            # Toggle/Switch detection
-            if any(keyword in desc_lower for keyword in ['toggle', 'switch', '스위치', '토글']):
-                # Look for elements with role="switch" or data-slot="switch"
-                switch_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and (
-                         e.attributes.get('role') == 'switch' or
-                         e.attributes.get('data-slot') == 'switch'
-                     )),
-                    None
-                )
-                if switch_elem:
-                    # Use ARIA role selector (Playwright supports this)
-                    selector = '[role="switch"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",  # Toggle switches use click
-                        "reasoning": "ARIA role match: Found switch component with role='switch'",
-                        "confidence": 95
-                    }
+    def _try_pure_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
+        """
+        Embedding-based semantic matching (병렬 실행용 분리 함수).
+        """
+        try:
+            try:
+                import numpy as np
+            except ImportError:
+                print("[Semantic Match] Warning: numpy not available, skipping semantic matching")
+                return None
 
-            # Slider detection
-            if any(keyword in desc_lower for keyword in ['slider', 'range', '슬라이더']):
-                # Look for elements with role="slider" or data-slot="slider"
-                slider_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and (
-                         e.attributes.get('role') == 'slider' or
-                         e.attributes.get('data-slot') == 'slider'
-                     )),
-                    None
-                )
-                if slider_elem:
-                    # Use ARIA role selector
-                    selector = '[role="slider"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",  # Interact with slider via click
-                        "reasoning": "ARIA role match: Found slider component with role='slider'",
-                        "confidence": 95
-                    }
-
-            # Dialog/Modal detection
-            if any(keyword in desc_lower for keyword in ['dialog', 'modal', '다이얼로그', '모달', 'popup', '팝업']):
-                dialog_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and (
-                         e.attributes.get('role') == 'dialog' or
-                         e.attributes.get('role') == 'alertdialog'
-                     )),
-                    None
-                )
-                if dialog_elem:
-                    selector = '[role="dialog"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",
-                        "reasoning": "ARIA role match: Found dialog/modal component with role='dialog'",
-                        "confidence": 95
-                    }
-
-            # Checkbox detection
-            if any(keyword in desc_lower for keyword in ['checkbox', '체크박스', 'check']):
-                checkbox_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and e.attributes.get('role') == 'checkbox'),
-                    None
-                )
-                if checkbox_elem:
-                    selector = '[role="checkbox"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",
-                        "reasoning": "ARIA role match: Found checkbox component with role='checkbox'",
-                        "confidence": 95
-                    }
-
-            # Radio button detection
-            if any(keyword in desc_lower for keyword in ['radio', '라디오']):
-                radio_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and e.attributes.get('role') == 'radio'),
-                    None
-                )
-                if radio_elem:
-                    selector = '[role="radio"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",
-                        "reasoning": "ARIA role match: Found radio button with role='radio'",
-                        "confidence": 95
-                    }
-
-            # Tab detection
-            if any(keyword in desc_lower for keyword in ['tab', '탭']):
-                tab_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and e.attributes.get('role') == 'tab'),
-                    None
-                )
-                if tab_elem:
-                    selector = '[role="tab"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",
-                        "reasoning": "ARIA role match: Found tab component with role='tab'",
-                        "confidence": 95
-                    }
-
-            # Menu detection
-            if any(keyword in desc_lower for keyword in ['menu', '메뉴', 'dropdown', '드롭다운']):
-                menu_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and (
-                         e.attributes.get('role') == 'menu' or
-                         e.attributes.get('role') == 'menuitem'
-                     )),
-                    None
-                )
-                if menu_elem:
-                    selector = '[role="menu"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",
-                        "reasoning": "ARIA role match: Found menu component with role='menu'",
-                        "confidence": 95
-                    }
-
-            # Combobox detection (autocomplete/select)
-            if any(keyword in desc_lower for keyword in ['combobox', 'autocomplete', 'select', '선택', '자동완성']):
-                combobox_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and e.attributes.get('role') == 'combobox'),
-                    None
-                )
-                if combobox_elem:
-                    selector = '[role="combobox"]'
-                    return {
-                        "selector": selector,
-                        "action": "click",
-                        "reasoning": "ARIA role match: Found combobox/select with role='combobox'",
-                        "confidence": 95
-                    }
-
-            # Searchbox detection
-            if any(keyword in desc_lower for keyword in ['search', '검색']):
-                search_elem = next(
-                    (e for e in dom_elements
-                     if e.attributes and e.attributes.get('role') == 'searchbox'),
-                    None
-                )
-                if search_elem:
-                    selector = '[role="searchbox"]'
-                    return {
-                        "selector": selector,
-                        "action": "fill",  # Search inputs use fill
-                        "reasoning": "ARIA role match: Found search input with role='searchbox'",
-                        "confidence": 95
-                    }
-
-            # STEP 2: Embedding-based semantic matching (fallback for text-based elements)
-            # Get embedding for step description
             desc_embedding = self._get_embedding(step_description)
             if desc_embedding is None:
                 return None
 
-            # Find best matching element
             best_match = None
             best_similarity = 0.0
-            SIMILARITY_THRESHOLD = 0.82  # High threshold for semantic matching
+            SIMILARITY_THRESHOLD = 0.82
 
             for elem in dom_elements:
                 elem_text = elem.text.strip()
                 if not elem_text or len(elem_text) < 2:
                     continue
 
-                # Get embedding for element text
                 elem_embedding = self._get_embedding(elem_text)
                 if elem_embedding is None:
                     continue
 
-                # Calculate cosine similarity
                 similarity = np.dot(desc_embedding, elem_embedding) / (
                     np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
                 )
@@ -1638,27 +1614,102 @@ Return ONLY a JSON array:
                     best_similarity = similarity
                     best_match = elem
 
-            # If we found a good semantic match, use it
             if best_match and best_similarity >= SIMILARITY_THRESHOLD:
                 element_type = best_match.tag if best_match.tag in ['button', 'a', 'input', 'select', 'textarea'] else 'button'
                 selector = f'{element_type}:has-text("{best_match.text}")'
-
-                # Convert similarity to confidence percentage
                 confidence = int(best_similarity * 100)
 
                 return {
                     "selector": selector,
                     "action": action,
-                    "reasoning": f"Embedding semantic match: '{step_description[:50]}' → '{best_match.text}' (similarity: {best_similarity:.2f})",
+                    "reasoning": f"Semantic match: '{step_description[:50]}' → '{best_match.text}' (similarity: {best_similarity:.2f})",
                     "confidence": confidence
                 }
 
-            # No good semantic match found
             return None
 
         except Exception as e:
             print(f"[Semantic Match] Error: {e}")
             return None
+
+    def _try_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str,
+                                current_url: str = "", screenshot: str = "") -> Dict[str, Any] | None:
+        """
+        병렬 매칭 시스템: ARIA + Semantic을 동시 실행 후, 둘 다 성공하면 LLM이 결과 통합.
+
+        병렬 실행 흐름:
+        1. ARIA detection (빠름, 무료)
+        2. Semantic matching (빠름, 저렴)
+        3. 둘 다 성공하면 → LLM Aggregator가 최종 판단 (교차 검증)
+        4. 하나만 성공하면 → 그 결과 사용
+        5. 둘 다 실패하면 → None (메인 로직이 LLM Vision 호출)
+
+        Returns:
+            최종 선택된 셀렉터 결과 또는 None
+        """
+        print("[Parallel Match] Starting ARIA + Semantic parallel execution...")
+
+        # 병렬 실행 (Python은 진짜 병렬이 아니지만 I/O 바운드라 충분히 빠름)
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            aria_future = executor.submit(self._try_aria_matching, step_description, dom_elements, action)
+            semantic_future = executor.submit(self._try_pure_semantic_matching, step_description, dom_elements, action)
+
+            # 결과 기다리기
+            aria_result = aria_future.result()
+            semantic_result = semantic_future.result()
+
+        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: {semantic_result is not None}")
+
+        # Case 1: 둘 다 성공 → LLM Aggregator가 최종 판단
+        if aria_result and semantic_result:
+            print(f"[Parallel Match] Both succeeded! ARIA conf={aria_result['confidence']}, Semantic conf={semantic_result['confidence']}")
+
+            # 셀렉터가 같으면 LLM 호출 생략 (확실함)
+            if aria_result['selector'] == semantic_result['selector']:
+                print(f"[Parallel Match] ✅ Both agree on same selector! Using it with high confidence.")
+                aria_result['confidence'] = min(95, aria_result['confidence'] + 10)  # Boost confidence
+                return aria_result
+
+            # 셀렉터가 다르면 LLM에게 물어보기 (교차 검증 필요)
+            print(f"[Parallel Match] ⚠️ Disagreement detected! Calling LLM Aggregator...")
+            print(f"  ARIA: {aria_result['selector']}")
+            print(f"  Semantic: {semantic_result['selector']}")
+
+            # LLM Vision도 실행해서 3-way 교차 검증
+            vision_result = self.llm_client.select_element_for_step(
+                step_description=step_description,
+                dom_elements=dom_elements,
+                screenshot_base64=screenshot,
+                url=current_url
+            )
+
+            # LLM Aggregator 호출
+            final_decision = self.llm_client.aggregate_matching_results(
+                step_description=step_description,
+                aria_result=aria_result,
+                semantic_result=semantic_result,
+                vision_result=vision_result,
+                url=current_url
+            )
+
+            print(f"[Parallel Match] LLM Aggregator decision: {final_decision['selector']} (conf: {final_decision['confidence']})")
+            return final_decision
+
+        # Case 2: ARIA만 성공
+        elif aria_result:
+            print(f"[Parallel Match] Using ARIA only (conf: {aria_result['confidence']})")
+            return aria_result
+
+        # Case 3: Semantic만 성공
+        elif semantic_result:
+            print(f"[Parallel Match] Using Semantic only (conf: {semantic_result['confidence']})")
+            return semantic_result
+
+        # Case 4: 둘 다 실패 → None 리턴 (메인 로직이 LLM Vision 호출)
+        print("[Parallel Match] Both ARIA and Semantic failed, will use LLM Vision")
+        return None
 
     def _get_cached_selector(self, step_description: str, action: str, page_url: str) -> str | None:
         """
@@ -1690,6 +1741,12 @@ Return ONLY a JSON array:
             selector: Selector that was used
             success: Whether the action succeeded
         """
+        # 동적 ID 패턴 감지 - Radix UI 등의 프레임워크가 생성하는 동적 ID는 캐싱하지 않음
+        import re
+        if re.search(r'radix-:[a-z0-9]+:', selector, re.IGNORECASE):
+            print(f"[Cache] Skipping cache for dynamic ID selector: {selector}")
+            return
+
         cache_key = self._get_cache_key(step_description, action, page_url)
 
         if cache_key not in self.selector_cache:
