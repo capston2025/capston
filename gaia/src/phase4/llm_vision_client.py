@@ -441,6 +441,12 @@ JSON response:"""
         try:
             prompt = f"""You are a UI element locator. Find the element described as: "{description}"
 
+**IMPORTANT: Be FLEXIBLE with matching:**
+- "이름 입력" should match any name input field (label "이름", placeholder "홍길동", etc.)
+- "이메일 입력" should match email fields (label "이메일", "Email", type="email", etc.)
+- Focus on the INTENT, not exact text match
+- Look for labels, placeholders, and field purpose
+
 **CRITICAL: Respond with ONLY valid JSON. No explanations, no markdown.**
 
 Analyze the screenshot and return the CENTER COORDINATES of the target element:
@@ -486,6 +492,101 @@ If the element is not visible or unclear, set confidence to 0.0
             return {
                 "x": 0,
                 "y": 0,
+                "confidence": 0.0,
+                "reasoning": f"Error: {e}"
+            }
+
+    def find_exploreable_element(
+        self,
+        screenshot_base64: str,
+        target_description: str,
+    ) -> Dict[str, Any]:
+        """
+        타겟 요소가 안 보일 때, 어떤 요소를 클릭하면 나타날지 찾기.
+
+        이 메서드는 스크린샷에서 타겟 요소가 보이지 않을 때,
+        탭, 모달, 드롭다운 등을 클릭하면 타겟이 나타날 수 있는지 분석합니다.
+
+        Args:
+            screenshot_base64: Base64-encoded screenshot
+            target_description: 찾으려는 요소 설명 (예: "이름 입력", "장바구니 수량 조절")
+
+        Returns:
+            Dict with:
+                - found_exploreable: bool (탐색 가능한 요소를 찾았는지)
+                - x: int (클릭할 x 좌표)
+                - y: int (클릭할 y 좌표)
+                - element_type: str ("tab" | "modal" | "dropdown" | "accordion")
+                - element_text: str (버튼/탭에 있는 텍스트)
+                - confidence: float (0.0-1.0)
+                - reasoning: str (왜 이 요소를 클릭해야 하는지 설명)
+        """
+        prompt = f"""You are trying to find: "{target_description}"
+
+But it's NOT visible in the current screenshot.
+
+**Task**: Find a button/tab/trigger that might reveal the target element when clicked.
+
+**Common patterns to look for:**
+1. **Tab buttons** - Often at top of sections with labels like "로그인", "회원가입", "Settings", etc.
+2. **Modal/Dialog triggers** - Buttons that open popups (often have text like "Open", "Show", "View Details")
+3. **Dropdown buttons** - Select boxes, combo boxes with arrows
+4. **Accordion/Expand buttons** - Sections that can be expanded (▶, ▼ icons or "More", "Expand" text)
+
+**Examples:**
+- Target: "이름 입력" → Look for "회원가입" or "Sign Up" tab
+- Target: "장바구니 수량 조절" → Look for "장바구니 보기" or "Cart" button
+- Target: "설정 옵션" → Look for "설정" or "Settings" button
+
+**CRITICAL: Respond with ONLY valid JSON. No markdown.**
+
+{{
+  "found_exploreable": true,
+  "x": <center x coordinate of button/tab to click>,
+  "y": <center y coordinate of button/tab to click>,
+  "element_type": "tab" | "modal" | "dropdown" | "accordion",
+  "element_text": "<visible text on the button/tab>",
+  "confidence": <0.0 to 1.0>,
+  "reasoning": "<why clicking this might reveal the target>"
+}}
+
+If you don't see any reasonable button/tab to explore, set:
+{{
+  "found_exploreable": false,
+  "confidence": 0.0,
+  "reasoning": "No exploreable elements found"
+}}
+
+**JSON ONLY (no markdown):**"""
+
+        try:
+            response_text = self.analyze_with_vision(prompt, screenshot_base64)
+
+            # Parse JSON response
+            result = json.loads(response_text.strip())
+
+            # Validate response structure
+            if "found_exploreable" not in result:
+                return {
+                    "found_exploreable": False,
+                    "confidence": 0.0,
+                    "reasoning": "Invalid response structure"
+                }
+
+            return result
+
+        except json.JSONDecodeError as e:
+            print(f"LLM exploreable element detection failed (JSON parse error): {e}")
+            print(f"Response was: {response_text[:200]}")
+            return {
+                "found_exploreable": False,
+                "confidence": 0.0,
+                "reasoning": f"JSON parse error: {e}"
+            }
+        except Exception as e:
+            print(f"LLM exploreable element detection failed: {e}")
+            return {
+                "found_exploreable": False,
                 "confidence": 0.0,
                 "reasoning": f"Error: {e}"
             }

@@ -1,39 +1,49 @@
 # GAIA - Goal-oriented Autonomous Intelligence for Adaptive GUI Testing
 
-GAIA is the 1학기 MVP for an autonomous QA assistant. The system ingests a planning PDF, produces GPT-driven UI automation plans, tracks checklist coverage in real time, and coordinates MCP-based browser exploration.
+GAIA is the 1학기 MVP for an autonomous QA assistant. The system ingests a planning PDF, produces GPT-guided UI automation plans, adaptively schedules them, and drives Playwright MCP sessions while tracking checklist coverage in real time.
 
 ## 🏗️ Architecture Overview
 
 ```
 gaia/
 ├── src/
-│   ├── phase1/         # Spec PDF ingestion + GPT planning
-│   ├── phase4/         # MCP client and agent orchestrator
-│   ├── phase5/         # Simple reporting utilities
-│   ├── tracker/        # Checklist state tracker
-│   ├── gui/            # PySide6 desktop application
-│   └── utils/          # Shared config + data models
-├── tests/              # Pytest suites for core phases
-├── artifacts/          # Specs, diagrams, demo assets
-├── docs/               # Project context, progress, guides
-├── requirements.txt    # Python dependencies for the MVP
-└── main.py             # Desktop entry point
+│   ├── phase1/             # PDF ingestion + OpenAI Agent Builder planners
+│   ├── scheduler/          # Adaptive priority queue for test execution
+│   ├── phase4/             # MCP host clients + intelligent orchestrators
+│   │   ├── master_orchestrator.py   # Multi-page exploration (GPT-5)
+│   │   ├── intelligent_orchestrator.py # Vision-guided executor (GPT-5-mini)
+│   │   ├── llm_vision_client.py     # LLM selection + cost controls
+│   │   └── mcp_host.py              # FastAPI + Playwright MCP bridge
+│   ├── tracker/            # Checklist coverage tracker
+│   ├── gui/                # PySide6 desktop controller & live preview
+│   ├── utils/              # Shared config + Pydantic data models
+│   └── orchestrator.py     # CLI orchestrator for batch runs
+├── artifacts/
+│   ├── cache/              # Selector/embedding caches & run metadata
+│   └── plans/              # Saved planner outputs for replay
+├── scripts/                # Helper launchers (GUI, MCP host)
+├── tests/                  # Pytest suites (planner, scheduler, orchestration)
+├── run_auto_test.py        # Convenience harness for full pipeline demos
+└── docs/                   # Project context, progress, and guides
 ```
 
 ### Core Flow
 
 1. **Phase 1 – Spec Analysis**
-   - `PDFLoader` extracts raw text from planning PDFs.
-   - `SpecAnalyzer` prompts GPT (`gpt-4o` by default) to build structured test scenarios.
-2. **Tracker**
-   - `ChecklistTracker` maintains the 25-item MVP checklist and exposes coverage metrics.
-3. **Phase 4 – Agent + MCP**
-   - `MCPClient` talks to the Playwright MCP host for DOM discovery.
-   - `AgentOrchestrator` merges DOM insights with GPT output to refine plans and mark checklist hits.
-4. **Phase 5 – Reporting**
-   - `build_summary` produces coverage snapshots for demos.
-5. **GUI**
-   - PySide6 desktop app drives the workflow, executes automation workers, and visualises progress.
+   - `pdf_loader.PDFLoader` extracts structured text from planning PDFs.
+   - `agent_client.AgentServiceClient` submits prompts to OpenAI Agent Builder (default `gpt-4o`) to generate 100+ `TestScenario` objects and the 25-item checklist.
+2. **Adaptive Scheduler**
+   - `scheduler.adaptive_scheduler.AdaptiveScheduler` scores scenarios (MUST/SHOULD/MAY, DOM novelty, historic failures) and streams prioritized batches to the executor.
+3. **Phase 4 – Site Exploration & Execution**
+   - `master_orchestrator.MasterOrchestrator` (GPT-5) builds a site map, navigates multi-page flows, and delegates actionable scenarios.
+   - `intelligent_orchestrator.IntelligentOrchestrator` (GPT-5-mini vision) pairs DOM snapshots with screenshots, chooses selectors, applies smart navigation memory, and records evidence.
+   - Selector/embedding caches in `artifacts/cache` short-circuit repeat work and cut API spend.
+4. **Checklist Tracking & Reporting**
+   - `ChecklistTracker` marks found features and exposes coverage metrics.
+   - `phase5` utilities (WIP) summarise run results for investor demos / regression reports.
+5. **GUI & MCP Host**
+   - PySide6 GUI (`gaia/src/gui`) streams logs, screenshots, and cursor overlays.
+   - `scripts/run_mcp_host.sh` boots the FastAPI + Playwright MCP host that powers browser automation.
 
 ## 🚀 Getting Started
 
@@ -47,10 +57,13 @@ python -m gaia.main
 Optional environment overrides:
 
 - `OPENAI_API_KEY` – GPT API key (required for live planning).
-- `GAIA_LLM_MODEL` – GPT model override (default: `gpt-4o`).
+- `GAIA_LLM_MODEL` – Planner LLM override (default: `gpt-4o`).
 - `GAIA_WORKFLOW_ID` – Agent Builder workflow ID (e.g. `wf_68ea589f9a948190a518e9b2626ab1d5037b50134b0c56e7`).
 - `GAIA_WORKFLOW_VERSION` – Workflow version to invoke (default: `1`).
+- `GAIA_LLM_REASONING_EFFORT` / `GAIA_LLM_VERBOSITY` – Optional planner tuning.
+- `GAIA_LLM_MAX_COMPLETION_TOKENS` – Upper bound for planner completions.
 - `MCP_HOST_URL` – Playwright MCP host (default: `http://localhost:8001`).
+- `MCP_TIMEOUT` – Timeout (seconds) when calling the MCP host (default: `45`).
 
 For MCP/Playwright execution:
 
