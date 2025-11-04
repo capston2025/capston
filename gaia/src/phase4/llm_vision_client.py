@@ -441,11 +441,33 @@ JSON response:"""
         try:
             prompt = f"""You are a UI element locator. Find the element described as: "{description}"
 
-**IMPORTANT: Be FLEXIBLE with matching:**
-- "이름 입력" should match any name input field (label "이름", placeholder "홍길동", etc.)
-- "이메일 입력" should match email fields (label "이메일", "Email", type="email", etc.)
-- Focus on the INTENT, not exact text match
-- Look for labels, placeholders, and field purpose
+**CRITICAL MATCHING RULES - READ CAREFULLY:**
+
+1. **SEMANTIC MATCHING (NOT literal text matching):**
+   - "이름 입력" = ANY name input field
+     ✓ Label showing "이름"
+     ✓ Placeholder "홍길동", "Enter name", "Name"
+     ✓ Field with label "Name" or "이름" nearby
+
+   - "이메일 입력" = ANY email input field
+     ✓ Label "이메일" or "Email"
+     ✓ input[type="email"]
+     ✓ Placeholder "@example.com" patterns
+
+   - "비밀번호 입력" = ANY password field
+     ✓ Label "비밀번호" or "Password"
+     ✓ input[type="password"]
+     ✓ Field with lock icon nearby
+
+2. **IGNORE exact text match requirement**
+   - The description is a HINT about PURPOSE, not exact text to find
+   - Look for the FUNCTION of the element, not the exact wording
+
+3. **Example:**
+   - Request: "이름 입력"
+   - Screenshot shows: Label "이름" with input field (placeholder "홍길동")
+   - **CORRECT**: Return coordinates with confidence 0.9+ ✓
+   - **WRONG**: Return confidence 0.0 because text doesn't exactly say "이름 입력" ✗
 
 **CRITICAL: Respond with ONLY valid JSON. No explanations, no markdown.**
 
@@ -458,7 +480,7 @@ Analyze the screenshot and return the CENTER COORDINATES of the target element:
   "reasoning": "<brief explanation>"
 }}
 
-If the element is not visible or unclear, set confidence to 0.0
+If the element is truly not visible (not just mismatched text), set confidence to 0.0
 
 **JSON ONLY (no markdown):**"""
 

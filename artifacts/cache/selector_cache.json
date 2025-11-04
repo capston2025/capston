@@ -289,13 +289,13 @@
   },
   "f6c507cb61fd158b3ef858f2bbf86033": {
     "selector": "#login-email",
-    "timestamp": 1762250731.50819,
-    "success_count": 1,
+    "timestamp": 1762257464.061428,
+    "success_count": 2,
     "step_description": "이메일 입력"
   },
   "457301ca2c23aa3cf4ce5f4dd4a474ef": {
     "selector": "#login-password",
-    "timestamp": 1762250836.749908,
+    "timestamp": 1762257524.2993011,
     "success_count": 2,
     "step_description": "비밀번호 입력"
   },
@@ -337,55 +337,55 @@
   },
   "db7fb4979259dcf9127e1fc18573fb8d": {
     "selector": "button:has-text(\"기본 기능\")",
-    "timestamp": 1762251602.284395,
-    "success_count": 1,
+    "timestamp": 1762256569.865494,
+    "success_count": 4,
     "step_description": "기본 기능 카드의 이동 버튼을 클릭"
   },
   "05250d922029eb7243c39fd38e691d74": {
     "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
-    "timestamp": 1762251617.218482,
-    "success_count": 1,
+    "timestamp": 1762256603.46805,
+    "success_count": 4,
     "step_description": "검색어 'button' 입력"
   },
   "621cd3b8a88aaf22f552dd2a50bf64b6": {
     "selector": "#login-email",
-    "timestamp": 1762251726.1467772,
-    "success_count": 2,
+    "timestamp": 1762256683.512856,
+    "success_count": 7,
     "step_description": "이메일 입력"
   },
   "12d9e5f9d890d202fcdc4399ae0ca8b8": {
     "selector": "#login-password",
-    "timestamp": 1762251733.249836,
-    "success_count": 2,
+    "timestamp": 1762256683.854091,
+    "success_count": 7,
     "step_description": "비밀번호 입력"
   },
   "8796685ae5fe4f9eb0c03b7dee9a8345": {
     "selector": "button:has-text(\"로그인\")",
-    "timestamp": 1762251657.7677581,
-    "success_count": 1,
+    "timestamp": 1762256684.190172,
+    "success_count": 4,
     "step_description": "로그인 버튼 클릭"
   },
   "0f6995c88dc73d1b83676d0b092b608f": {
     "selector": "button:has-text(\"장바구니\")",
-    "timestamp": 1762251753.495302,
-    "success_count": 1,
+    "timestamp": 1762256294.203139,
+    "success_count": 3,
     "step_description": "임의의 상품 카드에서 '장바구니 추가' 클릭"
   },
   "699bb29fa3822814659b2b2be9a18dbe": {
     "selector": "button:has-text(\"장바구니\")",
-    "timestamp": 1762251783.838264,
+    "timestamp": 1762256324.5533838,
     "success_count": 0,
     "step_description": "같은 상품에서 다시 '장바구니 추가' 클릭"
   },
   "bfea7c44ac56a85da8fe9561339903f6": {
     "selector": "button:has-text(\"전체 선택\")",
-    "timestamp": 1762252081.704674,
-    "success_count": 1,
+    "timestamp": 1762256607.457966,
+    "success_count": 3,
     "step_description": "필터 버튼을 클릭해 특정 카테고리를 선택"
   },
   "fc25c8b74c8b1e50b0368bbcc9dc2bee": {
     "selector": "button:has-text(\"전체 선택\")",
-    "timestamp": 1762252112.064147,
+    "timestamp": 1762256637.855192,
     "success_count": 0,
     "step_description": "정렬 버튼 클릭 후 '제목순' 선택"
   },
@@ -446,6 +446,180 @@
   "f6692f32563fc11064a5d38bb077e4e6": {
     "selector": "button:has-text(\"자동재생 켜기\")",
     "timestamp": 1762252773.096809,
+    "success_count": 1,
+    "step_description": "일시정지 버튼 클릭"
+  },
+  "69822f50939f153e0ab71297d1fc91ee": {
+    "selector": "button:has-text(\"기본 기능\")",
+    "timestamp": 1762257180.66114,
+    "success_count": 1,
+    "step_description": "'기본 기능' 카드 클릭"
+  },
+  "2853dc3f990954aa1a82f10ccf827358": {
+    "selector": "button:has-text(\"폼과 피드백\")",
+    "timestamp": 1762257182.421365,
+    "success_count": 1,
+    "step_description": "'폼과 피드백' 카드 클릭"
+  },
+  "6d519f020b73a0c43e301436156748b7": {
+    "selector": "button:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1762257184.404573,
+    "success_count": 1,
+    "step_description": "'인터랙션과 데이터' 카드 클릭"
+  },
+  "18037fda661036ad6959e61e3da662d6": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762257361.732955,
+    "success_count": 1,
+    "step_description": "검색어 입력"
+  },
+  "6df7b70b377e0f2c7dcbf29a1b2acd20": {
+    "selector": "button:has-text(\"필터\")",
+    "timestamp": 1762257369.299547,
+    "success_count": 1,
+    "step_description": "필터 버튼 클릭"
+  },
+  "def5f6d4f78a70ceab4fa644c0ce252e": {
+    "selector": "button:has-text(\"전체 선택\")",
+    "timestamp": 1762257370.167119,
+    "success_count": 1,
+    "step_description": "카테고리 'forms' 선택"
+  },
+  "3d2ff5d7cff8dbd3941a055d7ff5a7d1": {
+    "selector": "button:has-text(\"정렬\")",
+    "timestamp": 1762257376.664156,
+    "success_count": 1,
+    "step_description": "정렬 버튼 클릭"
+  },
+  "c5097631b1737f2a06cc86069c02b3d3": {
+    "selector": "button:has-text(\"전체 선택\")",
+    "timestamp": 1762257407.349828,
+    "success_count": 0,
+    "step_description": "정렬 '제목순' 선택"
+  },
+  "4cf4babac1c65af5883ca0571db83c78": {
+    "selector": "[role=\"tab\"]:has-text(\"회원가입\")",
+    "timestamp": 1762257450.432648,
+    "success_count": 1,
+    "step_description": "회원가입 탭으로 전환"
+  },
+  "f670270f0d375f3e351116aae0ce5f21": {
+    "selector": "#signup-name",
+    "timestamp": 1762257458.37801,
+    "success_count": 1,
+    "step_description": "이름 입력"
+  },
+  "429b6467ab5bc4d02d05fb2a5d1c7d61": {
+    "selector": "button:has-text(\"기본 기능\")",
+    "timestamp": 1762259363.9914,
+    "success_count": 1,
+    "step_description": "기본 기능 카드의 이동 버튼을 클릭"
+  },
+  "95e8c2d72c9e505882422d6347beb13a": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762259400.816627,
+    "success_count": 1,
+    "step_description": "검색어 'button' 입력"
+  },
+  "09ccecbed02f3349a1b99e3652ab4ba4": {
+    "selector": "button:has-text(\"필터\")",
+    "timestamp": 1762259417.233438,
+    "success_count": 1,
+    "step_description": "필터 버튼을 클릭해 특정 카테고리를 선택"
+  },
+  "221278af1355789142cab7f151025e61": {
+    "selector": "button:has-text(\"정렬\")",
+    "timestamp": 1762259441.8135061,
+    "success_count": 1,
+    "step_description": "정렬 버튼 클릭 후 '제목순' 선택"
+  },
+  "af2003871a55f781efbc798e40ec0293": {
+    "selector": "#login-email",
+    "timestamp": 1762259515.695519,
+    "success_count": 2,
+    "step_description": "이메일 입력"
+  },
+  "8686950276827522134a7a4cd623b173": {
+    "selector": "#login-password",
+    "timestamp": 1762259523.746173,
+    "success_count": 2,
+    "step_description": "비밀번호 입력"
+  },
+  "ebf0cb19d9a135c46e24c794e03b5bce": {
+    "selector": "button:has-text(\"로그인\")",
+    "timestamp": 1762259483.7964091,
+    "success_count": 1,
+    "step_description": "로그인 버튼 클릭"
+  },
+  "a3ad228adbe512761187ab413deb5902": {
+    "selector": "#signup-name",
+    "timestamp": 1762259508.955801,
+    "success_count": 1,
+    "step_description": "이름 입력"
+  },
+  "291ef03ddb23ceb8c642f44735868a6f": {
+    "selector": "button:has-text(\"회원가입\")",
+    "timestamp": 1762259534.476956,
+    "success_count": 1,
+    "step_description": "회원가입 버튼 클릭"
+  },
+  "7d9d988e4a4ea4abfa4b07cb9b38d137": {
+    "selector": "button:has-text(\"장바구니\")",
+    "timestamp": 1762259538.162803,
+    "success_count": 1,
+    "step_description": "임의의 상품 카드에서 '장바구니 추가' 클릭"
+  },
+  "6e1202aedca0777b0e49d36cd0c71d90": {
+    "selector": "button:has-text(\"장바구니\")",
+    "timestamp": 1762259568.5246458,
+    "success_count": 0,
+    "step_description": "같은 상품에서 다시 '장바구니 추가' 클릭"
+  },
+  "2d583217d2bf451d3fc63954bcb88d2e": {
+    "selector": "button:has-text(\"장바구니 보기\")",
+    "timestamp": 1762259666.298707,
+    "success_count": 0,
+    "step_description": "장바구니 보기 열기"
+  },
+  "d55574e35438e13e710f080970557f58": {
+    "selector": "button:has-text(\"날짜를 선택하세요\")",
+    "timestamp": 1762260086.480785,
+    "success_count": 1,
+    "step_description": "날짜 피커에서 임의의 날짜 선택"
+  },
+  "e898b121db5981b93c34a24aec2cebc9": {
+    "selector": "button:has-text(\"시간을 선택하세요\")",
+    "timestamp": 1762260108.3213599,
+    "success_count": 1,
+    "step_description": "시간 드롭다운에서 '오전 10시' 선택"
+  },
+  "2422a20fe2774ec7803d94ac18cb177e": {
+    "selector": "button:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762260158.121572,
+    "success_count": 0,
+    "step_description": "다운로드 시작 버튼 클릭"
+  },
+  "93b3dd3bd63ee0c60d5e5d9410acf10a": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762260416.366009,
+    "success_count": 1,
+    "step_description": "도움말/설정 등 툴팁 대상에 호버 또는 포커스"
+  },
+  "8c21776a775885b9e0c2c99e4a7d9f61": {
+    "selector": "button:has-text(\"토글\")",
+    "timestamp": 1762260451.6094131,
+    "success_count": 1,
+    "step_description": "뷰 전환 토글 클릭(그리드 → 리스트 또는 반대)"
+  },
+  "9dd2e5e476663dec4ff7d12825d06277": {
+    "selector": "button:has-text(\"자동재생 끄기\")",
+    "timestamp": 1762260469.225298,
+    "success_count": 1,
+    "step_description": "재생 버튼 클릭"
+  },
+  "d451e3a7c273ad79a752b7883a2c9fcc": {
+    "selector": "button:has-text(\"자동재생 켜기\")",
+    "timestamp": 1762260537.0378392,
     "success_count": 1,
     "step_description": "일시정지 버튼 클릭"
   }

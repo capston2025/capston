@@ -175,7 +175,12 @@ class IntelligentOrchestrator:
                     results["skipped"] += 1
 
             except Exception as e:
-                self._log(f"❌ Exception: {e}", progress_callback)
+                import traceback
+                tb_str = traceback.format_exc()
+                self._log(f"❌ Exception in scenario {scenario.id}: {e}", progress_callback)
+                self._log(f"📜 Traceback:\n{tb_str}", progress_callback)
+                print(f"[ERROR] Exception in scenario {scenario.id}:")
+                print(tb_str)
                 results["failed"] += 1
                 results["scenarios"].append({
                     "id": scenario.id,
@@ -393,6 +398,20 @@ Return ONLY a JSON array:
                     if step.params:
                         self._log(f"    📋 Params: {step.params}", progress_callback)
 
+                    # NEW: Infer missing intermediate steps from description
+                    # Check if description implies actions not in the step (e.g., "탭으로 전환", "모달 열기")
+                    inferred_success = self._infer_and_execute_missing_steps(
+                        step=step,
+                        screenshot=screenshot,
+                        dom_elements=dom_elements,
+                        current_url=current_url,
+                        progress_callback=progress_callback
+                    )
+
+                    # Update state after inferred steps
+                    if inferred_success:
+                        screenshot, dom_elements, current_url = self._get_page_state()
+
                     selector = step.selector if step.selector else ""
                     before_screenshot = screenshot
                     success = self._execute_action(
@@ -508,8 +527,11 @@ Return ONLY a JSON array:
                     # Track non-assertion step
                     total_non_assertion_steps += 1
 
+                    # Detect DOM context (active tabs/modals) for context-aware caching
+                    dom_context = self._detect_dom_context(dom_elements)
+
                     # CACHE CHECK: Try to get cached selector first
-                    cached_selector = self._get_cached_selector(step.description, step.action, current_url)
+                    cached_selector = self._get_cached_selector(step.description, step.action, current_url, dom_context)
 
                     if cached_selector:
                         # Use cached selector
@@ -705,7 +727,8 @@ Return ONLY a JSON array:
                                             action=step.action,
                                             page_url=current_url,
                                             selector=smart_nav["selector"],
-                                            success=True
+                                            success=True,
+                                            dom_context=dom_context
                                         )
 
                                         # Update state after successful click
@@ -793,9 +816,20 @@ Return ONLY a JSON array:
                                     url=current_url
                                 )
 
+                                self._log(f"    🔍 Exploration click result: {explore_click}", progress_callback)
+
                                 if explore_click:
-                                    time.sleep(0.5)  # Wait for tab switch / modal open
+                                    self._log(f"    ⏳ Waiting 1.5s for tab transition...", progress_callback)
+                                    time.sleep(1.5)  # Increased wait time for React state updates
                                     screenshot, dom_elements, current_url = self._get_page_state()
+                                    self._log(f"    📊 After exploration: DOM elements = {len(dom_elements)}", progress_callback)
+
+                                    # DEBUG: Save screenshot after exploration
+                                    import base64
+                                    debug_path = f"/tmp/debug_after_exploration_{step.description[:20]}.png"
+                                    with open(debug_path, "wb") as f:
+                                        f.write(base64.b64decode(screenshot))
+                                    self._log(f"    🖼️  DEBUG: Saved screenshot to {debug_path}", progress_callback)
 
                                     # Now retry finding the target element
                                     self._log(f"    🔁 Retrying target element detection after exploration...", progress_callback)
@@ -863,7 +897,8 @@ Return ONLY a JSON array:
                         action=step.action,
                         page_url=current_url,
                         selector=llm_decision["selector"],
-                        success=success
+                        success=success,
+                        dom_context=dom_context
                     )
 
                     if not success:
@@ -910,7 +945,8 @@ Return ONLY a JSON array:
                                         action=step.action,
                                         page_url=current_url,
                                         selector=llm_decision["selector"],
-                                        success=True
+                                        success=True,
+                                        dom_context=dom_context
                                     )
                                     time.sleep(0.2)
                                     # Update current_url after navigation
@@ -1071,7 +1107,17 @@ Return ONLY a JSON array:
             }
 
         except Exception as e:
+            import traceback
+            tb_str = traceback.format_exc()
             logs.append(f"❌ Exception: {e}")
+            logs.append(f"📜 Traceback:\n{tb_str}")
+
+            # Print to console for debugging
+            print(f"\n[ERROR] Exception in _execute_single_scenario for {scenario.id}:")
+            print(tb_str)
+            self._log(f"❌ Exception in step execution: {e}", progress_callback)
+            self._log(f"📜 Traceback:\n{tb_str}", progress_callback)
+
             return {
                 "id": scenario.id,
                 "scenario": scenario.scenario,
@@ -1284,6 +1330,131 @@ Return ONLY a JSON array:
             print(f"Coordinate click failed: {e}")
             return False
 
+    def _infer_and_execute_missing_steps(
+        self,
+        step,
+        screenshot: str,
+        dom_elements: List[DomElement],
+        current_url: str,
+        progress_callback
+    ) -> bool:
+        """
+        Infer and execute missing intermediate steps from step description.
+
+        For example:
+        - "기본 기능 페이지 접속 후 회원가입 탭으로 전환"
+          → Infers: Need to click "회원가입" tab before continuing
+        - "모달 열기 후 입력"
+          → Infers: Need to click modal trigger button first
+
+        Args:
+            step: Current test step
+            screenshot: Current screenshot base64
+            dom_elements: Current DOM elements
+            current_url: Current URL
+            progress_callback: Callback for logging
+
+        Returns:
+            True if any inferred steps were executed, False otherwise
+        """
+        # Keywords that suggest missing intermediate steps
+        transition_keywords = ["탭으로 전환", "탭 전환", "전환", "모달 열기", "모달을 열", "드롭다운 열기", "아코디언 열기"]
+
+        description = step.description.lower()
+
+        # Check if description contains transition keywords
+        needs_intermediate_step = any(keyword in description for keyword in transition_keywords)
+
+        if not needs_intermediate_step:
+            return False
+
+        self._log(f"    🧠 Inferring missing intermediate steps from: '{step.description}'", progress_callback)
+
+        # Use LLM to infer what element needs to be clicked before the main action
+        prompt = f"""Analyze this test step description and determine if there's a missing intermediate action.
+
+Step description: "{step.description}"
+Main action: {step.action}
+
+The description suggests an intermediate step (like switching tabs, opening modal, etc.) before the main action.
+
+Identify what needs to be clicked/interacted with BEFORE executing the main action.
+
+Respond with JSON only:
+{{
+  "needs_intermediate": true/false,
+  "intermediate_action": "click" | "fill" | null,
+  "target_element": "what to click (e.g., '회원가입 탭', '필터 버튼')",
+  "reasoning": "why this is needed"
+}}"""
+
+        try:
+            # Use GPT-4o for reasoning
+            import openai
+            import os
+            api_key = os.getenv("OPENAI_API_KEY")
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4o-2024-11-20",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=300
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            # Remove markdown if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+
+            import json
+            result = json.loads(result_text.strip())
+
+            if not result.get("needs_intermediate"):
+                self._log(f"    ℹ️  No intermediate step needed", progress_callback)
+                return False
+
+            target = result.get("target_element", "")
+            reasoning = result.get("reasoning", "")
+
+            self._log(f"    💡 Inferred: Need to interact with '{target}'", progress_callback)
+            self._log(f"    💭 Reasoning: {reasoning}", progress_callback)
+
+            # Use LLM to find and click the target element
+            llm_decision = self.llm_client.select_element_for_step(
+                step_description=f"{target} 클릭",
+                dom_elements=dom_elements,
+                screenshot_base64=screenshot,
+                url=current_url
+            )
+
+            if llm_decision['selector'] and llm_decision['confidence'] >= 70:
+                self._log(f"    🎯 Found target: {llm_decision['selector']} (confidence: {llm_decision['confidence']}%)", progress_callback)
+
+                # Execute intermediate action
+                intermediate_success = self._execute_action(
+                    action=result.get("intermediate_action", "click"),
+                    selector=llm_decision['selector'],
+                    params=[],
+                    url=current_url
+                )
+
+                if intermediate_success:
+                    self._log(f"    ✅ Intermediate step executed successfully", progress_callback)
+                    time.sleep(1.0)  # Wait for transition
+                    return True
+                else:
+                    self._log(f"    ⚠️  Intermediate step failed, continuing anyway", progress_callback)
+                    return False
+            else:
+                self._log(f"    ⚠️  Could not find target element (confidence: {llm_decision.get('confidence', 0)}%)", progress_callback)
+                return False
+
+        except Exception as e:
+            self._log(f"    ⚠️  Failed to infer intermediate steps: {e}", progress_callback)
+            return False
+
     def _get_page_state(self) -> tuple[str, List[DomElement], str]:
         """
         Get current page state: screenshot, DOM, and URL.
@@ -1478,14 +1649,68 @@ Return ONLY a JSON array:
         except Exception as e:
             print(f"[Cache] Failed to save cache: {e}")
 
-    def _get_cache_key(self, step_description: str, action: str, page_url: str) -> str:
-        """Generate cache key for a step."""
+    def _get_cache_key(self, step_description: str, action: str, page_url: str, dom_context: str = "") -> str:
+        """
+        Generate cache key for a step.
+
+        Args:
+            step_description: Step description
+            action: Action type (click, fill, etc.)
+            page_url: Current page URL
+            dom_context: Context string representing active tabs/modals (e.g., "tab:회원가입")
+
+        Returns:
+            MD5 hash of the cache key
+        """
         # Normalize URL (keep hash for SPA, just remove trailing slash)
         # SPA에서 해시가 다르면 완전히 다른 페이지이므로 해시 유지 필요!
         normalized_url = page_url.rstrip('/')
-        # Create hash of (description + action + url)
-        key_string = f"{step_description}|{action}|{normalized_url}"
+
+        # Include DOM context in cache key to differentiate between different UI states
+        # e.g., login tab vs signup tab on the same page
+        key_string = f"{step_description}|{action}|{normalized_url}|{dom_context}"
         return hashlib.md5(key_string.encode('utf-8')).hexdigest()
+
+    def _detect_dom_context(self, dom_elements: List[DomElement]) -> str:
+        """
+        Detect the current DOM context (active tabs, modals, etc.) to make cache context-aware.
+
+        Args:
+            dom_elements: Current DOM elements
+
+        Returns:
+            Context string (e.g., "tab:회원가입" or "modal:장바구니" or "")
+        """
+        context_parts = []
+
+        # Detect active tab
+        for elem in dom_elements:
+            # Get role from attributes
+            elem_role = elem.attributes.get("role", "")
+
+            # Check for active tab indicators
+            if elem_role == "tab":
+                # Check various active state indicators
+                attrs_str = str(elem.attributes)
+                if ("aria-selected" in elem.attributes and elem.attributes.get("aria-selected") == "true") or \
+                   "data-state='active'" in attrs_str or \
+                   "data-state='checked'" in attrs_str:
+                    tab_text = elem.text[:20] if elem.text else ""
+                    if tab_text:
+                        context_parts.append(f"tab:{tab_text}")
+                        break
+
+        # Detect open modal/dialog
+        for elem in dom_elements:
+            elem_role = elem.attributes.get("role", "")
+            if elem_role in ["dialog", "alertdialog"]:
+                attrs_str = str(elem.attributes)
+                if "data-state='open'" in attrs_str or elem.attributes.get("data-state") == "open":
+                    modal_text = elem.text[:20] if elem.text else "modal"
+                    context_parts.append(f"modal:{modal_text}")
+                    break
+
+        return "|".join(context_parts)
 
     def _detect_aria_roles(self, step_description: str, dom_elements: List[DomElement]) -> Dict[str, List[DomElement]]:
         """
@@ -1864,6 +2089,23 @@ Return ONLY a JSON array:
             confidence = max(50, int(best_score * 100))
 
             print(f"[Semantic Match] Using offline fuzzy fallback (score: {best_score:.2f}, text: '{best_match.text[:30]}')")
+
+            # NEW: LLM verification for ambiguous matches (score < 0.85)
+            # This prevents cases like "필터 버튼" matching "전체 선택"
+            if best_score < 0.85:
+                print(f"[Semantic Match] Score below 0.85, requesting LLM verification...")
+                is_valid = self._verify_semantic_match_with_llm(
+                    step_description=step_description,
+                    matched_text=best_match.text,
+                    matched_element=best_match
+                )
+
+                if not is_valid:
+                    print(f"[Semantic Match] LLM rejected match: '{step_description}' != '{best_match.text}'")
+                    return None
+                else:
+                    print(f"[Semantic Match] LLM confirmed match is valid")
+
             return {
                 "selector": selector,
                 "action": action,
@@ -1873,6 +2115,77 @@ Return ONLY a JSON array:
 
         print(f"[Semantic Match] No reliable offline match (best score: {best_score:.2f})")
         return None
+
+    def _verify_semantic_match_with_llm(
+        self,
+        step_description: str,
+        matched_text: str,
+        matched_element
+    ) -> bool:
+        """
+        Use LLM to verify if a semantic match is valid.
+
+        Args:
+            step_description: What the user requested (e.g., "필터 버튼을 클릭해 특정 카테고리를 선택")
+            matched_text: The text of the element that was matched (e.g., "전체 선택")
+            matched_element: The DOM element that was matched
+
+        Returns:
+            True if match is valid, False otherwise
+        """
+        prompt = f"""Verify if this semantic match is correct.
+
+User requested: "{step_description}"
+Matched element text: "{matched_text}"
+Element type: {matched_element.tag}
+
+Is this a valid match? Consider:
+- Does the matched element actually help accomplish the requested task?
+- Are they semantically related?
+- Would clicking this element be the right action?
+
+Examples of INVALID matches:
+- User: "필터 버튼 클릭" → Matched: "전체 선택" (WRONG - completely different)
+- User: "검색 입력" → Matched: "로그인" (WRONG - different purpose)
+
+Examples of VALID matches:
+- User: "이름 입력" → Matched: "이름" label + input (CORRECT - same field)
+- User: "필터 선택" → Matched: "필터" (CORRECT - exact match)
+
+Respond with JSON only:
+{{
+  "is_valid": true/false,
+  "reasoning": "brief explanation"
+}}"""
+
+        try:
+            import openai
+            import json
+            import os
+
+            api_key = os.getenv("OPENAI_API_KEY")
+            client = openai.OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # Use mini for fast verification
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=150
+            )
+
+            result_text = response.choices[0].message.content.strip()
+
+            # Remove markdown if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+
+            result = json.loads(result_text.strip())
+            return result.get("is_valid", False)
+
+        except Exception as e:
+            print(f"[Semantic Match] LLM verification failed: {e}, assuming valid")
+            return True  # Default to valid if verification fails
 
     @staticmethod
     def _normalize_text(value: str) -> str:
@@ -1927,26 +2240,33 @@ Return ONLY a JSON array:
 
         return vector.tolist()
 
-    def _get_cached_selector(self, step_description: str, action: str, page_url: str) -> str | None:
+    def _get_cached_selector(self, step_description: str, action: str, page_url: str, dom_context: str = "") -> str | None:
         """
         Try to get cached selector for this step.
+
+        Args:
+            step_description: Step description
+            action: Action type
+            page_url: Current page URL
+            dom_context: DOM context string (active tabs/modals)
 
         Returns:
             Cached selector if found and still valid, None otherwise
         """
-        cache_key = self._get_cache_key(step_description, action, page_url)
+        cache_key = self._get_cache_key(step_description, action, page_url, dom_context)
         cached = self.selector_cache.get(cache_key)
 
         if cached:
             # Prefer high-confidence cache entries (success_count >= 2)
             if cached.get("success_count", 0) >= 2:
-                print(f"[Cache HIT] Using cached selector for '{step_description}'")
+                context_info = f" [context: {dom_context}]" if dom_context else ""
+                print(f"[Cache HIT] Using cached selector for '{step_description}'{context_info}")
                 return cached["selector"]
 
         return None
 
     def _update_cache(self, step_description: str, action: str, page_url: str,
-                     selector: str, success: bool) -> None:
+                     selector: str, success: bool, dom_context: str = "") -> None:
         """
         Update cache with execution result.
 
@@ -1956,6 +2276,7 @@ Return ONLY a JSON array:
             page_url: Current page URL
             selector: Selector that was used
             success: Whether the action succeeded
+            dom_context: DOM context string (active tabs/modals)
         """
         # 동적 ID 패턴 감지 - Radix UI 등의 프레임워크가 생성하는 동적 ID는 캐싱하지 않음
         import re
@@ -1963,7 +2284,7 @@ Return ONLY a JSON array:
             print(f"[Cache] Skipping cache for dynamic ID selector: {selector}")
             return
 
-        cache_key = self._get_cache_key(step_description, action, page_url)
+        cache_key = self._get_cache_key(step_description, action, page_url, dom_context)
 
         if cache_key not in self.selector_cache:
             self.selector_cache[cache_key] = {

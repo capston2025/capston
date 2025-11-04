@@ -608,8 +608,23 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             # Store click position for animation
             click_position = {"x": x, "y": y}
 
-            # Click at coordinates
-            await page.mouse.click(x, y)
+            # Click at coordinates using JavaScript to trigger React events properly
+            # Find the element at the coordinates and click it programmatically
+            try:
+                await page.evaluate(f"""
+                    (async () => {{
+                        const element = document.elementFromPoint({x}, {y});
+                        if (element) {{
+                            element.click();
+                            return true;
+                        }}
+                        return false;
+                    }})();
+                """)
+            except Exception as e:
+                # Fallback to mouse click if JS click fails
+                print(f"JS click failed at ({x}, {y}), falling back to mouse.click: {e}")
+                await page.mouse.click(x, y)
 
         elif action == "evaluate":
             # Execute JavaScript (value contains the script)
