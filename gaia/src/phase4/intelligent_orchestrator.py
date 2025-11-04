@@ -774,7 +774,61 @@ Return ONLY a JSON array:
                                 self._log(f"    ❌ Vision fallback failed (confidence: {coord_result.get('confidence', 0)*100:.0f}%)", progress_callback)
                                 self._log(f"    💭 Vision reasoning: {coord_result.get('reasoning', 'Unknown')}", progress_callback)
 
-                            # If we reach here, all fallbacks failed
+                            # STEP 5: NEW! If target not visible, try to find and click exploreable elements (tabs, modals, etc.)
+                            self._log(f"    🔍 Target not visible, looking for tabs/triggers to explore...", progress_callback)
+                            explore_result = self.llm_client.find_exploreable_element(
+                                screenshot_base64=screenshot,
+                                target_description=step.description
+                            )
+
+                            if explore_result.get("found_exploreable") and explore_result.get("confidence", 0) > 0.6:
+                                self._log(f"    💡 Found {explore_result.get('element_type', 'element')}: '{explore_result.get('element_text', 'N/A')}'", progress_callback)
+                                self._log(f"    🔄 Clicking to reveal target element... ({explore_result.get('reasoning', 'Unknown')})", progress_callback)
+                                logs.append(f"  🔍 Exploring: {explore_result.get('element_text', 'N/A')}")
+
+                                # Click the tab/modal/trigger button
+                                explore_click = self._execute_coordinate_click(
+                                    x=explore_result["x"],
+                                    y=explore_result["y"],
+                                    url=current_url
+                                )
+
+                                if explore_click:
+                                    time.sleep(0.5)  # Wait for tab switch / modal open
+                                    screenshot, dom_elements, current_url = self._get_page_state()
+
+                                    # Now retry finding the target element
+                                    self._log(f"    🔁 Retrying target element detection after exploration...", progress_callback)
+                                    retry_coord = self.llm_client.find_element_coordinates(
+                                        screenshot_base64=screenshot,
+                                        description=step.description
+                                    )
+
+                                    if retry_coord.get("confidence", 0) > 0.5:
+                                        self._log(f"    🎉 Found target after exploration at ({retry_coord['x']}, {retry_coord['y']})!", progress_callback)
+                                        logs.append(f"  ✅ Target found after exploration")
+                                        # Execute the actual target action
+                                        target_click = self._execute_coordinate_click(
+                                            x=retry_coord["x"],
+                                            y=retry_coord["y"],
+                                            url=current_url
+                                        )
+                                        if target_click:
+                                            self._log(f"    ✅ Target action successful!", progress_callback)
+                                            time.sleep(0.5)
+                                            screenshot, dom_elements, current_url = self._get_page_state()
+                                            continue
+                                        else:
+                                            self._log(f"    ❌ Target click failed", progress_callback)
+                                    else:
+                                        self._log(f"    ❌ Still cannot find target after exploration (confidence: {retry_coord.get('confidence', 0)*100:.0f}%)", progress_callback)
+                                else:
+                                    self._log(f"    ❌ Exploration click failed", progress_callback)
+                            else:
+                                self._log(f"    ❌ No exploreable elements found (confidence: {explore_result.get('confidence', 0)*100:.0f}%)", progress_callback)
+                                self._log(f"    💭 Reasoning: {explore_result.get('reasoning', 'Unknown')}", progress_callback)
+
+                            # If we reach here, all fallbacks failed (including exploration)
                             logs.append(f"  ⚠️ All fallback attempts failed, skipping step")
                             self._log(f"    ⚠️ Skipping step after fallback attempts", progress_callback)
                             skipped_steps += 1
