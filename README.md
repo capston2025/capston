@@ -45,6 +45,34 @@ gaia/
    - PySide6 GUI (`gaia/src/gui`) streams logs, screenshots, and cursor overlays.
    - `scripts/run_mcp_host.sh` boots the FastAPI + Playwright MCP host that powers browser automation.
 
+## 🤖 QA Agent (NEW)
+
+**QA Agent**는 기획서를 분석하여 자동으로 테스트 케이스를 생성하는 AI 기반 서비스입니다.
+
+### Quick Start
+
+```bash
+# 1. Agent Service 시작
+./start_qa_agent.sh
+
+# 2. Python 예제 실행 (별도 터미널)
+python gaia/example_qa_agent.py
+
+# 3. 통합 테스트 실행
+python gaia/test_qa_agent.py
+```
+
+### 주요 기능
+
+- 📄 **자동 분석**: 기획서 PDF/텍스트 → 100+ 테스트 케이스 자동 생성
+- 🎯 **우선순위 분류**: MUST (핵심) / SHOULD (중요) / MAY (부가)
+- 🔄 **Playwright 연동**: 생성된 테스트 케이스를 자동으로 실행
+- 🤖 **GPT-5 기반**: 최신 AI 모델로 정확한 테스트 시나리오 생성
+
+### 상세 가이드
+
+📚 **완벽 가이드**: [gaia/agent-service/QA_AGENT_GUIDE.md](gaia/agent-service/QA_AGENT_GUIDE.md)
+
 ## 🚀 Getting Started
 
 ```bash
