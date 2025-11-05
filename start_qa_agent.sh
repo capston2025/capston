@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # QA Agent Quick Start Script
+# This script is used to quickly start and test the QA Agent.
 # 이 스크립트는 QA Agent를 빠르게 시작하고 테스트하는 데 사용됩니다.
 
 set -e
