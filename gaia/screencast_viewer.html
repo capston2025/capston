@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GAIA Screencast Viewer - 실시간 브라우저 미리보기</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .header {
+            background: #2d2d2d;
+            padding: 15px 20px;
+            border-bottom: 2px solid #3d3d3d;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #666;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.connected {
+            background: #22c55e;
+        }
+
+        .status-indicator.disconnected {
+            background: #ef4444;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .stats {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .stat {
+            display: flex;
+            gap: 5px;
+        }
+
+        .stat-label {
+            color: #666;
+        }
+
+        .stat-value {
+            color: #fff;
+            font-weight: 500;
+        }
+
+        .viewer-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow: auto;
+        }
+
+        .screencast-frame {
+            max-width: 100%;
+            max-height: 100%;
+            border: 1px solid #3d3d3d;
+            border-radius: 8px;
+            box-shadow: 0 10px 50px rgba(0, 0, 0, 0.5);
+        }
+
+        .placeholder {
+            text-align: center;
+            color: #666;
+        }
+
+        .placeholder h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .placeholder p {
+            font-size: 14px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #3d3d3d;
+            border-top-color: #22c55e;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎬 GAIA Screencast Viewer</h1>
+        <div class="status">
+            <div class="status-indicator" id="statusIndicator"></div>
+            <span id="statusText">연결 중...</span>
+        </div>
+    </div>
+
+    <div class="stats">
+        <div class="stat">
+            <span class="stat-label">FPS:</span>
+            <span class="stat-value" id="fpsValue">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">프레임 수:</span>
+            <span class="stat-value" id="frameCount">0</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">지연시간:</span>
+            <span class="stat-value" id="latency">0ms</span>
+        </div>
+    </div>
+
+    <div class="viewer-container">
+        <div class="placeholder" id="placeholder">
+            <div class="loading"></div>
+            <h2>브라우저 세션 대기 중</h2>
+            <p>MCP Host에 연결하고 있습니다...</p>
+        </div>
+        <img class="screencast-frame" id="screencastFrame" style="display: none;" />
+    </div>
+
+    <script>
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const placeholder = document.getElementById('placeholder');
+        const screencastFrame = document.getElementById('screencastFrame');
+        const fpsValue = document.getElementById('fpsValue');
+        const frameCountEl = document.getElementById('frameCount');
+        const latencyEl = document.getElementById('latency');
+
+        let ws = null;
+        let frameCount = 0;
+        let lastFrameTime = Date.now();
+        let fpsFrames = [];
+
+        function connect() {
+            ws = new WebSocket('ws://localhost:8001/ws/screencast');
+
+            ws.onopen = () => {
+                console.log('✅ WebSocket 연결 성공');
+                statusIndicator.className = 'status-indicator connected';
+                statusText.textContent = '연결됨';
+                placeholder.style.display = 'none';
+
+                // 현재 프레임 요청
+                ws.send('get_current_frame');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'screencast_frame' && data.frame) {
+                    // 프레임 표시
+                    screencastFrame.src = `data:image/jpeg;base64,${data.frame}`;
+                    screencastFrame.style.display = 'block';
+
+                    // 통계 업데이트
+                    frameCount++;
+                    frameCountEl.textContent = frameCount;
+
+                    // FPS 계산
+                    const now = Date.now();
+                    const elapsed = now - lastFrameTime;
+                    lastFrameTime = now;
+
+                    fpsFrames.push(1000 / elapsed);
+                    if (fpsFrames.length > 10) {
+                        fpsFrames.shift();
+                    }
+
+                    const avgFps = fpsFrames.reduce((a, b) => a + b, 0) / fpsFrames.length;
+                    fpsValue.textContent = avgFps.toFixed(1);
+
+                    // 지연시간 계산
+                    const latency = Date.now() - (data.timestamp * 1000);
+                    latencyEl.textContent = `${latency.toFixed(0)}ms`;
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('❌ WebSocket 에러:', error);
+                statusIndicator.className = 'status-indicator disconnected';
+                statusText.textContent = '연결 오류';
+            };
+
+            ws.onclose = () => {
+                console.log('🔌 WebSocket 연결 종료');
+                statusIndicator.className = 'status-indicator disconnected';
+                statusText.textContent = '연결 끊김';
+                screencastFrame.style.display = 'none';
+                placeholder.style.display = 'block';
+
+                // 5초 후 재연결 시도
+                setTimeout(() => {
+                    console.log('🔄 재연결 시도...');
+                    connect();
+                }, 5000);
+            };
+        }
+
+        // 페이지 로드 시 연결
+        connect();
+    </script>
+</body>
+</html>

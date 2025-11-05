@@ -7,8 +7,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
@@ -16,6 +17,16 @@ from gaia.src.phase4.llm_vision_client import LLMVisionClient
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG, MCPConfig
 from gaia.src.utils.models import DomElement, TestScenario, TestStep
+
+# Dynamic ID patterns from popular UI libraries
+DYNAMIC_ID_PATTERNS = [
+    r'radix-:r\d+:',           # Radix UI (e.g., radix-:r0:-trigger-signup)
+    r'mui-\d{5,}',             # Material-UI
+    r'react-\d{13,}',          # React timestamp-based IDs
+    r'headlessui-\w+-\d+',     # HeadlessUI
+    r'rc-tabs-\d+-tab',        # rc-tabs (Ant Design)
+    r'floating-ui-\d+',        # Floating UI
+]
 
 
 class IntelligentOrchestrator:
@@ -66,6 +77,143 @@ class IntelligentOrchestrator:
             os.path.dirname(__file__), "../../../artifacts/cache/embedding_cache.json"
         )
         self._load_embedding_cache()
+
+        # Enable LLM validation (can be disabled for faster execution)
+        self.enable_llm_validation = os.getenv("GAIA_ENABLE_LLM_VALIDATION", "false").lower() == "true"
+
+    # ==================== Dynamic ID Detection & Stable Selector Generation ====================
+
+    def _is_dynamic_selector(self, selector: str) -> bool:
+        """
+        Detect if selector contains dynamic ID patterns from popular UI libraries.
+
+        Args:
+            selector: CSS selector string (e.g., '[id="radix-:r0:-trigger-signup"]')
+
+        Returns:
+            True if selector contains dynamic ID pattern
+        """
+        return any(re.search(pattern, selector) for pattern in DYNAMIC_ID_PATTERNS)
+
+    def _create_stable_selector(self, elem: DomElement) -> Optional[str]:
+        """
+        Generate text-based selector, avoiding dynamic IDs.
+
+        Priority:
+        1. Text-based selector (most stable)
+        2. ARIA label
+        3. data-testid attribute
+        4. Stable ID (non-dynamic)
+        5. None (trigger vision fallback)
+
+        Args:
+            elem: DomElement with selector and metadata
+
+        Returns:
+            Stable selector string or None if no stable option available
+        """
+        # Check if current selector is dynamic
+        is_dynamic = self._is_dynamic_selector(elem.selector)
+
+        if is_dynamic:
+            print(f"[Stable Selector] ⚠️ Dynamic ID detected: {elem.selector}")
+
+        # Priority 1: Text-based selector
+        if elem.text and elem.text.strip():
+            stable_selector = f'{elem.tag}:has-text("{elem.text}")'
+            if is_dynamic:
+                print(f"[Stable Selector] ✅ Using text selector: {stable_selector}")
+            return stable_selector
+
+        # Priority 2: ARIA label
+        aria_label = elem.attributes.get('aria-label', '')
+        if aria_label:
+            stable_selector = f'[aria-label="{aria_label}"]'
+            if is_dynamic:
+                print(f"[Stable Selector] ✅ Using ARIA label: {stable_selector}")
+            return stable_selector
+
+        # Priority 3: data-testid
+        test_id = elem.attributes.get('data-testid', '')
+        if test_id:
+            stable_selector = f'[data-testid="{test_id}"]'
+            if is_dynamic:
+                print(f"[Stable Selector] ✅ Using data-testid: {stable_selector}")
+            return stable_selector
+
+        # Priority 4: ID (only if NOT dynamic)
+        if elem.selector.startswith('[id=') and not is_dynamic:
+            return elem.selector
+
+        # Priority 5: Fallback to vision
+        if is_dynamic:
+            print(f"[Stable Selector] ⚠️ No stable alternative found, will use vision fallback")
+
+        return None  # Trigger vision fallback
+
+    def _validate_cached_selector(
+        self,
+        cached_data: Dict[str, Any],
+        current_url: str
+    ) -> Optional[str]:
+        """
+        Validate cached selector with hybrid approach:
+        Stage 1: Dynamic ID check (0.001s)
+        Stage 2: DOM lookup via MCP (0.01s)
+        Stage 3: LLM validation (2-3s, optional)
+
+        Args:
+            cached_data: Cached selector data with metadata
+            current_url: Current page URL
+
+        Returns:
+            Valid selector or None if cache invalid
+        """
+        cached_selector = cached_data.get('selector', '')
+        cached_text = cached_data.get('element_text', '')
+        cached_tag = cached_data.get('element_tag', '')
+
+        # Stage 1: Fast heuristic - Dynamic ID check
+        if self._is_dynamic_selector(cached_selector):
+            print(f"[Cache Validation] ⚠️ Dynamic ID detected in cache: {cached_selector}")
+
+            # Try to regenerate using cached metadata
+            if cached_text:
+                new_selector = f'{cached_tag}:has-text("{cached_text}")'
+                print(f"[Cache Validation] ✅ Regenerated text selector: {new_selector}")
+                return new_selector
+
+            # Can't regenerate, invalidate cache
+            print(f"[Cache Validation] ❌ Cache invalidated (no text metadata)")
+            return None
+
+        # Stage 2: DOM lookup - Verify selector still exists
+        try:
+            response = requests.post(
+                f"{self.mcp_config.host_url}/querySelector",
+                json={"selector": cached_selector},
+                timeout=1  # Fast timeout
+            )
+            if response.status_code == 200 and response.json().get('exists'):
+                print(f"[Cache Validation] ✅ Selector still valid: {cached_selector}")
+                return cached_selector
+            else:
+                print(f"[Cache Validation] ⚠️ Selector not found in DOM")
+        except Exception as e:
+            print(f"[Cache Validation] ⚠️ DOM lookup failed: {e}")
+
+        # Stage 3: LLM validation (optional, expensive)
+        if self.enable_llm_validation:
+            print(f"[Cache Validation] 🤖 Attempting LLM validation...")
+            # TODO: Implement LLM validation if needed
+            # For now, skip to save cost
+            pass
+
+        # Cache invalid
+        print(f"[Cache Validation] ❌ Cache entry invalidated")
+        return None
+
+    # ==================== End of Dynamic ID Handling ====================
 
     def execute_scenarios(
         self,
@@ -721,6 +869,11 @@ Return ONLY a JSON array:
                                         logs.append(f"  ✅ Action executed via smart navigation")
                                         self._log(f"    ✅ Smart navigation succeeded!", progress_callback)
 
+                                        # Find element to get tag information
+                                        target_element = next((e for e in dom_elements if e.selector == smart_nav["selector"]), None)
+                                        element_tag = target_element.tag if target_element else ""
+                                        element_text = smart_nav.get("element_text", "")
+
                                         # Update cache with successful smart navigation selector
                                         self._update_cache(
                                             step_description=step.description,
@@ -728,7 +881,9 @@ Return ONLY a JSON array:
                                             page_url=current_url,
                                             selector=smart_nav["selector"],
                                             success=True,
-                                            dom_context=dom_context
+                                            dom_context=dom_context,
+                                            element_text=element_text,
+                                            element_tag=element_tag
                                         )
 
                                         # Update state after successful click
@@ -892,13 +1047,17 @@ Return ONLY a JSON array:
                     )
 
                     # UPDATE CACHE: Record execution result
+                    element_text = target_element.text if target_element else ""
+                    element_tag = target_element.tag if target_element else ""
                     self._update_cache(
                         step_description=step.description,
                         action=step.action,
                         page_url=current_url,
                         selector=llm_decision["selector"],
                         success=success,
-                        dom_context=dom_context
+                        dom_context=dom_context,
+                        element_text=element_text,
+                        element_tag=element_tag
                     )
 
                     if not success:
@@ -939,6 +1098,12 @@ Return ONLY a JSON array:
                                     logs.append(f"  ✅ Found element after scrolling")
                                     # Continue to next step
                                     logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+
+                                    # Find element to get metadata
+                                    target_element = next((e for e in dom_elements if e.selector == llm_decision['selector']), None)
+                                    element_text = target_element.text if target_element else ""
+                                    element_tag = target_element.tag if target_element else ""
+
                                     # Update cache with successful selector
                                     self._update_cache(
                                         step_description=step.description,
@@ -946,7 +1111,9 @@ Return ONLY a JSON array:
                                         page_url=current_url,
                                         selector=llm_decision["selector"],
                                         success=True,
-                                        dom_context=dom_context
+                                        dom_context=dom_context,
+                                        element_text=element_text,
+                                        element_tag=element_tag
                                     )
                                     time.sleep(0.2)
                                     # Update current_url after navigation
@@ -2257,18 +2424,32 @@ Respond with JSON only:
         cached = self.selector_cache.get(cache_key)
 
         if cached:
-            # Prefer high-confidence cache entries (success_count >= 2)
-            if cached.get("success_count", 0) >= 2:
-                context_info = f" [context: {dom_context}]" if dom_context else ""
-                print(f"[Cache HIT] Using cached selector for '{step_description}'{context_info}")
-                return cached["selector"]
+            # Validate cached selector before use
+            validated_selector = self._validate_cached_selector(cached, page_url)
+
+            if validated_selector:
+                # Update cache with validated selector (might be regenerated)
+                if validated_selector != cached.get('selector'):
+                    cached['selector'] = validated_selector
+                    print(f"[Cache] Updated with regenerated selector: {validated_selector}")
+
+                # Prefer high-confidence cache entries (success_count >= 2)
+                if cached.get("success_count", 0) >= 2:
+                    context_info = f" [context: {dom_context}]" if dom_context else ""
+                    print(f"[Cache HIT] Using validated selector for '{step_description}'{context_info}")
+                    return cached
+            else:
+                # Cache invalid, remove it
+                print(f"[Cache MISS] Cached selector invalid, removing: {cache_key}")
+                del self.selector_cache[cache_key]
 
         return None
 
     def _update_cache(self, step_description: str, action: str, page_url: str,
-                     selector: str, success: bool, dom_context: str = "") -> None:
+                     selector: str, success: bool, dom_context: str = "",
+                     element_text: str = "", element_tag: str = "") -> None:
         """
-        Update cache with execution result.
+        Update cache with execution result and metadata.
 
         Args:
             step_description: Human-readable step description
@@ -2277,12 +2458,13 @@ Respond with JSON only:
             selector: Selector that was used
             success: Whether the action succeeded
             dom_context: DOM context string (active tabs/modals)
+            element_text: Text content of the element (for regeneration)
+            element_tag: HTML tag of the element (for regeneration)
         """
-        # 동적 ID 패턴 감지 - Radix UI 등의 프레임워크가 생성하는 동적 ID는 캐싱하지 않음
-        import re
-        if re.search(r'radix-:[a-z0-9]+:', selector, re.IGNORECASE):
-            print(f"[Cache] Skipping cache for dynamic ID selector: {selector}")
-            return
+        # 동적 ID 패턴 감지 - 우리가 만든 함수 사용
+        if self._is_dynamic_selector(selector):
+            print(f"[Cache] ⚠️ Dynamic ID detected, caching with metadata for regeneration: {selector}")
+            # 동적 ID지만 메타데이터와 함께 캐싱 (나중에 재생성 가능)
 
         cache_key = self._get_cache_key(step_description, action, page_url, dom_context)
 
@@ -2291,7 +2473,9 @@ Respond with JSON only:
                 "selector": selector,
                 "timestamp": time.time(),
                 "success_count": 1 if success else 0,
-                "step_description": step_description  # For debugging
+                "step_description": step_description,  # For debugging
+                "element_text": element_text,  # For regeneration
+                "element_tag": element_tag,    # For regeneration
             }
         else:
             # Update existing entry

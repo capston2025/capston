@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
+from gaia.src.gui.screencast_client import ScreencastClient
+
 
 
 class DropArea(QLabel):
@@ -483,9 +485,11 @@ class MainWindow(QMainWindow):
         self._log_mode: str = "summary"  # "summary" or "full"
         self._is_busy: bool
         self._busy_overlay: BusyOverlay | None = None
+        self._screencast_client: ScreencastClient | None = None
 
         self._is_busy = False
         self._build_layout()
+        self._setup_screencast()
 
         if controller_factory:
             controller_factory(self)
@@ -968,3 +972,78 @@ class MainWindow(QMainWindow):
         url = self._url_input.text().strip()
         if url:
             self.urlSubmitted.emit(url)
+
+    def _setup_screencast(self) -> None:
+        """CDP 스크린캐스트 WebSocket 클라이언트를 설정하고 연결합니다"""
+        self._screencast_client = ScreencastClient()
+        self._screencast_client.frame_received.connect(self._update_screencast_frame)
+        self._screencast_client.connection_status_changed.connect(self._on_screencast_connection_changed)
+        self._screencast_client.error_occurred.connect(self._on_screencast_error)
+        # 자동 연결 시작
+        self._screencast_client.start()
+        print("[GUI] Screencast client started")
+
+    def _update_screencast_frame(self, frame_base64: str) -> None:
+        """
+        CDP 스크린캐스트에서 수신한 프레임을 브라우저 뷰에 표시합니다
+        기존 update_live_preview 메서드의 간소화 버전 (클릭 애니메이션 제거)
+        """
+        html = f'''
+        <html>
+        <head>
+            <style>
+                body {{
+                    margin: 0;
+                    padding: 0;
+                    background: #1a1a1a;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    overflow: hidden;
+                }}
+                img {{
+                    max-width: 100%;
+                    max-height: 100vh;
+                    object-fit: contain;
+                    box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+                    border: 1px solid rgba(59, 130, 246, 0.2);
+                    border-radius: 4px;
+                }}
+            </style>
+        </head>
+        <body>
+            <img src="data:image/jpeg;base64,{frame_base64}" alt="Browser screencast">
+        </body>
+        </html>
+        '''
+        self._browser_view.setHtml(html)
+
+    def _on_screencast_connection_changed(self, connected: bool) -> None:
+        """스크린캐스트 연결 상태 변경 핸들러"""
+        if connected:
+            print("[GUI] Screencast connected")
+        else:
+            print("[GUI] Screencast disconnected")
+            # 연결 끊김 시 안내 메시지 표시
+            if not self._is_busy:  # busy가 아닐 때만 메시지 표시
+                self._browser_view.setHtml('''
+                    <html>
+                    <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#666;">
+                        <div style="text-align:center;">
+                            <h2>브라우저 세션 없음</h2>
+                            <p>테스트를 시작하면 실시간 화면이 표시됩니다</p>
+                        </div>
+                    </body>
+                    </html>
+                ''')
+
+    def _on_screencast_error(self, error_message: str) -> None:
+        """스크린캐스트 에러 핸들러"""
+        print(f"[GUI] Screencast error: {error_message}")
+
+    def closeEvent(self, event) -> None:
+        """창 닫기 이벤트 - 스크린캐스트 클라이언트 정리"""
+        if self._screencast_client:
+            self._screencast_client.stop()
+            print("[GUI] Screencast client stopped")
+        super().closeEvent(event)

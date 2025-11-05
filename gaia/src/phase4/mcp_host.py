@@ -1,17 +1,18 @@
 import asyncio
 import base64
 import uuid
-from fastapi import FastAPI, HTTPException
+import json as json_module
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from playwright.async_api import async_playwright, Playwright, expect, Browser, Page
+from playwright.async_api import async_playwright, Playwright, expect, Browser, Page, CDPSession
 from typing import Dict, Any, Optional, List
 
 app = FastAPI(title="MCP Host", description="Model Context Protocol Host for Browser Automation")
 
-# 라이브 미리보기를 위한 전역 상태
-live_preview_subscribers: List[asyncio.Queue] = []
-current_page_screenshot: str = ""
+# 라이브 미리보기를 위한 전역 상태 (CDP 스크린캐스트용)
+screencast_subscribers: List[WebSocket] = []
+current_screencast_frame: Optional[str] = None
 
 # 브라우저 세션 관리
 class BrowserSession:
@@ -21,18 +22,104 @@ class BrowserSession:
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
         self.current_url: str = ""
+        self.cdp_session: Optional[CDPSession] = None
+        self.screencast_active: bool = False
 
     async def get_or_create_page(self) -> Page:
         """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다"""
         if not self.browser:
             if not playwright_instance:
                 raise HTTPException(status_code=503, detail="Playwright not initialized")
-            self.browser = await playwright_instance.chromium.launch(headless=True)
+            self.browser = await playwright_instance.chromium.launch(
+                headless=True,  # CDP 스크린캐스트 사용하므로 headless로 실행
+            )
             self.page = await self.browser.new_page()
+
+            # 페이지 생성 후 바로 CDP 스크린캐스트 시작
+            await self.start_screencast()
         return self.page
+
+    async def start_screencast(self):
+        """CDP 스크린캐스트를 시작합니다 - 브라우저 변경사항을 실시간 스트리밍"""
+        if self.page and not self.cdp_session:
+            try:
+                # CDP 세션 생성
+                self.cdp_session = await self.page.context.new_cdp_session(self.page)
+
+                # 스크린캐스트 프레임 이벤트 리스너 등록
+                self.cdp_session.on('Page.screencastFrame', self._handle_screencast_frame)
+
+                # 스크린캐스트 시작
+                await self.cdp_session.send('Page.startScreencast', {
+                    'format': 'jpeg',
+                    'quality': 80,
+                    'maxWidth': 1280,
+                    'maxHeight': 720,
+                    'everyNthFrame': 1  # 모든 프레임 전송 (부드러운 스트리밍)
+                })
+
+                self.screencast_active = True
+                print(f"[CDP Screencast] Started for session {self.session_id}")
+            except Exception as e:
+                print(f"[CDP Screencast] Failed to start: {e}")
+
+    async def _handle_screencast_frame(self, payload: Dict[str, Any]):
+        """스크린캐스트 프레임을 처리하고 구독자에게 전송합니다"""
+        global current_screencast_frame
+
+        # 프레임 데이터 추출 (이미 base64 인코딩됨)
+        frame_data = payload.get('data')
+        session_id = payload.get('sessionId')
+
+        if frame_data:
+            # 전역 상태 업데이트
+            current_screencast_frame = frame_data
+
+            # 모든 WebSocket 구독자에게 프레임 전송
+            disconnected_clients = []
+            for ws in screencast_subscribers:
+                try:
+                    await ws.send_json({
+                        'type': 'screencast_frame',
+                        'session_id': self.session_id,
+                        'frame': frame_data,
+                        'timestamp': asyncio.get_event_loop().time()
+                    })
+                except Exception as e:
+                    print(f"[CDP Screencast] Failed to send to subscriber: {e}")
+                    disconnected_clients.append(ws)
+
+            # 연결이 끊어진 클라이언트 제거
+            for ws in disconnected_clients:
+                if ws in screencast_subscribers:
+                    screencast_subscribers.remove(ws)
+
+        # CDP에 프레임 수신 확인 (다음 프레임 요청)
+        if self.cdp_session and session_id:
+            try:
+                await self.cdp_session.send('Page.screencastFrameAck', {'sessionId': session_id})
+            except Exception as e:
+                print(f"[CDP Screencast] Failed to ack frame: {e}")
+
+    async def stop_screencast(self):
+        """CDP 스크린캐스트를 중지합니다"""
+        if self.cdp_session and self.screencast_active:
+            try:
+                await self.cdp_session.send('Page.stopScreencast')
+                self.screencast_active = False
+                print(f"[CDP Screencast] Stopped for session {self.session_id}")
+            except Exception as e:
+                print(f"[CDP Screencast] Failed to stop: {e}")
 
     async def close(self):
         """브라우저 세션을 종료합니다"""
+        if self.screencast_active:
+            await self.stop_screencast()
+
+        if self.cdp_session:
+            await self.cdp_session.detach()
+            self.cdp_session = None
+
         if self.browser:
             await self.browser.close()
             self.browser = None
@@ -1048,9 +1135,48 @@ async def close_session(request: McpRequest):
     return {"success": False, "message": f"Session '{session_id}' not found"}
 
 
+@app.websocket("/ws/screencast")
+async def websocket_screencast(websocket: WebSocket):
+    """
+    WebSocket 엔드포인트: 실시간 스크린캐스트 프레임을 스트리밍합니다.
+    클라이언트가 연결하면 CDP에서 전송하는 모든 프레임을 실시간으로 받습니다.
+    """
+    await websocket.accept()
+    screencast_subscribers.append(websocket)
+    print(f"[WebSocket] New screencast subscriber connected (total: {len(screencast_subscribers)})")
+
+    try:
+        # 연결 유지 - 클라이언트가 메시지를 보내거나 연결이 끊어질 때까지 대기
+        while True:
+            # 클라이언트로부터 메시지를 받습니다 (ping/pong 등)
+            data = await websocket.receive_text()
+
+            # 클라이언트가 요청하면 현재 프레임을 즉시 전송
+            if data == "get_current_frame" and current_screencast_frame:
+                await websocket.send_json({
+                    'type': 'screencast_frame',
+                    'frame': current_screencast_frame,
+                    'timestamp': asyncio.get_event_loop().time()
+                })
+
+    except WebSocketDisconnect:
+        print(f"[WebSocket] Screencast subscriber disconnected")
+    except Exception as e:
+        print(f"[WebSocket] Error: {e}")
+    finally:
+        if websocket in screencast_subscribers:
+            screencast_subscribers.remove(websocket)
+        print(f"[WebSocket] Subscriber removed (total: {len(screencast_subscribers)})")
+
+
 @app.get("/")
 async def root():
-    return {"message": "MCP Host is running.", "active_sessions": len(active_sessions)}
+    return {
+        "message": "MCP Host is running.",
+        "active_sessions": len(active_sessions),
+        "screencast_subscribers": len(screencast_subscribers),
+        "screencast_active": any(s.screencast_active for s in active_sessions.values())
+    }
 
 def main() -> None:
     import uvicorn
