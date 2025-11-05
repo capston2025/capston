@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert UI components spec markdown to PDF for testing"""
+"""UI 구성 요소 명세 마크다운을 테스트용 PDF로 변환합니다"""
 import sys
 from pathlib import Path
 from reportlab.lib.pagesizes import A4
@@ -9,13 +9,13 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 def markdown_to_pdf(md_path: Path, pdf_path: Path):
-    """Convert markdown file to PDF"""
+    """마크다운 파일을 PDF로 변환합니다"""
 
-    # Read markdown
+    # 마크다운 읽기
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Create PDF
+    # PDF 생성
     doc = SimpleDocTemplate(
         str(pdf_path),
         pagesize=A4,
@@ -25,22 +25,22 @@ def markdown_to_pdf(md_path: Path, pdf_path: Path):
         bottomMargin=18,
     )
 
-    # Use existing styles from reportlab
+    # reportlab이 제공하는 스타일 사용
     styles = getSampleStyleSheet()
 
-    # Build story
+    # 스토리 구성
     story = []
     lines = content.split('\n')
 
     for line in lines:
         line = line.strip()
 
-        # Skip empty lines
+        # 빈 줄은 건너뛰기
         if not line:
             story.append(Spacer(1, 0.2*inch))
             continue
 
-        # Handle headers
+        # 헤더 처리
         if line.startswith('# '):
             text = line[2:].strip()
             story.append(Paragraph(text, styles['Title']))
@@ -61,7 +61,7 @@ def markdown_to_pdf(md_path: Path, pdf_path: Path):
             story.append(Paragraph(text, styles['Heading3']))
             story.append(Spacer(1, 0.1*inch))
 
-        # Handle lists
+        # 리스트 처리
         elif line.startswith('- ') or line.startswith('* '):
             text = line[2:].strip()
             story.append(Paragraph(f"• {text}", styles['Normal']))
@@ -69,20 +69,20 @@ def markdown_to_pdf(md_path: Path, pdf_path: Path):
         elif line.startswith('---'):
             story.append(Spacer(1, 0.3*inch))
 
-        # Handle numbered lists
+        # 번호 리스트 처리
         elif len(line) > 2 and line[0].isdigit() and line[1] == '.':
             text = line[2:].strip()
             story.append(Paragraph(text, styles['Normal']))
 
-        # Regular text
+        # 일반 텍스트
         else:
-            # Skip markdown markers
+            # 마크다운 구분자는 건너뛰기
             if line.startswith('```') or line.startswith('|'):
                 continue
 
             story.append(Paragraph(line, styles['Normal']))
 
-    # Build PDF
+    # PDF 생성
     print(f"📄 Generating PDF...")
     doc.build(story)
     print(f"✅ PDF created: {pdf_path}")

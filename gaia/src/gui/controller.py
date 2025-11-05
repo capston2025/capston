@@ -1,4 +1,4 @@
-"""Application controller wiring GUI events to GAIA services."""
+"""GAIA 서비스와 GUI 이벤트를 연결하는 애플리케이션 컨트롤러입니다."""
 from __future__ import annotations
 
 import html
@@ -30,7 +30,7 @@ class ControllerConfig:
 
 
 class AppController(QObject):
-    """Coordinates file inputs, planning, and automation execution."""
+    """파일 입력, 플랜 생성, 자동화 실행을 조정합니다."""
 
     def __init__(self, window, config: ControllerConfig | None = None) -> None:
         super().__init__(window)
@@ -83,34 +83,34 @@ class AppController(QObject):
 
         self._window.append_log(f"📄 Loading PDF: {path.name}")
 
-        # Extract PDF text
+        # PDF 텍스트 추출
         try:
             result = self._pdf_loader.extract(path)
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except Exception as exc:  # pragma: no cover - 방어적 로깅
             self._window.append_log(f"❌ Failed to parse PDF: {exc}")
             return
 
         self._current_pdf_text = result.text
 
-        # Generate PDF hash for caching
+        # 캐싱을 위한 PDF 해시 생성
         import hashlib
         self._current_pdf_hash = hashlib.md5(result.text.encode()).hexdigest()[:12]
 
-        # Show heuristic checklist first (immediate feedback)
+        # 즉각적인 피드백을 위해 휴리스틱 체크리스트를 먼저 표시
         self._window.show_checklist(result.checklist_items)
         self._window.append_log("📄 PDF loaded, starting AI analysis...")
 
-        # Check for suggested URL
+        # 추천 URL이 있는지 확인
         if result.suggested_url:
             self._current_url = result.suggested_url
             self._window.set_url_field(result.suggested_url)
             self._window.append_log(f"🌐 Suggested test URL: {result.suggested_url}")
 
-        # Start Agent Builder analysis in background thread
+        # 백그라운드 스레드에서 Agent Builder 분석 시작
         self._start_analysis_worker(result.text)
 
     def _start_analysis_worker(self, pdf_text: str) -> None:
-        """Start Agent Builder analysis in a worker thread"""
+        """Agent Builder 분석을 워커 스레드에서 시작합니다."""
         if self._analysis_thread and self._analysis_thread.isRunning():
             self._window.append_log("⚠️ Analysis already in progress, please wait...")
             return
@@ -119,7 +119,7 @@ class AppController(QObject):
         worker = AnalysisWorker(pdf_text, analyzer=self._analyzer)
         worker.moveToThread(thread)
 
-        # Connect signals
+        # 시그널 연결
         thread.started.connect(worker.run)
         worker.progress.connect(self._window.append_log)
         worker.finished.connect(self._on_analysis_finished)
@@ -178,7 +178,7 @@ class AppController(QObject):
 
     @Slot(object)
     def _on_analysis_finished(self, analysis_result) -> None:
-        """Handle Agent Builder analysis completion"""
+        """Agent Builder 분석 완료를 처리합니다."""
         self._window.hide_loading_overlay()
         summary = analysis_result.summary
         self._window.append_log(
@@ -186,15 +186,15 @@ class AppController(QObject):
             f"(MUST: {summary['must']}, SHOULD: {summary['should']}, MAY: {summary['may']})"
         )
 
-        # Show test cases using glass cards
+        # 글래스 카드 형태로 테스트 케이스 표시
         self._window.show_scenarios(analysis_result.checklist)
 
         self._analysis_plan = self._convert_testcases_to_scenarios(
             analysis_result.checklist
         )
 
-        # Save plan to disk for future use (avoid re-analysis)
-        # Save by URL if available, otherwise by PDF hash
+        # 재분석을 피하기 위해 플랜을 디스크에 저장
+        # URL이 있으면 해당 URL로, 없으면 PDF 해시로 저장
         if self._analysis_plan:
             try:
                 saved_path = self._plan_repository.save_plan_for_url(
@@ -206,11 +206,11 @@ class AppController(QObject):
             except Exception as e:
                 self._window.append_log(f"⚠️ Failed to cache plan: {e}")
 
-        # Log individual test cases
+        # 각 테스트 케이스 로그
         for tc in analysis_result.checklist:
             self._window.append_log(f"  • {tc.id}: {tc.name}")
 
-        # Show results in browser view (like a chatbot conversation)
+        # 챗봇 대화처럼 브라우저 뷰에 결과 표시
         self._show_analysis_results_in_browser(analysis_result)
 
         self._analysis_thread = None
@@ -230,7 +230,7 @@ class AppController(QObject):
         return summary
 
     def _show_analysis_results_in_browser(self, analysis_result) -> None:
-        """Display Agent Builder results in browser view with a glass aesthetic."""
+        """Agent Builder 결과를 글래스 스타일로 브라우저 뷰에 표시합니다."""
         summary = analysis_result.summary
 
         must_cases = [tc for tc in analysis_result.checklist if tc.priority == 'MUST']
@@ -482,7 +482,7 @@ class AppController(QObject):
 
     @Slot(str)
     def _on_analysis_error(self, error_message: str) -> None:
-        """Handle Agent Builder analysis error"""
+        """Agent Builder 분석 오류를 처리합니다."""
         self._window.hide_loading_overlay()
         self._window.append_log(f"❌ Agent Builder failed: {error_message}")
         self._window.append_log("📝 Using heuristic checklist instead")
@@ -501,18 +501,18 @@ class AppController(QObject):
             self._window.append_log("⚠️ Automation already in progress.")
             return
 
-        # Use analysis_plan (abstract scenarios from Agent Builder)
+        # Agent Builder가 만든 추상 시나리오인 analysis_plan 사용
         candidate_plan: List[TestScenario] = list(self._analysis_plan) if self._analysis_plan else []
 
         if not candidate_plan:
             self._window.append_log("⚠️ 생성된 테스트 시나리오가 없습니다. PDF를 먼저 분석해주세요.")
             return
 
-        # Step 1: Analyze DOM and capture screenshot using MCP
+        # 1단계: MCP로 DOM 분석 및 스크린샷 캡처
         self._window.append_log("📸 MCP로 DOM 분석 및 스크린샷 캡처 중...")
 
-        # Step 2: LLM selects executable tests and creates priority queue
-        # Step 3: Execute tests with site exploration
+        # 2단계: LLM이 실행 가능한 테스트를 선택하고 우선순위 큐 생성
+        # 3단계: 사이트 탐색과 함께 테스트 실행
         self._plan = candidate_plan
         self._window.append_log(f"🤖 Master Orchestrator 자동화를 시작합니다 ({len(candidate_plan)}개 시나리오)")
         self._window.append_log("   🗺️  1️⃣ 사이트 구조 탐색 (네비게이션 링크 발견)")
@@ -523,11 +523,11 @@ class AppController(QObject):
         self._start_intelligent_worker(self._current_url, candidate_plan)
 
     def _start_intelligent_worker(self, url: str, plan: Sequence[TestScenario]) -> None:
-        """Start MasterOrchestrator (with site exploration) in background thread"""
+        """사이트 탐색을 포함한 MasterOrchestrator를 백그라운드에서 시작합니다."""
         from gaia.src.gui.intelligent_worker import IntelligentWorker
 
         thread = QThread(self)
-        # Use MasterOrchestrator instead of IntelligentOrchestrator
+        # IntelligentOrchestrator 대신 MasterOrchestrator 사용
         worker = IntelligentWorker(url, plan, orchestrator=self._master_orchestrator)
         worker.moveToThread(thread)
 
@@ -562,7 +562,7 @@ class AppController(QObject):
     # ------------------------------------------------------------------
     @Slot()
     def _on_intelligent_worker_finished(self) -> None:
-        """Handle IntelligentOrchestrator completion"""
+        """IntelligentOrchestrator 완료를 처리합니다."""
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ LLM-powered automation completed. Coverage: {summary:.1f}%")
         self._window.set_busy(False)
@@ -593,7 +593,7 @@ class AppController(QObject):
         self._window.append_log(f"🌐 Loading URL: {url}")
         self._window.load_url(url)
 
-        # If analysis already done but URL was missing, save now with URL
+        # 이전에 URL 없이 분석했다면 이제 URL과 함께 저장
         if self._analysis_plan and not self._plan:
             try:
                 saved_path = self._plan_repository.save_plan_for_url(

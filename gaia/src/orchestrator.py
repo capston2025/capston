@@ -1,6 +1,6 @@
 """
-GAIA Orchestrator - AI Agent Orchestration
-Coordinates multiple AI agents to perform end-to-end QA testing
+GAIA 오케스트레이터 - AI 에이전트 오케스트레이션
+엔드 투 엔드 QA 테스트를 수행하도록 여러 AI 에이전트를 조율합니다.
 """
 
 import json
@@ -10,34 +10,34 @@ from dataclasses import asdict
 from src.phase1.agent_client import AgentServiceClient, AnalysisResult, TestCase
 from src.tracker.checklist import ChecklistTracker
 from src.utils.models import TestScenario, Assertion, TestStep
-# from src.phase4.agent import ExplorerAgent  # Phase 4 구현 시
-# from src.phase5.report import ReportGenerator  # Phase 5 구현 시
+# Phase 4 구현 시 사용할 import: from src.phase4.agent import ExplorerAgent
+# Phase 5 구현 시 사용할 import: from src.phase5.report import ReportGenerator
 
 
 class GAIAOrchestrator:
-    """Orchestrates the entire GAIA workflow"""
+    """전체 GAIA 워크플로를 조율합니다"""
 
     def __init__(self):
-        """Initialize orchestrator with all agents and services"""
+        """모든 에이전트와 서비스를 초기화합니다"""
         self.agent_client = AgentServiceClient()
         self.checklist_tracker = ChecklistTracker()
 
     def run(self, spec_text: str, target_url: str) -> Dict:
         """
-        Run the complete GAIA workflow.
+        GAIA 전체 워크플로를 실행합니다.
 
-        Args:
-            spec_text: The specification document text
-            target_url: The target website URL to test
+        매개변수:
+            spec_text: 명세 문서 텍스트
+            target_url: 테스트할 대상 웹사이트 URL
 
-        Returns:
-            Final report with coverage and findings
+        반환:
+            커버리지와 발견 사항을 포함한 최종 보고서
         """
         print("=" * 60)
         print("🚀 GAIA Orchestration Started")
         print("=" * 60)
 
-        # ===== PHASE 1: Spec Analysis =====
+        # ===== 1단계: 명세 분석 =====
         print("\n📋 Phase 1: Analyzing specification...")
         analysis_result = self._phase1_analyze(spec_text)
 
@@ -46,20 +46,20 @@ class GAIAOrchestrator:
         print(f"   - SHOULD: {analysis_result.summary['should']}")
         print(f"   - MAY: {analysis_result.summary['may']}")
 
-        # Convert Agent Builder results to TestScenarios
+        # Agent Builder 결과를 TestScenario로 변환
         test_scenarios = self._convert_to_scenarios(analysis_result.checklist)
 
-        # Initialize checklist tracker
+        # 체크리스트 추적기를 초기화
         self.checklist_tracker.seed_from_scenarios(test_scenarios)
 
-        # ===== PHASE 4: LLM Agent Exploration =====
+        # ===== 4단계: LLM 에이전트 탐색 =====
         print("\n🔍 Phase 4: Exploring website with AI agent...")
         exploration_result = self._phase4_explore(
             target_url=target_url,
             checklist=analysis_result.checklist
         )
 
-        # ===== PHASE 5: Report Generation =====
+        # ===== 5단계: 보고서 생성 =====
         print("\n📊 Phase 5: Generating report...")
         final_report = self._phase5_report()
 
@@ -71,33 +71,33 @@ class GAIAOrchestrator:
 
     def _phase1_analyze(self, spec_text: str) -> AnalysisResult:
         """
-        Phase 1: Analyze specification using Agent Builder.
+        1단계: Agent Builder를 사용해 명세를 분석합니다.
 
-        This phase uses OpenAI Agent Builder to:
-        1. Extract all features from the spec
-        2. Generate structured test cases
-        3. Categorize and prioritize tests
+        이 단계에서는 OpenAI Agent Builder를 활용해 다음을 수행합니다.
+        1. 명세에서 모든 기능을 추출
+        2. 구조화된 테스트 케이스 생성
+        3. 테스트를 범주화하고 우선순위를 지정
         """
         result = self.agent_client.analyze_document(spec_text)
         return result
 
     def _phase4_explore(self, target_url: str, checklist: List) -> Dict:
         """
-        Phase 4: Explore website using LLM Agent with MCP.
+        4단계: MCP를 사용하는 LLM 에이전트로 웹사이트를 탐색합니다.
 
-        This phase:
-        1. Provides the checklist to the LLM Agent
-        2. Agent explores the website using Playwright MCP
-        3. When features are found, marks them in the tracker
-        4. Returns exploration statistics
+        이 단계에서는 다음을 수행합니다.
+        1. 체크리스트를 LLM 에이전트에 전달
+        2. Playwright MCP로 웹사이트 탐색
+        3. 기능을 찾으면 트래커에 표시
+        4. 탐색 통계를 반환
         """
-        # TODO: Implement Phase 4 Agent
-        # For now, return mock result
+        # TODO: Phase 4 에이전트 구현
+        # 현재는 목업 결과를 반환
 
         print(f"   Target URL: {target_url}")
         print(f"   Checklist items to find: {len(checklist)}")
 
-        # Example of how Phase 4 will work:
+        # Phase 4 동작 예시:
         #
         # explorer = ExplorerAgent(
         #     checklist=checklist,
@@ -105,17 +105,17 @@ class GAIAOrchestrator:
         # )
         #
         # result = explorer.explore(target_url, instructions=f"""
-        # You are a QA automation agent. Your goal is to explore {target_url}
-        # and find the following features:
+        # 당신은 QA 자동화 에이전트입니다. 목표는 {target_url}를 탐색하는 것입니다
+        # 그리고 다음 기능을 찾아야 합니다:
         #
         # {json.dumps([asdict(tc) for tc in checklist], indent=2, ensure_ascii=False)}
         #
-        # For each feature you find:
-        # 1. Navigate to the appropriate page
-        # 2. Verify the feature exists and works
-        # 3. Call checklist_tracker.mark_found(feature_id)
+        # 각 기능을 찾을 때마다:
+        # 1. 해당 페이지로 이동
+        # 2. 기능이 존재하고 동작하는지 확인
+        # 3. checklist_tracker.mark_found(feature_id)를 호출
         #
-        # Available tools:
+        # 사용 가능한 도구:
         # - playwright.goto(url)
         # - playwright.click(selector)
         # - playwright.fill(selector, text)
@@ -131,28 +131,28 @@ class GAIAOrchestrator:
 
     def _convert_to_scenarios(self, test_cases: List[TestCase]) -> List[TestScenario]:
         """
-        Convert Agent Builder TestCases to GAIA TestScenarios.
+        Agent Builder의 TestCase를 GAIA용 TestScenario로 변환합니다.
 
-        Args:
-            test_cases: List of TestCase from Agent Builder
+        매개변수:
+            test_cases: Agent Builder가 생성한 TestCase 목록
 
-        Returns:
-            List of TestScenario for GAIA system
+        반환:
+            GAIA 시스템에서 사용할 TestScenario 목록
         """
         scenarios = []
         for tc in test_cases:
-            # Convert steps to TestStep objects
+            # 단계 문자열을 TestStep 객체로 변환
             steps = [
                 TestStep(
                     description=step,
-                    action="click",  # Default action, Phase 4 will determine actual action
-                    selector="",     # Will be filled by Phase 4
+                    action="click",  # 기본 동작이며 실제 동작은 Phase 4에서 결정
+                    selector="",     # Phase 4에서 채워짐
                     params=[]
                 )
                 for step in tc.steps
             ]
 
-            # Create assertion from expected_result
+            # expected_result로 Assertion 생성
             assertion = Assertion(
                 description=tc.expected_result,
                 selector="",
@@ -160,7 +160,7 @@ class GAIAOrchestrator:
                 params=[]
             )
 
-            # Create TestScenario
+            # TestScenario 생성
             scenario = TestScenario(
                 id=tc.id,
                 priority=tc.priority,
@@ -174,12 +174,12 @@ class GAIAOrchestrator:
 
     def _phase5_report(self) -> Dict:
         """
-        Phase 5: Generate final report.
+        5단계: 최종 보고서를 생성합니다.
 
-        This phase:
-        1. Retrieves current checklist status
-        2. Calculates coverage metrics
-        3. Generates detailed report
+        이 단계에서는 다음을 수행합니다.
+        1. 현재 체크리스트 상태를 가져옴
+        2. 커버리지 지표를 계산
+        3. 상세 보고서를 생성
         """
         coverage = self.checklist_tracker.coverage()
         checklist_dict = self.checklist_tracker.as_dict()
@@ -211,11 +211,11 @@ class GAIAOrchestrator:
         return report
 
 
-# Example usage
+# 사용 예시
 if __name__ == "__main__":
     orchestrator = GAIAOrchestrator()
 
-    # Sample spec
+    # 샘플 명세
     spec = """
     온라인 쇼핑몰 웹사이트 기획서
 
@@ -226,13 +226,13 @@ if __name__ == "__main__":
     4. 결제하기
     """
 
-    # Run orchestration
+    # 오케스트레이션 실행
     result = orchestrator.run(
         spec_text=spec,
         target_url="https://example-shop.com"
     )
 
-    # Print final report
+    # 최종 보고서 출력
     print("\n" + "=" * 60)
     print("📄 FINAL REPORT")
     print("=" * 60)

@@ -2,21 +2,21 @@ import express, { Request, Response } from "express";
 import dotenv from "dotenv";
 import { runWorkflow, WorkflowInput } from "./workflow";
 
-// Load environment variables
+// 환경 변수를 불러옵니다
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// 미들웨어 설정
 app.use(express.json({ limit: "10mb" }));
 
-// Health check endpoint
+// 헬스 체크 엔드포인트
 app.get("/health", (req: Request, res: Response) => {
   res.json({ status: "ok", service: "agent-service" });
 });
 
-// Workflow execution endpoint
+// 워크플로 실행 엔드포인트
 app.post("/api/analyze", async (req: Request, res: Response) => {
   try {
     const { input_as_text } = req.body as WorkflowInput;
@@ -48,19 +48,19 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
   }
 });
 
-// Start server
+// 서버 시작
 const server = app.listen(PORT, () => {
   console.log(`🚀 Agent service running on http://localhost:${PORT}`);
   console.log(`   Health check: http://localhost:${PORT}/health`);
   console.log(`   Analysis API: POST http://localhost:${PORT}/api/analyze`);
 });
 
-// Increase timeout for GPT-5 processing (default is 120s)
-// GPT-5 can take 10-15 minutes for large documents (50+ pages)
+// GPT-5 처리를 위해 타임아웃을 확장합니다 (기본값 120초)
+// 대형 문서(50페이지 이상)는 GPT-5가 10~15분이 걸릴 수 있습니다
 server.timeout = 1500000; // 25 minutes in milliseconds
 console.log(`   ⏱️  Server timeout: ${server.timeout / 1000}s (extended for GPT-5)`);
 
-// Graceful shutdown
+// 정상 종료 처리
 process.on("SIGTERM", () => {
   console.log("SIGTERM signal received: closing HTTP server");
   process.exit(0);

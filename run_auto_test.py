@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Auto-test runner for GAIA system.
-Loads test plan with no selectors and executes using MasterOrchestrator.
+GAIA 시스템 자동 테스트 실행기.
+선택자가 없는 테스트 플랜을 불러와 MasterOrchestrator로 실행합니다.
 """
 import json
 import os
 import sys
 from pathlib import Path
 
-# Add project root to path
+# 프로젝트 루트를 경로에 추가
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Load environment variables from .env
+# .env에서 환경 변수를 불러오기
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -19,11 +19,11 @@ from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.utils.models import TestScenario
 
 def load_test_plan(plan_path: str):
-    """Load test plan from JSON file."""
+    """JSON 파일에서 테스트 플랜을 불러옵니다."""
     with open(plan_path, 'r') as f:
         data = json.load(f)
 
-    # Convert to TestScenario objects
+    # TestScenario 객체로 변환
     scenarios = []
     for scenario_data in data['test_scenarios']:
         try:
@@ -35,7 +35,7 @@ def load_test_plan(plan_path: str):
     return scenarios
 
 def run_tests(url: str, plan_path: str):
-    """Run tests and return results."""
+    """테스트를 실행하고 결과를 반환합니다."""
     print("=" * 60)
     print("GAIA AUTO-TEST RUNNER")
     print("=" * 60)
@@ -43,16 +43,16 @@ def run_tests(url: str, plan_path: str):
     print(f"Test Plan: {plan_path}")
     print("=" * 60)
 
-    # Load test plan
+    # 테스트 플랜 불러오기
     print("\nLoading test plan...")
     scenarios = load_test_plan(plan_path)
     print(f"Loaded {len(scenarios)} test scenarios")
 
-    # Initialize orchestrator
+    # 오케스트레이터 초기화
     print("\nInitializing MasterOrchestrator...")
     orchestrator = MasterOrchestrator(session_id="auto_test_session")
 
-    # Execute tests
+    # 테스트 실행
     print("\nExecuting tests...")
     print("-" * 60)
 
@@ -62,7 +62,7 @@ def run_tests(url: str, plan_path: str):
         progress_callback=lambda msg: print(msg)
     )
 
-    # Print results
+    # 결과 출력
     print("\n" + "=" * 60)
     print("TEST RESULTS")
     print("=" * 60)
@@ -74,7 +74,7 @@ def run_tests(url: str, plan_path: str):
     print(f"Pages Explored: {results.get('pages_explored', 'N/A')}")
     print("=" * 60)
 
-    # Detailed results
+    # 상세 결과
     print("\nDetailed Results:")
     print("-" * 60)
     for scenario_result in results['scenarios']:
@@ -99,15 +99,15 @@ def run_tests(url: str, plan_path: str):
     return results
 
 if __name__ == "__main__":
-    # Configuration
+    # 구성
     TARGET_URL = "https://final-blog-25638597.figma.site"
     TEST_PLAN = "/Users/coldmans/Documents/GitHub/capston/gaia/artifacts/plans/realistic_test_no_selectors.json"
 
-    # Run tests
+    # 테스트 실행
     try:
         results = run_tests(TARGET_URL, TEST_PLAN)
 
-        # Exit with appropriate code
+        # 적절한 종료 코드 반환
         if results['failed'] > 0:
             sys.exit(1)
         elif results['partial'] > 0:

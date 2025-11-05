@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Simple test runner for local site testing"""
+"""로컬 사이트 테스트를 위한 간단한 실행기"""
 import sys
 import json
 from pathlib import Path
 
-# Add project root to path
+# 프로젝트 루트를 경로에 추가
 sys.path.insert(0, '/Users/coldmans/Documents/GitHub/capston')
 
 from gaia.src.phase4.intelligent_orchestrator import IntelligentOrchestrator
@@ -14,7 +14,7 @@ def main():
     print("GAIA LOCAL SITE TEST RUNNER")
     print("=" * 60)
 
-    # Target URL and test plan
+    # 대상 URL과 테스트 플랜
     url = "http://localhost:3000"
     test_plan_path = Path("/Users/coldmans/Documents/GitHub/capston/gaia/artifacts/plans/comprehensive_ui_test_no_selectors.json")
 
@@ -22,14 +22,14 @@ def main():
     print(f"Test Plan: {test_plan_path}")
     print()
 
-    # Load test plan
+    # 테스트 플랜 불러오기
     with open(test_plan_path, 'r', encoding='utf-8') as f:
         test_plan = json.load(f)
 
     print(f"Loaded {len(test_plan['test_scenarios'])} test scenarios")
     print()
 
-    # Convert test plan to TestScenario objects
+    # 테스트 플랜을 TestScenario 객체로 변환
     from gaia.src.utils.models import TestScenario, TestStep
     scenarios = []
     for scenario_dict in test_plan['test_scenarios']:
@@ -39,18 +39,18 @@ def main():
             priority=scenario_dict['priority'],
             scenario=scenario_dict['scenario'],
             steps=steps,
-            assertion=scenario_dict.get('assertion', {})  # Include assertion field
+            assertion=scenario_dict.get('assertion', {})  # assertion 필드를 포함
         )
         scenarios.append(scenario)
 
-    # Create orchestrator (no base_url parameter - will use execute_scenarios)
+    # 오케스트레이터 생성 (base_url 없이 execute_scenarios 사용)
     orchestrator = IntelligentOrchestrator()
 
     try:
-        # Run tests
+        # 테스트 실행
         results = orchestrator.execute_scenarios(url, scenarios)
 
-        # Print results
+        # 결과 출력
         print()
         print("=" * 60)
         print("TEST RESULTS")
@@ -63,7 +63,7 @@ def main():
         print(f"Skipped: {results['skipped']}")
         print()
 
-        # Show detailed results
+        # 상세 결과 표시
         if 'scenarios' in results:
             for scenario in results['scenarios']:
                 status = scenario.get('status', 'unknown')

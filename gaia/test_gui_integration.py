@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test GUI integration without actually opening the GUI window"""
+"""GUI 창을 실제로 띄우지 않고 통합 동작을 테스트합니다"""
 import sys
 sys.path.insert(0, '/Users/coldmans/Documents/GitHub/capston')
 
@@ -11,14 +11,14 @@ print("=" * 80)
 print("🧪 Testing GUI Integration (Simulated)")
 print("=" * 80)
 
-# Simulate what happens when user drops PDF in GUI
+# 사용자가 GUI에 PDF를 드롭했을 때의 동작을 시뮬레이션
 
-# Step 1: PDF Drop Event
+# 1단계: PDF 드롭 이벤트
 print("\n📄 Step 1: Simulating PDF drop...")
 pdf_path = Path("/Users/coldmans/Documents/GitHub/capston/gaia/ui_components_spec_korean.pdf")
 print(f"   File: {pdf_path.name}")
 
-# Step 2: PDF Loader (runs immediately)
+# 2단계: PDF 로더(즉시 실행)
 print("\n📋 Step 2: Loading PDF (immediate heuristic checklist)...")
 loader = PDFLoader()
 result = loader.extract(pdf_path)
@@ -31,7 +31,7 @@ for i, item in enumerate(result.checklist_items[:5], 1):
 if len(result.checklist_items) > 5:
     print(f"   ... and {len(result.checklist_items) - 5} more")
 
-# Step 3: Background Agent Builder (AnalysisWorker)
+# 3단계: 백그라운드 Agent Builder(AnalysisWorker)
 print("\n🤖 Step 3: Starting Agent Builder in background...")
 print("   (In GUI: shows '🤖 Analyzing with AI Agent Builder...')")
 
@@ -46,7 +46,7 @@ print("   Calling Agent Builder API...")
 try:
     analysis_result = client.analyze_document(result.text)
 
-    # Step 4: Analysis Complete
+    # 4단계: 분석 완료
     print("\n✅ Step 4: Agent Builder complete!")
     print(f"\nGUI log would show:")
     print(f"   ✅ Generated {analysis_result.summary['total']} test cases " +
@@ -54,7 +54,7 @@ try:
           f"SHOULD: {analysis_result.summary['should']}, " +
           f"MAY: {analysis_result.summary['may']})")
 
-    # Step 5: Update Checklist
+    # 5단계: 체크리스트 업데이트
     print("\n📋 Step 5: Updating checklist in GUI...")
     print("   (Replaces heuristic checklist with AI-generated test cases)")
 
@@ -69,7 +69,7 @@ try:
     if len(checklist_items) > 10:
         print(f"   ... and {len(checklist_items) - 10} more")
 
-    # Step 6: Individual test cases in log
+    # 6단계: 개별 테스트 케이스 로그 출력
     print("\n📝 Step 6: Logging individual test cases...")
     print("   GUI log would show:")
     for tc in analysis_result.checklist[:5]:

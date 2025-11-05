@@ -1,4 +1,4 @@
-"""Qt widgets composing the main application window."""
+"""메인 애플리케이션 창을 구성하는 Qt 위젯 모음입니다."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,10 +26,12 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
+from gaia.src.gui.screencast_client import ScreencastClient
+
 
 
 class DropArea(QLabel):
-    """Label widget that supports drag-and-drop for local files."""
+    """로컬 파일 드래그 앤 드롭을 지원하는 라벨 위젯입니다."""
 
     def __init__(self, on_file_dropped: Callable[[str], None], *, title: str, parent: QWidget | None = None) -> None:
         super().__init__(title, parent)
@@ -56,7 +58,7 @@ class DropArea(QLabel):
 
 
 class SpinnerWidget(QWidget):
-    """Simple circular spinner drawn via QPainter."""
+    """QPainter로 그린 원형 스피너 위젯입니다."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -86,7 +88,7 @@ class SpinnerWidget(QWidget):
         radius = min(self.width(), self.height()) / 2 - 4
         rect = event.rect().adjusted(6, 6, -6, -6)
 
-        # Fade trail for spinner arc
+        # 스피너 호에 잔상을 주는 설정
         gradient_colors = [
             QColor(107, 91, 255, 230),
             QColor(140, 118, 255, 120),
@@ -103,7 +105,7 @@ class SpinnerWidget(QWidget):
 
 
 class BusyOverlay(QFrame):
-    """Frosted overlay with spinner, status label, and elapsed time."""
+    """스피너와 상태 레이블, 경과 시간을 포함한 반투명 오버레이입니다."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -129,13 +131,13 @@ class BusyOverlay(QFrame):
         self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         container_layout.addWidget(self._message)
 
-        # Elapsed time label
+        # 경과 시간 레이블
         self._elapsed_label = QLabel("", container)
         self._elapsed_label.setObjectName("OverlayElapsedLabel")
         self._elapsed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         container_layout.addWidget(self._elapsed_label)
 
-        # Expected time hint
+        # 예상 소요 시간 안내
         self._hint_label = QLabel("⏱️  예상 소요 시간: 3-8분", container)
         self._hint_label.setObjectName("OverlayHintLabel")
         self._hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -143,7 +145,7 @@ class BusyOverlay(QFrame):
 
         layout.addWidget(container, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Timer for updating elapsed time
+        # 경과 시간 갱신을 위한 타이머
         self._elapsed_seconds = 0
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.timeout.connect(self._update_elapsed_time)
@@ -153,7 +155,7 @@ class BusyOverlay(QFrame):
         self._elapsed_seconds = 0
         self._update_elapsed_time()
         self._spinner.start()
-        self._elapsed_timer.start(1000)  # Update every second
+        self._elapsed_timer.start(1000)  # 매초 업데이트
         self.show()
 
     def hide_overlay(self) -> None:
@@ -162,7 +164,7 @@ class BusyOverlay(QFrame):
         self.hide()
 
     def _update_elapsed_time(self) -> None:
-        """Update the elapsed time display"""
+        """경과 시간 표시를 업데이트합니다"""
         minutes = self._elapsed_seconds // 60
         seconds = self._elapsed_seconds % 60
         self._elapsed_label.setText(f"⏱️  경과 시간: {minutes}분 {seconds:02d}초")
@@ -170,7 +172,7 @@ class BusyOverlay(QFrame):
 
 
 class ScenarioCard(QFrame):
-    """Glassmorphism card representing a generated test scenario."""
+    """생성된 테스트 시나리오를 표현하는 글래스모피즘 카드입니다."""
 
     def __init__(self, scenario: object, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -241,7 +243,7 @@ class ScenarioCard(QFrame):
             layout.addWidget(assertion)
 
 class MainWindow(QMainWindow):
-    """Top level window wiring UI elements and controller callbacks."""
+    """UI 요소와 컨트롤러 콜백을 연결하는 최상위 창입니다."""
 
     fileDropped = Signal(str)
     startRequested = Signal()
@@ -483,21 +485,23 @@ class MainWindow(QMainWindow):
         self._log_mode: str = "summary"  # "summary" or "full"
         self._is_busy: bool
         self._busy_overlay: BusyOverlay | None = None
+        self._screencast_client: ScreencastClient | None = None
 
         self._is_busy = False
         self._build_layout()
+        self._setup_screencast()
 
         if controller_factory:
             controller_factory(self)
 
     # ------------------------------------------------------------------
-    # UI construction helpers
+    # UI 구성 헬퍼
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
         central = QWidget(self)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(20, 16, 20, 20)  # Reduced top margin
-        root_layout.setSpacing(16)  # Reduced spacing
+        root_layout.setContentsMargins(20, 16, 20, 20)  # 상단 여백 축소
+        root_layout.setSpacing(16)  # 간격 축소
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
@@ -509,7 +513,7 @@ class MainWindow(QMainWindow):
         header_row.addStretch()
 
         root_layout.addLayout(header_row)
-        root_layout.addSpacing(4)  # Reduced spacing
+        root_layout.addSpacing(4)  # 간격 축소
 
         splitter = QSplitter(Qt.Orientation.Horizontal, central)
         splitter.setChildrenCollapsible(False)
@@ -532,10 +536,10 @@ class MainWindow(QMainWindow):
         browser_card = QFrame(splitter)
         browser_card.setObjectName("BrowserCard")
         browser_layout = QVBoxLayout(browser_card)
-        browser_layout.setContentsMargins(0, 0, 0, 0)  # Remove all margins
-        browser_layout.setSpacing(0)  # Remove spacing
+        browser_layout.setContentsMargins(0, 0, 0, 0)  # 모든 여백 제거
+        browser_layout.setSpacing(0)  # 간격 제거
 
-        # Remove browser title - maximize space for content
+        # 브라우저 제목을 숨겨 콘텐츠 영역을 최대화
         self._browser_view = QWebEngineView(browser_card)
         self._browser_view.setUrl(QUrl("about:blank"))
         base_height = 820
@@ -625,7 +629,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
-        # Title and control buttons at the top
+        # 상단의 제목과 컨트롤 버튼
         title_row = QHBoxLayout()
         title_label = QLabel("2단계. 자동화 검증", page)
         title_label.setObjectName("SectionLabel")
@@ -645,7 +649,7 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(title_row)
 
-        # Scenario section (expanded)
+        # 시나리오 영역(확장 적용)
         scenario_label = QLabel("자동화 시나리오", page)
         scenario_label.setObjectName("SectionLabel")
         layout.addWidget(scenario_label)
@@ -653,16 +657,16 @@ class MainWindow(QMainWindow):
         self._checklist_view = QListWidget(page)
         self._checklist_view.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self._checklist_view.setSpacing(12)
-        layout.addWidget(self._checklist_view, stretch=3)  # Increased from 2 to 3
+        layout.addWidget(self._checklist_view, stretch=3)  # 2에서 3으로 확장
 
-        # Logs section (expanded, no emoji)
+        # 로그 영역(확장, 이모지 제거)
         logs_header = QHBoxLayout()
         logs_label = QLabel("실행 요약", page)
         logs_label.setObjectName("SectionLabel")
         logs_header.addWidget(logs_label)
         logs_header.addStretch()
 
-        self._view_logs_button = QPushButton("상세 로그 보기", page)  # Removed emoji
+        self._view_logs_button = QPushButton("상세 로그 보기", page)  # 이모지 제거
         self._view_logs_button.setObjectName("GhostButton")
         self._view_logs_button.setEnabled(False)
         self._view_logs_button.clicked.connect(self._show_detailed_logs)
@@ -672,14 +676,14 @@ class MainWindow(QMainWindow):
         self._log_output = QTextEdit(page)
         self._log_output.setPlaceholderText("실행 요약이 여기에 표시됩니다…")
         self._log_output.setReadOnly(True)
-        layout.addWidget(self._log_output, stretch=2)  # Increased from 1 to 2
+        layout.addWidget(self._log_output, stretch=2)  # 1에서 2로 확장
 
-        # Feedback section removed - no longer needed
+        # 피드백 섹션 제거(더 이상 필요 없음)
 
         return page
 
     # ------------------------------------------------------------------
-    # Workflow stage helpers
+    # 워크플로 단계 헬퍼
     # ------------------------------------------------------------------
     def show_setup_stage(self) -> None:
         self._workflow_stage = "setup"
@@ -695,7 +699,7 @@ class MainWindow(QMainWindow):
 
 
     # ------------------------------------------------------------------
-    # Slots exposed to the controller
+    # 컨트롤러에 노출되는 슬롯
     # ------------------------------------------------------------------
     def show_checklist(self, items: Iterable[str]) -> None:
         self._checklist_view.clear()
@@ -712,18 +716,18 @@ class MainWindow(QMainWindow):
             self._checklist_view.setItemWidget(list_item, card)
 
     def append_log(self, message: str) -> None:
-        """Append log message. Shows summary in UI, stores full logs."""
-        # Always store full logs
+        """로그 메시지를 추가합니다. UI에는 요약만 표시하고 전체 로그는 저장합니다."""
+        # 항상 전체 로그를 저장
         self._full_execution_logs.append(message)
 
-        # In summary mode, only show important messages
+        # 요약 모드에서는 중요한 메시지만 표시
         if self._log_mode == "summary":
-            # Show messages with status indicators or important keywords
+            # 상태 아이콘이나 핵심 키워드가 있는 메시지만 표시
             important_keywords = (
                 "Step ", "Exploring", "Discovered", "Page ", "Executing",
                 "PASS", "FAIL", "SKIP", "Execution Results", "상세 결과",
                 "Passed:", "Failed:", "Skipped:", "complete",
-                # Real-time progress indicators (NEW for UI responsiveness)
+                # 실시간 진행 표시(UI 반응성 향상을 위해 추가)
                 "🤖 Step", "📜 Scroll", "⬇️", "📸 Re-analyzing",
                 "🎯 Trying", "✅ Found", "❌ Element not found",
                 "🔍 Low confidence", "💡 Reason:", "🌐 Current URL",
@@ -731,13 +735,13 @@ class MainWindow(QMainWindow):
             )
             if any(keyword in message for keyword in important_keywords):
                 self._log_output.append(message)
-                # Force immediate UI update for real-time feedback
+                # 실시간 피드백을 위해 즉시 UI 업데이트 강제
                 from PySide6.QtCore import QCoreApplication
                 QCoreApplication.processEvents()
         else:
-            # In full mode, show everything
+            # 전체 모드에서는 모든 로그 표시
             self._log_output.append(message)
-            # Also force immediate UI update in full mode
+            # 전체 모드에서도 즉시 UI 업데이트 강제
             from PySide6.QtCore import QCoreApplication
             QCoreApplication.processEvents()
 
@@ -745,12 +749,12 @@ class MainWindow(QMainWindow):
         self._is_busy = busy
         if busy:
             self.show_review_stage()
-            # Start execution: clear logs and use summary mode
+            # 실행 시작: 로그를 비우고 요약 모드 사용
             self._full_execution_logs = []
             self._log_mode = "summary"
             self._log_output.clear()
             self._view_logs_button.setEnabled(False)
-            # Clear browser view and prepare for live preview
+            # 브라우저 뷰를 초기화하고 실시간 미리보기 준비
             self._browser_view.setHtml('''
                 <html>
                 <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#666;">
@@ -762,7 +766,7 @@ class MainWindow(QMainWindow):
                 </html>
             ''')
         else:
-            # Execution complete: enable detailed log view
+            # 실행 완료: 상세 로그 보기 활성화
             self._view_logs_button.setEnabled(True)
 
         self._start_button.setEnabled(not busy)
@@ -774,7 +778,7 @@ class MainWindow(QMainWindow):
             self._load_plan_button.setEnabled(not busy)
         if busy:
             self._drop_area.setText("자동화를 진행 중이에요… 잠시만 기다려 주세요 ☄️")
-            # Don't show loading overlay - we have live preview now!
+            # 로딩 오버레이는 표시하지 않음 - 실시간 미리보기가 제공됨
             # self.show_loading_overlay(message or "시나리오를 실행 중입니다…")
         else:
             self._drop_area.setText("체크리스트 PDF를 드래그하거나 선택해 주세요")
@@ -787,24 +791,24 @@ class MainWindow(QMainWindow):
         self._url_input.setText(url)
 
     def show_html_in_browser(self, html_content: str) -> None:
-        """Display HTML content in the browser view"""
+        """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
         self._browser_view.setHtml(html_content)
 
     def update_live_preview(self, screenshot_base64: str, click_position: dict = None) -> None:
-        """Update browser view with real-time screenshot from Playwright"""
+        """Playwright 실시간 스크린샷을 브라우저 뷰에 업데이트합니다"""
         import base64
         from PySide6.QtCore import QByteArray
         from PySide6.QtGui import QPixmap
 
         try:
-            # Decode base64 to bytes
+            # base64를 바이트로 디코딩
             image_data = base64.b64decode(screenshot_base64)
 
-            # Convert to QPixmap
+            # QPixmap으로 변환
             pixmap = QPixmap()
             pixmap.loadFromData(QByteArray(image_data))
 
-            # Build click animation + mouse cursor overlay if position provided
+            # 좌표가 주어지면 클릭 애니메이션과 마우스 커서를 오버레이
             click_overlay = ""
             if click_position and "x" in click_position and "y" in click_position:
                 x = click_position["x"]
@@ -844,7 +848,7 @@ class MainWindow(QMainWindow):
                 "></div>
                 '''
 
-            # Display as HTML img tag (scaled to fit) with animation overlay
+            # HTML img 태그로 표시하고 애니메이션 오버레이 적용
             html = f'''
             <html>
             <head>
@@ -898,10 +902,10 @@ class MainWindow(QMainWindow):
             self._busy_overlay.hide_overlay()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # 내부 헬퍼
     # ------------------------------------------------------------------
     def _show_detailed_logs(self) -> None:
-        """Show detailed execution logs in a dialog."""
+        """대화 상자로 상세 실행 로그를 표시합니다."""
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton
 
         dialog = QDialog(self)
@@ -910,13 +914,13 @@ class MainWindow(QMainWindow):
 
         layout = QVBoxLayout(dialog)
 
-        # Log text area
+        # 로그 텍스트 영역
         log_view = QTextEdit(dialog)
         log_view.setReadOnly(True)
         log_view.setPlainText("\n".join(self._full_execution_logs))
         layout.addWidget(log_view)
 
-        # Close button
+        # 닫기 버튼
         close_button = QPushButton("닫기", dialog)
         close_button.clicked.connect(dialog.close)
         layout.addWidget(close_button)
@@ -934,13 +938,13 @@ class MainWindow(QMainWindow):
             self.fileDropped.emit(file_path)
 
     def _open_plan_dialog(self) -> None:
-        # Try mock_data first (for manually created plans), then plans directory (for cached plans)
+        # 수동 생성 플랜은 mock_data를 먼저 확인하고, 없으면 plans 디렉터리를 확인
         if self._last_plan_directory.exists():
             initial_dir = str(self._last_plan_directory)
         else:
             mock_data_dir = Path.cwd() / "artifacts" / "mock_data"
             plans_dir = Path.cwd() / "artifacts" / "plans"
-            # Prefer mock_data if it exists, otherwise try plans
+            # mock_data가 있으면 우선 사용하고 없으면 plans를 시도
             if mock_data_dir.exists():
                 initial_dir = str(mock_data_dir)
             elif plans_dir.exists():
@@ -968,3 +972,78 @@ class MainWindow(QMainWindow):
         url = self._url_input.text().strip()
         if url:
             self.urlSubmitted.emit(url)
+
+    def _setup_screencast(self) -> None:
+        """CDP 스크린캐스트 WebSocket 클라이언트를 설정하고 연결합니다"""
+        self._screencast_client = ScreencastClient()
+        self._screencast_client.frame_received.connect(self._update_screencast_frame)
+        self._screencast_client.connection_status_changed.connect(self._on_screencast_connection_changed)
+        self._screencast_client.error_occurred.connect(self._on_screencast_error)
+        # 자동 연결 시작
+        self._screencast_client.start()
+        print("[GUI] Screencast client started")
+
+    def _update_screencast_frame(self, frame_base64: str) -> None:
+        """
+        CDP 스크린캐스트에서 수신한 프레임을 브라우저 뷰에 표시합니다
+        기존 update_live_preview 메서드의 간소화 버전 (클릭 애니메이션 제거)
+        """
+        html = f'''
+        <html>
+        <head>
+            <style>
+                body {{
+                    margin: 0;
+                    padding: 0;
+                    background: #1a1a1a;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    overflow: hidden;
+                }}
+                img {{
+                    max-width: 100%;
+                    max-height: 100vh;
+                    object-fit: contain;
+                    box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+                    border: 1px solid rgba(59, 130, 246, 0.2);
+                    border-radius: 4px;
+                }}
+            </style>
+        </head>
+        <body>
+            <img src="data:image/jpeg;base64,{frame_base64}" alt="Browser screencast">
+        </body>
+        </html>
+        '''
+        self._browser_view.setHtml(html)
+
+    def _on_screencast_connection_changed(self, connected: bool) -> None:
+        """스크린캐스트 연결 상태 변경 핸들러"""
+        if connected:
+            print("[GUI] Screencast connected")
+        else:
+            print("[GUI] Screencast disconnected")
+            # 연결 끊김 시 안내 메시지 표시
+            if not self._is_busy:  # busy가 아닐 때만 메시지 표시
+                self._browser_view.setHtml('''
+                    <html>
+                    <body style="margin:0; padding:0; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#666;">
+                        <div style="text-align:center;">
+                            <h2>브라우저 세션 없음</h2>
+                            <p>테스트를 시작하면 실시간 화면이 표시됩니다</p>
+                        </div>
+                    </body>
+                    </html>
+                ''')
+
+    def _on_screencast_error(self, error_message: str) -> None:
+        """스크린캐스트 에러 핸들러"""
+        print(f"[GUI] Screencast error: {error_message}")
+
+    def closeEvent(self, event) -> None:
+        """창 닫기 이벤트 - 스크린캐스트 클라이언트 정리"""
+        if self._screencast_client:
+            self._screencast_client.stop()
+            print("[GUI] Screencast client stopped")
+        super().closeEvent(event)

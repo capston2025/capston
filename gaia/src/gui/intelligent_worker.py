@@ -1,6 +1,6 @@
 """
-QThread worker for IntelligentOrchestrator execution.
-Runs LLM-powered browser automation in background.
+IntelligentOrchestrator 실행을 위한 QThread 워커.
+백그라운드에서 LLM 기반 브라우저 자동화를 수행합니다.
 """
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from gaia.src.utils.models import TestScenario
 
 
 class IntelligentWorker(QObject):
-    """Worker for executing IntelligentOrchestrator in background thread"""
+    """백그라운드 스레드에서 IntelligentOrchestrator를 실행하는 워커"""
 
     progress = Signal(str)
-    screenshot = Signal(str, object)  # (base64, click_position dict or None)
+    screenshot = Signal(str, object)  # (base64, click_position dict 또는 None)
     finished = Signal()
 
     def __init__(
@@ -32,32 +32,32 @@ class IntelligentWorker(QObject):
         self._cancel_requested = False
 
     def start(self) -> None:
-        """Execute scenarios using IntelligentOrchestrator"""
+        """IntelligentOrchestrator로 시나리오를 실행합니다"""
         try:
             self.progress.emit(f"🤖 Starting LLM-powered automation for {len(self.scenarios)} scenarios...")
 
-            # Set screenshot callback on orchestrator
+            # 오케스트레이터에 스크린샷 콜백 설정
             if hasattr(self.orchestrator, '_screenshot_callback'):
                 self.orchestrator._screenshot_callback = self._on_screenshot
 
-            # For MasterOrchestrator, also set callback on internal IntelligentOrchestrator
+            # MasterOrchestrator인 경우 내부 IntelligentOrchestrator에도 콜백 설정
             if hasattr(self.orchestrator, 'intelligent_orch'):
                 self.orchestrator.intelligent_orch._screenshot_callback = self._on_screenshot
 
-            # Execute scenarios with progress callback
+            # 진행 콜백과 함께 시나리오 실행
             results = self.orchestrator.execute_scenarios(
                 url=self.url,
                 scenarios=self.scenarios,
                 progress_callback=self._on_progress
             )
 
-            # Log summary
+            # 요약 로그 출력
             self.progress.emit(f"\n📊 Execution Results:")
             self.progress.emit(f"   ✅ Passed: {results['passed']}/{results['total']}")
             self.progress.emit(f"   ❌ Failed: {results['failed']}/{results['total']}")
             self.progress.emit(f"   ⏭️  Skipped: {results['skipped']}/{results['total']}")
 
-            # Log detailed results with clear status
+            # 상태가 분명한 상세 결과 로그
             self.progress.emit("\n상세 결과:")
             for idx, scenario_result in enumerate(results["scenarios"], 1):
                 status_text = {
@@ -79,15 +79,15 @@ class IntelligentWorker(QObject):
             self.finished.emit()
 
     def _on_progress(self, message: str) -> None:
-        """Forward progress messages to GUI"""
+        """진행 메시지를 GUI에 전달합니다"""
         self.progress.emit(message)
 
     def _on_screenshot(self, screenshot_base64: str, click_position: dict = None) -> None:
-        """Forward screenshot to GUI for real-time preview"""
+        """실시간 미리보기를 위해 스크린샷을 GUI로 전달합니다"""
         self.screenshot.emit(screenshot_base64, click_position)
 
     def request_cancel(self) -> None:
-        """Request cancellation (not yet implemented)"""
+        """취소를 요청합니다(아직 완전 구현되지 않음)"""
         self._cancel_requested = True
         self.progress.emit("⚠️ Cancel requested (not yet fully supported)")
 

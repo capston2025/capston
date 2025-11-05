@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test Agent Builder with UI components spec PDF"""
+"""UI 구성 요소 명세 PDF로 Agent Builder를 테스트합니다"""
 import sys
 sys.path.insert(0, '/Users/coldmans/Documents/GitHub/capston')
 
@@ -10,7 +10,7 @@ print("=" * 80)
 print("🧪 Testing Agent Builder with UI Components Specification")
 print("=" * 80)
 
-# Step 1: Load PDF
+# 1단계: PDF 로드
 print("\n📄 Step 1: Loading PDF...")
 loader = PDFLoader()
 try:
@@ -21,7 +21,7 @@ except Exception as e:
     print(f"❌ Failed to load PDF: {e}")
     sys.exit(1)
 
-# Step 2: Check Agent Service
+# 2단계: Agent 서비스 확인
 print("\n🔍 Step 2: Checking Agent Service...")
 client = AgentServiceClient()
 if not client.health_check():
@@ -30,7 +30,7 @@ if not client.health_check():
     sys.exit(1)
 print("✅ Agent service is healthy")
 
-# Step 3: Call Agent Builder
+# 3단계: Agent Builder 호출
 print("\n🤖 Step 3: Calling Agent Builder...")
 print("   📊 Analyzing comprehensive UI specification...")
 print("   ⏱️  This may take 10-20 seconds (large document)...")
@@ -51,7 +51,7 @@ try:
 
     print(f"\n📋 Generated Test Cases:\n")
 
-    # Group by priority
+    # 우선순위별로 그룹화
     must_cases = [tc for tc in analysis.checklist if tc.priority == 'MUST']
     should_cases = [tc for tc in analysis.checklist if tc.priority == 'SHOULD']
     may_cases = [tc for tc in analysis.checklist if tc.priority == 'MAY']

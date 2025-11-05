@@ -1,9 +1,9 @@
 """
-Simple logic test for scheduler scoring without imports.
-Tests the scoring formula directly.
+외부 임포트 없이 스케줄러 점수를 검증하는 간단한 로직 테스트입니다.
+점수 계산 공식을 직접 확인합니다.
 """
 
-# Scoring constants (from scoring.py)
+# 점수 상수 (scoring.py 참고)
 PRIORITY_SCORES = {
     "MUST": 100,
     "SHOULD": 60,
@@ -16,25 +16,25 @@ BONUS_RECENT_FAIL = 10
 PENALTY_NO_DOM_CHANGE = 25
 
 def compute_score(item, visited_urls, failed_ids):
-    """Simplified score calculation."""
+    """단순화된 점수 계산입니다."""
     priority = item.get("priority", "MAY")
     score = PRIORITY_SCORES.get(priority, 0)
 
-    # New elements bonus
+    # 신규 요소 보너스
     new_elements = item.get("new_elements", 0)
     score += new_elements * BONUS_NEW_ELEMENTS
 
-    # Unseen URL bonus
+    # 미방문 URL 보너스
     target_url = item.get("target_url")
     if target_url and target_url not in visited_urls:
         score += BONUS_UNSEEN_URL
 
-    # Recent fail bonus
+    # 최근 실패 보너스
     test_id = item.get("id", "")
     if test_id in failed_ids:
         score += BONUS_RECENT_FAIL
 
-    # No DOM change penalty
+    # DOM 변경 없음 패널티
     if item.get("no_dom_change", False):
         score -= PENALTY_NO_DOM_CHANGE
 
@@ -44,7 +44,7 @@ print("="*70)
 print("GAIA Adaptive Scheduler - Logic Verification")
 print("="*70)
 
-# Test data
+# 테스트 데이터
 visited_urls = set()
 failed_ids = set()
 
@@ -66,7 +66,7 @@ for name, item, expected in tests:
 print("\n[Test 2] Bonuses")
 print("-" * 70)
 
-# New elements
+# 신규 요소
 item = {"id": "T4", "priority": "MUST", "new_elements": 2}
 score = compute_score(item, visited_urls, failed_ids)
 expected = 130  # 100 + (2*15)
@@ -74,7 +74,7 @@ status = "✓" if score == expected else "✗"
 print(f"  {status} New elements (2): {score} (expected: {expected})")
 assert score == expected
 
-# Unseen URL
+# 미방문 URL
 item = {"id": "T5", "priority": "MUST", "target_url": "https://new.com"}
 score = compute_score(item, visited_urls, failed_ids)
 expected = 120  # 100 + 20
@@ -82,7 +82,7 @@ status = "✓" if score == expected else "✗"
 print(f"  {status} Unseen URL: {score} (expected: {expected})")
 assert score == expected
 
-# Recent fail
+# 최근 실패
 failed_ids.add("T6")
 item = {"id": "T6", "priority": "MUST"}
 score = compute_score(item, visited_urls, failed_ids)
@@ -109,7 +109,7 @@ combos = [
     ("MUST + 2 elem + URL", {"id": "C1", "priority": "MUST", "new_elements": 2, "target_url": "https://c1.com"}, 150),
     ("SHOULD + 1 elem + URL", {"id": "C2", "priority": "SHOULD", "new_elements": 1, "target_url": "https://c2.com"}, 95),
     ("MUST + 3 elem", {"id": "C3", "priority": "MUST", "new_elements": 3}, 145),
-    ("SHOULD + URL + fail", {"id": "C4", "priority": "SHOULD", "target_url": "https://c4.com"}, 90),  # With fail below
+    ("SHOULD + URL + fail", {"id": "C4", "priority": "SHOULD", "target_url": "https://c4.com"}, 90),  # 아래에서 실패 처리
 ]
 
 for name, item, expected in combos:
@@ -123,16 +123,16 @@ for name, item, expected in combos:
 print("\n[Test 5] Edge Cases")
 print("-" * 70)
 
-# Already visited URL (no bonus)
+# 이미 방문한 URL (보너스 없음)
 visited_urls.add("https://visited.com")
 item = {"id": "E1", "priority": "MUST", "target_url": "https://visited.com"}
 score = compute_score(item, visited_urls, failed_ids)
-expected = 100  # No URL bonus
+expected = 100  # URL 보너스 없음
 status = "✓" if score == expected else "✗"
 print(f"  {status} Visited URL (no bonus): {score} (expected: {expected})")
 assert score == expected
 
-# Negative score prevention
+# 음수 점수 방지
 item = {"id": "E2", "priority": "MAY", "no_dom_change": True}
 score = compute_score(item, visited_urls, failed_ids)
 expected = 5  # 30 - 25
@@ -140,7 +140,7 @@ status = "✓" if score == expected else "✗"
 print(f"  {status} Low score (MAY - penalty): {score} (expected: {expected})")
 assert score == expected
 
-# Maximum score
+# 최대 점수
 item = {"id": "E3", "priority": "MUST", "new_elements": 10, "target_url": "https://max.com"}
 score = compute_score(item, visited_urls, failed_ids)
 expected = 270  # 100 + 150 + 20
@@ -156,7 +156,7 @@ scenarios = [
     ("Search (found 5 elements)", {"id": "S2", "priority": "MUST", "new_elements": 5}, 175),
     ("Profile page (new URL)", {"id": "S3", "priority": "SHOULD", "target_url": "https://profile.com"}, 80),
     ("Static page (no changes)", {"id": "S4", "priority": "MUST", "no_dom_change": True}, 75),
-    ("Retry failed checkout", {"id": "S5", "priority": "MUST"}, 110),  # With fail below
+    ("Retry failed checkout", {"id": "S5", "priority": "MUST"}, 110),  # 아래에서 실패 처리
 ]
 
 visited_urls.clear()

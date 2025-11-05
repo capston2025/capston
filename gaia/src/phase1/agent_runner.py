@@ -1,4 +1,4 @@
-"""Agent Builder workflow runner integration."""
+"""Agent Builder 워크플로 실행기 연동."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ import requests
 
 
 class AgentWorkflowRunner:
-    """Invokes an OpenAI Agent Builder workflow and returns the parsed payload."""
+    """OpenAI Agent Builder 워크플로를 호출하고 파싱된 페이로드를 반환합니다."""
 
     _WORKFLOW_BASE_URL = "https://api.openai.com/v1/workflows"
 
@@ -33,7 +33,7 @@ class AgentWorkflowRunner:
 
     # ------------------------------------------------------------------
     def run(self, document_text: str) -> Dict[str, Any]:
-        """Execute the configured workflow with the supplied document text."""
+        """지정된 문서 텍스트로 워크플로를 실행합니다."""
 
         url = f"{self._WORKFLOW_BASE_URL}/runs"
         headers = {
@@ -58,25 +58,25 @@ class AgentWorkflowRunner:
 
     # ------------------------------------------------------------------
     def _extract_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize the workflow response into a Python dict."""
+        """워크플로 응답을 파이썬 dict로 정규화합니다."""
 
         if not data:
             raise ValueError("Agent workflow 응답이 비어 있습니다.")
 
-        # Agent Builder responses commonly place JSON in outputs -> items
+        # Agent Builder 응답은 outputs -> items 위치에 JSON을 두는 경우가 많습니다
         outputs = data.get("outputs")
         if isinstance(outputs, list) and outputs:
             first = outputs[0]
             if isinstance(first, dict):
                 if first.get("content"):
-                    # GPT Agents beta style: content list of dicts
+                    # GPT Agents 베타 형식: dict 목록으로 이루어진 content
                     for item in first["content"]:
                         if item.get("type") == "output_text":
                             return self._parse_json_blob(item.get("text", ""))
                 if first.get("value"):
                     return self._parse_json_blob(first["value"])
 
-        # Fallback: some workflows return top-level output_text or data
+        # 폴백: 일부 워크플로는 최상위 output_text 또는 data로 반환합니다
         if "output_text" in data:
             return self._parse_json_blob(data["output_text"])
 
@@ -97,6 +97,6 @@ class AgentWorkflowRunner:
                 raise ValueError("Agent workflow 응답이 비어 있습니다.")
             try:
                 return json.loads(blob)
-            except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+            except json.JSONDecodeError as exc:  # pragma: no cover - 방어적 처리
                 raise ValueError("Agent workflow 응답이 JSON 형식이 아닙니다.") from exc
         raise ValueError("Agent workflow 응답 형식을 해석할 수 없습니다.")

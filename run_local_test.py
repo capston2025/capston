@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test runner for local UI test site.
+로컬 UI 테스트 사이트용 테스트 실행기입니다.
 """
 import json
 import os
@@ -16,7 +16,7 @@ from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.utils.models import TestScenario
 
 def load_test_plan(plan_path: str):
-    """Load test plan from JSON file."""
+    """JSON 파일에서 테스트 플랜을 불러옵니다."""
     with open(plan_path, 'r') as f:
         data = json.load(f)
 
@@ -31,7 +31,7 @@ def load_test_plan(plan_path: str):
     return scenarios
 
 def run_tests(url: str, plan_path: str):
-    """Run tests and return results."""
+    """테스트를 실행하고 결과를 반환합니다."""
     print("=" * 60)
     print("GAIA LOCAL SITE TEST RUNNER")
     print("=" * 60)
@@ -55,7 +55,7 @@ def run_tests(url: str, plan_path: str):
         progress_callback=lambda msg: print(msg)
     )
 
-    # Print results
+    # 결과 출력
     print("\n" + "=" * 60)
     print("TEST RESULTS")
     print("=" * 60)
@@ -66,7 +66,7 @@ def run_tests(url: str, plan_path: str):
     print(f"SKIPPED: {results['skipped']} ({results['skipped']/results['total']*100:.1f}%)")
     print("=" * 60)
 
-    # Detailed results
+    # 상세 결과
     print("\nDetailed Results:")
     print("-" * 60)
     for scenario_result in results['scenarios']:
@@ -85,15 +85,15 @@ def run_tests(url: str, plan_path: str):
     return results
 
 if __name__ == "__main__":
-    # Configuration
+    # 구성
     TARGET_URL = "http://localhost:3000"
     TEST_PLAN = "/Users/coldmans/Documents/GitHub/capston/gaia/artifacts/plans/comprehensive_ui_test_no_selectors.json"
 
-    # Run tests
+    # 테스트 실행
     try:
         results = run_tests(TARGET_URL, TEST_PLAN)
 
-        # Exit with appropriate code
+        # 적절한 종료 코드 반환
         if results['failed'] > 0:
             sys.exit(1)
         elif results['partial'] > 0:

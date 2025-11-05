@@ -1,4 +1,4 @@
-"""Agent workflow-backed spec analysis utilities."""
+"""Agent 워크플로 기반 명세 분석 유틸리티입니다."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from gaia.src.utils.models import DomElement, TestScenario
 
 
 class SpecAnalyzer:
-    """Generates automation plans by invoking an Agent Builder workflow."""
+    """Agent Builder 워크플로를 호출해 자동화 플랜을 생성합니다."""
 
     def __init__(
         self,
@@ -25,13 +25,13 @@ class SpecAnalyzer:
     # ------------------------------------------------------------------
     def generate_from_spec(self, document_text: str) -> List[TestScenario]:
         try:
-            # Use AgentServiceClient instead of AgentWorkflowRunner
+            # AgentWorkflowRunner 대신 AgentServiceClient를 사용
             result = self._agent_client.analyze_document(document_text)
-            # Convert to scenarios format
+            # 시나리오 형식으로 변환
             scenarios = self._convert_analysis_result(result)
             return scenarios or self._fallback_plan()
         except Exception as e:
-            # For errors, log and use fallback
+            # 오류 발생 시 로그를 남기고 폴백을 사용
             print(f"Warning: Agent Builder failed, using fallback: {e}")
             return self._fallback_plan()
 
@@ -52,39 +52,39 @@ class SpecAnalyzer:
 
         combined_text = "\n\n".join(enriched_text_parts) if enriched_text_parts else ""
         try:
-            # Use AgentServiceClient instead of AgentWorkflowRunner
+            # AgentWorkflowRunner 대신 AgentServiceClient를 사용
             result = self._agent_client.analyze_document(combined_text)
-            # Convert to scenarios format
+            # 시나리오 형식으로 변환
             scenarios = self._convert_analysis_result(result)
             return scenarios or self._fallback_plan()
         except Exception as e:
-            # For errors, log and use fallback
+            # 오류 발생 시 로그를 남기고 폴백을 사용
             print(f"Warning: Agent Builder failed, using fallback: {e}")
             return self._fallback_plan()
 
     # ------------------------------------------------------------------
     def _convert_analysis_result(self, result) -> List[TestScenario]:
-        """Convert AgentServiceClient AnalysisResult to TestScenario list."""
+        """AgentServiceClient AnalysisResult를 TestScenario 목록으로 변환합니다."""
         from gaia.src.utils.models import Assertion, TestStep
 
         scenarios = []
         for test_case in result.checklist:
-            # Convert steps from strings to TestStep objects
+            # 문자열 단계를 TestStep 객체로 변환
             steps = [
                 TestStep(
                     description=step,
-                    action="",  # Will be auto-matched later
-                    selector="",  # Will be auto-matched later
+                    action="",  # 이후 자동 매핑
+                    selector="",  # 이후 자동 매핑
                     params=[],
                 )
                 for step in test_case.steps
             ]
 
-            # Create assertion from expected_result
+            # expected_result로 Assertion 생성
             assertion = Assertion(
                 description=test_case.expected_result,
-                selector="",  # Will be auto-matched later
-                condition="is_visible",  # Default condition
+                selector="",  # 이후 자동 매핑
+                condition="is_visible",  # 기본 조건
                 params=[],
             )
 
