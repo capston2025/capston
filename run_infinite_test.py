@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Infinite test loop with auto-fixing for GAIA system.
-Runs tests, analyzes failures, automatically fixes code, and repeats.
+GAIA 시스템을 위한 자동 수정 테스트 루프입니다.
+테스트를 실행하고 실패를 분석해 코드를 자동으로 수정한 뒤 반복합니다.
 """
 import json
 import os
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 import subprocess
 
-# Add project root to path
+# 프로젝트 루트를 경로에 추가
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dotenv import load_dotenv
@@ -18,17 +18,17 @@ load_dotenv()
 from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.utils.models import TestScenario
 
-# Import Playwright MCP for verification
+# 검증을 위해 Playwright MCP 임포트
 try:
     from playwright.sync_api import sync_playwright
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
-    print("Warning: Playwright not available for verification")
+    print("경고: 검증용 Playwright를 사용할 수 없습니다")
 
 
 def load_test_plan(plan_path: str):
-    """Load test plan from JSON file."""
+    """JSON 파일에서 테스트 플랜을 불러옵니다."""
     with open(plan_path, 'r') as f:
         data = json.load(f)
 
@@ -46,7 +46,7 @@ def load_test_plan(plan_path: str):
 def verify_test_feasibility(url: str, test_description: str, test_id: str):
     """
     Use Playwright to verify if a test is actually feasible on the site.
-    Returns: (feasible: bool, reason: str)
+    반환: (실행 가능 여부: bool, 이유: str)
     """
     if not HAS_PLAYWRIGHT:
         return True, "Cannot verify - Playwright not available"
@@ -59,12 +59,12 @@ def verify_test_feasibility(url: str, test_description: str, test_id: str):
             page = browser.new_page()
             page.goto(url, wait_until='networkidle')
 
-            # Get page HTML
+            # 페이지 HTML 가져오기
             html = page.content()
 
-            # Check for specific patterns based on test description
+            # 테스트 설명을 기준으로 특정 패턴 확인
             if "submit" in test_description.lower() or "send button" in test_description.lower():
-                # Look for submit buttons
+                # 제출 버튼 탐색
                 submit_buttons = page.locator('button[type="submit"], input[type="submit"], button:has-text("제출"), button:has-text("전송"), button:has-text("보내기")').count()
 
                 if submit_buttons == 0:
@@ -79,7 +79,7 @@ def verify_test_feasibility(url: str, test_description: str, test_id: str):
 
 
 def run_single_iteration(url: str, plan_path: str, iteration: int):
-    """Run a single test iteration and return results."""
+    """단일 테스트 반복을 실행하고 결과를 반환합니다."""
     print("\n" + "=" * 60)
     print(f"ITERATION {iteration}")
     print("=" * 60)
@@ -87,16 +87,16 @@ def run_single_iteration(url: str, plan_path: str, iteration: int):
     print(f"Test Plan: {plan_path}")
     print("=" * 60)
 
-    # Load test plan
+    # 테스트 플랜 불러오기
     print("\nLoading test plan...")
     scenarios = load_test_plan(plan_path)
     print(f"Loaded {len(scenarios)} test scenarios")
 
-    # Initialize orchestrator
+    # 오케스트레이터 초기화
     print("\nInitializing MasterOrchestrator...")
     orchestrator = MasterOrchestrator(session_id=f"iteration_{iteration}")
 
-    # Execute tests
+    # 테스트 실행
     print("\nExecuting tests...")
     print("-" * 60)
 
@@ -106,7 +106,7 @@ def run_single_iteration(url: str, plan_path: str, iteration: int):
         progress_callback=lambda msg: print(msg)
     )
 
-    # Print results
+    # 결과 출력
     print("\n" + "=" * 60)
     print(f"ITERATION {iteration} RESULTS")
     print("=" * 60)
@@ -121,8 +121,10 @@ def run_single_iteration(url: str, plan_path: str, iteration: int):
 
 def analyze_and_fix_failures(results, url: str):
     """
-    Analyze failed tests and attempt automatic fixes.
-    Returns: (fixed_count: int, impossible_tests: list)
+    실패한 테스트를 분석하고 자동 수정을 시도합니다.
+
+    반환:
+        (수정된 개수: int, 불가능한 테스트 목록: list)
     """
     print("\n🔧 Analyzing failures...")
     fixed_count = 0
@@ -139,7 +141,7 @@ def analyze_and_fix_failures(results, url: str):
         print(f"\n  ❌ Analyzing {test_id}: {scenario_desc}")
         print(f"     Error: {error_msg[:150]}...")
 
-        # Check if test is actually feasible
+        # 테스트가 실제로 가능한지 확인
         feasible, reason = verify_test_feasibility(url, scenario_desc, test_id)
 
         if not feasible:
@@ -151,28 +153,28 @@ def analyze_and_fix_failures(results, url: str):
             })
             continue
 
-        # TODO: Add more automatic fixes here based on error patterns
-        # For now, we rely on the disabled element fix already applied
+        # TODO: 오류 패턴을 기반으로 자동 수정 로직 추가
+        # 현재는 비활성 요소 수정 로직에 의존
 
     return fixed_count, impossible_tests
 
 
 def run_infinite_loop(url: str, plan_path: str, max_iterations: int = 10):
-    """Run test-fix loop until all tests pass or max iterations reached."""
+    """모든 테스트가 통과하거나 최대 반복 횟수에 도달할 때까지 테스트-수정 루프를 실행합니다."""
     print("🚀 Starting infinite test loop...")
     print(f"   Max iterations: {max_iterations}")
     print(f"   Target: {url}")
 
     for iteration in range(1, max_iterations + 1):
-        # Run tests
+        # 테스트 실행
         results = run_single_iteration(url, plan_path, iteration)
 
-        # Check if all tests passed
+        # 모든 테스트 통과 여부 확인
         if results['failed'] == 0:
             print(f"\n🎉 ALL TESTS PASSED in iteration {iteration}!")
             return results
 
-        # Analyze and fix
+        # 분석 및 수정
         fixed_count, impossible_tests = analyze_and_fix_failures(results, url)
 
         if impossible_tests:
@@ -185,7 +187,7 @@ def run_infinite_loop(url: str, plan_path: str, max_iterations: int = 10):
         else:
             print(f"\n⚠️ No automatic fixes available for this iteration")
 
-        # Continue to next iteration
+        # 다음 반복으로 진행
         print(f"\n🔄 Moving to iteration {iteration + 1}...")
 
     print(f"\n❌ Max iterations ({max_iterations}) reached without passing all tests")
@@ -193,16 +195,16 @@ def run_infinite_loop(url: str, plan_path: str, max_iterations: int = 10):
 
 
 if __name__ == "__main__":
-    # Configuration
+    # 구성
     TARGET_URL = "https://final-blog-25638597.figma.site"
     TEST_PLAN = "/Users/coldmans/Documents/GitHub/capston/gaia/artifacts/plans/realistic_test_no_selectors.json"
     MAX_ITERATIONS = 10
 
-    # Run infinite loop
+    # 무한 루프 실행
     try:
         final_results = run_infinite_loop(TARGET_URL, TEST_PLAN, MAX_ITERATIONS)
 
-        # Exit with appropriate code
+        # 적절한 종료 코드 반환
         if final_results['failed'] > 0:
             sys.exit(1)
         else:

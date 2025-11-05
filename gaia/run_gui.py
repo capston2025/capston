@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Launch GAIA GUI"""
+"""GAIA GUI를 실행합니다"""
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
+# 임포트를 위해 상위 디렉터리를 경로에 추가
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Load environment variables from .env file
+# .env 파일에서 환경 변수를 로드
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 

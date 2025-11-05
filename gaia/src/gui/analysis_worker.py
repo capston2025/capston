@@ -1,4 +1,4 @@
-"""Worker thread for Agent Builder analysis"""
+"""Agent Builder 분석을 수행하는 워커 스레드"""
 from __future__ import annotations
 
 from typing import Dict, Iterable
@@ -11,12 +11,12 @@ from gaia.src.utils.models import TestScenario
 
 
 class AnalysisWorker(QObject):
-    """Worker to analyze PDF with Agent Builder in background thread."""
+    """백그라운드 스레드에서 Agent Builder로 PDF를 분석하는 워커입니다."""
 
-    # Signals
-    progress = Signal(str)  # Log messages
-    finished = Signal(object)  # AnalysisResult
-    error = Signal(str)  # Error message
+    # 시그널
+    progress = Signal(str)  # 로그 메시지
+    finished = Signal(object)  # AnalysisResult 객체
+    error = Signal(str)  # 오류 메시지
 
     def __init__(self, pdf_text: str, analyzer: SpecAnalyzer | None = None):
         super().__init__()
@@ -24,7 +24,7 @@ class AnalysisWorker(QObject):
         self._analyzer = analyzer or SpecAnalyzer()
 
     def run(self) -> None:
-        """Run the analysis (executed in worker thread)."""
+        """워크 스레드에서 분석을 실행합니다."""
         try:
             self.progress.emit("🤖 OpenAI Agent Builder에 분석을 요청하는 중입니다…")
             self.progress.emit("⏱️  문서 길이에 따라 2-5분 가량 소요될 수 있어요.")
@@ -44,7 +44,7 @@ class AnalysisWorker(QObject):
         self,
         scenarios: Iterable[TestScenario],
     ) -> AnalysisResult:
-        """Convert planner scenarios into the GUI-friendly AnalysisResult."""
+        """플래너 시나리오를 GUI에서 사용하기 좋은 AnalysisResult로 변환합니다."""
         summary: Dict[str, int] = {"total": 0, "must": 0, "should": 0, "may": 0}
         test_cases: list[TestCase] = []
 
@@ -58,9 +58,9 @@ class AnalysisWorker(QObject):
                 TestCase(
                     id=scenario.id,
                     name=scenario.scenario,
-                    category="",  # Category not provided by workflow
+                    category="",  # 워크플로에서 카테고리를 제공하지 않음
                     priority=priority_label,
-                    precondition="",  # Placeholder; can be enriched later
+                    precondition="",  # 임시 자리표시자이며 후속 보강 가능
                     steps=steps,
                     expected_result=scenario.assertion.description,
                 )

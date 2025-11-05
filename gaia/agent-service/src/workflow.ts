@@ -73,7 +73,7 @@ export interface WorkflowOutput {
   output_text: string;
 }
 
-// Main code entrypoint
+// 메인 코드 진입점
 export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutput> => {
   return await withTrace("QA 도우미", async () => {
     console.log("🤖 Using Agent:", agent.name);
@@ -105,7 +105,7 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
 
     conversationHistory.push(...agentResultTemp.newItems.map((item) => item.rawItem));
 
-    // Debug: Log response structure
+    // 디버그: 응답 구조를 기록합니다
     console.log("Agent response items count:", agentResultTemp.newItems.length);
     console.log("FinalOutput length:", agentResultTemp.finalOutput?.length || 0);
 

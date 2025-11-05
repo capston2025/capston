@@ -9,13 +9,13 @@ from typing import Dict, Any, Optional, List
 
 app = FastAPI(title="MCP Host", description="Model Context Protocol Host for Browser Automation")
 
-# Global state for live preview
+# 라이브 미리보기를 위한 전역 상태
 live_preview_subscribers: List[asyncio.Queue] = []
 current_page_screenshot: str = ""
 
-# Browser session management
+# 브라우저 세션 관리
 class BrowserSession:
-    """Maintains a persistent browser session for stateful testing"""
+    """상태 기반 테스트를 위해 지속적인 브라우저 세션을 유지합니다"""
     def __init__(self, session_id: str):
         self.session_id = session_id
         self.browser: Optional[Browser] = None
@@ -23,7 +23,7 @@ class BrowserSession:
         self.current_url: str = ""
 
     async def get_or_create_page(self) -> Page:
-        """Get existing page or create new browser session"""
+        """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다"""
         if not self.browser:
             if not playwright_instance:
                 raise HTTPException(status_code=503, detail="Playwright not initialized")
@@ -32,32 +32,32 @@ class BrowserSession:
         return self.page
 
     async def close(self):
-        """Close browser session"""
+        """브라우저 세션을 종료합니다"""
         if self.browser:
             await self.browser.close()
             self.browser = None
             self.page = None
 
-# Active sessions storage
+# 활성 세션 저장소
 active_sessions: Dict[str, BrowserSession] = {}
 
 
-# --- URL Normalization Helper ---
+# --- URL 정규화 도우미 ---
 def normalize_url(url: str) -> str:
     """
-    Normalize URL for consistent comparison.
-    Handles hash navigation and trailing slash differences.
+    일관된 비교를 위해 URL을 정규화합니다.
+    해시 내비게이션과 끝에 붙는 슬래시 차이를 처리합니다.
 
-    Examples:
+    예시:
         "https://example.com/#hash" -> "https://example.com#hash"
         "https://example.com/" -> "https://example.com"
         "https://example.com/#basics" -> "https://example.com#basics"
     """
     if not url:
         return url
-    # Replace "/#" with "#" for consistent comparison
+    # 일관된 비교를 위해 "/#"를 "#"로 바꿉니다
     normalized = url.replace("/#", "#")
-    # Remove trailing slash unless it's the only character after the protocol
+    # 프로토콜 이후 문자 없이 슬래시만 있을 때를 제외하고 끝 슬래시를 제거합니다
     if normalized.endswith("/") and not normalized.endswith("://"):
         normalized = normalized.rstrip("/")
     return normalized
@@ -65,10 +65,10 @@ def normalize_url(url: str) -> str:
 
 # --- Assertion Helper Functions ---
 async def _execute_assertion(page: Page, action: str, selector: str, value: Any) -> Dict[str, Any]:
-    """Execute assertion/validation actions and return results"""
+    """검증 작업을 수행하고 결과를 반환합니다"""
     try:
         if action == "expectVisible":
-            # Check if element is visible
+            # 요소가 보이는지 확인합니다
             if not selector:
                 return {"success": False, "message": "Selector required for expectVisible"}
             element = page.locator(selector).first
@@ -76,7 +76,7 @@ async def _execute_assertion(page: Page, action: str, selector: str, value: Any)
             return {"success": True, "message": f"Element {selector} is visible"}
 
         elif action == "expectHidden":
-            # Check if element is hidden
+            # 요소가 숨겨져 있는지 확인합니다
             if not selector:
                 return {"success": False, "message": "Selector required for expectHidden"}
             element = page.locator(selector).first
@@ -84,7 +84,7 @@ async def _execute_assertion(page: Page, action: str, selector: str, value: Any)
             return {"success": True, "message": f"Element {selector} is hidden"}
 
         elif action == "expectTrue":
-            # Evaluate JavaScript expression and check if true
+            # 자바스크립트 표현식을 평가해 참인지 확인합니다
             if value is None:
                 return {"success": False, "message": "Value (expression) required for expectTrue"}
             result = await page.evaluate(value)
@@ -94,7 +94,7 @@ async def _execute_assertion(page: Page, action: str, selector: str, value: Any)
                 return {"success": False, "message": f"Expression '{value}' evaluated to false"}
 
         elif action == "expectAttribute":
-            # Check element attribute value
+            # 요소 속성 값을 확인합니다
             if not selector or value is None:
                 return {"success": False, "message": "Selector and value [attr, expected] required"}
             element = page.locator(selector).first
@@ -110,7 +110,7 @@ async def _execute_assertion(page: Page, action: str, selector: str, value: Any)
                 return {"success": False, "message": f"Attribute {attr_name}={actual_value}, expected {expected_value}"}
 
         elif action == "expectCountAtLeast":
-            # Check minimum element count
+            # 최소 요소 개수를 확인합니다
             if not selector or value is None:
                 return {"success": False, "message": "Selector and value (min count) required"}
             elements = page.locator(selector)
@@ -145,15 +145,15 @@ class Assertion(BaseModel):
 class NetworkAssertion(BaseModel):
     """네트워크 요청/응답 검증"""
     description: str
-    method: str  # GET, POST, etc.
-    url_pattern: str  # regex or substring
+    method: str  # GET, POST 등
+    url_pattern: str  # 정규식 또는 부분 문자열
     expected_status: int = 200
     response_contains: Optional[Dict[str, Any]] = None  # JSON 응답 검증
 
 class UIAssertion(BaseModel):
     """UI 상태 검증"""
     description: str
-    assertion_type: str  # toast, modal, element_count, etc.
+    assertion_type: str  # 토스트, 모달, element_count 등
     selector: Optional[str] = None
     expected_text: Optional[str] = None
     expected_count: Optional[int] = None
@@ -169,12 +169,12 @@ class McpRequest(BaseModel):
     action: str = Field(..., description="The action to perform, e.g., 'analyze_page' or 'execute_scenario'.")
     params: Dict[str, Any] = Field(default_factory=dict, description="Parameters for the action.")
 
-# Global Playwright instance
+# 전역 Playwright 인스턴스
 playwright_instance: Optional[Playwright] = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Initializes the Playwright instance on server startup."""
+    """서버가 시작될 때 Playwright 인스턴스를 초기화합니다."""
     global playwright_instance
     print("Initializing Playwright...")
     playwright_instance = await async_playwright().start()
@@ -182,14 +182,14 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Stops the Playwright instance on server shutdown."""
+    """서버가 종료될 때 Playwright 인스턴스를 중지합니다."""
     if playwright_instance:
         print("Stopping Playwright...")
         await playwright_instance.stop()
         print("Playwright stopped.")
 
 async def analyze_page_elements(page) -> Dict[str, Any]:
-    """Extract interactive elements from the current page."""
+    """현재 페이지에서 상호작용 가능한 요소를 추출합니다."""
     try:
         try:
             await page.wait_for_load_state("networkidle", timeout=2000)
@@ -202,8 +202,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
 
                 function isVisible(el) {
                     const style = window.getComputedStyle(el);
-                    // More lenient visibility check for React SPAs
-                    // Allow elements that are in DOM but might be off-screen or animating
+                    // React SPA를 위한 더 완화된 표시 여부 검사
+                    // DOM에 있지만 화면 밖이거나 애니메이션 중인 요소도 허용
                     return style.display !== 'none' &&
                         style.visibility !== 'hidden' &&
                         parseFloat(style.opacity) > 0.1 &&  // Allow fade-in animations (changed from strict '0' check)
@@ -212,7 +212,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 }
 
                 function getUniqueSelector(el) {
-                    // Use attribute selector for IDs with special characters (like :, ., [, ])
+                    // 특수 문자가 포함된 ID(예: :, ., [, ])는 속성 선택자를 사용
                     if (el.id) {
                         if (/[:\.\[\]\(\)]/.test(el.id)) {
                             return `[id="${el.id}"]`;
@@ -228,7 +228,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         return `${el.tagName.toLowerCase()}[aria-label="${el.getAttribute('aria-label')}"]`;
                     }
 
-                    // For inputs, check placeholder before falling back to text/class
+                    // 입력 요소는 텍스트나 클래스로 넘어가기 전에 placeholder를 확인
                     if (el.tagName === 'INPUT' && el.placeholder) {
                         return `${el.tagName.toLowerCase()}[placeholder="${el.placeholder}"]`;
                     }
@@ -277,8 +277,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     });
                 });
 
-                // Collect buttons and interactive role elements
-                // Common ARIA roles for interactive UI elements
+                // 버튼과 상호작용 가능한 역할 요소를 수집
+                // 상호작용 UI에서 자주 사용하는 ARIA 역할
                 document.querySelectorAll(`
                     button,
                     [role="button"],
@@ -368,7 +368,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
         ''')
 
         print(f"Found {len(elements_data)} interactive elements")
-        # Debug: Print first 10 elements for troubleshooting
+        # 디버깅용으로 처음 10개 요소를 출력합니다
         if len(elements_data) <= 10:
             element_strs = [f"{e.get('tag', '')}:{e.get('text', '')[:20]}" for e in elements_data]
             print(f"  Elements: {element_strs}")
@@ -381,18 +381,18 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
 
 
 async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str, Any]:
-    """Analyze page elements using persistent session."""
+    """지속 세션을 사용해 페이지 요소를 분석합니다."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    # Get or create session
+    # 세션을 가져오거나 생성합니다
     if session_id not in active_sessions:
         active_sessions[session_id] = BrowserSession(session_id)
 
     session = active_sessions[session_id]
     page = await session.get_or_create_page()
 
-    # Navigate only if URL is provided AND different from actual browser URL
+    # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
     if url:
         current_browser_url = page.url
         current_normalized = normalize_url(current_browser_url)
@@ -408,18 +408,18 @@ async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str
                 await page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
                 pass
-            # Wait for React/Figma SPA to hydrate after navigation
+            # 이동 후 React/Figma SPA가 하이드레이션되도록 대기합니다
             await page.wait_for_timeout(3000)
 
-        # Always sync session.current_url with actual browser URL
+        # session.current_url을 실제 브라우저 URL과 항상 동기화합니다
         session.current_url = page.url
         print(f"[analyze_page] Synced session.current_url to: {session.current_url}")
 
-    # Get elements and add current URL to response
+    # 요소를 수집하고 현재 URL을 응답에 추가합니다
     result = await analyze_page_elements(page)
-    result["url"] = page.url  # Add current browser URL to response
+    result["url"] = page.url  # 현재 브라우저 URL을 응답에 추가합니다
 
-    # Also provide dom_elements key for backwards compatibility with orchestrator
+    # 오케스트레이터와의 하위 호환을 위해 dom_elements 키도 제공합니다
     if "elements" in result:
         result["dom_elements"] = result["elements"]
 
@@ -427,18 +427,18 @@ async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str
 
 
 async def capture_screenshot(url: str = None, session_id: str = "default") -> Dict[str, Any]:
-    """Capture a screenshot using persistent session."""
+    """지속 세션을 사용해 스크린샷을 캡처합니다."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    # Get or create session
+    # 세션을 가져오거나 생성합니다
     if session_id not in active_sessions:
         active_sessions[session_id] = BrowserSession(session_id)
 
     session = active_sessions[session_id]
     page = await session.get_or_create_page()
 
-    # Navigate only if URL is provided AND different from actual browser URL
+    # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
     if url:
         current_browser_url = page.url
         current_normalized = normalize_url(current_browser_url)
@@ -451,10 +451,10 @@ async def capture_screenshot(url: str = None, session_id: str = "default") -> Di
             except Exception:
                 await page.wait_for_timeout(2000)
 
-        # Always sync session.current_url with actual browser URL
+        # session.current_url을 실제 브라우저 URL과 항상 동기화합니다
         session.current_url = page.url
 
-    # Capture screenshot of current page (wherever it is)
+    # 현재 페이지(위치와 관계없이)를 캡처합니다
     screenshot_bytes = await page.screenshot(full_page=False)
     screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
 
@@ -482,7 +482,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    # Get or create session
+    # 세션을 가져오거나 생성합니다
     if session_id not in active_sessions:
         active_sessions[session_id] = BrowserSession(session_id)
 
@@ -490,8 +490,8 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
     page = await session.get_or_create_page()
 
     try:
-        # Navigate only if URL changed (and URL is not empty)
-        # Compare with actual browser URL, not cached session URL
+        # URL이 변경되었고 비어 있지 않을 때에만 이동합니다
+        # 캐시된 세션 URL이 아닌 실제 브라우저 URL과 비교합니다
         current_page_url = page.url
         current_normalized = normalize_url(current_page_url)
         requested_normalized = normalize_url(url) if url else None
@@ -501,31 +501,31 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
 
         if requested_normalized and current_normalized != requested_normalized:
             print(f"[execute_simple_action] URLs differ, navigating to: {url}")
-            await page.goto(url, timeout=60000)  # Increased from 30s to 60s
+            await page.goto(url, timeout=60000)  # 30초에서 60초로 증가시켰습니다
             session.current_url = url
             try:
-                # Wait for network to be idle (no ongoing requests)
+                # 네트워크가 유휴 상태가 될 때까지 대기합니다(요청 없음)
                 await page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
-                pass  # Continue even if networkidle times out
+                pass  # networkidle이 타임아웃되어도 계속 진행합니다
 
-            # Additional wait for React SPA hydration/rendering
-            # This ensures DOM is fully populated before analysis
-            # Figma sites need extra time for hash navigation
-            await page.wait_for_timeout(5000)  # Wait 5 seconds for React/Figma to render (increased for hash navigation)
+            # React SPA가 하이드레이션/렌더링되도록 추가로 대기합니다
+            # 분석 전에 DOM이 완전히 채워지도록 보장합니다
+            # Figma 사이트는 해시 내비게이션에 추가 시간이 필요합니다
+            await page.wait_for_timeout(5000)  # React/Figma가 렌더링되도록 5초 동안 대기합니다(해시 내비게이션을 고려해 증가)
 
-        # Get element position before action (for click animation)
+        # 동작 전에 요소 위치를 기록합니다(클릭 애니메이션용)
         click_position = None
 
-        # Handle actions that don't require selector
+        # 선택자가 필요 없는 동작을 처리합니다
         if action == "tab":
-            # Press Tab key on the page (keyboard.press doesn't support timeout)
+            # 페이지에서 Tab 키를 누릅니다(keyboard.press는 타임아웃을 지원하지 않음)
             await page.keyboard.press("Tab")
 
         elif action == "scroll":
-            # Scroll the page or element
+            # 페이지나 요소를 스크롤합니다
             if selector and selector != "body":
-                # Scroll specific element into view (only if selector is not "body")
+                # 특정 요소가 화면에 보이도록 스크롤합니다(선택자가 "body"가 아닐 때만)
                 element = page.locator(selector).first
                 try:
                     bounding_box = await element.bounding_box()
@@ -538,51 +538,51 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                     pass
                 await element.scroll_into_view_if_needed(timeout=10000)
             else:
-                # Scroll the page by specified amount or direction
+                # 지정한 양이나 방향으로 페이지를 스크롤합니다
                 if value in ["down", "up", "bottom", "top"]:
-                    # Direction-based scrolling
+                    # 방향 기반 스크롤링
                     if value == "down":
-                        scroll_amount = 800  # Scroll down by 800px
+                        scroll_amount = 800  # 800px만큼 아래로 스크롤합니다
                     elif value == "up":
-                        scroll_amount = -800  # Scroll up by 800px
+                        scroll_amount = -800  # 800px만큼 위로 스크롤합니다
                     elif value == "bottom":
-                        scroll_amount = 999999  # Scroll to bottom
+                        scroll_amount = 999999  # 맨 아래로 스크롤합니다
                     elif value == "top":
-                        scroll_amount = -999999  # Scroll to top
+                        scroll_amount = -999999  # 맨 위로 스크롤합니다
                     await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
                 else:
-                    # Numeric scrolling
+                    # 수치 기반 스크롤링
                     scroll_amount = int(value) if value else 500
                     await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
 
         elif action == "goto":
-            # Navigate to URL (value contains the URL)
+            # 값에 포함된 URL로 이동합니다
             if value is None:
                 raise ValueError("Value (URL) is required for 'goto' action")
             await page.goto(value, timeout=60000, wait_until="networkidle")
 
         elif action == "setViewport":
-            # Change viewport size (value should be JSON array [width, height] or [[width, height]])
+            # 뷰포트 크기를 변경합니다(값은 [width, height] 또는 [[width, height]] 형식의 JSON 배열)
             if value is None:
                 raise ValueError("Value [width, height] is required for 'setViewport' action")
             import json
             if isinstance(value, str):
                 width, height = json.loads(value)
             else:
-                # Handle both [width, height] and [[width, height]] formats
+                # [width, height]와 [[width, height]] 두 형식을 모두 처리합니다
                 if isinstance(value, list) and len(value) > 0:
                     if isinstance(value[0], list):
-                        # Double-nested: [[width, height]]
+                        # 이중 중첩 형식: [[width, height]]
                         width, height = value[0][0], value[0][1]
                     else:
-                        # Single array: [width, height]
+                        # 단일 배열 형식: [width, height]
                         width, height = value[0], value[1]
                 else:
                     raise ValueError(f"Invalid viewport value format: {value}")
             await page.set_viewport_size({"width": int(width), "height": int(height)})
 
         elif action == "wait" or action == "waitForTimeout":
-            # Wait for a specified time in milliseconds (value contains the wait time)
+            # 지정된 시간(밀리초) 동안 대기합니다(값에 대기 시간이 포함)
             import asyncio
             if value is None:
                 raise ValueError("Value (milliseconds) is required for 'wait' action")
@@ -590,11 +590,11 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             await asyncio.sleep(wait_time_ms / 1000.0)
 
         elif action == "clickAt" or action == "click_at_coordinates":
-            # Click at specific coordinates (value contains [x, y])
+            # 지정한 좌표를 클릭합니다(값은 [x, y])
             if value is None:
                 raise ValueError("Value [x, y] is required for 'clickAt' action")
 
-            # Parse coordinates
+            # 좌표를 파싱합니다
             if isinstance(value, str):
                 import json
                 coords = json.loads(value)
@@ -605,11 +605,11 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
 
             x, y = int(coords[0]), int(coords[1])
 
-            # Store click position for animation
+            # 애니메이션을 위해 클릭 위치를 저장합니다
             click_position = {"x": x, "y": y}
 
-            # Click at coordinates using JavaScript to trigger React events properly
-            # Find the element at the coordinates and click it programmatically
+            # React 이벤트가 정확히 발생하도록 자바스크립트로 좌표를 클릭합니다
+            # 해당 좌표의 요소를 찾아 프로그래밍 방식으로 클릭합니다
             try:
                 await page.evaluate(f"""
                     (async () => {{
@@ -622,24 +622,24 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                     }})();
                 """)
             except Exception as e:
-                # Fallback to mouse click if JS click fails
+                # 자바스크립트 클릭이 실패하면 마우스 클릭으로 대체합니다
                 print(f"JS click failed at ({x}, {y}), falling back to mouse.click: {e}")
                 await page.mouse.click(x, y)
 
         elif action == "evaluate":
-            # Execute JavaScript (value contains the script)
+            # 자바스크립트를 실행합니다(값에 스크립트 포함)
             if value is None:
                 raise ValueError("Value (script) is required for 'evaluate' action")
             if selector:
-                # Evaluate on specific element
+                # 특정 요소에서 평가합니다
                 element = page.locator(selector).first
                 await element.evaluate(value)
             else:
-                # Evaluate on page
+                # 페이지에서 평가합니다
                 await page.evaluate(value)
 
         elif action == "hover":
-            # Hover over element
+            # 요소 위에 호버합니다
             if not selector:
                 raise ValueError("Selector is required for 'hover' action")
             element = page.locator(selector).first
@@ -655,7 +655,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             await element.hover(timeout=30000)
 
         elif action == "dragAndDrop":
-            # Drag and drop (value contains target selector)
+            # 드래그 앤 드롭을 수행합니다(값에 대상 선택자 포함)
             if not selector or not value:
                 raise ValueError("Both selector and value (target) required for 'dragAndDrop' action")
             source = page.locator(selector).first
@@ -663,32 +663,32 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             await source.drag_to(target, timeout=30000)
 
         elif action == "scrollIntoView":
-            # Scroll element into view
+            # 요소가 화면에 보이도록 스크롤합니다
             if not selector:
                 raise ValueError("Selector is required for 'scrollIntoView' action")
             element = page.locator(selector).first
             await element.scroll_into_view_if_needed(timeout=10000)
 
         elif action == "focus":
-            # Focus element
+            # 요소에 포커스를 맞춥니다
             if not selector:
                 raise ValueError("Selector is required for 'focus' action")
             element = page.locator(selector).first
             await element.focus(timeout=30000)
 
         elif action == "select":
-            # Select option in dropdown (value contains option value)
+            # 드롭다운에서 옵션을 선택합니다(값에 옵션 값 포함)
             if not selector or value is None:
                 raise ValueError("Selector and value required for 'select' action")
             element = page.locator(selector).first
             await element.select_option(value, timeout=30000)
 
         elif action in ("expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"):
-            # Assertion actions - will be handled by returning result
-            # These don't execute actions, they return validation results
+            # 검증 동작은 결과를 반환하는 방식으로 처리됩니다
+            # 이 동작은 실행되지 않고 검증 결과만 반환합니다
             result = await _execute_assertion(page, action, selector, value)
 
-            # Capture screenshot for assertion result
+            # 검증 결과용 스크린샷을 캡처합니다
             screenshot_bytes = await page.screenshot(full_page=False)
             screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
@@ -699,10 +699,10 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             }
 
         elif action in ("click", "fill", "press"):
-            # Actions that require selector
+            # 선택자가 필요한 동작
             element = page.locator(selector).first
 
-            # Get element position for click animation
+            # 클릭 애니메이션을 위해 요소 위치를 구합니다
             try:
                 bounding_box = await element.bounding_box()
                 if bounding_box:
@@ -714,29 +714,29 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 pass
 
             if action == "click":
-                await element.click(timeout=30000)  # Increased from 10s to 30s
+                await element.click(timeout=30000)  # 10초에서 30초로 증가시켰습니다
             elif action == "fill":
                 if value is None:
                     raise ValueError("Value is required for 'fill' action")
-                await element.fill(value, timeout=30000)  # Increased from 10s to 30s
+                await element.fill(value, timeout=30000)  # 10초에서 30초로 증가시켰습니다
             elif action == "press":
                 if value is None:
                     raise ValueError("Value is required for 'press' action")
-                await element.press(value, timeout=30000)  # Increased from 10s to 30s
+                await element.press(value, timeout=30000)  # 10초에서 30초로 증가시켰습니다
 
         else:
             raise ValueError(f"Unsupported action: {action}")
 
-        # Wait for state change
+        # 상태 변경을 기다립니다
         try:
-            await page.wait_for_load_state("networkidle", timeout=5000)  # Increased from 3s to 5s
+            await page.wait_for_load_state("networkidle", timeout=5000)  # 3초에서 5초로 증가시켰습니다
         except Exception:
-            await page.wait_for_timeout(1500)  # Increased from 1s to 1.5s
+            await page.wait_for_timeout(1500)  # 1초에서 1.5초로 증가시켰습니다
 
-        # Update current URL in case of navigation
+        # 내비게이션이 발생하면 현재 URL을 업데이트합니다
         session.current_url = page.url
 
-        # Capture screenshot after action for real-time preview
+        # 실시간 미리보기용으로 동작 후 스크린샷을 캡처합니다
         screenshot_bytes = await page.screenshot(full_page=False)
         screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
@@ -745,13 +745,13 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             "message": f"Action '{action}' executed on '{selector if selector else 'page'}'",
             "screenshot": screenshot_base64,
             "current_url": session.current_url,
-            "click_position": click_position  # Add click position for animation
+            "click_position": click_position  # 애니메이션용 클릭 위치를 추가합니다
         }
 
     except Exception as e:
         return {"success": False, "message": f"Action failed: {str(e)}"}
 
-    # Don't close browser - keep session alive!
+    # 브라우저를 닫지 말고 세션을 유지합니다!
 
 
 async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
@@ -768,7 +768,7 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
     browser = await playwright_instance.chromium.launch(headless=True)
     page = await browser.new_page()
 
-    # Network request/response listener
+    # 네트워크 요청/응답 리스너
     import time
 
     async def log_request(request):
@@ -795,25 +795,25 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
     page.on("response", lambda response: asyncio.create_task(log_response(response)))
 
     try:
-        # Handle initial navigation if specified as the first step
+        # 첫 단계로 지정된 초기 내비게이션을 처리합니다
         if scenario.steps and scenario.steps[0].action == 'goto':
             step = scenario.steps.pop(0)
             url = step.params[0] if step.params else "about:blank"
             await page.goto(url, timeout=30000)
             logs.append(f"SUCCESS: Navigated to {url}")
 
-        # Execute remaining steps
+        # 나머지 단계를 실행합니다
         for step in scenario.steps:
             logs.append(f"Executing step: {step.description}")
 
-            # Skip 'note' actions (documentation/assertion steps)
+            # 'note' 동작(문서화/검증 단계)을 건너뜁니다
             if step.action == 'note' or step.action == '':
                 logs.append(f"NOTE: {step.description}")
                 continue
 
-            # Handle actions that don't require selector
+            # 선택자가 필요 없는 동작을 처리합니다
             if step.action == 'tab':
-                await page.keyboard.press("Tab")  # keyboard.press doesn't support timeout
+                await page.keyboard.press("Tab")  # keyboard.press는 타임아웃을 지원하지 않습니다
                 logs.append(f"SUCCESS: Tab key pressed")
                 continue
             elif step.action == 'scroll':
@@ -827,24 +827,24 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
                     logs.append(f"SUCCESS: Scrolled page by {scroll_amount}px")
                 continue
 
-            # Use .first to handle multiple matches (avoid strict mode violation)
+            # 여러 매치를 처리하기 위해 .first를 사용합니다(엄격 모드 위반 방지)
             element = page.locator(step.selector).first
 
             if step.action == 'click':
-                await element.click(timeout=30000)  # Increased from 10s to 30s
+                await element.click(timeout=30000)  # 10초에서 30초로 증가시켰습니다
             elif step.action == 'fill':
-                await element.fill(str(step.params[0]), timeout=30000)  # Increased from 10s to 30s
+                await element.fill(str(step.params[0]), timeout=30000)  # 10초에서 30초로 증가시켰습니다
             elif step.action == 'press':
-                await element.press(str(step.params[0]), timeout=30000)  # Increased from 10s to 30s
+                await element.press(str(step.params[0]), timeout=30000)  # 10초에서 30초로 증가시켰습니다
             else:
                 raise ValueError(f"Unsupported action: {step.action}")
             logs.append(f"SUCCESS: {step.action} on '{step.selector}'")
 
-        # Execute assertion
+        # 검증을 실행합니다
         logs.append(f"Executing assertion: {scenario.assertion.description}")
         assertion = scenario.assertion
 
-        # Skip 'note' assertions (documentation only)
+        # 'note' 검증(문서용)만 건너뜁니다
         if assertion.condition == 'note' or assertion.condition == '':
             logs.append(f"NOTE: {assertion.description}")
             logs.append(f"SUCCESS: All assertions passed.")
@@ -993,22 +993,22 @@ async def execute_action(request: McpRequest):
     session_id = params.get("session_id", "default")
 
     if action == "analyze_page":
-        url = params.get("url")  # url can be None to use current page
+        url = params.get("url")  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
         return await analyze_page(url, session_id)
 
     elif action == "capture_screenshot":
-        url = params.get("url")  # url can be None to use current page
+        url = params.get("url")  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
         return await capture_screenshot(url, session_id)
 
     elif action == "execute_action":
-        # Simple action execution (click, fill, press) without full scenario
+        # 전체 시나리오 없이 단순 동작(클릭, 입력, 키 입력)을 실행합니다
         url = params.get("url")
-        selector = params.get("selector", "")  # selector can be empty for some actions
+        selector = params.get("selector", "")  # 일부 동작은 선택자가 비어 있을 수 있습니다
         action_type = params.get("action")
         value = params.get("value")
 
-        # Some actions don't need selector (goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates)
-        # Assertion actions also don't need selector (they use value parameter instead)
+        # goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates 같은 동작은 선택자가 필요 없습니다
+        # 검증 동작도 선택자가 필요 없으며 value 매개변수를 사용합니다
         actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll", "wait", "waitForTimeout", "clickAt", "click_at_coordinates",
                                         "expectTrue", "expectAttribute", "expectCountAtLeast"]
 
@@ -1036,7 +1036,7 @@ async def execute_action(request: McpRequest):
 
 @app.post("/close_session")
 async def close_session(request: McpRequest):
-    """Close a browser session and clean up resources."""
+    """브라우저 세션을 닫고 리소스를 정리합니다."""
     session_id = request.params.get("session_id", "default")
 
     if session_id in active_sessions:
