@@ -880,7 +880,20 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         elif action in ("click", "fill", "press"):
             # :has-text() 실패 시 :text()로 자동 재시도 (fallback)
             # [type="submit"] 실패 시 제거해서 재시도 (fallback)
+            # [role="switch"]:has-text() → 부모 컨테이너로 탐색 (토글 스위치 특수 처리)
             fallback_selectors = []
+
+            # 토글 스위치 특수 처리: [role="switch"]:has-text("XXX") 패턴 감지
+            if '[role="switch"]' in selector and ':has-text(' in selector:
+                import re
+                # :has-text("텍스트") 추출
+                text_match = re.search(r':has-text\(["\']([^"\']+)["\']\)', selector)
+                if text_match:
+                    text = text_match.group(1)
+                    # 토글 스위치는 보통 label과 함께 있으므로 부모 컨테이너에서 찾기
+                    fallback_selectors.append(f'.flex:has(label:has-text("{text}")) button[role="switch"]')
+                    fallback_selectors.append(f'div:has(label:has-text("{text}")) button[role="switch"]')
+
             if ':has-text(' in selector:
                 fallback_selectors.append(selector.replace(':has-text(', ':text('))
             if '[type="submit"]' in selector:
