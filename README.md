@@ -1,17 +1,18 @@
 # GAIA - Goal-oriented Autonomous Intelligence for Adaptive GUI Testing
 
-GAIA is the 1학기 MVP for an autonomous QA assistant. The system ingests a planning PDF, produces GPT-guided UI automation plans, adaptively schedules them, and drives Playwright MCP sessions while tracking checklist coverage in real time.
+GAIA는 자동화된 QA 어시스턴트를 위한 1학기 MVP입니다. 기획 PDF를 입력받아 GPT 기반 UI 자동화 계획을 생성하고, 적응형 스케줄링을 통해 Playwright MCP 세션을 제어하며 실시간으로 체크리스트 커버리지를 추적합니다.
 
 ## 🏗️ Architecture Overview
 
 ```
 gaia/
+├── agent-service/          # Node.js OpenAI Agent Builder service (Phase 1)
 ├── src/
-│   ├── phase1/             # PDF ingestion + OpenAI Agent Builder planners
+│   ├── phase1/             # PDF ingestion + Agent Service client
 │   ├── scheduler/          # Adaptive priority queue for test execution
 │   ├── phase4/             # MCP host clients + intelligent orchestrators
-│   │   ├── master_orchestrator.py   # Multi-page exploration (GPT-5)
-│   │   ├── intelligent_orchestrator.py # Vision-guided executor (GPT-5-mini)
+│   │   ├── master_orchestrator.py   # Multi-page exploration (GPT-4o)
+│   │   ├── intelligent_orchestrator.py # Vision-guided executor (GPT-4o-mini)
 │   │   ├── llm_vision_client.py     # LLM selection + cost controls
 │   │   └── mcp_host.py              # FastAPI + Playwright MCP bridge
 │   ├── tracker/            # Checklist coverage tracker
@@ -21,22 +22,22 @@ gaia/
 ├── artifacts/
 │   ├── cache/              # Selector/embedding caches & run metadata
 │   └── plans/              # Saved planner outputs for replay
+├── docs/                   # Project context, progress, and guides
 ├── scripts/                # Helper launchers (GUI, MCP host)
 ├── tests/                  # Pytest suites (planner, scheduler, orchestration)
-├── run_auto_test.py        # Convenience harness for full pipeline demos
-└── docs/                   # Project context, progress, and guides
+└── run_auto_test.py        # Convenience harness for full pipeline demos
 ```
 
 ### Core Flow
 
 1. **Phase 1 – Spec Analysis**
    - `pdf_loader.PDFLoader` extracts structured text from planning PDFs.
-   - `agent_client.AgentServiceClient` submits prompts to OpenAI Agent Builder (default `gpt-4o`) to generate 100+ `TestScenario` objects and the 25-item checklist.
+   - `agent_client.AgentServiceClient` submits prompts to Node.js Agent Service (using OpenAI API with default `gpt-4o`) to generate 100+ `TestScenario` objects and the 25-item checklist.
 2. **Adaptive Scheduler**
    - `scheduler.adaptive_scheduler.AdaptiveScheduler` scores scenarios (MUST/SHOULD/MAY, DOM novelty, historic failures) and streams prioritized batches to the executor.
 3. **Phase 4 – Site Exploration & Execution**
-   - `master_orchestrator.MasterOrchestrator` (GPT-5) builds a site map, navigates multi-page flows, and delegates actionable scenarios.
-   - `intelligent_orchestrator.IntelligentOrchestrator` (GPT-5-mini vision) pairs DOM snapshots with screenshots, chooses selectors, applies smart navigation memory, and records evidence.
+   - `master_orchestrator.MasterOrchestrator` (GPT-4o) builds a site map, navigates multi-page flows, and delegates actionable scenarios.
+   - `intelligent_orchestrator.IntelligentOrchestrator` (GPT-4o-mini vision) pairs DOM snapshots with screenshots, chooses selectors, applies smart navigation memory, and records evidence.
    - Selector/embedding caches in `artifacts/cache` short-circuit repeat work and cut API spend.
 4. **Checklist Tracking & Reporting**
    - `ChecklistTracker` marks found features and exposes coverage metrics.
@@ -47,44 +48,68 @@ gaia/
 
 ## 🚀 Getting Started
 
+### Prerequisites
+
+1. **Python 가상환경 설정**
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r gaia/requirements.txt
-python -m gaia.main
 ```
 
-Optional environment overrides:
-
-- `OPENAI_API_KEY` – GPT API key (required for live planning).
-- `GAIA_LLM_MODEL` – Planner LLM override (default: `gpt-4o`).
-- `GAIA_WORKFLOW_ID` – Agent Builder workflow ID (e.g. `wf_68ea589f9a948190a518e9b2626ab1d5037b50134b0c56e7`).
-- `GAIA_WORKFLOW_VERSION` – Workflow version to invoke (default: `1`).
-- `GAIA_LLM_REASONING_EFFORT` / `GAIA_LLM_VERBOSITY` – Optional planner tuning.
-- `GAIA_LLM_MAX_COMPLETION_TOKENS` – Upper bound for planner completions.
-- `MCP_HOST_URL` – Playwright MCP host (default: `http://localhost:8001`).
-- `MCP_TIMEOUT` – Timeout (seconds) when calling the MCP host (default: `45`).
-
-For MCP/Playwright execution:
-
+2. **Playwright 브라우저 설치**
 ```bash
 playwright install chromium
 ```
 
-### Quick Start Scripts
+3. **Agent Service 설정 (Phase 1용 - 선택사항)**
+```bash
+cd gaia/agent-service
+npm install
+# .env 파일 생성 (OPENAI_API_KEY 설정)
+cp .env.example .env
+# .env 파일 편집하여 API 키 입력
+```
 
-Once dependencies are installed and `.env` is filled, you can use helper scripts:
+### Environment Variables
+
+필수 및 선택적 환경 변수:
+
+- `OPENAI_API_KEY` – OpenAI API key (**필수**, GPT-4o/4o-mini 사용)
+- `GAIA_LLM_MODEL` – Planner LLM 모델 (기본값: `gpt-4o`)
+- `GAIA_WORKFLOW_ID` – Agent Builder workflow ID (선택사항)
+- `GAIA_WORKFLOW_VERSION` – Workflow version (기본값: `1`)
+- `GAIA_LLM_REASONING_EFFORT` / `GAIA_LLM_VERBOSITY` – Planner 튜닝 옵션
+- `GAIA_LLM_MAX_COMPLETION_TOKENS` – Planner completion 토큰 상한
+- `MCP_HOST_URL` – Playwright MCP host URL (기본값: `http://localhost:8001`)
+- `MCP_TIMEOUT` – MCP host 호출 시 타임아웃 초 (기본값: `45`)
+
+### Quick Start - GUI 사용 (권장)
+
+의존성 설치 및 환경 변수 설정 후, GUI를 통한 실행이 가장 간편합니다:
 
 ```bash
-# terminal 1 (Playwright MCP host)
+# Terminal 1: MCP Host 실행 (브라우저 자동화 서버)
 ./scripts/run_mcp_host.sh
 
-# terminal 2 (PySide6 GUI)
+# Terminal 2: PySide6 GUI 실행
 ./scripts/run_gui.sh
 ```
 
-GUI에서 과거 테스트 플랜을 재사용하려면 1단계 화면의 `이전 테스트 불러오기` 버튼을 눌러
-`artifacts/plans/*.json` 파일을 선택하면 됩니다. PDF 분석 없이 바로 자동화를 시작할 수 있습니다.
+**GUI 사용 방법:**
+1. **Phase 1**: PDF 업로드 또는 `이전 테스트 불러오기` 버튼으로 `artifacts/plans/*.json` 선택
+2. **Phase 4**: 테스트 실행 - 실시간 로그, 스크린샷, 커버리지 확인
+3. 테스트 결과는 자동으로 `artifacts/cache/`에 저장됨
+
+### CLI 실행 (고급 사용자)
+
+```bash
+# 전체 파이프라인 실행
+python run_auto_test.py --url https://example.com --spec path/to/spec.pdf
+
+# 또는 개별 모듈 실행
+python -m gaia.main
+```
 
 ## 🧪 Tests
 
@@ -94,15 +119,20 @@ pytest gaia/tests
 
 ## 🗺️ Documentation
 
-- `gaia/docs/PROJECT_CONTEXT.md` – Full project charter.
-- `gaia/docs/PROGRESS.md` – Iteration log.
-- `gaia/docs/IMPLEMENTATION_GUIDE.md` – Environment, module, and next-step notes.
+프로젝트 문서는 다음 위치에 있습니다:
+
+- `gaia/docs/PROJECT_CONTEXT.md` – 프로젝트 전체 목표 및 배경
+- `gaia/docs/PROGRESS.md` – 개발 진행 상황 로그
+- `gaia/docs/IMPLEMENTATION_GUIDE.md` – 환경 설정 및 모듈 가이드
+- `docs/MIDTERM_PRESENTATION.md` – 중간 발표 자료
+- `PROJECT.md` – 프로젝트 상세 명세서 (루트)
 
 ## 🤝 Team Workflow
 
-- GPT is the default LLM for all automated planning in this repo.
-- Update `gaia/docs/PROGRESS.md` after each milestone.
-- Keep checklist coverage visible during demos using the GUI log output.
+- **LLM 모델**: OpenAI GPT-4o (Planning), GPT-4o-mini (Vision/Cost-optimization)
+- 마일스톤 완료 후 `gaia/docs/PROGRESS.md` 업데이트
+- 데모 시 GUI 로그 출력을 통해 체크리스트 커버리지 표시
+- 캐시 관련 변경 시 `artifacts/cache/` JSON 구조 문서화
 
 ## 🚀 Smart Navigation (NEW)
 
@@ -232,15 +262,17 @@ GAIA now remembers successful element selections and reuses them in future test 
 ## 🔧 Recent Improvements (Issue #25)
 
 ### Cost Optimization (NEW)
-- **Hybrid GPT-5 / GPT-5-mini Strategy**: Optimized LLM costs by 80% while maintaining accuracy
-  - **Master Orchestrator**: Uses GPT-5 for critical site exploration and navigation mapping
-  - **Vision Tasks**: Uses GPT-5-mini for screenshot analysis and element detection
+- **Hybrid GPT-4o / GPT-4o-mini Strategy**: Optimized LLM costs by 80% while maintaining accuracy
+  - **Master Orchestrator**: Uses GPT-4o for critical site exploration and navigation mapping
+  - **Vision Tasks**: Uses GPT-4o-mini for screenshot analysis and element detection
   - **Cost Savings**: Estimated 80% reduction in API costs on vision-heavy workloads
   - File: `gaia/src/phase4/llm_vision_client.py:26-28`
 
-### LLM Model Upgrade
-- **GPT-5 Integration**: Upgraded from `gpt-5-mini` to `gpt-5` for better reasoning and decision-making
-  - File: `gaia/src/phase4/llm_vision_client.py:26`
+### LLM Model Configuration
+- **GPT-4o Integration**: Uses OpenAI's GPT-4o for better reasoning and decision-making
+  - Default model: `gpt-4o` (configurable via `GAIA_LLM_MODEL` env var)
+  - Vision tasks: `gpt-4o-mini` for cost optimization
+  - File: `gaia/src/phase4/llm_vision_client.py:45`
   - Added 60-second timeout to prevent hanging on API calls
   - Increased token limit from 1024 to 2048 for complex responses
 
@@ -335,7 +367,7 @@ GAIA now remembers successful element selections and reuses them in future test 
   - Only marks tests as executed if they passed or failed (not skipped)
   - File: `gaia/src/phase4/master_orchestrator.py:61, 129-176`
 - **Site Exploration**: LLM-powered page discovery for hash-based SPAs (Figma Sites, React Router)
-  - Uses GPT-5 (not mini) for critical navigation analysis
+  - Uses GPT-4o (full model, not mini) for critical navigation analysis
   - Analyzes DOM + screenshot to identify navigation structure
   - Discovers hash-based routes (#basics, #forms, #interactions)
   - Files: `gaia/src/phase4/master_orchestrator.py:202-308`
@@ -488,7 +520,7 @@ better_selector = f'button:has-text("둘러보기")'
 
 **Master Orchestrator Flow:**
 ```
-1. 🗺️ Site exploration → Discover 4 pages
+1. 🗺️ Site exploration → Discover 4 pages (GPT-4o)
 2. 📄 Page 1/4: Home → Execute TC001-TC004
 3. 📄 Page 2/4: #basics → Execute TC010-TC011
 4. 📄 Page 3/4: #forms → Execute TC005-TC008
@@ -498,7 +530,7 @@ better_selector = f'button:has-text("둘러보기")'
 
 **4-Stage Fallback Pipeline:**
 ```
-1. LLM Vision Analysis (GPT-5-mini + screenshot)
+1. LLM Vision Analysis (GPT-4o-mini + screenshot)
    ↓ (if confidence < 70%)
 2. Auto-fix (regex text extraction + text-based selector)
    ↓ (if no match)
