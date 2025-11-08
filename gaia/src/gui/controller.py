@@ -121,7 +121,7 @@ class AppController(QObject):
 
         # 시그널 연결
         thread.started.connect(worker.run)
-        worker.progress.connect(self._window.append_log)
+        worker.progress.connect(self._handle_worker_progress)
         worker.finished.connect(self._on_analysis_finished)
         worker.error.connect(self._on_analysis_error)
         worker.finished.connect(thread.quit)
@@ -156,7 +156,8 @@ class AppController(QObject):
             self._window.append_log("⚠️ 선택한 플랜에 실행 가능한 시나리오가 없습니다.")
             return
 
-        self._analysis_plan = scenarios
+        plan_list = list(scenarios)
+        self._analysis_plan = plan_list
         self._plan = ()
         self._current_pdf_text = None
         self._current_pdf_hash = metadata.get("pdf_hash") if metadata else None
@@ -169,12 +170,13 @@ class AppController(QObject):
         else:
             self._window.append_log("ℹ️ 플랜에 URL 정보가 없어 직접 입력이 필요합니다.")
 
-        self._window.show_scenarios(scenarios)
-        summary = self._summarize_scenarios(scenarios)
+        self._window.show_scenarios(plan_list)
+        summary = self._summarize_scenarios(plan_list)
         self._window.append_log(
             f"📂 '{path.name}' 플랜 불러오기 완료 — 총 {summary['total']}개 "
             f"(MUST {summary['must']}, SHOULD {summary['should']}, MAY {summary['may']})"
         )
+        self._reset_tracker_with_plan(plan_list)
 
     @Slot(object)
     def _on_analysis_finished(self, analysis_result) -> None:
@@ -192,6 +194,7 @@ class AppController(QObject):
         self._analysis_plan = self._convert_testcases_to_scenarios(
             analysis_result.checklist
         )
+        self._reset_tracker_with_plan(self._analysis_plan)
 
         # 재분석을 피하기 위해 플랜을 디스크에 저장
         # URL이 있으면 해당 URL로, 없으면 PDF 해시로 저장
@@ -510,6 +513,7 @@ class AppController(QObject):
 
         # 1단계: MCP로 DOM 분석 및 스크린샷 캡처
         self._window.append_log("📸 MCP로 DOM 분석 및 스크린샷 캡처 중...")
+        self._reset_tracker_with_plan(candidate_plan)
 
         # 2단계: LLM이 실행 가능한 테스트를 선택하고 우선순위 큐 생성
         # 3단계: 사이트 탐색과 함께 테스트 실행
@@ -532,7 +536,7 @@ class AppController(QObject):
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)
-        worker.progress.connect(self._window.append_log)
+        worker.progress.connect(self._handle_worker_progress)
         worker.screenshot.connect(self._window.update_live_preview)
         worker.finished.connect(self._on_intelligent_worker_finished)
         worker.finished.connect(thread.quit)
@@ -549,7 +553,7 @@ class AppController(QObject):
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)
-        worker.progress.connect(self._window.append_log)
+        worker.progress.connect(self._handle_worker_progress)
         worker.finished.connect(self._on_worker_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -566,6 +570,7 @@ class AppController(QObject):
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ LLM-powered automation completed. Coverage: {summary:.1f}%")
         self._window.set_busy(False)
+        self._update_overall_progress_display()
         self._worker_thread = None
         self._worker = None
 
@@ -574,6 +579,7 @@ class AppController(QObject):
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ Automation completed. Coverage: {summary:.1f}%")
         self._window.set_busy(False)
+        self._update_overall_progress_display()
         self._worker_thread = None
         self._worker = None
 
@@ -604,6 +610,34 @@ class AppController(QObject):
                 self._window.append_log(f"💾 Plan cached with URL: {saved_path.name}")
             except Exception as e:
                 self._window.append_log(f"⚠️ Failed to cache plan: {e}")
+
+    # ------------------------------------------------------------------
+    @Slot(str)
+    def _handle_worker_progress(self, message: str) -> None:
+        self._window.append_log(message)
+        self._update_overall_progress_display()
+
+    def _reset_tracker_with_plan(self, scenarios: Sequence[TestScenario]) -> None:
+        plan_list = list(scenarios)
+        self._tracker.items.clear()
+        if plan_list:
+            self._tracker.seed_from_scenarios(plan_list)
+        self._update_overall_progress_display()
+
+    def _update_overall_progress_display(self) -> None:
+        items = getattr(self._tracker, "items", {})
+        total = len(items)
+        completed = sum(1 for item in items.values() if getattr(item, "checked", False))
+        percent = (completed / total * 100) if total else 0.0
+        self._window.update_overall_progress(percent, completed, total)
+        if total:
+            progress_items = [
+                (item.feature_id or item.description or "", 100.0 if item.checked else 0.0)
+                for item in items.values()
+            ]
+        else:
+            progress_items = []
+        self._window.update_test_progress(progress_items)
 
     # ------------------------------------------------------------------
     def _plan_has_selectors(self, scenarios: Sequence[TestScenario]) -> bool:
