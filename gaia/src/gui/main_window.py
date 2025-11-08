@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Sequence
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -19,10 +19,12 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
+    QProgressBar,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -170,6 +172,92 @@ class BusyOverlay(QFrame):
         self._elapsed_label.setText(f"⏱️  경과 시간: {minutes}분 {seconds:02d}초")
         self._elapsed_seconds += 1
 
+
+class CircularProgressWidget(QWidget):
+    """전체 진행률을 원형 그래프로 보여주는 위젯."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._value: float = 0.0
+        self.setMinimumSize(160, 160)
+
+    def set_value(self, value: float) -> None:
+        clamped = max(0.0, min(100.0, float(value)))
+        if abs(clamped - self._value) > 0.1:
+            self._value = clamped
+            self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: D401
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = event.rect().adjusted(12, 12, -12, -12)
+
+        # 배경 원
+        background_pen = QPen(QColor(230, 236, 255), 12)
+        background_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(background_pen)
+        painter.drawArc(rect, 0, 360 * 16)
+
+        # 진행률 아크
+        progress_pen = QPen(QColor(93, 99, 247), 12)
+        progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(progress_pen)
+        span_angle = int(-self._value / 100 * 360 * 16)
+        painter.drawArc(rect, 90 * 16, span_angle)
+
+        # 텍스트
+        painter.setPen(QColor(26, 27, 61))
+        font = QFont()
+        font.setPointSize(20)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            rect,
+            Qt.AlignmentFlag.AlignCenter,
+            f"{int(round(self._value))}%",
+        )
+
+
+class TestProgressItem(QFrame):
+    """테스트 케이스 진행률을 위한 커스텀 막대 그래프."""
+
+    def __init__(self, title: str, percent: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("TestProgressItem")
+        self._percent = 0.0
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+
+        self._title_label = QLabel(title, self)
+        self._title_label.setObjectName("ScenarioProgressTitle")
+        header.addWidget(self._title_label, stretch=1)
+
+        self._percent_label = QLabel(self)
+        self._percent_label.setObjectName("ScenarioProgressValue")
+        header.addWidget(self._percent_label)
+
+        layout.addLayout(header)
+
+        self._progress_bar = QProgressBar(self)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(10)
+        self._progress_bar.setObjectName("ScenarioProgressBar")
+        layout.addWidget(self._progress_bar)
+
+        self.set_progress(percent)
+
+    def set_progress(self, percent: float) -> None:
+        self._percent = max(0.0, min(100.0, float(percent)))
+        self._progress_bar.setValue(int(round(self._percent)))
+        self._percent_label.setText(f"{int(round(self._percent))}%")
 
 class ScenarioCard(QFrame):
     """생성된 테스트 시나리오를 표현하는 글래스모피즘 카드입니다."""
@@ -486,6 +574,10 @@ class MainWindow(QMainWindow):
         self._is_busy: bool
         self._busy_overlay: BusyOverlay | None = None
         self._screencast_client: ScreencastClient | None = None
+        self._overall_progress_widget: CircularProgressWidget | None = None
+        self._overall_progress_detail: QLabel | None = None
+        self._test_progress_layout: QVBoxLayout | None = None
+        self._test_progress_empty_label: QLabel | None = None
 
         self._is_busy = False
         self._build_layout()
@@ -572,7 +664,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
-        title_label = QLabel("1단계. 테스트 준비", page)
+        title_label = QLabel("테스트 준비", page)
         title_label.setObjectName("SectionLabel")
         layout.addWidget(title_label)
 
@@ -629,27 +721,126 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
-        # 상단의 제목과 컨트롤 버튼
+        # 상단의 제목
         title_row = QHBoxLayout()
-        title_label = QLabel("2단계. 자동화 검증", page)
+        title_label = QLabel("자동화 검증", page)
         title_label.setObjectName("SectionLabel")
         title_row.addWidget(title_label)
         title_row.addStretch()
 
-        self._back_to_setup_button = QPushButton("입력 단계로", page)
+        layout.addLayout(title_row)
+
+        # 상단 진행률 및 로그 영역
+        logs_container = QFrame(page)
+        logs_container.setObjectName("LogsContainer")
+        logs_layout = QVBoxLayout(logs_container)
+        logs_layout.setContentsMargins(0, 0, 0, 0)
+        logs_layout.setSpacing(8)
+
+        progress_label = QLabel("테스트 진행 현황", logs_container)
+        progress_label.setObjectName("SectionLabel")
+        logs_layout.addWidget(progress_label)
+
+        progress_row = QHBoxLayout()
+        progress_row.setContentsMargins(0, 0, 0, 0)
+        progress_row.setSpacing(18)
+        logs_layout.addLayout(progress_row)
+
+        overall_card = QFrame(logs_container)
+        overall_card.setObjectName("OverallProgressCard")
+        overall_layout = QVBoxLayout(overall_card)
+        overall_layout.setContentsMargins(20, 20, 20, 20)
+        overall_layout.setSpacing(10)
+
+        overall_title = QLabel("전체 진행률", overall_card)
+        overall_title.setObjectName("SectionLabel")
+        overall_layout.addWidget(overall_title)
+
+        self._overall_progress_widget = CircularProgressWidget(overall_card)
+        overall_layout.addWidget(self._overall_progress_widget, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self._overall_progress_detail = QLabel("0 / 0 완료", overall_card)
+        self._overall_progress_detail.setObjectName("OverallProgressDetail")
+        self._overall_progress_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overall_layout.addWidget(self._overall_progress_detail)
+
+        progress_row.addWidget(overall_card, stretch=1)
+
+        scenario_progress_card = QFrame(logs_container)
+        scenario_progress_card.setObjectName("ScenarioProgressPanel")
+        scenario_progress_layout = QVBoxLayout(scenario_progress_card)
+        scenario_progress_layout.setContentsMargins(20, 20, 20, 20)
+        scenario_progress_layout.setSpacing(10)
+
+        scenario_progress_header = QHBoxLayout()
+        scenario_progress_header.setContentsMargins(0, 0, 0, 0)
+        scenario_progress_header.setSpacing(8)
+        scenario_progress_label = QLabel("테스트 케이스 진행률", scenario_progress_card)
+        scenario_progress_label.setObjectName("SectionLabel")
+        scenario_progress_header.addWidget(scenario_progress_label)
+        scenario_progress_header.addStretch()
+        scenario_progress_layout.addLayout(scenario_progress_header)
+
+        progress_scroll = QScrollArea(scenario_progress_card)
+        progress_scroll.setWidgetResizable(True)
+        progress_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        progress_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        progress_scroll_content = QWidget(progress_scroll)
+        self._test_progress_layout = QVBoxLayout(progress_scroll_content)
+        self._test_progress_layout.setContentsMargins(0, 0, 0, 0)
+        self._test_progress_layout.setSpacing(10)
+        progress_scroll.setWidget(progress_scroll_content)
+        scenario_progress_layout.addWidget(progress_scroll)
+
+        # 초기 비어 있는 상태 메시지
+        empty_label = QLabel("아직 진행률 정보가 없습니다.", progress_scroll_content)
+        empty_label.setProperty("role", "empty-state")
+        empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._test_progress_empty_label = empty_label
+        self._test_progress_layout.addWidget(empty_label)
+        self._test_progress_layout.addStretch(1)
+
+        progress_row.addWidget(scenario_progress_card, stretch=2)
+
+        logs_label = QLabel("실행 요약", logs_container)
+        logs_label.setObjectName("SectionLabel")
+        logs_layout.addWidget(logs_label)
+
+        self._log_output = QTextEdit(logs_container)
+        self._log_output.setPlaceholderText("실행 요약이 여기에 표시됩니다…")
+        self._log_output.setReadOnly(True)
+        logs_layout.addWidget(self._log_output, stretch=1)
+
+        controls_bar = QFrame(logs_container)
+        controls_bar.setObjectName("LogsControls")
+        controls_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        controls_row = QHBoxLayout(controls_bar)
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(12)
+        controls_row.addStretch()
+
+        self._back_to_setup_button = QPushButton("입력 단계로", controls_bar)
         self._back_to_setup_button.setObjectName("GhostButton")
         self._back_to_setup_button.clicked.connect(self.show_setup_stage)
-        title_row.addWidget(self._back_to_setup_button)
+        controls_row.addWidget(self._back_to_setup_button)
 
-        self._cancel_button = QPushButton("중단", page)
+        self._cancel_button = QPushButton("중단", controls_bar)
         self._cancel_button.setObjectName("DangerButton")
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self.cancelRequested.emit)
-        title_row.addWidget(self._cancel_button)
+        controls_row.addWidget(self._cancel_button)
 
-        layout.addLayout(title_row)
+        self._view_logs_button = QPushButton("상세 로그 보기", controls_bar)  # 이모지 제거
+        self._view_logs_button.setObjectName("GhostButton")
+        self._view_logs_button.setEnabled(False)
+        self._view_logs_button.clicked.connect(self._show_detailed_logs)
+        controls_row.addWidget(self._view_logs_button)
 
-        # 시나리오 영역(확장 적용)
+        logs_layout.addWidget(controls_bar)
+        layout.addWidget(logs_container, stretch=2)
+
+        # 시나리오 영역(하단)
         scenario_label = QLabel("자동화 시나리오", page)
         scenario_label.setObjectName("SectionLabel")
         layout.addWidget(scenario_label)
@@ -657,26 +848,7 @@ class MainWindow(QMainWindow):
         self._checklist_view = QListWidget(page)
         self._checklist_view.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self._checklist_view.setSpacing(12)
-        layout.addWidget(self._checklist_view, stretch=3)  # 2에서 3으로 확장
-
-        # 로그 영역(확장, 이모지 제거)
-        logs_header = QHBoxLayout()
-        logs_label = QLabel("실행 요약", page)
-        logs_label.setObjectName("SectionLabel")
-        logs_header.addWidget(logs_label)
-        logs_header.addStretch()
-
-        self._view_logs_button = QPushButton("상세 로그 보기", page)  # 이모지 제거
-        self._view_logs_button.setObjectName("GhostButton")
-        self._view_logs_button.setEnabled(False)
-        self._view_logs_button.clicked.connect(self._show_detailed_logs)
-        logs_header.addWidget(self._view_logs_button)
-        layout.addLayout(logs_header)
-
-        self._log_output = QTextEdit(page)
-        self._log_output.setPlaceholderText("실행 요약이 여기에 표시됩니다…")
-        self._log_output.setReadOnly(True)
-        layout.addWidget(self._log_output, stretch=2)  # 1에서 2로 확장
+        layout.addWidget(self._checklist_view, stretch=2)
 
         # 피드백 섹션 제거(더 이상 필요 없음)
 
@@ -714,6 +886,45 @@ class MainWindow(QMainWindow):
             card = ScenarioCard(scenario, self._checklist_view)
             list_item.setSizeHint(card.sizeHint())
             self._checklist_view.setItemWidget(list_item, card)
+
+    def update_overall_progress(self, percent: float, completed: int | None = None, total: int | None = None) -> None:
+        """전체 진행률 원형 그래프를 갱신합니다."""
+        if self._overall_progress_widget:
+            self._overall_progress_widget.set_value(percent)
+
+        if self._overall_progress_detail:
+            if completed is not None and total is not None:
+                self._overall_progress_detail.setText(f"{completed} / {total} 완료")
+            else:
+                self._overall_progress_detail.setText(f"{int(round(max(0.0, min(100.0, percent))))}% 진행")
+
+    def update_test_progress(self, progress_items: Sequence[tuple[str, float]]) -> None:
+        """개별 테스트 케이스 진행률 막대를 갱신합니다."""
+        if not self._test_progress_layout:
+            return
+
+        # 기존 항목 제거
+        while self._test_progress_layout.count():
+            item = self._test_progress_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                if widget is self._test_progress_empty_label:
+                    self._test_progress_empty_label = None
+                widget.deleteLater()
+
+        progress_items = list(progress_items)
+        if not progress_items:
+            empty_label = QLabel("아직 진행률 정보가 없습니다.", self)
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_label.setProperty("role", "empty-state")
+            self._test_progress_empty_label = empty_label
+            self._test_progress_layout.addWidget(empty_label)
+        else:
+            for title, percent in progress_items:
+                item_widget = TestProgressItem(title, percent, self)
+                self._test_progress_layout.addWidget(item_widget)
+
+        self._test_progress_layout.addStretch(1)
 
     def append_log(self, message: str) -> None:
         """로그 메시지를 추가합니다. UI에는 요약만 표시하고 전체 로그는 저장합니다."""
