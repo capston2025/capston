@@ -1,708 +1,232 @@
 {
   "profile": "realistic-test",
-  "url": "https://final-blog-25638597.figma.site",
+  "url": "https://test-sitev2.vercel.app/",
   "test_scenarios": [
     {
       "id": "RT001",
       "priority": "MUST",
-      "scenario": "Navigate to basics page via card button",
+      "scenario": "단축키 입력 시 관련 모달이 열리는 것을 확인한다",
       "steps": [
-        {
-          "description": "Click 둘러보기 button in first card (기본 기능)",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#"] },
+        { "description": "단축키 모달 단축키(⌘+/ 또는 Ctrl+/)를 입력한다", "action": "press", "selector": "", "params": ["Meta+Slash"] },
+        { "description": "단축키 모달이 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["단축키 모달"] }
       ],
-      "assertion": {
-        "description": "Should navigate to basics page",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "window.location.hash === '#basics'"
-        ]
-      }
+      "assertion": { "description": "단축키 입력 후 관련 모달이 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["단축키 모달"] }
     },
     {
       "id": "RT002",
-      "priority": "MUST",
-      "scenario": "Navigate to forms page via bottom button",
+      "priority": "SHOULD",
+      "scenario": "브레드크럼 클릭 시 이전 페이지로 이동하는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to home page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site"
-          ]
-        },
-        {
-          "description": "Click 폼과 피드백 button at bottom section",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "브레드크럼 상위 항목을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "브레드크럼 상위 페이지가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["상위 페이지"] }
       ],
-      "assertion": {
-        "description": "Should navigate to forms page",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "window.location.hash === '#forms'"
-        ]
-      }
+      "assertion": { "description": "브레드크럼 상위 항목 클릭 시 상위 페이지가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["상위 페이지"] }
     },
     {
       "id": "RT003",
-      "priority": "MUST",
-      "scenario": "Navigate back to home using 홈으로 button",
+      "priority": "SHOULD",
+      "scenario": "‘보고서 다운로드’ 클릭 시 파일 다운로드 준비 상태가 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to basics page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#basics"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        },
-        {
-          "description": "Click 홈으로 button",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "폼 페이지 접속 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "다운로드 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "다운로드 준비 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["다운로드 준비됨"] }
       ],
-      "assertion": {
-        "description": "Should return to home page",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "window.location.hash === '' || window.location.hash === '#'"
-        ]
-      }
+      "assertion": { "description": "다운로드 시작 시 다운로드 준비 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["다운로드 준비됨"] }
     },
     {
       "id": "RT004",
-      "priority": "MUST",
-      "scenario": "Click share button",
+      "priority": "MAY",
+      "scenario": "사이드바를 닫으면 홈 아이콘이 사라지는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to home page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site"
-          ]
-        },
-        {
-          "description": "Click 공유하기 button",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "홈페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#"] },
+        { "description": "사이드바 접기 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "홈 아이콘이 사라졌는지 확인한다", "action": "expectVisible", "selector": "", "params": ["홈 아이콘 비표시"] }
       ],
-      "assertion": {
-        "description": "Share action should complete",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "true"
-        ]
-      }
+      "assertion": { "description": "사이드바 닫힘 상태에서 홈 아이콘이 표시되지 않아야 한다", "selector": "", "condition": "expectVisible", "params": ["홈 아이콘 비표시"] }
     },
     {
       "id": "RT005",
-      "priority": "MUST",
-      "scenario": "Radio button selection on forms page",
+      "priority": "SHOULD",
+      "scenario": "드롭다운 항목의 텍스트가 올바르게 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to forms page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#forms"
-          ]
-        },
-        {
-          "description": "Wait for forms page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click radio button for express shipping",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "폼 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "드롭다운을 클릭하여 연다", "action": "click", "selector": "", "params": [] },
+        { "description": "드롭다운 항목 텍스트가 올바르게 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["드롭다운 항목"] }
       ],
-      "assertion": {
-        "description": "Radio button should be selected",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "document.querySelector(\"button[value='express']\")?.getAttribute('data-state') === 'checked'"
-        ]
-      }
+      "assertion": { "description": "드롭다운 옵션의 텍스트가 누락 없이 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["드롭다운 항목"] }
     },
     {
       "id": "RT006",
-      "priority": "MUST",
-      "scenario": "Toggle switch interaction",
+      "priority": "SHOULD",
+      "scenario": "툴팁 아이콘 클릭 시 설명 툴팁이 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to forms page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#forms"
-          ]
-        },
-        {
-          "description": "Wait for forms page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click first toggle switch (알림 받기)",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "폼 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "툴팁 아이콘을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "툴팁 설명이 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["설명 툴팁"] }
       ],
-      "assertion": {
-        "description": "Switch should toggle state",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "document.querySelector(\"button[role='switch']\") !== null"
-        ]
-      }
+      "assertion": { "description": "아이콘 클릭 시 설명 툴팁이 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["설명 툴팁"] }
     },
     {
       "id": "RT007",
-      "priority": "MUST",
-      "scenario": "Select dropdown interaction",
+      "priority": "SHOULD",
+      "scenario": "알림 토글을 off로 전환하면 알림이 비활성화되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to forms page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#forms"
-          ]
-        },
-        {
-          "description": "Wait for forms page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click select dropdown trigger",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "폼 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "알림 토글을 off로 전환한다", "action": "click", "selector": "", "params": [] },
+        { "description": "알림 비활성화 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["알림 비활성화"] }
       ],
-      "assertion": {
-        "description": "Dropdown should open",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "document.querySelector(\"button[role='combobox'][aria-expanded='true']\") !== null"
-        ]
-      }
+      "assertion": { "description": "토글 off 시 알림 비활성화 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["알림 비활성화"] }
     },
     {
       "id": "RT008",
       "priority": "MUST",
-      "scenario": "Date picker interaction",
+      "scenario": "비밀번호에 특수기호가 없으면 회원가입 실패 상태가 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to forms page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#forms"
-          ]
-        },
-        {
-          "description": "Wait for forms page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click date picker button",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "기본 기능 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "회원가입 이름 입력란에 '테스터'를 입력한다", "action": "fill", "selector": "", "params": ["테스터"] },
+        { "description": "회원가입 이메일 입력란에 'test@example.com'을 입력한다", "action": "fill", "selector": "", "params": ["test@example.com"] },
+        { "description": "회원가입 비밀번호 입력란에 'Password123'을 입력한다", "action": "fill", "selector": "", "params": ["Password123"] },
+        { "description": "회원가입 제출 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "비밀번호 규칙 오류가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["비밀번호 규칙 오류"] }
       ],
-      "assertion": {
-        "description": "Calendar popover should open",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "document.querySelector('[role=\"dialog\"]') !== null"
-        ]
-      }
+      "assertion": { "description": "특수문자 미포함 시 비밀번호 규칙 오류 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["비밀번호 규칙 오류"] }
     },
     {
       "id": "RT009",
-      "priority": "MUST",
-      "scenario": "Modal dialog interaction on interactions page",
+      "priority": "SHOULD",
+      "scenario": "‘오류 발생’ 버튼을 클릭하면 오류가 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to interactions page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#interactions"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click 모달 다이얼로그 열기 button",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Wait for modal to appear",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        },
-        {
-          "description": "Press Escape to close modal",
-          "action": "press",
-          "selector": "",
-          "params": [
-            "Escape"
-          ]
-        }
+        { "description": "폼 & 피드백 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "오류 발생 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "오류 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["오류 표시"] }
       ],
-      "assertion": {
-        "description": "Modal should open and close",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "true"
-        ]
-      }
+      "assertion": { "description": "오류 발생 조작 후 화면에 오류 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["오류 표시"] }
     },
     {
       "id": "RT010",
-      "priority": "MUST",
-      "scenario": "Tab navigation on basics page",
+      "priority": "MAY",
+      "scenario": "다크모드 토글 on 시 화면 테마가 어두운 모드로 변경되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to basics page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#basics"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click 분석 tab",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "홈페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#"] },
+        { "description": "다크모드 토글을 on으로 전환한다", "action": "click", "selector": "", "params": [] },
+        { "description": "어두운 모드 테마가 적용되었는지 확인한다", "action": "expectVisible", "selector": "", "params": ["다크 모드 적용"] }
       ],
-      "assertion": {
-        "description": "분석 tab should be selected",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "document.querySelector(\"button[role='tab'][data-state='active']\")?.textContent?.includes('분석')"
-        ]
-      }
+      "assertion": { "description": "다크모드 on 시 어두운 테마 적용 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["다크 모드 적용"] }
     },
     {
       "id": "RT011",
-      "priority": "MUST",
-      "scenario": "Accordion expansion on basics page",
+      "priority": "SHOULD",
+      "scenario": "필터 옵션 변경 시 테이블 데이터가 갱신되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to basics page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#basics"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click first accordion trigger",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "인터랙션 & 데이터 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "테이블 필터 옵션을 변경한다", "action": "click", "selector": "", "params": [] },
+        { "description": "필터 적용된 테이블 데이터가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["필터 적용 결과"] }
       ],
-      "assertion": {
-        "description": "Accordion content should expand",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "document.querySelector('[data-state=\"open\"]') !== null"
-        ]
-      }
+      "assertion": { "description": "필터 변경 후 적용된 결과가 테이블에 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["필터 적용 결과"] }
     },
     {
       "id": "RT012",
       "priority": "SHOULD",
-      "scenario": "Sidebar navigation from basics to forms",
+      "scenario": "장바구니 추가 버튼 클릭 시 장바구니 아이콘의 개수가 증가하는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to basics page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#basics"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click sidebar button for 폼과 피드백",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "기본 기능 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "임의의 상품 카드에서 장바구니 추가 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "장바구니 배지 카운트가 증가했는지 확인한다", "action": "expectVisible", "selector": "", "params": ["장바구니 배지 증가"] }
       ],
-      "assertion": {
-        "description": "Should navigate to forms page",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "window.location.hash === '#forms'"
-        ]
-      }
+      "assertion": { "description": "상품 추가 후 장바구니 배지 카운트 증가 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["장바구니 배지 증가"] }
     },
     {
       "id": "RT013",
-      "priority": "SHOULD",
-      "scenario": "Data table filter button click",
+      "priority": "MAY",
+      "scenario": "요소에 마우스를 올리면 ‘더 보기’ 버튼이 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to interactions page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#interactions"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click filter button",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "인터랙션 & 데이터 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "대상 요소에 마우스를 올린다", "action": "hover", "selector": "", "params": [] },
+        { "description": "‘더 보기’ 버튼이 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["더 보기"] }
       ],
-      "assertion": {
-        "description": "Filter action should trigger",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "true"
-        ]
-      }
+      "assertion": { "description": "호버 시 ‘더 보기’ 버튼이 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["더 보기"] }
     },
     {
       "id": "RT014",
-      "priority": "MUST",
-      "scenario": "Responsive - Mobile viewport",
+      "priority": "MAY",
+      "scenario": "마지막 요소에 마우스를 올리면 배경색이 변경되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Set viewport to mobile size",
-          "action": "setViewport",
-          "selector": "",
-          "params": [
-            [
-              375,
-              667
-            ]
-          ]
-        },
-        {
-          "description": "Navigate to site",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site"
-          ]
-        },
-        {
-          "description": "Check no horizontal scroll",
-          "action": "expectTrue",
-          "selector": "",
-          "params": [
-            "document.documentElement.scrollWidth <= window.innerWidth + 1"
-          ]
-        }
+        { "description": "인터랙션 & 데이터 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "마지막 요소에 마우스를 올린다", "action": "hover", "selector": "", "params": [] },
+        { "description": "마지막 요소 배경색 변경 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["배경 변경"] }
       ],
-      "assertion": {
-        "description": "Page should be responsive on mobile",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "true"
-        ]
-      }
+      "assertion": { "description": "마지막 요소 호버 시 배경 변경 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["배경 변경"] }
     },
     {
       "id": "RT015",
-      "priority": "MUST",
-      "scenario": "Responsive - Tablet viewport",
+      "priority": "SHOULD",
+      "scenario": "검색어 입력 후 검색 버튼 클릭 시 결과 리스트가 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Set viewport to tablet size",
-          "action": "setViewport",
-          "selector": "",
-          "params": [
-            [
-              768,
-              1024
-            ]
-          ]
-        },
-        {
-          "description": "Navigate to site",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site"
-          ]
-        },
-        {
-          "description": "Check no horizontal scroll",
-          "action": "expectTrue",
-          "selector": "",
-          "params": [
-            "document.documentElement.scrollWidth <= window.innerWidth + 1"
-          ]
-        }
+        { "description": "기본 기능 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "검색 입력란에 'UI'를 입력한다", "action": "fill", "selector": "", "params": ["UI"] },
+        { "description": "검색 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "검색 결과 리스트가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["검색 결과"] }
       ],
-      "assertion": {
-        "description": "Page should be responsive on tablet",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "true"
-        ]
-      }
+      "assertion": { "description": "검색 실행 후 결과 리스트가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["검색 결과"] }
     },
     {
       "id": "RT016",
       "priority": "SHOULD",
-      "scenario": "Verify page title on basics page",
+      "scenario": "모달의 ‘취소’ 또는 ‘확인’ 버튼 클릭 시 모달이 닫히는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to basics page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#basics"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "인터랙션 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "모달 열기 트리거를 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "모달 ‘취소’ 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "모달이 닫힌 것을 확인한다", "action": "expectVisible", "selector": "", "params": ["모달 비표시"] }
       ],
-      "assertion": {
-        "description": "Page title should be visible",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": []
-      }
+      "assertion": { "description": "취소/확인 조작 후 모달이 닫혀야 한다", "selector": "", "condition": "expectVisible", "params": ["모달 비표시"] }
     },
     {
       "id": "RT017",
       "priority": "SHOULD",
-      "scenario": "Verify stats section on homepage",
+      "scenario": "‘공유하기’ 버튼 클릭 시 동일한 모달이 하나만 생성되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to home page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "홈페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#"] },
+        { "description": "공유하기 버튼을 연속으로 2회 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "공유 모달 단일 인스턴스 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["공유 모달 1개"] }
       ],
-      "assertion": {
-        "description": "Stats section should display",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": []
-      }
+      "assertion": { "description": "여러 번 클릭해도 공유 모달은 하나만 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["공유 모달 1개"] }
     },
     {
       "id": "RT018",
       "priority": "SHOULD",
-      "scenario": "View mode toggle on interactions page",
+      "scenario": "‘URL 복사’ 버튼 클릭 시 클립보드에 URL이 복사되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to interactions page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#interactions"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        },
-        {
-          "description": "Click view toggle button",
-          "action": "click",
-          "selector": "",
-          "params": []
-        }
+        { "description": "홈페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#"] },
+        { "description": "공유하기 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "URL 복사 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "복사 완료 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["복사 완료"] }
       ],
-      "assertion": {
-        "description": "View mode should toggle",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": [
-          "true"
-        ]
-      }
+      "assertion": { "description": "URL 복사 실행 후 복사 완료 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["복사 완료"] }
     },
     {
       "id": "RT019",
-      "priority": "COULD",
-      "scenario": "Breadcrumb display on basics page",
+      "priority": "SHOULD",
+      "scenario": "비로그인 상태에서 장바구니 추가 시 오류 상태가 표시되는 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to basics page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site#basics"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "기본 기능 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "임의의 상품 카드에서 장바구니 추가 버튼을 클릭한다", "action": "click", "selector": "", "params": [] },
+        { "description": "로그인 필요 상태가 표시되는지 확인한다", "action": "expectVisible", "selector": "", "params": ["로그인 필요"] }
       ],
-      "assertion": {
-        "description": "Breadcrumb should be visible",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": []
-      }
+      "assertion": { "description": "비로그인 상태에서 장바구니 추가 시 로그인 필요 상태가 표시되어야 한다", "selector": "", "condition": "expectVisible", "params": ["로그인 필요"] }
     },
     {
       "id": "RT020",
-      "priority": "COULD",
-      "scenario": "Keyboard shortcut hint display",
+      "priority": "SHOULD",
+      "scenario": "범위 슬라이더를 최댓값으로 이동하면 표시 숫자가 최댓값과 같은 것을 확인한다",
       "steps": [
-        {
-          "description": "Navigate to home page",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://final-blog-25638597.figma.site"
-          ]
-        },
-        {
-          "description": "Wait for page to load",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "폼 페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "범위 슬라이더를 최댓값으로 이동한다", "action": "drag", "selector": "", "params": ["max"] },
+        { "description": "현재 표시 숫자가 최댓값과 같은지 확인한다", "action": "expectVisible", "selector": "", "params": ["최댓값 표시"] }
       ],
-      "assertion": {
-        "description": "Keyboard shortcut hints should be visible",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": []
-      }
+      "assertion": { "description": "슬라이더를 최대로 이동하면 표시된 숫자가 최댓값이어야 한다", "selector": "", "condition": "expectVisible", "params": ["최댓값 표시"] }
     }
   ]
 }
