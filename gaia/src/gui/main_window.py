@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QSizePolicy,
-    QProgressBar,
+    QGridLayout,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -179,7 +179,10 @@ class CircularProgressWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._value: float = 0.0
-        self.setMinimumSize(160, 160)
+        self._track_color = QColor(226, 232, 240)
+        self._progress_color = QColor(16, 185, 129)
+        self._pen_width = 16
+        self.setMinimumSize(180, 180)
 
     def set_value(self, value: float) -> None:
         clamped = max(0.0, min(100.0, float(value)))
@@ -194,14 +197,15 @@ class CircularProgressWidget(QWidget):
         rect = event.rect().adjusted(12, 12, -12, -12)
 
         # 배경 원
-        background_pen = QPen(QColor(230, 236, 255), 12)
-        background_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(background_pen)
+        track_pen = QPen(self._track_color, self._pen_width)
+        track_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(track_pen)
         painter.drawArc(rect, 0, 360 * 16)
 
         # 진행률 아크
-        progress_pen = QPen(QColor(93, 99, 247), 12)
+        progress_pen = QPen(self._progress_color, self._pen_width)
         progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        progress_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(progress_pen)
         span_angle = int(-self._value / 100 * 360 * 16)
         painter.drawArc(rect, 90 * 16, span_angle)
@@ -219,45 +223,54 @@ class CircularProgressWidget(QWidget):
         )
 
 
-class TestProgressItem(QFrame):
-    """테스트 케이스 진행률을 위한 커스텀 막대 그래프."""
+class TestProgressBadge(QFrame):
+    """테스트 케이스 완료 여부를 나타내는 원형 배지."""
 
     def __init__(self, title: str, percent: float, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("TestProgressItem")
+        self.setObjectName("TestProgressBadge")
         self._percent = 0.0
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(8)
+        self._indicator = QLabel(self)
+        self._indicator.setObjectName("TestProgressIndicator")
+        self._indicator.setFixedSize(40, 40)
+        self._indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._indicator, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self._title_label = QLabel(title, self)
-        self._title_label.setObjectName("ScenarioProgressTitle")
-        header.addWidget(self._title_label, stretch=1)
-
-        self._percent_label = QLabel(self)
-        self._percent_label.setObjectName("ScenarioProgressValue")
-        header.addWidget(self._percent_label)
-
-        layout.addLayout(header)
-
-        self._progress_bar = QProgressBar(self)
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setTextVisible(False)
-        self._progress_bar.setFixedHeight(10)
-        self._progress_bar.setObjectName("ScenarioProgressBar")
-        layout.addWidget(self._progress_bar)
+        self._title_label.setObjectName("TestProgressCode")
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._title_label)
 
         self.set_progress(percent)
 
     def set_progress(self, percent: float) -> None:
         self._percent = max(0.0, min(100.0, float(percent)))
-        self._progress_bar.setValue(int(round(self._percent)))
-        self._percent_label.setText(f"{int(round(self._percent))}%")
+        done = self._percent >= 99.0
+        if done:
+            indicator_style = (
+                "background: #10b981;"
+                "border: 2px solid #10b981;"
+                "border-radius: 20px;"
+                "color: white;"
+                "font-weight: 700;"
+            )
+            self._indicator.setText("✓")
+        else:
+            indicator_style = (
+                "background: rgba(255,255,255,0.95);"
+                "border: 2px solid #d1d5db;"
+                "border-radius: 20px;"
+                "color: #9ca3af;"
+                "font-weight: 700;"
+            )
+            self._indicator.setText("")
+        self._indicator.setStyleSheet(indicator_style)
 
 class ScenarioCard(QFrame):
     """생성된 테스트 시나리오를 표현하는 글래스모피즘 카드입니다."""
@@ -523,6 +536,47 @@ class MainWindow(QMainWindow):
                 color: #047857;
             }
 
+            QFrame#LogsControls {
+                background: transparent;
+            }
+
+            QFrame#OverallProgressCard {
+                background: rgba(255, 255, 255, 0.85);
+                border-radius: 26px;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+
+            QLabel#OverallProgressDetail {
+                font-size: 14px;
+                color: #1f2937;
+                font-weight: 600;
+            }
+
+            QFrame#ScenarioProgressPanel {
+                background: rgba(255, 255, 255, 0.85);
+                border-radius: 26px;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+
+            QScrollArea#ScenarioProgressScroll {
+                background: transparent;
+                border: none;
+            }
+
+            QWidget#ScenarioProgressContent {
+                background: transparent;
+            }
+
+            QFrame#TestProgressBadge {
+                background: transparent;
+            }
+
+            QLabel#TestProgressCode {
+                font-weight: 600;
+                color: #1f2937;
+                font-size: 12px;
+            }
+
             QFrame#BusyOverlay {
                 background: rgba(18, 23, 46, 0.25);
             }
@@ -561,11 +615,11 @@ class MainWindow(QMainWindow):
         self._review_page: QWidget
         self._drop_area: DropArea
         self._checklist_view: QListWidget
-        self._log_output: QTextEdit
+        self._log_output: QTextEdit | None
         self._start_button: QPushButton
         self._cancel_button: QPushButton
         self._back_to_setup_button: QPushButton
-        self._view_logs_button: QPushButton
+        self._view_logs_button: QPushButton | None
         self._url_input: QLineEdit
         self._browser_view: QWebEngineView
         self._workflow_stage: str
@@ -576,9 +630,11 @@ class MainWindow(QMainWindow):
         self._screencast_client: ScreencastClient | None = None
         self._overall_progress_widget: CircularProgressWidget | None = None
         self._overall_progress_detail: QLabel | None = None
-        self._test_progress_layout: QVBoxLayout | None = None
+        self._test_progress_layout: QGridLayout | None = None
         self._test_progress_empty_label: QLabel | None = None
 
+        self._log_output = None
+        self._view_logs_button = None
         self._is_busy = False
         self._build_layout()
         self._setup_screencast()
@@ -730,23 +786,19 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(title_row)
 
-        # 상단 진행률 및 로그 영역
-        logs_container = QFrame(page)
-        logs_container.setObjectName("LogsContainer")
-        logs_layout = QVBoxLayout(logs_container)
-        logs_layout.setContentsMargins(0, 0, 0, 0)
-        logs_layout.setSpacing(8)
-
-        progress_label = QLabel("테스트 진행 현황", logs_container)
-        progress_label.setObjectName("SectionLabel")
-        logs_layout.addWidget(progress_label)
+        # 상단 진행 현황 영역
+        progress_container = QFrame(page)
+        progress_container.setObjectName("LogsContainer")
+        progress_layout = QVBoxLayout(progress_container)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(12)
 
         progress_row = QHBoxLayout()
         progress_row.setContentsMargins(0, 0, 0, 0)
         progress_row.setSpacing(18)
-        logs_layout.addLayout(progress_row)
+        progress_layout.addLayout(progress_row)
 
-        overall_card = QFrame(logs_container)
+        overall_card = QFrame(progress_container)
         overall_card.setObjectName("OverallProgressCard")
         overall_layout = QVBoxLayout(overall_card)
         overall_layout.setContentsMargins(20, 20, 20, 20)
@@ -766,7 +818,7 @@ class MainWindow(QMainWindow):
 
         progress_row.addWidget(overall_card, stretch=1)
 
-        scenario_progress_card = QFrame(logs_container)
+        scenario_progress_card = QFrame(progress_container)
         scenario_progress_card.setObjectName("ScenarioProgressPanel")
         scenario_progress_layout = QVBoxLayout(scenario_progress_card)
         scenario_progress_layout.setContentsMargins(20, 20, 20, 20)
@@ -782,14 +834,18 @@ class MainWindow(QMainWindow):
         scenario_progress_layout.addLayout(scenario_progress_header)
 
         progress_scroll = QScrollArea(scenario_progress_card)
+        progress_scroll.setObjectName("ScenarioProgressScroll")
         progress_scroll.setWidgetResizable(True)
         progress_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         progress_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        progress_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         progress_scroll_content = QWidget(progress_scroll)
-        self._test_progress_layout = QVBoxLayout(progress_scroll_content)
+        progress_scroll_content.setObjectName("ScenarioProgressContent")
+        self._test_progress_layout = QGridLayout(progress_scroll_content)
         self._test_progress_layout.setContentsMargins(0, 0, 0, 0)
-        self._test_progress_layout.setSpacing(10)
+        self._test_progress_layout.setHorizontalSpacing(16)
+        self._test_progress_layout.setVerticalSpacing(14)
         progress_scroll.setWidget(progress_scroll_content)
         scenario_progress_layout.addWidget(progress_scroll)
 
@@ -798,21 +854,11 @@ class MainWindow(QMainWindow):
         empty_label.setProperty("role", "empty-state")
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._test_progress_empty_label = empty_label
-        self._test_progress_layout.addWidget(empty_label)
-        self._test_progress_layout.addStretch(1)
+        self._test_progress_layout.addWidget(empty_label, 0, 0, Qt.AlignmentFlag.AlignCenter)
 
         progress_row.addWidget(scenario_progress_card, stretch=2)
 
-        logs_label = QLabel("실행 요약", logs_container)
-        logs_label.setObjectName("SectionLabel")
-        logs_layout.addWidget(logs_label)
-
-        self._log_output = QTextEdit(logs_container)
-        self._log_output.setPlaceholderText("실행 요약이 여기에 표시됩니다…")
-        self._log_output.setReadOnly(True)
-        logs_layout.addWidget(self._log_output, stretch=1)
-
-        controls_bar = QFrame(logs_container)
+        controls_bar = QFrame(progress_container)
         controls_bar.setObjectName("LogsControls")
         controls_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         controls_row = QHBoxLayout(controls_bar)
@@ -831,14 +877,14 @@ class MainWindow(QMainWindow):
         self._cancel_button.clicked.connect(self.cancelRequested.emit)
         controls_row.addWidget(self._cancel_button)
 
-        self._view_logs_button = QPushButton("상세 로그 보기", controls_bar)  # 이모지 제거
+        self._view_logs_button = QPushButton("상세 로그 보기", controls_bar)
         self._view_logs_button.setObjectName("GhostButton")
         self._view_logs_button.setEnabled(False)
         self._view_logs_button.clicked.connect(self._show_detailed_logs)
         controls_row.addWidget(self._view_logs_button)
 
-        logs_layout.addWidget(controls_bar)
-        layout.addWidget(logs_container, stretch=2)
+        progress_layout.addWidget(controls_bar)
+        layout.addWidget(progress_container, stretch=2)
 
         # 시나리오 영역(하단)
         scenario_label = QLabel("자동화 시나리오", page)
@@ -918,18 +964,29 @@ class MainWindow(QMainWindow):
             empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty_label.setProperty("role", "empty-state")
             self._test_progress_empty_label = empty_label
-            self._test_progress_layout.addWidget(empty_label)
-        else:
-            for title, percent in progress_items:
-                item_widget = TestProgressItem(title, percent, self)
-                self._test_progress_layout.addWidget(item_widget)
+            self._test_progress_layout.addWidget(
+                empty_label, 0, 0, 1, 5, Qt.AlignmentFlag.AlignCenter
+            )
+            return
 
-        self._test_progress_layout.addStretch(1)
+        cols = 5
+        for idx, (title, percent) in enumerate(progress_items):
+            row = idx // cols
+            col = idx % cols
+            item_widget = TestProgressBadge(title, percent, self)
+            self._test_progress_layout.addWidget(item_widget, row, col, Qt.AlignmentFlag.AlignCenter)
+
+        final_row = (len(progress_items) + cols - 1) // cols
+        self._test_progress_layout.setRowStretch(final_row, 1)
 
     def append_log(self, message: str) -> None:
         """로그 메시지를 추가합니다. UI에는 요약만 표시하고 전체 로그는 저장합니다."""
         # 항상 전체 로그를 저장
         self._full_execution_logs.append(message)
+
+        log_output = self._log_output
+        if not log_output:
+            return
 
         # 요약 모드에서는 중요한 메시지만 표시
         if self._log_mode == "summary":
@@ -945,13 +1002,13 @@ class MainWindow(QMainWindow):
                 "📊 Available DOM", "🤖 Using GPT-5", "🤖 Asking GPT-5"
             )
             if any(keyword in message for keyword in important_keywords):
-                self._log_output.append(message)
+                log_output.append(message)
                 # 실시간 피드백을 위해 즉시 UI 업데이트 강제
                 from PySide6.QtCore import QCoreApplication
                 QCoreApplication.processEvents()
         else:
             # 전체 모드에서는 모든 로그 표시
-            self._log_output.append(message)
+            log_output.append(message)
             # 전체 모드에서도 즉시 UI 업데이트 강제
             from PySide6.QtCore import QCoreApplication
             QCoreApplication.processEvents()
@@ -963,8 +1020,10 @@ class MainWindow(QMainWindow):
             # 실행 시작: 로그를 비우고 요약 모드 사용
             self._full_execution_logs = []
             self._log_mode = "summary"
-            self._log_output.clear()
-            self._view_logs_button.setEnabled(False)
+            if self._log_output:
+                self._log_output.clear()
+            if self._view_logs_button:
+                self._view_logs_button.setEnabled(False)
             # 브라우저 뷰를 초기화하고 실시간 미리보기 준비
             self._browser_view.setHtml('''
                 <html>
@@ -978,7 +1037,8 @@ class MainWindow(QMainWindow):
             ''')
         else:
             # 실행 완료: 상세 로그 보기 활성화
-            self._view_logs_button.setEnabled(True)
+            if self._view_logs_button:
+                self._view_logs_button.setEnabled(True)
 
         self._start_button.setEnabled(not busy)
         self._cancel_button.setEnabled(busy)
