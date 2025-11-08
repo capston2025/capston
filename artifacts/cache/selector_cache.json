@@ -519,7 +519,7 @@
   },
   "5d6eab4ed4225e10f17a24da35d58490": {
     "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762331773.729794,
+    "timestamp": 1762627354.7376041,
     "success_count": 1,
     "step_description": "공유하기 버튼을 연속으로 2회 클릭한다",
     "element_text": "공유하기",
@@ -527,8 +527,8 @@
   },
   "7b0eb49b57d0c914e38e20feb1508e72": {
     "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762331839.12012,
-    "success_count": 1,
+    "timestamp": 1762627776.947212,
+    "success_count": 2,
     "step_description": "단축키 모달 단축키(⌘+/ 또는 Ctrl+/)를 입력한다",
     "element_text": "공유하기",
     "element_tag": "button"
@@ -607,16 +607,16 @@
   },
   "6c14f91f86a8b0dc6b9ccb2b280f7d91": {
     "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
-    "timestamp": 1762337530.974667,
-    "success_count": 1,
+    "timestamp": 1762627061.1856508,
+    "success_count": 2,
     "step_description": "검색 입력란에 'UI'를 입력한다",
     "element_text": "",
     "element_tag": "input"
   },
   "558f5a027587d53320d4f339c791fb57": {
     "selector": "button:has-text(\"장바구니\")",
-    "timestamp": 1762337647.247641,
-    "success_count": 0,
+    "timestamp": 1762626871.5334039,
+    "success_count": 1,
     "step_description": "임의의 상품 카드에서 장바구니 추가 버튼을 클릭한다",
     "element_text": "",
     "element_tag": ""
@@ -639,8 +639,8 @@
   },
   "b303c6eff15c42a5fb1a71d5862d9ffc": {
     "selector": "button:has-text(\"으로\")",
-    "timestamp": 1762337875.154666,
-    "success_count": 1,
+    "timestamp": 1762626794.912482,
+    "success_count": 2,
     "step_description": "다크모드 토글을 on으로 전환한다",
     "element_text": "",
     "element_tag": ""
@@ -1135,7 +1135,7 @@
   },
   "941ed7350537cc3651cc319e850b55c8": {
     "selector": "[role=\"tab\"]:has-text(\"분석\")",
-    "timestamp": 1762626093.3969688,
+    "timestamp": 1762625872.218116,
     "success_count": 4,
     "step_description": "분석 탭을 클릭한다",
     "element_text": "",
@@ -1144,8 +1144,8 @@
   },
   "08ea6f7cb31c248cf90e35d20bac14f4": {
     "selector": "[role=\"tab\"]:has-text(\"보고서\")",
-    "timestamp": 1762619297.7553658,
-    "success_count": 3,
+    "timestamp": 1762625873.336548,
+    "success_count": 4,
     "step_description": "보고서 탭을 클릭한다",
     "element_text": "",
     "element_tag": "",
@@ -1153,8 +1153,8 @@
   },
   "659c3e4b3ff27b4a36b06bb07637b20a": {
     "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762620072.4308622,
-    "success_count": 1,
+    "timestamp": 1762625855.537827,
+    "success_count": 2,
     "step_description": "공유하기 버튼을 클릭한다",
     "element_text": "공유하기",
     "element_tag": "button",
@@ -1387,5 +1387,83 @@
     "attributes": {
       "class": "relative p-6 border rounded-lg cursor-pointer overflow-hidden"
     }
+  },
+  "8474b42981a870b87183241141720351": {
+    "selector": "button:has-text(\"정렬\")",
+    "timestamp": 1762626465.5929012,
+    "success_count": 1,
+    "step_description": "드롭다운을 클릭하여 연다",
+    "element_text": "정렬",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "f18df9b8521bbf6f471782a35f46e6c4": {
+    "selector": "[id=\"radix-:r9:-trigger-notifications\"]",
+    "timestamp": 1762626617.5036778,
+    "success_count": 1,
+    "step_description": "알림 토글을 off로 전환한다",
+    "element_text": "알림",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": "tab"
+    }
+  },
+  "a35374f454a357c1caece22d795a7b51": {
+    "selector": "button:has-text(\"필터\")",
+    "timestamp": 1762626828.427902,
+    "success_count": 1,
+    "step_description": "테이블 필터 옵션을 변경한다",
+    "element_text": "필터",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "291240016e3dc2e957839ac286ef21e7": {
+    "selector": "a.owner-error",
+    "timestamp": 1762626957.052921,
+    "success_count": 1,
+    "step_description": "대상 요소에 마우스를 올린다",
+    "element_text": "Read our documentation to learn more about this error.",
+    "element_tag": "a",
+    "attributes": {
+      "href": "https://vercel.com/docs/errors/platform-error-codes#not_found",
+      "target": ""
+    }
+  },
+  "1f3a58fe5fdfc5955cadafadf86da790": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762627080.566535,
+    "success_count": 1,
+    "step_description": "검색 버튼을 클릭한다",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "54f81cd91699dd5102424ba9503ecf63": {
+    "selector": "button[type=\"submit\"]:has-text(\"공유하기\")",
+    "timestamp": 1762627147.70243,
+    "success_count": 0,
+    "step_description": "모달 열기 트리거를 클릭한다",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
   }
 }
