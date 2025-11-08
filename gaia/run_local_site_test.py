@@ -16,7 +16,7 @@ def main():
 
     # 대상 URL과 테스트 플랜
     url = "http://localhost:3000"
-    test_plan_path = Path("/Users/coldmans/Documents/GitHub/capston/gaia/artifacts/plans/comprehensive_ui_test_no_selectors.json")
+    test_plan_path = Path("/Users/coldmans/Documents/GitHub/capston/gaia/artifacts/plans/local_site_test_with_vision_assertions.json")
 
     print(f"Target URL: {url}")
     print(f"Test Plan: {test_plan_path}")

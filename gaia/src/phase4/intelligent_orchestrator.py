@@ -487,6 +487,8 @@ Return ONLY a JSON array:
         current_url = url
         failed_non_assertion_steps = 0  # Track failed steps (excluding assertions)
         total_non_assertion_steps = 0   # Track total non-assertion steps
+        failed_assertion_steps = 0  # Track failed assertion steps
+        total_assertion_steps = 0   # Track total assertion steps
         skipped_steps = 0  # Track skipped steps (fallback failures)
 
         try:
@@ -508,6 +510,9 @@ Return ONLY a JSON array:
                 self._log(f"  📸 Analyzing page: {url}", progress_callback)
                 dom_elements = self._analyze_dom(current_url)
                 screenshot = self._capture_screenshot(current_url, send_to_gui=True)
+
+            # IMPORTANT: Capture BEFORE screenshot for scenario-level verification
+            before_scenario_screenshot = screenshot
 
             if not dom_elements:
                 logs.append("⚠️ No DOM elements found")
@@ -538,8 +543,10 @@ Return ONLY a JSON array:
                     self._log(f"    ⚡ Direct execution: {step.action.upper()}", progress_callback)
                     logs.append(f"  Action: {step.action} (direct)")
 
-                    # Track non-assertion steps
-                    if step.action not in assertion_actions:
+                    # Track assertion vs non-assertion steps
+                    if step.action in assertion_actions:
+                        total_assertion_steps += 1
+                    else:
                         total_non_assertion_steps += 1
 
                     # For debugging: log params
@@ -561,23 +568,45 @@ Return ONLY a JSON array:
                         screenshot, dom_elements, current_url = self._get_page_state()
 
                     selector = step.selector if step.selector else ""
-                    before_screenshot = screenshot
-                    success = self._execute_action(
-                        action=step.action,
-                        selector=selector,
-                        params=step.params or [],
-                        url=current_url
-                    )
+
+                    # For assertions, use current screenshot as "before"
+                    # (state after previous action but before assertion check)
+                    before_screenshot = screenshot if step.action in assertion_actions else None
+
+                    # DEBUG: Log before_screenshot status for assertions
+                    if step.action in assertion_actions:
+                        if before_screenshot:
+                            self._log(f"    📸 Using before screenshot ({len(before_screenshot)} chars)", progress_callback)
+                        else:
+                            self._log(f"    ⚠️ WARNING: No before_screenshot available!", progress_callback)
+
+                    # Assertion 액션이면 before_screenshot 전달
+                    if step.action in assertion_actions:
+                        success = self._execute_action(
+                            action=step.action,
+                            selector=selector,
+                            params=step.params or [],
+                            url=current_url,
+                            before_screenshot=before_screenshot
+                        )
+                    else:
+                        success = self._execute_action(
+                            action=step.action,
+                            selector=selector,
+                            params=step.params or [],
+                            url=current_url
+                        )
 
                     if not success:
                         logs.append(f"  ❌ Action {step.action} failed")
                         self._log(f"    ❌ Action failed", progress_callback)
 
-                        # For assertion actions, log but continue (don't fail entire scenario)
+                        # For assertion actions, log but continue (don't fail entire scenario immediately)
                         if step.action in assertion_actions:
+                            failed_assertion_steps += 1  # Track assertion failure
                             self._log(f"    ⚠️ Assertion failed, continuing...", progress_callback)
                         else:
-                            # Track failed non-assertion step
+                            # Track failed non-assertion step (critical failure - stop immediately)
                             failed_non_assertion_steps += 1
                             return {
                                 "id": scenario.id,
@@ -883,9 +912,7 @@ Return ONLY a JSON array:
                                     action="goto",
                                     selector="",
                                     params=[smart_nav['target_url']],
-                                    url=smart_nav['target_url'],
-                                    screenshot=screenshot,
-                                    progress_callback=progress_callback
+                                    url=smart_nav['target_url']
                                 )
 
                                 if goto_success:
@@ -1232,34 +1259,113 @@ Return ONLY a JSON array:
 
                     # Screenshot is already sent by _execute_action with click_position
 
-            # Step 3: Decide on pass/fail based on step execution
+            # Step 3: Scenario-level Vision AI verification (NEW!)
+            # Capture AFTER screenshot and verify entire scenario success
+            after_scenario_screenshot = self._capture_screenshot(current_url, send_to_gui=False)
+            scenario_verified = False
+            scenario_verification_result = None
+
+            # Only do scenario verification if assertion field exists
+            if hasattr(scenario, 'assertion') and scenario.assertion:
+                self._log(f"  🔍 Running scenario-level Vision AI verification...", progress_callback)
+
+                # Extract assertion details (handle both old and new format)
+                expected_outcome = getattr(scenario.assertion, "expected_outcome", None) or scenario.scenario
+                success_indicators = getattr(scenario.assertion, "success_indicators", [])
+
+                if success_indicators:
+                    from gaia.src.phase4.llm_vision_client import LLMVisionClient
+                    vision_client = LLMVisionClient()
+
+                    scenario_verification_result = vision_client.verify_scenario_success(
+                        scenario_description=scenario.scenario,
+                        expected_outcome=expected_outcome,
+                        success_indicators=success_indicators,
+                        before_screenshot=before_scenario_screenshot,
+                        after_screenshot=after_scenario_screenshot,
+                        url=current_url
+                    )
+
+                    scenario_verified = scenario_verification_result.get("success", False)
+                    confidence = scenario_verification_result.get("confidence", 0)
+                    reasoning = scenario_verification_result.get("reasoning", "")
+                    matched_indicators = scenario_verification_result.get("matched_indicators", [])
+
+                    self._log(f"  🔍 Vision AI Result:", progress_callback)
+                    self._log(f"     - Success: {scenario_verified}", progress_callback)
+                    self._log(f"     - Confidence: {confidence}%", progress_callback)
+                    self._log(f"     - Matched: {matched_indicators}", progress_callback)
+                    self._log(f"     - Reasoning: {reasoning}", progress_callback)
+
+                    logs.append(f"  🔍 Vision AI Verification: {'✅ PASS' if scenario_verified else '❌ FAIL'}")
+                    logs.append(f"     Confidence: {confidence}%, Matched: {matched_indicators}")
+                    logs.append(f"     Reasoning: {reasoning}")
+
+            # Step 4: Decide on pass/fail based on step execution AND Vision AI
             # 4-tier status system:
-            # - success: 100% steps completed, no skips
-            # - partial: Some steps skipped but core functionality worked
+            # - success: All actions passed + Vision AI verified success
+            # - partial: Some steps skipped or Vision AI verification failed
             # - failed: Critical steps failed
-            # - skipped: Test not executed
 
             if failed_non_assertion_steps == 0 and total_non_assertion_steps > 0:
-                if skipped_steps == 0:
-                    # Perfect execution!
-                    logs.append(f"  ✅ All {total_non_assertion_steps} action steps executed successfully")
-                    self._log(f"  ✅ Test SUCCESS: 100% completion", progress_callback)
-                    return {
-                        "id": scenario.id,
-                        "scenario": scenario.scenario,
-                        "status": "success",
-                        "logs": logs
-                    }
+                # All actions succeeded
+                # Now check Vision AI result if available
+                if scenario_verification_result:
+                    # Vision AI verification available - use it as final decision
+                    if scenario_verified:
+                        logs.append(f"  ✅ All {total_non_assertion_steps} action steps passed + Vision AI verified")
+                        self._log(f"  ✅ Test SUCCESS: Vision AI verified", progress_callback)
+                        return {
+                            "id": scenario.id,
+                            "scenario": scenario.scenario,
+                            "status": "success",
+                            "logs": logs,
+                            "verification": scenario_verification_result
+                        }
+                    else:
+                        # Actions passed but Vision AI says scenario failed
+                        logs.append(f"  ⚠️ Actions passed, but Vision AI verification failed")
+                        self._log(f"  ⚠️ Test PARTIAL: Vision AI verification failed", progress_callback)
+                        return {
+                            "id": scenario.id,
+                            "scenario": scenario.scenario,
+                            "status": "partial",
+                            "logs": logs,
+                            "verification": scenario_verification_result
+                        }
+                elif failed_assertion_steps == 0:
+                    # No Vision AI, but step-based assertions passed
+                    if skipped_steps == 0:
+                        logs.append(f"  ✅ All {total_non_assertion_steps} action steps and {total_assertion_steps} assertions passed")
+                        self._log(f"  ✅ Test SUCCESS: 100% completion", progress_callback)
+                        return {
+                            "id": scenario.id,
+                            "scenario": scenario.scenario,
+                            "status": "success",
+                            "logs": logs
+                        }
+                    else:
+                        # Some steps skipped but didn't fail
+                        skip_rate = (skipped_steps / total_non_assertion_steps) * 100
+                        logs.append(f"  ⚠️ {total_non_assertion_steps - skipped_steps}/{total_non_assertion_steps} steps completed ({skipped_steps} skipped)")
+                        self._log(f"  ⚠️ Test PARTIAL: {skip_rate:.0f}% steps skipped", progress_callback)
+                        return {
+                            "id": scenario.id,
+                            "scenario": scenario.scenario,
+                            "status": "partial",
+                            "logs": logs
+                        }
                 else:
-                    # Some steps skipped but didn't fail
-                    skip_rate = (skipped_steps / total_non_assertion_steps) * 100
-                    logs.append(f"  ⚠️ {total_non_assertion_steps - skipped_steps}/{total_non_assertion_steps} steps completed ({skipped_steps} skipped)")
-                    self._log(f"  ⚠️ Test PARTIAL: {skip_rate:.0f}% steps skipped", progress_callback)
+                    # Actions succeeded but assertions failed
+                    logs.append(f"  ⚠️ All {total_non_assertion_steps} actions passed, but {failed_assertion_steps}/{total_assertion_steps} assertions failed")
+                    self._log(f"  ⚠️ Test PARTIAL: Assertions failed ({failed_assertion_steps}/{total_assertion_steps})", progress_callback)
                     return {
                         "id": scenario.id,
                         "scenario": scenario.scenario,
-                        "status": "partial",
-                        "logs": logs
+                        "status": "partial",  # Assertion 실패는 partial로 처리
+                        "logs": logs,
+                        "failed_assertions": failed_assertion_steps,
+                        "total_assertions": total_assertion_steps
                     }
 
             # Optional: Still try LLM verification for additional confidence
@@ -1388,7 +1494,7 @@ Return ONLY a JSON array:
             print(f"Screenshot capture failed: {e}")
             return ""
 
-    def _execute_action(self, action: str, selector: str, params: List[Any], url: str) -> bool:
+    def _execute_action(self, action: str, selector: str, params: List[Any], url: str, before_screenshot: str = None) -> bool:
         """Execute a browser action using MCP host."""
         try:
             # Build payload based on action type
@@ -1409,6 +1515,10 @@ Return ONLY a JSON array:
                     "session_id": self.session_id
                 }
             }
+
+            # Assertion일 때만 before_screenshot 전달 (Vision AI Fallback용)
+            if action in ["expectVisible", "expectHidden", "expectTrue"] and before_screenshot:
+                payload["params"]["before_screenshot"] = before_screenshot
 
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
