@@ -95,13 +95,15 @@ class LLMVisionClient:
                 "attributes": attrs
             })
 
+        # Build prompt using string concatenation to avoid f-string brace conflicts with JSON
+        dom_json = json.dumps(dom_list, ensure_ascii=False, indent=2)
         prompt = f"""Analyze this webpage and select a DOM element for test automation.
 
 Page URL: {url}
 Task: {step_description}
 
 Available elements (JSON):
-{json.dumps(dom_list, ensure_ascii=False, indent=2)}
+{dom_json}
 
 **CRITICAL RULES - SELECTOR GENERATION:**
 1. **NEVER use generic class selectors**: If you're tempted to use `.flex`, `.items-center`, `.gap-2`, or similar utility classes, set confidence to 0 instead
@@ -114,11 +116,16 @@ Available elements (JSON):
    - ✅ MUST select: Elements where `button_type="submit"` (this is the REAL submit button!)
    - ❌ NEVER select: Elements where `role="tab"` or `data_state="active"` (these are TAB CONTROLS, not submit buttons!)
    - **Check the JSON fields**: Look at `role`, `button_type`, `data_state` to distinguish tabs from buttons
-   - **Generate SPECIFIC selectors**: If you find `button_type="submit"`, use `button[type="submit"]:has-text("TEXT")` NOT just `button:has-text("TEXT")`!
+   - **Generate SPECIFIC selectors ONLY when button_type exists**:
+     - If `button_type="submit"` → use `button[type="submit"]:has-text("TEXT")`
+     - If `button_type="button"` or `button_type` is null/missing → use `button:has-text("TEXT")` (don't add [type])
    - Example: Two buttons with text "회원가입":
      - Button A: `{{"role": "tab", "button_type": "button", "data_state": "active"}}` ← This is a TAB, skip it!
      - Button B: `{{"role": null, "button_type": "submit", "data_state": null}}` ← This is the SUBMIT BUTTON!
-       → Return selector: `button[type="submit"]:has-text("회원가입")` (NOT `button:has-text("회원가입")`)
+       → Return selector: `button[type="submit"]:has-text("회원가입")`
+   - Example: Single button without type attribute:
+     - Button: `{{"role": null, "button_type": null, "text": "성공"}}` ← No type attribute
+       → Return selector: `button:has-text("성공")` (NOT `button[type="submit"]:has-text("성공")`)
 2. Text-based: `button:has-text("폼과 피드백")` ✅ BEST
 3. ARIA role-based: `[role="switch"]`, `[role="slider"]` ✅ BEST (for custom components)
 4. Data attribute: `[data-slot="switch"]`, `[data-slot="slider"]` ✅ EXCELLENT (for Radix UI)

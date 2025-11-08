@@ -470,6 +470,21 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         }
                     }
 
+                    // For switches/toggles, try to find nearby label text
+                    if (el.getAttribute('role') === 'switch' && (!text || text === 'on' || text === 'off')) {
+                        // Look for label in parent container
+                        const parent = el.parentElement;
+                        if (parent) {
+                            const parentContainer = parent.parentElement;
+                            if (parentContainer) {
+                                const label = parentContainer.querySelector('label');
+                                if (label && label.innerText) {
+                                    text = label.innerText.trim();
+                                }
+                            }
+                        }
+                    }
+
                     elements.push({
                         tag: el.tagName.toLowerCase(),
                         selector: getUniqueSelector(el),
@@ -484,7 +499,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     });
                 });
 
-                document.querySelectorAll('[onclick], [class*="btn"], [class*="button"]').forEach(el => {
+                document.querySelectorAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
                     if (!isVisible(el)) return;
                     if (el.tagName === 'BUTTON' || el.tagName === 'A') return;
 
@@ -863,30 +878,84 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             }
 
         elif action in ("click", "fill", "press"):
+            # :has-text() 실패 시 :text()로 자동 재시도 (fallback)
+            fallback_selector = None
+            if ':has-text(' in selector:
+                fallback_selector = selector.replace(':has-text(', ':text(')
+
             # 선택자가 필요한 동작
             element = page.locator(selector).first
 
             # 클릭 애니메이션을 위해 요소 위치를 구합니다
+            click_position = None
             try:
-                bounding_box = await element.bounding_box()
+                bounding_box = await element.bounding_box(timeout=5000)
                 if bounding_box:
                     click_position = {
                         "x": bounding_box["x"] + bounding_box["width"] / 2,
                         "y": bounding_box["y"] + bounding_box["height"] / 2
                     }
             except Exception:
-                pass
+                # bounding_box 실패 시 fallback 시도
+                if fallback_selector:
+                    try:
+                        element = page.locator(fallback_selector).first
+                        bounding_box = await element.bounding_box(timeout=5000)
+                        if bounding_box:
+                            click_position = {
+                                "x": bounding_box["x"] + bounding_box["width"] / 2,
+                                "y": bounding_box["y"] + bounding_box["height"] / 2
+                            }
+                            print(f"⚠️  :has-text() failed, using :text() instead")
+                    except Exception:
+                        pass
 
             if action == "click":
-                await element.click(timeout=30000)  # 10초에서 30초로 증가시켰습니다
+                # Scroll element into view before clicking to prevent timeout issues
+                try:
+                    await element.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
+                    await page.wait_for_timeout(500)  # Wait for scroll animation
+                except Exception as scroll_error:
+                    print(f"Warning: Could not scroll element into view: {scroll_error}")
+
+                try:
+                    await element.click(timeout=30000)
+                except Exception as click_error:
+                    # :has-text() 실패 시 :text()로 재시도
+                    if fallback_selector and 'Timeout' in str(click_error):
+                        print(f"⚠️  :has-text() timed out, retrying with :text()...")
+                        element = page.locator(fallback_selector).first
+                        await element.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
+                        await page.wait_for_timeout(500)
+                        await element.click(timeout=30000)
+                    else:
+                        raise
             elif action == "fill":
                 if value is None:
                     raise ValueError("Value is required for 'fill' action")
-                await element.fill(value, timeout=30000)  # 10초에서 30초로 증가시켰습니다
+                try:
+                    await element.fill(value, timeout=30000)
+                except Exception as fill_error:
+                    # :has-text() 실패 시 :text()로 재시도
+                    if fallback_selector and 'Timeout' in str(fill_error):
+                        print(f"⚠️  :has-text() timed out, retrying with :text()...")
+                        element = page.locator(fallback_selector).first
+                        await element.fill(value, timeout=30000)
+                    else:
+                        raise
             elif action == "press":
                 if value is None:
                     raise ValueError("Value is required for 'press' action")
-                await element.press(value, timeout=30000)  # 10초에서 30초로 증가시켰습니다
+                try:
+                    await element.press(value, timeout=30000)
+                except Exception as press_error:
+                    # :has-text() 실패 시 :text()로 재시도
+                    if fallback_selector and 'Timeout' in str(press_error):
+                        print(f"⚠️  :has-text() timed out, retrying with :text()...")
+                        element = page.locator(fallback_selector).first
+                        await element.press(value, timeout=30000)
+                    else:
+                        raise
 
         else:
             raise ValueError(f"Unsupported action: {action}")

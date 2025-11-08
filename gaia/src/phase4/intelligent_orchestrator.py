@@ -118,12 +118,34 @@ class IntelligentOrchestrator:
         if is_dynamic:
             print(f"[Stable Selector] ⚠️ Dynamic ID detected: {elem.selector}")
 
-        # Priority 1: Text-based selector
+        # Priority 1: Text-based selector (with attribute specificity)
         if elem.text and elem.text.strip():
-            stable_selector = f'{elem.tag}:has-text("{elem.text}")'
-            if is_dynamic:
-                print(f"[Stable Selector] ✅ Using text selector: {stable_selector}")
-            return stable_selector
+            # Try to make selector more specific using attributes
+            attrs = elem.attributes or {}
+
+            # For buttons, add type attribute if available (submit, button, reset)
+            if elem.tag == 'button' and attrs.get('type'):
+                button_type = attrs.get('type')
+                stable_selector = f'{elem.tag}[type="{button_type}"]:has-text("{elem.text}")'
+                if is_dynamic:
+                    print(f"[Stable Selector] ✅ Using specific button selector: {stable_selector}")
+                return stable_selector
+
+            # For elements with role, add role attribute
+            elif attrs.get('role') and attrs.get('role') != 'button':
+                # Skip role="button" as it's redundant with <button> tag
+                role = attrs.get('role')
+                stable_selector = f'{elem.tag}[role="{role}"]:has-text("{elem.text}")'
+                if is_dynamic:
+                    print(f"[Stable Selector] ✅ Using role-based selector: {stable_selector}")
+                return stable_selector
+
+            # Fallback to simple text selector
+            else:
+                stable_selector = f'{elem.tag}:has-text("{elem.text}")'
+                if is_dynamic:
+                    print(f"[Stable Selector] ✅ Using text selector: {stable_selector}")
+                return stable_selector
 
         # Priority 2: ARIA label
         aria_label = elem.attributes.get('aria-label', '')
@@ -177,41 +199,43 @@ class IntelligentOrchestrator:
         if self._is_dynamic_selector(cached_selector):
             print(f"[Cache Validation] ⚠️ Dynamic ID detected in cache: {cached_selector}")
 
-            # Try to regenerate using cached metadata
+            # Try to regenerate using cached metadata with attribute specificity
             if cached_text:
-                new_selector = f'{cached_tag}:has-text("{cached_text}")'
-                print(f"[Cache Validation] ✅ Regenerated text selector: {new_selector}")
-                return new_selector
+                attrs = cached_data.get('attributes', {})
+
+                # For buttons, use type attribute if available
+                if cached_tag == 'button' and attrs.get('type'):
+                    button_type = attrs.get('type')
+                    new_selector = f'{cached_tag}[type="{button_type}"]:has-text("{cached_text}")'
+                    print(f"[Cache Validation] ✅ Regenerated specific button selector: {new_selector}")
+                    # Update cache with better selector
+                    cached_data['selector'] = new_selector
+                    return new_selector
+
+                # For elements with role
+                elif attrs.get('role') and attrs.get('role') != 'button':
+                    role = attrs.get('role')
+                    new_selector = f'{cached_tag}[role="{role}"]:has-text("{cached_text}")'
+                    print(f"[Cache Validation] ✅ Regenerated role-based selector: {new_selector}")
+                    cached_data['selector'] = new_selector
+                    return new_selector
+
+                # Fallback to simple text selector
+                else:
+                    new_selector = f'{cached_tag}:has-text("{cached_text}")'
+                    print(f"[Cache Validation] ✅ Regenerated text selector: {new_selector}")
+                    cached_data['selector'] = new_selector
+                    return new_selector
 
             # Can't regenerate, invalidate cache
             print(f"[Cache Validation] ❌ Cache invalidated (no text metadata)")
             return None
 
-        # Stage 2: DOM lookup - Verify selector still exists
-        try:
-            response = requests.post(
-                f"{self.mcp_config.host_url}/querySelector",
-                json={"selector": cached_selector},
-                timeout=1  # Fast timeout
-            )
-            if response.status_code == 200 and response.json().get('exists'):
-                print(f"[Cache Validation] ✅ Selector still valid: {cached_selector}")
-                return cached_selector
-            else:
-                print(f"[Cache Validation] ⚠️ Selector not found in DOM")
-        except Exception as e:
-            print(f"[Cache Validation] ⚠️ DOM lookup failed: {e}")
-
-        # Stage 3: LLM validation (optional, expensive)
-        if self.enable_llm_validation:
-            print(f"[Cache Validation] 🤖 Attempting LLM validation...")
-            # TODO: Implement LLM validation if needed
-            # For now, skip to save cost
-            pass
-
-        # Cache invalid
-        print(f"[Cache Validation] ❌ Cache entry invalidated")
-        return None
+        # Stage 2: Trust non-dynamic selectors
+        # Skip DOM validation since querySelector endpoint doesn't exist
+        # Non-dynamic selectors (no radix IDs) are assumed stable
+        print(f"[Cache Validation] ✅ Using cached selector: {cached_selector}")
+        return cached_selector
 
     # ==================== End of Dynamic ID Handling ====================
 
@@ -707,10 +731,11 @@ Return ONLY a JSON array:
                     # Detect DOM context (active tabs/modals) for context-aware caching
                     dom_context = self._detect_dom_context(dom_elements)
 
-                    # CACHE CHECK: Try to get cached selector first
-                    cached_selector = self._get_cached_selector(step.description, step.action, current_url, dom_context)
+                    # CACHE DISABLED: Skip cache lookup entirely
+                    # cached_selector = self._get_cached_selector(step.description, step.action, current_url, dom_context)
+                    cached_selector = None  # Force cache bypass
 
-                    if cached_selector:
+                    if False:  # Disable cache usage
                         # Use cached selector
                         llm_decision = {
                             "selector": cached_selector,
@@ -772,6 +797,7 @@ Return ONLY a JSON array:
                                 if text_match:
                                     # Found it! Use text-based selector instead
                                     element_type = text_match.tag if text_match.tag in ['button', 'a', 'input'] else 'button'
+                                    # Use :has-text() instead of :has-text() for better Playwright compatibility
                                     better_selector = f'{element_type}:has-text("{target_text}")'
                                     self._log(f"    🔧 Auto-fix: Using text-based selector: {better_selector}", progress_callback)
                                     llm_decision['selector'] = better_selector
@@ -840,23 +866,47 @@ Return ONLY a JSON array:
                         all_english = re.findall(r'[A-Za-z]{3,}', step.description)  # Min 3 English chars
 
                         found_by_text = False
-                        # Try longest matches first to avoid substring issues
-                        for target_text in sorted(all_korean + all_english, key=len, reverse=True):
-                            # Search in ALL DOM elements - use exact match or word boundary
+
+                        # FIRST: Try to find multi-word phrases (e.g., "장바구니 추가")
+                        # Extract consecutive Korean words (2-3 words)
+                        phrase_pattern = r'[가-힣]{2,}(?:\s+[가-힣]{2,}){1,2}'  # 2-3 words with spaces
+                        phrases = re.findall(phrase_pattern, step.description)
+
+                        # Try phrase matching first (more specific)
+                        for phrase in sorted(set(phrases), key=len, reverse=True):
                             text_match = next((e for e in dom_elements
-                                             if target_text == e.text or  # Exact match first
-                                                f' {target_text} ' in f' {e.text} ' or  # Word boundary
-                                                e.text.startswith(target_text) or
-                                                e.text.endswith(target_text)), None)
+                                             if phrase in e.text), None)  # Contains phrase
                             if text_match:
                                 element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
-                                better_selector = f'{element_type}:has-text("{target_text}")'
-                                self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                # Use :has-text() instead of :has-text() for better Playwright compatibility
+                                better_selector = f'{element_type}:has-text("{phrase}")'
+                                self._log(f"    🔧 Aggressive phrase match: Found '{phrase}' → {better_selector}", progress_callback)
                                 llm_decision['selector'] = better_selector
-                                llm_decision['confidence'] = 85
-                                llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                llm_decision['confidence'] = 90
+                                llm_decision['reasoning'] = f"Aggressive phrase match: '{phrase}'"
                                 found_by_text = True
                                 break
+
+                        # FALLBACK: Try single word matches (less specific)
+                        if not found_by_text:
+                            # Try longest matches first to avoid substring issues
+                            for target_text in sorted(all_korean + all_english, key=len, reverse=True):
+                                # Search in ALL DOM elements - use exact match or word boundary
+                                text_match = next((e for e in dom_elements
+                                                 if target_text == e.text or  # Exact match first
+                                                    f' {target_text} ' in f' {e.text} ' or  # Word boundary
+                                                    e.text.startswith(target_text) or
+                                                    e.text.endswith(target_text)), None)
+                                if text_match:
+                                    element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
+                                    # Use :has-text() instead of :has-text() for better Playwright compatibility
+                                    better_selector = f'{element_type}:has-text("{target_text}")'
+                                    self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                    llm_decision['selector'] = better_selector
+                                    llm_decision['confidence'] = 85
+                                    llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                    found_by_text = True
+                                    break
 
                         if found_by_text:
                             self._log(f"    ✅ Found element by aggressive text matching", progress_callback)
@@ -926,8 +976,7 @@ Return ONLY a JSON array:
                                         selector=smart_nav["selector"],
                                         params=step.params,
                                         url=current_url,
-                                        screenshot=screenshot,
-                                        progress_callback=progress_callback
+                                        before_screenshot=screenshot
                                     )
 
                                     if click_success:
@@ -938,6 +987,7 @@ Return ONLY a JSON array:
                                         target_element = next((e for e in dom_elements if e.selector == smart_nav["selector"]), None)
                                         element_tag = target_element.tag if target_element else ""
                                         element_text = smart_nav.get("element_text", "")
+                                        element_attrs = target_element.attributes if target_element else {}
 
                                         # Update cache with successful smart navigation selector
                                         self._update_cache(
@@ -948,7 +998,8 @@ Return ONLY a JSON array:
                                             success=True,
                                             dom_context=dom_context,
                                             element_text=element_text,
-                                            element_tag=element_tag
+                                            element_tag=element_tag,
+                                            attributes=element_attrs
                                         )
 
                                         # Update state after successful click
@@ -1114,6 +1165,7 @@ Return ONLY a JSON array:
                     # UPDATE CACHE: Record execution result
                     element_text = target_element.text if target_element else ""
                     element_tag = target_element.tag if target_element else ""
+                    element_attrs = target_element.attributes if target_element else {}
                     self._update_cache(
                         step_description=step.description,
                         action=step.action,
@@ -1122,7 +1174,8 @@ Return ONLY a JSON array:
                         success=success,
                         dom_context=dom_context,
                         element_text=element_text,
-                        element_tag=element_tag
+                        element_tag=element_tag,
+                        attributes=element_attrs
                     )
 
                     if not success:
@@ -1168,6 +1221,7 @@ Return ONLY a JSON array:
                                     target_element = next((e for e in dom_elements if e.selector == llm_decision['selector']), None)
                                     element_text = target_element.text if target_element else ""
                                     element_tag = target_element.tag if target_element else ""
+                                    element_attrs = target_element.attributes if target_element else {}
 
                                     # Update cache with successful selector
                                     self._update_cache(
@@ -1178,7 +1232,8 @@ Return ONLY a JSON array:
                                         success=True,
                                         dom_context=dom_context,
                                         element_text=element_text,
-                                        element_tag=element_tag
+                                        element_tag=element_tag,
+                                        attributes=element_attrs
                                     )
                                     time.sleep(0.2)
                                     # Update current_url after navigation
@@ -2108,9 +2163,31 @@ Respond with JSON only:
         print(f"[ARIA Disambiguate] Found {len(matches)} {role_name} elements")
 
         # Stage 1: Exact text match
+        # PRIORITY: Handle elements without text FIRST (e.g., switch with sibling label)
+        import re
+        text_keywords = re.findall(r'[가-힣]{2,}|[A-Za-z]{3,}', step_description)
+
+        # First pass: Check for elements WITHOUT text (need sibling traversal)
+        for elem in matches:
+            if not elem.text or not elem.text.strip():
+                # Try to find label text in description
+                for keyword in sorted(text_keywords, key=len, reverse=True):
+                    if len(keyword) >= 2:  # Min 2 chars
+                        # Use Playwright's sibling traversal: text >> .. >> .. >> [role="switch"]
+                        selector = f'text="{keyword}" >> .. >> .. >> [role="{elem.attributes.get("role")}"]'
+                        print(f"[ARIA Disambiguate] Using sibling traversal for {role_name}: {selector}")
+                        return {
+                            "selector": selector,
+                            "action": "click" if action != "fill" else "fill",
+                            "reasoning": f"ARIA + sibling label match: {role_name} with label '{keyword}'",
+                            "confidence": 85
+                        }
+
+        # Second pass: Check for elements WITH text
         for elem in matches:
             if elem.text and elem.text.strip() in step_description:
                 selector = f'[role="{elem.attributes.get("role")}"]:has-text("{elem.text}")'
+                print(f"[ARIA Disambiguate] Using text match for {role_name}: {selector}")
                 return {
                     "selector": selector,
                     "action": "click" if action != "fill" else "fill",
@@ -2233,7 +2310,7 @@ Respond with JSON only:
 
         병렬 실행 흐름:
         1. ARIA detection (빠름, 무료)
-        2. Semantic matching (빠름, 저렴)
+        2. Semantic matching (빠름, 저렴) - TEMPORARILY DISABLED due to dimension mismatch
         3. 둘 다 성공하면 → LLM Aggregator가 최종 판단 (교차 검증)
         4. 하나만 성공하면 → 그 결과 사용
         5. 둘 다 실패하면 → None (메인 로직이 LLM Vision 호출)
@@ -2241,20 +2318,14 @@ Respond with JSON only:
         Returns:
             최종 선택된 셀렉터 결과 또는 None
         """
-        print("[Parallel Match] Starting ARIA + Semantic parallel execution...")
+        print("[Parallel Match] ARIA matching only (Semantic DISABLED due to embedding dimension mismatch)")
 
-        # 병렬 실행 (Python은 진짜 병렬이 아니지만 I/O 바운드라 충분히 빠름)
-        import concurrent.futures
+        # TEMPORARILY DISABLED semantic matching due to dimension mismatch errors (128 vs 1536)
+        # Only using ARIA matching for now
+        aria_result = self._try_aria_matching(step_description, dom_elements, action)
+        semantic_result = None  # Disabled
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            aria_future = executor.submit(self._try_aria_matching, step_description, dom_elements, action)
-            semantic_future = executor.submit(self._try_pure_semantic_matching, step_description, dom_elements, action)
-
-            # 결과 기다리기
-            aria_result = aria_future.result()
-            semantic_result = semantic_future.result()
-
-        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: {semantic_result is not None}")
+        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: DISABLED")
 
         # Case 1: 둘 다 성공 → LLM Aggregator가 최종 판단
         if aria_result and semantic_result:
@@ -2585,7 +2656,7 @@ Respond with JSON only:
                 if cached.get("success_count", 0) >= 2:
                     context_info = f" [context: {dom_context}]" if dom_context else ""
                     print(f"[Cache HIT] Using validated selector for '{step_description}'{context_info}")
-                    return cached
+                    return cached['selector']  # Return selector string, not dict
             else:
                 # Cache invalid, remove it
                 print(f"[Cache MISS] Cached selector invalid, removing: {cache_key}")
@@ -2595,7 +2666,8 @@ Respond with JSON only:
 
     def _update_cache(self, step_description: str, action: str, page_url: str,
                      selector: str, success: bool, dom_context: str = "",
-                     element_text: str = "", element_tag: str = "") -> None:
+                     element_text: str = "", element_tag: str = "",
+                     attributes: dict = None) -> None:
         """
         Update cache with execution result and metadata.
 
@@ -2608,6 +2680,7 @@ Respond with JSON only:
             dom_context: DOM context string (active tabs/modals)
             element_text: Text content of the element (for regeneration)
             element_tag: HTML tag of the element (for regeneration)
+            attributes: Element attributes (for specific selector regeneration)
         """
         # 동적 ID 패턴 감지 - 우리가 만든 함수 사용
         if self._is_dynamic_selector(selector):
@@ -2624,6 +2697,7 @@ Respond with JSON only:
                 "step_description": step_description,  # For debugging
                 "element_text": element_text,  # For regeneration
                 "element_tag": element_tag,    # For regeneration
+                "attributes": attributes or {},  # For specific selector regeneration
             }
         else:
             # Update existing entry
@@ -2701,6 +2775,14 @@ Respond with JSON only:
                 json.dump(self.embedding_cache, f, indent=2)
         except Exception as e:
             print(f"[Embedding Cache] Failed to save cache: {e}")
+
+    def close(self) -> None:
+        """
+        Close the orchestrator and save caches.
+        Note: Browser session is managed by MCP host, not closed here.
+        """
+        self._save_cache()
+        self._save_embedding_cache()
 
 
 __all__ = ["IntelligentOrchestrator"]

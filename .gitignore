@@ -49,6 +49,8 @@ server/test-results/
 # Generated or temporary files
 /server/generated_checklist.json
 /server/test_planning_doc.py
+.gomod/
+.gocache/
 
 # Editor/IDE settings
 .vscode/
