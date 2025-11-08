@@ -1,9 +1,13 @@
-import express, { Request, Response } from "express";
 import dotenv from "dotenv";
-import { runWorkflow, WorkflowInput } from "./workflow";
+import path from "node:path";
 
-// 환경 변수를 불러옵니다
+// 환경 변수를 먼저 로드한 뒤 나머지 모듈을 import 해야 workflow.ts에서 접근 가능
+const defaultEnvPath = path.resolve(__dirname, "../../.env");
+dotenv.config({ path: defaultEnvPath });
 dotenv.config();
+
+import express, { Request, Response } from "express";
+import { runWorkflow, WorkflowInput } from "./workflow";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
