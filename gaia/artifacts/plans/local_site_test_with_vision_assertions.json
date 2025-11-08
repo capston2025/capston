@@ -1,0 +1,68 @@
+{
+  "profile": "local-test-with-vision",
+  "url": "http://localhost:3000",
+  "test_scenarios": [
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "회원가입 성공 시 자동 로그인된다",
+      "steps": [
+        { "description": "기본 기능 페이지 접속 후 회원가입 탭으로 전환", "action": "goto", "selector": "", "params": ["http://localhost:3000#basics"] },
+        { "description": "이름 입력", "action": "fill", "selector": "", "params": ["테스터"] },
+        { "description": "이메일 입력", "action": "fill", "selector": "", "params": ["test@example.com"] },
+        { "description": "비밀번호 입력", "action": "fill", "selector": "", "params": ["password123!"] },
+        { "description": "회원가입 버튼 클릭", "action": "click", "selector": "", "params": [] }
+      ],
+      "assertion": {
+        "expected_outcome": "회원가입이 성공하고 자동으로 로그인되어 사용자 프로필이 표시됨",
+        "success_indicators": [
+          "회원가입이 완료되었습니다!",
+          "사용자님 환영합니다",
+          "로그인 상태로 전환",
+          "프로필 정보 표시"
+        ]
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "로그인 성공 시 토스트와 프로필로 전환된다",
+      "steps": [
+        { "description": "기본 기능 페이지 접속", "action": "goto", "selector": "", "params": ["http://localhost:3000#basics"] },
+        { "description": "이메일 입력", "action": "fill", "selector": "", "params": ["jinhinjala26@naver.com"] },
+        { "description": "비밀번호 입력", "action": "fill", "selector": "", "params": ["password"] },
+        { "description": "로그인 버튼 클릭", "action": "click", "selector": "", "params": [] }
+      ],
+      "assertion": {
+        "expected_outcome": "로그인이 성공하고 사용자 프로필이 표시됨",
+        "success_indicators": [
+          "로그인되었습니다!",
+          "사용자님 환영합니다!",
+          "님 환영합니다",
+          "로그아웃 버튼 표시",
+          "프로필 영역 표시"
+        ]
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "MUST",
+      "scenario": "상품을 장바구니에 추가하면 토스트가 표시되고 수량이 증가한다",
+      "steps": [
+        { "description": "기본 기능 페이지 접속(상품 목록)", "action": "goto", "selector": "", "params": ["http://localhost:3000#basics"] },
+        { "description": "임의의 상품 카드에서 '장바구니 추가' 클릭", "action": "click", "selector": "", "params": [] },
+        { "description": "같은 상품에서 다시 '장바구니 추가' 클릭", "action": "click", "selector": "", "params": [] },
+        { "description": "장바구니 보기 열기", "action": "click", "selector": "", "params": [] }
+      ],
+      "assertion": {
+        "expected_outcome": "장바구니에 상품이 추가되고 수량이 2개로 표시됨",
+        "success_indicators": [
+          "장바구니에 추가되었습니다",
+          "장바구니 수량 2",
+          "장바구니 모달 열림",
+          "상품 목록에 아이템 표시"
+        ]
+      }
+    }
+  ]
+}

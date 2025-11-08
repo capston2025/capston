@@ -80,13 +80,19 @@ class LLMVisionClient:
 
         dom_list = []
         for idx, elem in enumerate(enabled_elements[:150]):  # Limit to 150 for better coverage (increased from 100)
+            attrs = elem.attributes or {}
             dom_list.append({
                 "index": idx,
                 "tag": elem.tag,
                 "selector": elem.selector,
                 "text": elem.text,
                 "type": elem.element_type,
-                "attributes": elem.attributes or {}
+                # CRITICAL: Expose key attributes at top level for LLM visibility
+                "role": attrs.get("role"),
+                "button_type": attrs.get("type"),  # For buttons: submit, button, reset
+                "data_state": attrs.get("data-state"),  # Radix UI state (active, inactive)
+                "aria_selected": attrs.get("aria-selected"),  # Tab selection state
+                "attributes": attrs
             })
 
         prompt = f"""Analyze this webpage and select a DOM element for test automation.
@@ -104,12 +110,21 @@ Available elements (JSON):
 4. **ONLY use selectors that appear in the JSON above**: Don't make up new selectors
 
 **Selector Priority (HIGHEST to LOWEST):**
-1. Text-based: `button:has-text("폼과 피드백")` ✅ BEST
-2. ARIA role-based: `[role="switch"]`, `[role="slider"]` ✅ BEST (for custom components)
-3. Data attribute: `[data-slot="switch"]`, `[data-slot="slider"]` ✅ EXCELLENT (for Radix UI)
-4. ID-based: `#submit-button` ✅ GOOD
-5. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
-6. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
+1. **Form context priority (CRITICAL!)**: If task is '회원가입', '제출', '저장', '확인', '가입', '로그인' etc:
+   - ✅ MUST select: Elements where `button_type="submit"` (this is the REAL submit button!)
+   - ❌ NEVER select: Elements where `role="tab"` or `data_state="active"` (these are TAB CONTROLS, not submit buttons!)
+   - **Check the JSON fields**: Look at `role`, `button_type`, `data_state` to distinguish tabs from buttons
+   - **Generate SPECIFIC selectors**: If you find `button_type="submit"`, use `button[type="submit"]:has-text("TEXT")` NOT just `button:has-text("TEXT")`!
+   - Example: Two buttons with text "회원가입":
+     - Button A: `{{"role": "tab", "button_type": "button", "data_state": "active"}}` ← This is a TAB, skip it!
+     - Button B: `{{"role": null, "button_type": "submit", "data_state": null}}` ← This is the SUBMIT BUTTON!
+       → Return selector: `button[type="submit"]:has-text("회원가입")` (NOT `button:has-text("회원가입")`)
+2. Text-based: `button:has-text("폼과 피드백")` ✅ BEST
+3. ARIA role-based: `[role="switch"]`, `[role="slider"]` ✅ BEST (for custom components)
+4. Data attribute: `[data-slot="switch"]`, `[data-slot="slider"]` ✅ EXCELLENT (for Radix UI)
+5. ID-based: `#submit-button` ✅ GOOD - BUT check if `role` matches intent first
+6. Type + text: `input[placeholder="이메일"]` ✅ ACCEPTABLE
+7. Generic classes: `.flex`, `.items-center` ❌ FORBIDDEN (set confidence to 0)
 
 **Action Detection Rules:**
 - If task mentions "wait", "verify", "check", or "confirm" → action should be "waitForTimeout" or "expectVisible", NOT "click"
@@ -126,10 +141,44 @@ Available elements (JSON):
 - **Dialog/Modal**: `role="dialog"` or `role="alertdialog"` → Selector: `[role="dialog"]`, Confidence: 90+
 - **Checkbox**: `role="checkbox"` → Selector: `[role="checkbox"]`, Action: click, Confidence: 90+
 - **Radio**: `role="radio"` → Selector: `[role="radio"]`, Action: click, Confidence: 90+
-- **Tab**: `role="tab"` → Selector: `[role="tab"]`, Action: click, Confidence: 90+
+- **Tab**: `role="tab"` → ONLY if task explicitly mentions "탭" or "이동" or "전환"! Otherwise set Confidence: 0
 - **Menu/Dropdown**: `role="menu"` or `role="menuitem"` → Selector: `[role="menu"]`, Confidence: 90+
 - **Combobox/Select**: `role="combobox"` → Selector: `[role="combobox"]`, Confidence: 90+
 - **Search**: `role="searchbox"` → Selector: `[role="searchbox"]`, Action: fill, Confidence: 90+
+
+**CRITICAL EXAMPLE - Tab vs Submit Button:**
+Task: "회원가입 버튼 클릭"
+Available elements in JSON:
+```json
+[
+  {{
+    "index": 0,
+    "tag": "button",
+    "text": "회원가입",
+    "role": "tab",           // ← TAB CONTROL!
+    "button_type": "button",
+    "data_state": "active",
+    "selector": "#radix-:r0:-trigger-signup"
+  }},
+  {{
+    "index": 1,
+    "tag": "button",
+    "text": "회원가입",
+    "role": null,            // ← NOT a tab
+    "button_type": "submit", // ← SUBMIT BUTTON!
+    "data_state": null,
+    "selector": "button:has-text(\\"회원가입\\")"
+  }}
+]
+```
+→ You MUST select index 1 and return this selector:
+  - `button[type="submit"]:has-text("회원가입")` (SPECIFIC - only matches submit button!)
+  - NOT `button:has-text("회원가입")` (TOO BROAD - matches both buttons!)
+  - Reasoning:
+    - Task is "버튼 클릭" (form submission intent)
+    - Element 0 has `role="tab"` → Skip it (tab control)
+    - Element 1 has `button_type="submit"` → Correct choice!
+    - Use attribute selector to be specific
 
 **Keywords to ARIA mapping:**
 - toggle, switch, 스위치, 토글 → `[role="switch"]`
@@ -313,6 +362,151 @@ JSON response:"""
             print(f"LLM vision analysis failed: {e}")
             raise
 
+    def verify_scenario_success(
+        self,
+        scenario_description: str,
+        expected_outcome: str,
+        success_indicators: List[str],
+        before_screenshot: str,
+        after_screenshot: str,
+        url: str,
+    ) -> Dict[str, Any]:
+        """
+        Verify if a test scenario succeeded by comparing before/after screenshots.
+        This is more holistic than single-action verification.
+
+        Args:
+            scenario_description: Description of the scenario (e.g., "회원가입 성공 시 자동 로그인된다")
+            expected_outcome: Overall expected outcome
+            success_indicators: List of indicators that show success
+            before_screenshot: Screenshot before scenario execution
+            after_screenshot: Screenshot after scenario execution
+            url: Current page URL
+
+        Returns:
+            Dict with:
+                - success: Boolean indicating if scenario succeeded
+                - reasoning: Why it passed/failed
+                - confidence: Confidence score (0-100)
+                - matched_indicators: List of success indicators found
+        """
+        indicators_text = "\n".join([f"  - {indicator}" for indicator in success_indicators])
+
+        prompt = f"""Analyze these screenshots to verify if a test scenario succeeded.
+
+**Scenario**: {scenario_description}
+**Expected Outcome**: {expected_outcome}
+
+**Success Indicators** (look for ANY of these):
+{indicators_text}
+
+**Page**: {url}
+**Images**: Before (first) and After (second)
+
+**CRITICAL - Flexible Matching Rules:**
+1. **Look for SEMANTIC equivalence**, not exact text
+2. **ANY success indicator is enough** - you don't need all of them
+3. **Examples of equivalent success indicators**:
+   - "회원가입이 완료되었습니다!" ≈ "회원가입이 완료되었습니다!" (toast)
+   - "로그인되었습니다!" ≈ "사용자님 환영합니다!" ≈ "OOO님 환영합니다!"
+   - "장바구니에 추가" ≈ "장바구니에 담겼습니다" ≈ cart count increased
+4. **Consider UI state changes**:
+   - Login button → Logout button
+   - Empty form → Filled form
+   - Modal closed → Modal open
+   - Item count: 0 → Item count: 1
+5. **Temporary UI elements** (toasts, notifications):
+   - Even if toast disappeared, look for OTHER indicators of success
+   - Example: Toast gone but user is now logged in = SUCCESS
+
+**Task**: Did the scenario succeed based on visible changes?
+
+Required JSON format (no markdown):
+{{
+    "success": true,
+    "reasoning": "detailed explanation of what changed and which indicators were found",
+    "confidence": 90,
+    "matched_indicators": ["list of success indicators that were found"]
+}}
+
+JSON response:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{before_screenshot}"
+                                }
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{after_screenshot}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            # Extract text from response
+            response_text = response.choices[0].message.content or ""
+
+            # Parse JSON
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            # Handle empty response
+            if not response_text:
+                print("LLM scenario verification returned empty response")
+                return {
+                    "success": False,
+                    "reasoning": "LLM returned empty response",
+                    "confidence": 0,
+                    "matched_indicators": []
+                }
+
+            # Try to parse JSON
+            try:
+                result = json.loads(response_text)
+                # Ensure matched_indicators exists
+                if "matched_indicators" not in result:
+                    result["matched_indicators"] = []
+                return result
+            except json.JSONDecodeError as json_err:
+                print(f"LLM scenario verification returned non-JSON response: {response_text[:200]}")
+                return {
+                    "success": False,
+                    "reasoning": f"LLM returned non-JSON: {response_text[:100]}",
+                    "confidence": 0,
+                    "matched_indicators": []
+                }
+
+        except Exception as e:
+            print(f"LLM scenario verification failed: {e}")
+            return {
+                "success": False,
+                "reasoning": f"Verification failed: {e}",
+                "confidence": 0,
+                "matched_indicators": []
+            }
+
     def verify_action_result(
         self,
         expected_result: str,
@@ -342,12 +536,25 @@ Page: {url}
 
 Images: Before (first) and After (second)
 
-Task: Did the expected result occur?
+**CRITICAL - SEMANTIC MATCHING RULES:**
+1. **DO NOT require exact text match** - Look for SEMANTIC equivalence
+2. **Example matches:**
+   - Expected: "로그인되었습니다!" → Actual: "사용자님 환영합니다!" ✅ BOTH mean login succeeded
+   - Expected: "추가되었습니다" → Actual: "상품이 장바구니에 담겼습니다" ✅ BOTH mean item added
+   - Expected: "삭제 완료" → Actual: "제거되었습니다" ✅ BOTH mean deletion succeeded
+3. **Focus on the OUTCOME, not the exact wording**
+4. **Common patterns to recognize:**
+   - Login success: "로그인되었습니다", "환영합니다", "Welcome", "사용자님"
+   - Form submission: "제출되었습니다", "전송 완료", "Success", "완료"
+   - Item added: "추가되었습니다", "담겼습니다", "Added to cart"
+   - Deletion: "삭제되었습니다", "제거되었습니다", "Deleted"
+
+Task: Did the expected OUTCOME occur? (Not exact text, but semantic meaning)
 
 Required JSON format (no markdown):
 {{
     "success": true,
-    "reasoning": "what changed",
+    "reasoning": "what changed and why it matches the expected outcome",
     "confidence": 90
 }}
 

@@ -18,10 +18,15 @@ class TestStep(BaseModel):
 class Assertion(BaseModel):
     """Post-conditions verified after running a scenario."""
 
-    description: str
-    selector: str
-    condition: str
+    # Old format (for backward compatibility)
+    description: Optional[str] = None
+    selector: Optional[str] = None
+    condition: Optional[str] = None
     params: List[Any] = Field(default_factory=list)
+
+    # New Vision AI format
+    expected_outcome: Optional[str] = None
+    success_indicators: List[str] = Field(default_factory=list)
 
 
 class TestScenario(BaseModel):

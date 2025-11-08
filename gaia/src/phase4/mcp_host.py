@@ -151,16 +151,92 @@ def normalize_url(url: str) -> str:
 
 
 # --- Assertion Helper Functions ---
-async def _execute_assertion(page: Page, action: str, selector: str, value: Any) -> Dict[str, Any]:
-    """검증 작업을 수행하고 결과를 반환합니다"""
+async def _execute_assertion(page: Page, action: str, selector: str, value: Any, before_screenshot: str = None) -> Dict[str, Any]:
+    """검증 작업을 수행하고 결과를 반환합니다 (하이브리드: DOM + Vision)"""
     try:
         if action == "expectVisible":
             # 요소가 보이는지 확인합니다
-            if not selector:
-                return {"success": False, "message": "Selector required for expectVisible"}
-            element = page.locator(selector).first
-            await element.wait_for(state="visible", timeout=30000)
-            return {"success": True, "message": f"Element {selector} is visible"}
+            if not selector and not value:
+                return {"success": False, "message": "Selector or text value required for expectVisible"}
+
+            # Phase 1: DOM 기반 검증 시도 (빠름 ~100ms)
+            dom_success = False
+            dom_error = None
+
+            try:
+                if selector:
+                    # Case A: selector로 찾기
+                    element = page.locator(selector).first
+                    await element.wait_for(state="visible", timeout=500)  # 짧은 타임아웃
+                    return {"success": True, "method": "dom_selector", "message": f"Element {selector} is visible"}
+                else:
+                    # Case B: 텍스트로 찾기
+                    element = page.get_by_text(value, exact=False).first
+                    await element.wait_for(state="visible", timeout=500)  # 짧은 타임아웃
+                    return {"success": True, "method": "dom_text", "message": f"Text '{value}' is visible"}
+            except Exception as e:
+                dom_error = str(e)
+                # DOM으로 못 찾음 → Vision으로 fallback
+
+            # Phase 2: Vision AI Fallback (느림 ~2s, 하지만 더 정확)
+            if before_screenshot:
+                print(f"⚠️ DOM check failed ({dom_error[:50]}...), trying Vision AI verification...")
+
+                # After 스크린샷 캡처
+                after_screenshot_bytes = await page.screenshot(full_page=False)
+                after_screenshot = base64.b64encode(after_screenshot_bytes).decode("utf-8")
+
+                # Vision AI로 검증 (LLMVisionClient 사용)
+                try:
+                    from gaia.src.phase4.llm_vision_client import LLMVisionClient
+
+                    llm_client = LLMVisionClient()
+                    vision_result = llm_client.verify_action_result(
+                        expected_result=value or f"Element {selector} is visible",
+                        before_screenshot=before_screenshot,
+                        after_screenshot=after_screenshot,
+                        url=str(page.url)
+                    )
+
+                    # Debug: Print Vision AI response
+                    print(f"🔍 Vision AI Result:")
+                    print(f"   - Success: {vision_result.get('success')}")
+                    print(f"   - Confidence: {vision_result.get('confidence', 0)}")
+                    print(f"   - Reasoning: {vision_result.get('reasoning', 'N/A')}")
+
+                    if vision_result.get("success") and vision_result.get("confidence", 0) > 70:
+                        return {
+                            "success": True,
+                            "method": "vision_ai",
+                            "confidence": vision_result["confidence"],
+                            "reasoning": vision_result["reasoning"],
+                            "message": f"Vision AI verified: {value}"
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "method": "vision_ai_failed",
+                            "confidence": vision_result.get("confidence", 0),
+                            "reasoning": vision_result.get("reasoning", "Unknown"),
+                            "dom_error": dom_error,
+                            "message": f"Both DOM and Vision failed for '{value}'"
+                        }
+                except Exception as vision_error:
+                    print(f"❌ Vision AI failed: {vision_error}")
+                    return {
+                        "success": False,
+                        "method": "both_failed",
+                        "dom_error": dom_error,
+                        "vision_error": str(vision_error),
+                        "message": f"Could not verify '{value}'"
+                    }
+            else:
+                # before_screenshot 없으면 DOM 실패가 최종 실패
+                return {
+                    "success": False,
+                    "method": "dom_only_failed",
+                    "message": f"Element not found: {dom_error}"
+                }
 
         elif action == "expectHidden":
             # 요소가 숨겨져 있는지 확인합니다
@@ -552,7 +628,7 @@ async def capture_screenshot(url: str = None, session_id: str = "default") -> Di
     }
 
 
-async def execute_simple_action(url: str, selector: str, action: str, value: str = None, session_id: str = "default") -> Dict[str, Any]:
+async def execute_simple_action(url: str, selector: str, action: str, value: str = None, session_id: str = "default", before_screenshot: str = None) -> Dict[str, Any]:
     """
     Execute a simple action (click, fill, press, scroll, tab) using persistent session.
 
@@ -562,6 +638,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         action: Action type (click, fill, press, scroll, tab)
         value: Value for fill/press actions, or scroll amount for scroll action
         session_id: Browser session ID (default: "default")
+        before_screenshot: Base64 screenshot before action (for Vision AI fallback)
 
     Returns:
         Dict with success status and screenshot
@@ -773,7 +850,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
         elif action in ("expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"):
             # 검증 동작은 결과를 반환하는 방식으로 처리됩니다
             # 이 동작은 실행되지 않고 검증 결과만 반환합니다
-            result = await _execute_assertion(page, action, selector, value)
+            result = await _execute_assertion(page, action, selector, value, before_screenshot=before_screenshot)
 
             # 검증 결과용 스크린샷을 캡처합니다
             screenshot_bytes = await page.screenshot(full_page=False)
@@ -1093,11 +1170,12 @@ async def execute_action(request: McpRequest):
         selector = params.get("selector", "")  # 일부 동작은 선택자가 비어 있을 수 있습니다
         action_type = params.get("action")
         value = params.get("value")
+        before_screenshot = params.get("before_screenshot")  # Vision AI용 이전 스크린샷
 
         # goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates 같은 동작은 선택자가 필요 없습니다
         # 검증 동작도 선택자가 필요 없으며 value 매개변수를 사용합니다
         actions_not_needing_selector = ["goto", "setViewport", "evaluate", "tab", "scroll", "wait", "waitForTimeout", "clickAt", "click_at_coordinates",
-                                        "expectTrue", "expectAttribute", "expectCountAtLeast"]
+                                        "expectTrue", "expectAttribute", "expectCountAtLeast", "expectVisible", "expectHidden"]
 
         if not action_type:
             raise HTTPException(status_code=400, detail="action is required for 'execute_action'.")
@@ -1105,7 +1183,7 @@ async def execute_action(request: McpRequest):
         if action_type not in actions_not_needing_selector and not selector:
             raise HTTPException(status_code=400, detail=f"selector is required for action '{action_type}'.")
 
-        return await execute_simple_action(url, selector, action_type, value, session_id)
+        return await execute_simple_action(url, selector, action_type, value, session_id, before_screenshot=before_screenshot)
 
     elif action == "execute_scenario":
         scenario_data = params.get("scenario")
