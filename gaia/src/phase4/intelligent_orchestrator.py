@@ -231,31 +231,11 @@ class IntelligentOrchestrator:
             print(f"[Cache Validation] ❌ Cache invalidated (no text metadata)")
             return None
 
-        # Stage 2: DOM lookup - Verify selector still exists
-        try:
-            response = requests.post(
-                f"{self.mcp_config.host_url}/querySelector",
-                json={"selector": cached_selector},
-                timeout=1  # Fast timeout
-            )
-            if response.status_code == 200 and response.json().get('exists'):
-                print(f"[Cache Validation] ✅ Selector still valid: {cached_selector}")
-                return cached_selector
-            else:
-                print(f"[Cache Validation] ⚠️ Selector not found in DOM")
-        except Exception as e:
-            print(f"[Cache Validation] ⚠️ DOM lookup failed: {e}")
-
-        # Stage 3: LLM validation (optional, expensive)
-        if self.enable_llm_validation:
-            print(f"[Cache Validation] 🤖 Attempting LLM validation...")
-            # TODO: Implement LLM validation if needed
-            # For now, skip to save cost
-            pass
-
-        # Cache invalid
-        print(f"[Cache Validation] ❌ Cache entry invalidated")
-        return None
+        # Stage 2: Trust non-dynamic selectors
+        # Skip DOM validation since querySelector endpoint doesn't exist
+        # Non-dynamic selectors (no radix IDs) are assumed stable
+        print(f"[Cache Validation] ✅ Using cached selector: {cached_selector}")
+        return cached_selector
 
     # ==================== End of Dynamic ID Handling ====================
 
@@ -751,10 +731,11 @@ Return ONLY a JSON array:
                     # Detect DOM context (active tabs/modals) for context-aware caching
                     dom_context = self._detect_dom_context(dom_elements)
 
-                    # CACHE CHECK: Try to get cached selector first
-                    cached_selector = self._get_cached_selector(step.description, step.action, current_url, dom_context)
+                    # CACHE DISABLED: Skip cache lookup entirely
+                    # cached_selector = self._get_cached_selector(step.description, step.action, current_url, dom_context)
+                    cached_selector = None  # Force cache bypass
 
-                    if cached_selector:
+                    if False:  # Disable cache usage
                         # Use cached selector
                         llm_decision = {
                             "selector": cached_selector,
@@ -816,6 +797,7 @@ Return ONLY a JSON array:
                                 if text_match:
                                     # Found it! Use text-based selector instead
                                     element_type = text_match.tag if text_match.tag in ['button', 'a', 'input'] else 'button'
+                                    # Use :has-text() instead of :has-text() for better Playwright compatibility
                                     better_selector = f'{element_type}:has-text("{target_text}")'
                                     self._log(f"    🔧 Auto-fix: Using text-based selector: {better_selector}", progress_callback)
                                     llm_decision['selector'] = better_selector
@@ -884,23 +866,47 @@ Return ONLY a JSON array:
                         all_english = re.findall(r'[A-Za-z]{3,}', step.description)  # Min 3 English chars
 
                         found_by_text = False
-                        # Try longest matches first to avoid substring issues
-                        for target_text in sorted(all_korean + all_english, key=len, reverse=True):
-                            # Search in ALL DOM elements - use exact match or word boundary
+
+                        # FIRST: Try to find multi-word phrases (e.g., "장바구니 추가")
+                        # Extract consecutive Korean words (2-3 words)
+                        phrase_pattern = r'[가-힣]{2,}(?:\s+[가-힣]{2,}){1,2}'  # 2-3 words with spaces
+                        phrases = re.findall(phrase_pattern, step.description)
+
+                        # Try phrase matching first (more specific)
+                        for phrase in sorted(set(phrases), key=len, reverse=True):
                             text_match = next((e for e in dom_elements
-                                             if target_text == e.text or  # Exact match first
-                                                f' {target_text} ' in f' {e.text} ' or  # Word boundary
-                                                e.text.startswith(target_text) or
-                                                e.text.endswith(target_text)), None)
+                                             if phrase in e.text), None)  # Contains phrase
                             if text_match:
                                 element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
-                                better_selector = f'{element_type}:has-text("{target_text}")'
-                                self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                # Use :has-text() instead of :has-text() for better Playwright compatibility
+                                better_selector = f'{element_type}:has-text("{phrase}")'
+                                self._log(f"    🔧 Aggressive phrase match: Found '{phrase}' → {better_selector}", progress_callback)
                                 llm_decision['selector'] = better_selector
-                                llm_decision['confidence'] = 85
-                                llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                llm_decision['confidence'] = 90
+                                llm_decision['reasoning'] = f"Aggressive phrase match: '{phrase}'"
                                 found_by_text = True
                                 break
+
+                        # FALLBACK: Try single word matches (less specific)
+                        if not found_by_text:
+                            # Try longest matches first to avoid substring issues
+                            for target_text in sorted(all_korean + all_english, key=len, reverse=True):
+                                # Search in ALL DOM elements - use exact match or word boundary
+                                text_match = next((e for e in dom_elements
+                                                 if target_text == e.text or  # Exact match first
+                                                    f' {target_text} ' in f' {e.text} ' or  # Word boundary
+                                                    e.text.startswith(target_text) or
+                                                    e.text.endswith(target_text)), None)
+                                if text_match:
+                                    element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
+                                    # Use :has-text() instead of :has-text() for better Playwright compatibility
+                                    better_selector = f'{element_type}:has-text("{target_text}")'
+                                    self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                    llm_decision['selector'] = better_selector
+                                    llm_decision['confidence'] = 85
+                                    llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                    found_by_text = True
+                                    break
 
                         if found_by_text:
                             self._log(f"    ✅ Found element by aggressive text matching", progress_callback)
@@ -2157,9 +2163,31 @@ Respond with JSON only:
         print(f"[ARIA Disambiguate] Found {len(matches)} {role_name} elements")
 
         # Stage 1: Exact text match
+        # PRIORITY: Handle elements without text FIRST (e.g., switch with sibling label)
+        import re
+        text_keywords = re.findall(r'[가-힣]{2,}|[A-Za-z]{3,}', step_description)
+
+        # First pass: Check for elements WITHOUT text (need sibling traversal)
+        for elem in matches:
+            if not elem.text or not elem.text.strip():
+                # Try to find label text in description
+                for keyword in sorted(text_keywords, key=len, reverse=True):
+                    if len(keyword) >= 2:  # Min 2 chars
+                        # Use Playwright's sibling traversal: text >> .. >> .. >> [role="switch"]
+                        selector = f'text="{keyword}" >> .. >> .. >> [role="{elem.attributes.get("role")}"]'
+                        print(f"[ARIA Disambiguate] Using sibling traversal for {role_name}: {selector}")
+                        return {
+                            "selector": selector,
+                            "action": "click" if action != "fill" else "fill",
+                            "reasoning": f"ARIA + sibling label match: {role_name} with label '{keyword}'",
+                            "confidence": 85
+                        }
+
+        # Second pass: Check for elements WITH text
         for elem in matches:
             if elem.text and elem.text.strip() in step_description:
                 selector = f'[role="{elem.attributes.get("role")}"]:has-text("{elem.text}")'
+                print(f"[ARIA Disambiguate] Using text match for {role_name}: {selector}")
                 return {
                     "selector": selector,
                     "action": "click" if action != "fill" else "fill",
@@ -2282,7 +2310,7 @@ Respond with JSON only:
 
         병렬 실행 흐름:
         1. ARIA detection (빠름, 무료)
-        2. Semantic matching (빠름, 저렴)
+        2. Semantic matching (빠름, 저렴) - TEMPORARILY DISABLED due to dimension mismatch
         3. 둘 다 성공하면 → LLM Aggregator가 최종 판단 (교차 검증)
         4. 하나만 성공하면 → 그 결과 사용
         5. 둘 다 실패하면 → None (메인 로직이 LLM Vision 호출)
@@ -2290,20 +2318,14 @@ Respond with JSON only:
         Returns:
             최종 선택된 셀렉터 결과 또는 None
         """
-        print("[Parallel Match] Starting ARIA + Semantic parallel execution...")
+        print("[Parallel Match] ARIA matching only (Semantic DISABLED due to embedding dimension mismatch)")
 
-        # 병렬 실행 (Python은 진짜 병렬이 아니지만 I/O 바운드라 충분히 빠름)
-        import concurrent.futures
+        # TEMPORARILY DISABLED semantic matching due to dimension mismatch errors (128 vs 1536)
+        # Only using ARIA matching for now
+        aria_result = self._try_aria_matching(step_description, dom_elements, action)
+        semantic_result = None  # Disabled
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            aria_future = executor.submit(self._try_aria_matching, step_description, dom_elements, action)
-            semantic_future = executor.submit(self._try_pure_semantic_matching, step_description, dom_elements, action)
-
-            # 결과 기다리기
-            aria_result = aria_future.result()
-            semantic_result = semantic_future.result()
-
-        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: {semantic_result is not None}")
+        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: DISABLED")
 
         # Case 1: 둘 다 성공 → LLM Aggregator가 최종 판단
         if aria_result and semantic_result:
@@ -2634,7 +2656,7 @@ Respond with JSON only:
                 if cached.get("success_count", 0) >= 2:
                     context_info = f" [context: {dom_context}]" if dom_context else ""
                     print(f"[Cache HIT] Using validated selector for '{step_description}'{context_info}")
-                    return cached
+                    return cached['selector']  # Return selector string, not dict
             else:
                 # Cache invalid, remove it
                 print(f"[Cache MISS] Cached selector invalid, removing: {cache_key}")
