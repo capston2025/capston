@@ -692,5 +692,437 @@
     "step_description": "기본 기능 카드의 이동 버튼을 클릭",
     "element_text": "기본 기능",
     "element_tag": "button"
+  },
+  "5d6eab4ed4225e10f17a24da35d58490": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762331773.729794,
+    "success_count": 1,
+    "step_description": "공유하기 버튼을 연속으로 2회 클릭한다",
+    "element_text": "공유하기",
+    "element_tag": "button"
+  },
+  "7b0eb49b57d0c914e38e20feb1508e72": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762331839.12012,
+    "success_count": 1,
+    "step_description": "단축키 모달 단축키(⌘+/ 또는 Ctrl+/)를 입력한다",
+    "element_text": "공유하기",
+    "element_tag": "button"
+  },
+  "1eb1d38e76a77e3edf33b991323066b8": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762337205.262974,
+    "success_count": 1,
+    "step_description": "공유하기 버튼을 연속으로 2회 클릭한다",
+    "element_text": "공유하기",
+    "element_tag": "button"
+  },
+  "a2474e216f8c905f066e16381ef1a12e": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762337239.395324,
+    "success_count": 1,
+    "step_description": "공유하기 버튼을 클릭한다",
+    "element_text": "공유하기",
+    "element_tag": "button"
+  },
+  "85bc3f20c9b44b0f6a2372364f83d6d0": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762337249.711972,
+    "success_count": 1,
+    "step_description": "URL 복사 버튼을 클릭한다",
+    "element_text": "공유하기",
+    "element_tag": "button"
+  },
+  "929cdeb198186f31abf7955aca1cb250": {
+    "selector": "button:has-text(\"모달 다이얼로그 열기\")",
+    "timestamp": 1762337262.461557,
+    "success_count": 1,
+    "step_description": "모달 열기 트리거를 클릭한다",
+    "element_text": "모달 다이얼로그 열기",
+    "element_tag": "button"
+  },
+  "33420382f776346b0f7ec6489651d1b8": {
+    "selector": "button:has-text(\"취소\")",
+    "timestamp": 1762337273.8594618,
+    "success_count": 1,
+    "step_description": "모달 ‘취소’ 버튼을 클릭한다",
+    "element_text": "취소",
+    "element_tag": "button"
+  },
+  "09d49859bc6c6887d0b36a86e4b65eac": {
+    "selector": "button:has-text(\"홈으로\")",
+    "timestamp": 1762337321.385292,
+    "success_count": 1,
+    "step_description": "브레드크럼 상위 항목을 클릭한다",
+    "element_text": "홈으로",
+    "element_tag": "button"
+  },
+  "e9fc2f9a1f0e5304064f672425a721a9": {
+    "selector": "button:has-text(\"Toggle Sidebar\")",
+    "timestamp": 1762337360.3875358,
+    "success_count": 1,
+    "step_description": "사이드바 접기 버튼을 클릭한다",
+    "element_text": "Toggle Sidebar",
+    "element_tag": "button"
+  },
+  "a8a27ac1aadbf8b8254b0ff87c75582d": {
+    "selector": "button:has-text(\"국가를 선택해주세요\")",
+    "timestamp": 1762337372.042689,
+    "success_count": 1,
+    "step_description": "드롭다운을 클릭하여 연다",
+    "element_text": "국가를 선택해주세요",
+    "element_tag": "button"
+  },
+  "b8d58a9b1b6435d4e9e52b3678e0a883": {
+    "selector": "select:has-text(\"모든 상태\n활성\n비활성\n대기\")",
+    "timestamp": 1762337468.061944,
+    "success_count": 0,
+    "step_description": "테이블 필터 옵션을 변경한다",
+    "element_text": "",
+    "element_tag": "select"
+  },
+  "6c14f91f86a8b0dc6b9ccb2b280f7d91": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762337530.974667,
+    "success_count": 1,
+    "step_description": "검색 입력란에 'UI'를 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "558f5a027587d53320d4f339c791fb57": {
+    "selector": "button:has-text(\"장바구니\")",
+    "timestamp": 1762337647.247641,
+    "success_count": 0,
+    "step_description": "임의의 상품 카드에서 장바구니 추가 버튼을 클릭한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "049d65edfb1d0762c0a3bbf9f71f8e5e": {
+    "selector": "button:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762337760.464514,
+    "success_count": 1,
+    "step_description": "다운로드 버튼을 클릭한다",
+    "element_text": "다운로드 시뮬레이션",
+    "element_tag": "button"
+  },
+  "e42e91ce6a5d6194730c9c650e869abd": {
+    "selector": "button:has-text(\"오류\")",
+    "timestamp": 1762337840.157897,
+    "success_count": 1,
+    "step_description": "오류 발생 버튼을 클릭한다",
+    "element_text": "오류",
+    "element_tag": "button"
+  },
+  "b303c6eff15c42a5fb1a71d5862d9ffc": {
+    "selector": "button:has-text(\"으로\")",
+    "timestamp": 1762337875.154666,
+    "success_count": 1,
+    "step_description": "다크모드 토글을 on으로 전환한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "5a04924695698898c5944d760f3e63d0": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762337936.649598,
+    "success_count": 1,
+    "step_description": "단축키 모달 단축키(⌘+/ 또는 Ctrl+/)를 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "d4fa841fb9c735d72de11ea32cfb65eb": {
+    "selector": "[role=\"tab\"]:has-text(\"회원가입\")",
+    "timestamp": 1762573101.613119,
+    "success_count": 1,
+    "step_description": "회원가입 탭으로 전환한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "728b60127ecee55e87af8fbf5f49a9be": {
+    "selector": "[role=\"tab\"]:has-text(\"로그인\")",
+    "timestamp": 1762573210.378718,
+    "success_count": 1,
+    "step_description": "로그인 탭을 클릭한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "e87fa69ead54fd608170484564ed050f": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762573642.877526,
+    "success_count": 1,
+    "step_description": "Cmd+/ 또는 Ctrl+/ 키를 누른다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "f6d0c2647aeba939802c1219ab166d61": {
+    "selector": "#signup-name",
+    "timestamp": 1762576281.2477639,
+    "success_count": 1,
+    "step_description": "회원가입 이름 입력란에 '테스터'를 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "4102f6fa395672d31afd3ac43a77f7df": {
+    "selector": "#signup-email",
+    "timestamp": 1762576288.563178,
+    "success_count": 1,
+    "step_description": "회원가입 이메일 입력란에 'test@example.com'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "ac9facaea4286fdf8e7d71df393a6f28": {
+    "selector": "#signup-password",
+    "timestamp": 1762576296.690787,
+    "success_count": 1,
+    "step_description": "회원가입 비밀번호 입력란에 'Password123'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "479118ad7305a7e88ddb4a40858f315f": {
+    "selector": "button:has-text(\"회원가입\")",
+    "timestamp": 1762576304.794613,
+    "success_count": 1,
+    "step_description": "회원가입 제출 버튼을 클릭한다",
+    "element_text": "회원가입",
+    "element_tag": "button"
+  },
+  "44cc8409e8aa19f1f902b67e256792ca": {
+    "selector": "[role=\"tab\"]:has-text(\"회원가입\")",
+    "timestamp": 1762576314.558342,
+    "success_count": 1,
+    "step_description": "회원가입 탭을 클릭한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "bf59b70e66746414a9ca26c4cc8269af": {
+    "selector": "#signup-name",
+    "timestamp": 1762576320.978783,
+    "success_count": 1,
+    "step_description": "이름 입력란에 '홍길동'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "295caab2bfdd182dcec74e785b79aef4": {
+    "selector": "#signup-email",
+    "timestamp": 1762576328.628961,
+    "success_count": 1,
+    "step_description": "이메일 입력란에 'test!@example.com'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "d08295f92523df36f966c9a575c95f17": {
+    "selector": "#signup-password",
+    "timestamp": 1762576336.777761,
+    "success_count": 1,
+    "step_description": "비밀번호 입력란에 'AnyPassword'를 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "5f2605ea48077a062f9f261cc99feda8": {
+    "selector": "button:has-text(\"회원가입\")",
+    "timestamp": 1762576346.386989,
+    "success_count": 1,
+    "step_description": "회원가입 버튼을 클릭한다",
+    "element_text": "회원가입",
+    "element_tag": "button"
+  },
+  "70b83c64583e4ccd596c0d780d73a67b": {
+    "selector": "#login-password",
+    "timestamp": 1762576376.243146,
+    "success_count": 1,
+    "step_description": "로그인 비밀번호 입력란에 'password123'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "8fd1f221dc6da266c386fe2c75d43f72": {
+    "selector": "#login-email",
+    "timestamp": 1762576422.508495,
+    "success_count": 1,
+    "step_description": "로그인 이메일 입력란에 'user@test.com'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "afaad1b40f4bd2f47ea438901886421a": {
+    "selector": "#login-password",
+    "timestamp": 1762576430.7245681,
+    "success_count": 1,
+    "step_description": "로그인 비밀번호 입력란에 'password'를 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "83612c55626af6c5c6b67cca2dc32ad1": {
+    "selector": "button:has-text(\"로그인\")",
+    "timestamp": 1762576441.9231622,
+    "success_count": 1,
+    "step_description": "로그인 버튼을 클릭한다",
+    "element_text": "로그인",
+    "element_tag": "button"
+  },
+  "7e1159d29f1e32169feeffb719cbb50e": {
+    "selector": "button:has-text(\"장바구니\")",
+    "timestamp": 1762576442.420238,
+    "success_count": 1,
+    "step_description": "첫 번째 상품의 '장바구니 추가' 버튼을 클릭한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "613e542497f618ad5de719cd8aab7c70": {
+    "selector": "button:has-text(\"장바구니 보기\")",
+    "timestamp": 1762576473.186093,
+    "success_count": 0,
+    "step_description": "'장바구니 보기' 버튼을 클릭한다",
+    "element_text": "장바구니 보기",
+    "element_tag": "button"
+  },
+  "3ace19ea449e1a0c9bccb3feba11b24f": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762576594.032491,
+    "success_count": 1,
+    "step_description": "검색 입력란에 '헤드폰'을 입력한다",
+    "element_text": "",
+    "element_tag": "input"
+  },
+  "941ed7350537cc3651cc319e850b55c8": {
+    "selector": "[role=\"tab\"]:has-text(\"분석\")",
+    "timestamp": 1762576604.248443,
+    "success_count": 1,
+    "step_description": "분석 탭을 클릭한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "08ea6f7cb31c248cf90e35d20bac14f4": {
+    "selector": "[role=\"tab\"]:has-text(\"보고서\")",
+    "timestamp": 1762576605.128441,
+    "success_count": 1,
+    "step_description": "보고서 탭을 클릭한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "a9d0c123906e43d43c8f4d7d38aaaa2e": {
+    "selector": "button:has-text(\"국가를 선택해주세요\")",
+    "timestamp": 1762576622.6014311,
+    "success_count": 1,
+    "step_description": "국가 선택 드롭다운을 클릭한다",
+    "element_text": "국가를 선택해주세요",
+    "element_tag": "button"
+  },
+  "c9a91f5a30c164eac85d24056bea1f9a": {
+    "selector": "div:has-text(\"대한민국\")",
+    "timestamp": 1762576629.931457,
+    "success_count": 1,
+    "step_description": "대한민국 옵션을 클릭한다",
+    "element_text": "대한민국",
+    "element_tag": "div"
+  },
+  "1bf29a4f00bbed1f44b81d6134f57733": {
+    "selector": "[role=\"switch\"]",
+    "timestamp": 1762576660.579106,
+    "success_count": 1,
+    "step_description": "알림 받기 스위치를 클릭하여 OFF로 전환한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "3de0c74a86045f4e760b0cccfd217c52": {
+    "selector": "button:has-text(\"으로\")",
+    "timestamp": 1762576683.1297169,
+    "success_count": 1,
+    "step_description": "알림 받기 스위치를 다시 클릭하여 ON으로 전환한다",
+    "element_text": "",
+    "element_tag": ""
+  },
+  "12f4e2efb340a360daeb882533cbb68c": {
+    "selector": "button:has-text(\"성공\")",
+    "timestamp": 1762576718.3927748,
+    "success_count": 1,
+    "step_description": "성공 토스트 버튼을 클릭한다",
+    "element_text": "성공",
+    "element_tag": "button"
+  },
+  "0ef491a0936b1dd8e152cdd7337e4661": {
+    "selector": "button:has-text(\"날짜를 선택하세요\")",
+    "timestamp": 1762576791.420785,
+    "success_count": 1,
+    "step_description": "예약 날짜 선택 버튼을 클릭한다",
+    "element_text": "날짜를 선택하세요",
+    "element_tag": "button"
+  },
+  "fbae59dc2b8cb75ee4ad172a3adda1c9": {
+    "selector": "[id=\"radix-:re:\"]",
+    "timestamp": 1762576814.8900979,
+    "success_count": 1,
+    "step_description": "첫 번째 아코디언 항목을 클릭한다",
+    "element_text": "자주 묻는 질문 1: 서비스 이용 방법",
+    "element_tag": "button"
+  },
+  "659c3e4b3ff27b4a36b06bb07637b20a": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1762576829.308367,
+    "success_count": 1,
+    "step_description": "공유하기 버튼을 클릭한다",
+    "element_text": "공유하기",
+    "element_tag": "button"
+  },
+  "f951098ab7ecf0bdb1a67d213b2c195d": {
+    "selector": "button:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762576833.36533,
+    "success_count": 1,
+    "step_description": "다운로드 시뮬레이션 버튼을 클릭한다",
+    "element_text": "다운로드 시뮬레이션",
+    "element_tag": "button"
+  },
+  "d6c35b1126aace4662901bc0b3bb01b5": {
+    "selector": "#express",
+    "timestamp": 1762576854.088191,
+    "success_count": 1,
+    "step_description": "'빠른 배송 (1-2일, 3,000원)' 라디오 버튼을 클릭한다",
+    "element_text": "express",
+    "element_tag": "button"
+  },
+  "83edc65cce1cc43f0eee75013520ae60": {
+    "selector": "button:has-text(\"전체 선택\")",
+    "timestamp": 1762576872.615391,
+    "success_count": 1,
+    "step_description": "'전체 선택' 버튼을 클릭한다",
+    "element_text": "전체 선택",
+    "element_tag": "button"
+  },
+  "77334db7b4f9c6df34ebfc56ee3719f3": {
+    "selector": "button:has-text(\"로딩 시뮬레이션\")",
+    "timestamp": 1762576882.301038,
+    "success_count": 1,
+    "step_description": "로딩 시뮬레이션 버튼을 클릭한다",
+    "element_text": "로딩 시뮬레이션",
+    "element_tag": "button"
+  },
+  "64bc657a6810a89f36898e3db1e52657": {
+    "selector": "button:has-text(\"Toggle Sidebar\")",
+    "timestamp": 1762577204.168999,
+    "success_count": 1,
+    "step_description": "Meta+Slash 키를 눌러 모바일 메뉴를 토글한다",
+    "element_text": "Toggle Sidebar",
+    "element_tag": "button"
+  },
+  "a7907df2f2027800d8302c5ab5037b57": {
+    "selector": "button:has-text(\"Toggle Sidebar\")",
+    "timestamp": 1762577216.050988,
+    "success_count": 1,
+    "step_description": "ESC 키를 눌러 메뉴를 닫는다",
+    "element_text": "Toggle Sidebar",
+    "element_tag": "button"
+  },
+  "8b109a2dad00f3d5f5a77eb7f1233e81": {
+    "selector": "button:has-text(\"모달 다이얼로그 열기\")",
+    "timestamp": 1762577225.899929,
+    "success_count": 1,
+    "step_description": "'모달 다이얼로그 열기' 버튼을 클릭한다",
+    "element_text": "모달 다이얼로그 열기",
+    "element_tag": "button"
+  },
+  "1ef7ac67ade80da3d9d389ef51321277": {
+    "selector": "button:has-text(\"가상 키보드 토글\")",
+    "timestamp": 1762577373.2133079,
+    "success_count": 1,
+    "step_description": "'가상 키보드 토글' 버튼을 클릭한다",
+    "element_text": "가상 키보드 토글",
+    "element_tag": "button"
   }
 }

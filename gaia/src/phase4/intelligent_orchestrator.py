@@ -830,8 +830,46 @@ Return ONLY a JSON array:
                                 break
 
                         if found_by_text:
-                            self._log(f"    ✅ Found element by aggressive text matching, skipping navigation", progress_callback)
-                            # Continue to action execution below
+                            self._log(f"    ✅ Found element by aggressive text matching", progress_callback)
+
+                            # 🔥 SMART TAB ACTIVATION: If we found a button/tab but action is fill/click on something else,
+                            # click the button first to activate the tab/section
+                            if text_match and text_match.tag == 'button' and step.action in ['fill', 'click']:
+                                # Check if this is likely a tab button (e.g., "회원가입", "로그인")
+                                tab_keywords = ['회원가입', '로그인', '탭', 'tab', '페이지', 'page']
+                                is_likely_tab = any(keyword in text_match.text.lower() or keyword in step.description.lower()
+                                                   for keyword in tab_keywords)
+
+                                if is_likely_tab:
+                                    self._log(f"    🔘 Detected tab/section button, clicking first to activate...", progress_callback)
+
+                                    # Click the tab button first
+                                    tab_click_success = self._execute_action(
+                                        action="click",
+                                        selector=better_selector,
+                                        params=[],
+                                        url=current_url
+                                    )
+
+                                    if tab_click_success:
+                                        self._log(f"    ✅ Tab activated, refreshing page state...", progress_callback)
+                                        time.sleep(1.0)  # Wait for tab content to load
+                                        screenshot, dom_elements, current_url = self._get_page_state()
+                                        self._log(f"    📊 DOM updated: {len(dom_elements)} elements", progress_callback)
+
+                                        # Now find the actual target element (e.g., input field)
+                                        # Re-run LLM to find the real target in the now-visible tab
+                                        self._log(f"    🔍 Re-analyzing to find actual target element...", progress_callback)
+                                        llm_decision = self.llm_client.select_element_for_step(
+                                            step_description=step.description,
+                                            dom_elements=dom_elements,
+                                            screenshot_base64=screenshot,
+                                            url=current_url
+                                        )
+                                        self._log(f"    🎯 Found actual target: {llm_decision['selector']}", progress_callback)
+                                    else:
+                                        self._log(f"    ⚠️ Tab click failed, continuing anyway...", progress_callback)
+
                         # STEP 2: SMART NAVIGATION (only if text matching failed)
                         if not found_by_text:
                             self._log(f"    🌍 Trying Smart Navigation (last resort)...", progress_callback)
