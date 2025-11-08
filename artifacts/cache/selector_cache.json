@@ -1042,8 +1042,8 @@
   },
   "f951098ab7ecf0bdb1a67d213b2c195d": {
     "selector": "button:has-text(\"다운로드 시뮬레이션\")",
-    "timestamp": 1762605751.283017,
-    "success_count": 1,
+    "timestamp": 1762620336.5458481,
+    "success_count": 2,
     "step_description": "다운로드 시뮬레이션 버튼을 클릭한다",
     "element_text": "다운로드 시뮬레이션",
     "element_tag": "button",
@@ -1056,8 +1056,8 @@
   },
   "d6c35b1126aace4662901bc0b3bb01b5": {
     "selector": "#express",
-    "timestamp": 1762605773.033108,
-    "success_count": 1,
+    "timestamp": 1762620360.1927092,
+    "success_count": 2,
     "step_description": "'빠른 배송 (1-2일, 3,000원)' 라디오 버튼을 클릭한다",
     "element_text": "express",
     "element_tag": "button",
@@ -1070,8 +1070,8 @@
   },
   "83edc65cce1cc43f0eee75013520ae60": {
     "selector": "button:has-text(\"전체 선택\")",
-    "timestamp": 1762605791.394937,
-    "success_count": 1,
+    "timestamp": 1762620400.601046,
+    "success_count": 2,
     "step_description": "'전체 선택' 버튼을 클릭한다",
     "element_text": "전체 선택",
     "element_tag": "button",
@@ -1084,7 +1084,7 @@
   },
   "77334db7b4f9c6df34ebfc56ee3719f3": {
     "selector": "button:has-text(\"로딩 시뮬레이션\")",
-    "timestamp": 1762605800.828822,
+    "timestamp": 1762620508.575985,
     "success_count": 1,
     "step_description": "로딩 시뮬레이션 버튼을 클릭한다",
     "element_text": "로딩 시뮬레이션",
@@ -1098,7 +1098,7 @@
   },
   "64bc657a6810a89f36898e3db1e52657": {
     "selector": "button:has-text(\"Toggle Sidebar\")",
-    "timestamp": 1762606175.245209,
+    "timestamp": 1762621102.9118788,
     "success_count": 1,
     "step_description": "Meta+Slash 키를 눌러 모바일 메뉴를 토글한다",
     "element_text": "Toggle Sidebar",
@@ -1112,8 +1112,8 @@
   },
   "8b109a2dad00f3d5f5a77eb7f1233e81": {
     "selector": "button:has-text(\"모달 다이얼로그 열기\")",
-    "timestamp": 1762606281.604673,
-    "success_count": 1,
+    "timestamp": 1762621177.32895,
+    "success_count": 2,
     "step_description": "'모달 다이얼로그 열기' 버튼을 클릭한다",
     "element_text": "모달 다이얼로그 열기",
     "element_tag": "button",
@@ -1126,7 +1126,7 @@
   },
   "1ef7ac67ade80da3d9d389ef51321277": {
     "selector": "button[type=\"submit\"]:has-text(\"가상 키보드 토글\")",
-    "timestamp": 1762606530.192954,
+    "timestamp": 1762621486.188662,
     "success_count": 0,
     "step_description": "'가상 키보드 토글' 버튼을 클릭한다",
     "element_text": "",
@@ -1308,7 +1308,7 @@
   },
   "d2dab2dfa55ccccf71979e63da8a7543": {
     "selector": "div:has-text(\"호버 카드 1\n\n마우스를 올리면 배경색과 크기가 변합니다\")",
-    "timestamp": 1762615783.7846348,
+    "timestamp": 1762621211.6154099,
     "success_count": 0,
     "step_description": "첫 번째 호버 카드에 마우스를 올린다",
     "element_text": "호버 카드 1\n\n마우스를 올리면 배경색과 크기가 변합니다",
@@ -1361,6 +1361,31 @@
     "element_tag": "th",
     "attributes": {
       "class": "text-foreground h-10 px-2 text-left align-middle font-medium whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px] cursor-pointer hover:bg-muted/50"
+    }
+  },
+  "a7907df2f2027800d8302c5ab5037b57": {
+    "selector": "button:has-text(\"Toggle Sidebar\")",
+    "timestamp": 1762621159.3014169,
+    "success_count": 1,
+    "step_description": "ESC 키를 눌러 메뉴를 닫는다",
+    "element_text": "Toggle Sidebar",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "3a76e7f53497894d28ee2ec228eadf32": {
+    "selector": "div:has-text(\"호버 카드 3\n\n마우스를 올리면 배경색과 크기가 변합니다\")",
+    "timestamp": 1762621288.072418,
+    "success_count": 0,
+    "step_description": "세 번째 호버 카드에 마우스를 올린다",
+    "element_text": "호버 카드 3\n\n마우스를 올리면 배경색과 크기가 변합니다",
+    "element_tag": "div",
+    "attributes": {
+      "class": "relative p-6 border rounded-lg cursor-pointer overflow-hidden"
     }
   }
 }
