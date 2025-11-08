@@ -879,9 +879,17 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
 
         elif action in ("click", "fill", "press"):
             # :has-text() 실패 시 :text()로 자동 재시도 (fallback)
-            fallback_selector = None
+            # [type="submit"] 실패 시 제거해서 재시도 (fallback)
+            fallback_selectors = []
             if ':has-text(' in selector:
-                fallback_selector = selector.replace(':has-text(', ':text(')
+                fallback_selectors.append(selector.replace(':has-text(', ':text('))
+            if '[type="submit"]' in selector:
+                fallback_selectors.append(selector.replace('[type="submit"]', ''))
+            if '[type="submit"]' in selector and ':has-text(' in selector:
+                # 둘 다 제거한 버전도 추가
+                fallback_selectors.append(selector.replace('[type="submit"]', '').replace(':has-text(', ':text('))
+
+            fallback_selector = fallback_selectors[0] if fallback_selectors else None
 
             # 선택자가 필요한 동작
             element = page.locator(selector).first
@@ -921,13 +929,21 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 try:
                     await element.click(timeout=30000)
                 except Exception as click_error:
-                    # :has-text() 실패 시 :text()로 재시도
-                    if fallback_selector and 'Timeout' in str(click_error):
-                        print(f"⚠️  :has-text() timed out, retrying with :text()...")
-                        element = page.locator(fallback_selector).first
-                        await element.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
-                        await page.wait_for_timeout(500)
-                        await element.click(timeout=30000)
+                    # Fallback 시도: :has-text() → :text(), [type="submit"] 제거 등
+                    if fallback_selectors and 'Timeout' in str(click_error):
+                        for fb_selector in fallback_selectors:
+                            try:
+                                print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
+                                element = page.locator(fb_selector).first
+                                await element.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
+                                await page.wait_for_timeout(500)
+                                await element.click(timeout=30000)
+                                break  # 성공하면 루프 종료
+                            except Exception:
+                                continue  # 다음 fallback 시도
+                        else:
+                            # 모든 fallback 실패
+                            raise click_error
                     else:
                         raise
             elif action == "fill":
@@ -936,11 +952,18 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 try:
                     await element.fill(value, timeout=30000)
                 except Exception as fill_error:
-                    # :has-text() 실패 시 :text()로 재시도
-                    if fallback_selector and 'Timeout' in str(fill_error):
-                        print(f"⚠️  :has-text() timed out, retrying with :text()...")
-                        element = page.locator(fallback_selector).first
-                        await element.fill(value, timeout=30000)
+                    # Fallback 시도
+                    if fallback_selectors and 'Timeout' in str(fill_error):
+                        for fb_selector in fallback_selectors:
+                            try:
+                                print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
+                                element = page.locator(fb_selector).first
+                                await element.fill(value, timeout=30000)
+                                break
+                            except Exception:
+                                continue
+                        else:
+                            raise fill_error
                     else:
                         raise
             elif action == "press":
@@ -949,22 +972,34 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 try:
                     await element.press(value, timeout=30000)
                 except Exception as press_error:
-                    # :has-text() 실패 시 :text()로 재시도
-                    if fallback_selector and 'Timeout' in str(press_error):
-                        print(f"⚠️  :has-text() timed out, retrying with :text()...")
-                        element = page.locator(fallback_selector).first
-                        await element.press(value, timeout=30000)
+                    # Fallback 시도
+                    if fallback_selectors and 'Timeout' in str(press_error):
+                        for fb_selector in fallback_selectors:
+                            try:
+                                print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
+                                element = page.locator(fb_selector).first
+                                await element.press(value, timeout=30000)
+                                break
+                            except Exception:
+                                continue
+                        else:
+                            raise press_error
                     else:
                         raise
 
         else:
             raise ValueError(f"Unsupported action: {action}")
 
-        # 상태 변경을 기다립니다
-        try:
-            await page.wait_for_load_state("networkidle", timeout=5000)  # 3초에서 5초로 증가시켰습니다
-        except Exception:
-            await page.wait_for_timeout(1500)  # 1초에서 1.5초로 증가시켰습니다
+        # 상태 변경을 기다립니다 (CLICK on button[type="submit"]일 때만)
+        # 폼 입력 중간에는 네비게이션 대기하지 않음 (홈페이지로 튕기는 문제 방지)
+        if action == "click" and "submit" in selector.lower():
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                await page.wait_for_timeout(1500)
+        else:
+            # 폼 입력/일반 클릭은 짧게만 대기
+            await page.wait_for_timeout(300)
 
         # 내비게이션이 발생하면 현재 URL을 업데이트합니다
         session.current_url = page.url
