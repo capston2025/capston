@@ -118,12 +118,34 @@ class IntelligentOrchestrator:
         if is_dynamic:
             print(f"[Stable Selector] ⚠️ Dynamic ID detected: {elem.selector}")
 
-        # Priority 1: Text-based selector
+        # Priority 1: Text-based selector (with attribute specificity)
         if elem.text and elem.text.strip():
-            stable_selector = f'{elem.tag}:has-text("{elem.text}")'
-            if is_dynamic:
-                print(f"[Stable Selector] ✅ Using text selector: {stable_selector}")
-            return stable_selector
+            # Try to make selector more specific using attributes
+            attrs = elem.attributes or {}
+
+            # For buttons, add type attribute if available (submit, button, reset)
+            if elem.tag == 'button' and attrs.get('type'):
+                button_type = attrs.get('type')
+                stable_selector = f'{elem.tag}[type="{button_type}"]:has-text("{elem.text}")'
+                if is_dynamic:
+                    print(f"[Stable Selector] ✅ Using specific button selector: {stable_selector}")
+                return stable_selector
+
+            # For elements with role, add role attribute
+            elif attrs.get('role') and attrs.get('role') != 'button':
+                # Skip role="button" as it's redundant with <button> tag
+                role = attrs.get('role')
+                stable_selector = f'{elem.tag}[role="{role}"]:has-text("{elem.text}")'
+                if is_dynamic:
+                    print(f"[Stable Selector] ✅ Using role-based selector: {stable_selector}")
+                return stable_selector
+
+            # Fallback to simple text selector
+            else:
+                stable_selector = f'{elem.tag}:has-text("{elem.text}")'
+                if is_dynamic:
+                    print(f"[Stable Selector] ✅ Using text selector: {stable_selector}")
+                return stable_selector
 
         # Priority 2: ARIA label
         aria_label = elem.attributes.get('aria-label', '')
@@ -177,11 +199,33 @@ class IntelligentOrchestrator:
         if self._is_dynamic_selector(cached_selector):
             print(f"[Cache Validation] ⚠️ Dynamic ID detected in cache: {cached_selector}")
 
-            # Try to regenerate using cached metadata
+            # Try to regenerate using cached metadata with attribute specificity
             if cached_text:
-                new_selector = f'{cached_tag}:has-text("{cached_text}")'
-                print(f"[Cache Validation] ✅ Regenerated text selector: {new_selector}")
-                return new_selector
+                attrs = cached_data.get('attributes', {})
+
+                # For buttons, use type attribute if available
+                if cached_tag == 'button' and attrs.get('type'):
+                    button_type = attrs.get('type')
+                    new_selector = f'{cached_tag}[type="{button_type}"]:has-text("{cached_text}")'
+                    print(f"[Cache Validation] ✅ Regenerated specific button selector: {new_selector}")
+                    # Update cache with better selector
+                    cached_data['selector'] = new_selector
+                    return new_selector
+
+                # For elements with role
+                elif attrs.get('role') and attrs.get('role') != 'button':
+                    role = attrs.get('role')
+                    new_selector = f'{cached_tag}[role="{role}"]:has-text("{cached_text}")'
+                    print(f"[Cache Validation] ✅ Regenerated role-based selector: {new_selector}")
+                    cached_data['selector'] = new_selector
+                    return new_selector
+
+                # Fallback to simple text selector
+                else:
+                    new_selector = f'{cached_tag}:has-text("{cached_text}")'
+                    print(f"[Cache Validation] ✅ Regenerated text selector: {new_selector}")
+                    cached_data['selector'] = new_selector
+                    return new_selector
 
             # Can't regenerate, invalidate cache
             print(f"[Cache Validation] ❌ Cache invalidated (no text metadata)")
@@ -926,8 +970,7 @@ Return ONLY a JSON array:
                                         selector=smart_nav["selector"],
                                         params=step.params,
                                         url=current_url,
-                                        screenshot=screenshot,
-                                        progress_callback=progress_callback
+                                        before_screenshot=screenshot
                                     )
 
                                     if click_success:
@@ -938,6 +981,7 @@ Return ONLY a JSON array:
                                         target_element = next((e for e in dom_elements if e.selector == smart_nav["selector"]), None)
                                         element_tag = target_element.tag if target_element else ""
                                         element_text = smart_nav.get("element_text", "")
+                                        element_attrs = target_element.attributes if target_element else {}
 
                                         # Update cache with successful smart navigation selector
                                         self._update_cache(
@@ -948,7 +992,8 @@ Return ONLY a JSON array:
                                             success=True,
                                             dom_context=dom_context,
                                             element_text=element_text,
-                                            element_tag=element_tag
+                                            element_tag=element_tag,
+                                            attributes=element_attrs
                                         )
 
                                         # Update state after successful click
@@ -1114,6 +1159,7 @@ Return ONLY a JSON array:
                     # UPDATE CACHE: Record execution result
                     element_text = target_element.text if target_element else ""
                     element_tag = target_element.tag if target_element else ""
+                    element_attrs = target_element.attributes if target_element else {}
                     self._update_cache(
                         step_description=step.description,
                         action=step.action,
@@ -1122,7 +1168,8 @@ Return ONLY a JSON array:
                         success=success,
                         dom_context=dom_context,
                         element_text=element_text,
-                        element_tag=element_tag
+                        element_tag=element_tag,
+                        attributes=element_attrs
                     )
 
                     if not success:
@@ -1168,6 +1215,7 @@ Return ONLY a JSON array:
                                     target_element = next((e for e in dom_elements if e.selector == llm_decision['selector']), None)
                                     element_text = target_element.text if target_element else ""
                                     element_tag = target_element.tag if target_element else ""
+                                    element_attrs = target_element.attributes if target_element else {}
 
                                     # Update cache with successful selector
                                     self._update_cache(
@@ -1178,7 +1226,8 @@ Return ONLY a JSON array:
                                         success=True,
                                         dom_context=dom_context,
                                         element_text=element_text,
-                                        element_tag=element_tag
+                                        element_tag=element_tag,
+                                        attributes=element_attrs
                                     )
                                     time.sleep(0.2)
                                     # Update current_url after navigation
@@ -2595,7 +2644,8 @@ Respond with JSON only:
 
     def _update_cache(self, step_description: str, action: str, page_url: str,
                      selector: str, success: bool, dom_context: str = "",
-                     element_text: str = "", element_tag: str = "") -> None:
+                     element_text: str = "", element_tag: str = "",
+                     attributes: dict = None) -> None:
         """
         Update cache with execution result and metadata.
 
@@ -2608,6 +2658,7 @@ Respond with JSON only:
             dom_context: DOM context string (active tabs/modals)
             element_text: Text content of the element (for regeneration)
             element_tag: HTML tag of the element (for regeneration)
+            attributes: Element attributes (for specific selector regeneration)
         """
         # 동적 ID 패턴 감지 - 우리가 만든 함수 사용
         if self._is_dynamic_selector(selector):
@@ -2624,6 +2675,7 @@ Respond with JSON only:
                 "step_description": step_description,  # For debugging
                 "element_text": element_text,  # For regeneration
                 "element_tag": element_tag,    # For regeneration
+                "attributes": attributes or {},  # For specific selector regeneration
             }
         else:
             # Update existing entry
@@ -2701,6 +2753,14 @@ Respond with JSON only:
                 json.dump(self.embedding_cache, f, indent=2)
         except Exception as e:
             print(f"[Embedding Cache] Failed to save cache: {e}")
+
+    def close(self) -> None:
+        """
+        Close the orchestrator and save caches.
+        Note: Browser session is managed by MCP host, not closed here.
+        """
+        self._save_cache()
+        self._save_embedding_cache()
 
 
 __all__ = ["IntelligentOrchestrator"]

@@ -470,6 +470,21 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         }
                     }
 
+                    // For switches/toggles, try to find nearby label text
+                    if (el.getAttribute('role') === 'switch' && (!text || text === 'on' || text === 'off')) {
+                        // Look for label in parent container
+                        const parent = el.parentElement;
+                        if (parent) {
+                            const parentContainer = parent.parentElement;
+                            if (parentContainer) {
+                                const label = parentContainer.querySelector('label');
+                                if (label && label.innerText) {
+                                    text = label.innerText.trim();
+                                }
+                            }
+                        }
+                    }
+
                     elements.push({
                         tag: el.tagName.toLowerCase(),
                         selector: getUniqueSelector(el),
