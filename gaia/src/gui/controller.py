@@ -631,10 +631,14 @@ class AppController(QObject):
         percent = (completed / total * 100) if total else 0.0
         self._window.update_overall_progress(percent, completed, total)
         if total:
-            progress_items = [
-                (item.feature_id or item.description or "", 100.0 if item.checked else 0.0)
-                for item in items.values()
-            ]
+            progress_items = []
+            for item in items.values():
+                title = item.feature_id or item.description or ""
+                status = getattr(item, "status", "pending")
+                percent_value = 100.0 if item.checked else 0.0
+                if status == "failed":
+                    percent_value = 0.0
+                progress_items.append((title, percent_value, status))
         else:
             progress_items = []
         self._window.update_test_progress(progress_items)

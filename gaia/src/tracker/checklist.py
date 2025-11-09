@@ -22,26 +22,33 @@ class ChecklistTracker:
                 feature_id=feature_id,
                 description=description,
                 checked=False,
+                status="pending",
             )
 
     def mark_found(self, feature_id: str, *, evidence: str | None = None) -> bool:
-        item = self.items.get(feature_id)
-        if not item:
-            return False
-        item.checked = True
-        if evidence:
-            item.evidence = evidence
-        return True
+        return self.set_status(feature_id, "success", evidence=evidence)
 
     def mark_by_predicate(self, predicate: str, *, evidence: str | None = None) -> List[ChecklistItem]:
         hits: List[ChecklistItem] = []
         for item in self.items.values():
             if predicate.lower() in item.description.lower():
-                item.checked = True
-                if evidence:
-                    item.evidence = evidence
+                self.set_status(item.feature_id, "success", evidence=evidence)
                 hits.append(item)
         return hits
+
+    def set_status(self, feature_id: str, status: str, *, evidence: str | None = None) -> bool:
+        """Update status (success, partial, failed, skipped, pending) and evidence for a checklist item."""
+        item = self.items.get(feature_id)
+        if not item:
+            return False
+
+        normalized = (status or "pending").lower()
+        item.status = normalized
+        item.checked = normalized in {"success", "partial"}
+
+        if evidence:
+            item.evidence = evidence
+        return True
 
     def as_dict(self) -> Dict[str, ChecklistItem]:
         return self.items

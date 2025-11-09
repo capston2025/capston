@@ -56,3 +56,4 @@ class ChecklistItem(BaseModel):
     description: str
     checked: bool = False
     evidence: Optional[str] = None
+    status: str = "pending"

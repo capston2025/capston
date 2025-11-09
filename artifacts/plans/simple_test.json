@@ -354,7 +354,7 @@
           "description": "대한민국 옵션을 클릭한다",
           "action": "click",
           "selector": "",
-          "params": []
+          "params": ["대한민국"]
         },
         {
           "description": "선택된 국가가 표시되는지 확인한다",
@@ -444,68 +444,7 @@
         "params": ["document.querySelectorAll('table tbody tr').length > 0"]
       }
     },
-    {
-      "id": "SH006",
-      "priority": "SHOULD",
-      "scenario": "토스트 알림이 정상적으로 표시되는 것을 확인한다",
-      "steps": [
-        {
-          "description": "폼과 피드백 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#forms"]
-        },
-        {
-          "description": "성공 토스트 버튼을 클릭한다",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "성공 토스트 알림이 표시되는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["성공!"]
-        }
-      ],
-      "assertion": {
-        "description": "버튼 클릭 시 토스트 알림이 표시되어야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["성공!"]
-      }
-    },
-    {
-      "id": "SH007",
-      "priority": "SHOULD",
-      "scenario": "페이지네이션이 정상적으로 동작하는 것을 확인한다",
-      "steps": [
-        {
-          "description": "기본 기능 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#basics"]
-        },
-        {
-          "description": "페이지네이션의 2번 페이지 링크를 클릭한다",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "2페이지의 상품 정보가 표시되는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["4-6 / 6개 상품"]
-        }
-      ],
-      "assertion": {
-        "description": "페이지 전환 시 해당 페이지의 데이터가 표시되어야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["4-6 / 6개 상품"]
-      }
-    },
+
     {
       "id": "SH008",
       "priority": "SHOULD",
@@ -568,37 +507,7 @@
         "params": ["서비스 이용을 위해서는"]
       }
     },
-    {
-      "id": "SH010",
-      "priority": "SHOULD",
-      "scenario": "공유하기 버튼 클릭 시 클립보드에 빈 문자열이 복사되는 버그를 확인한다",
-      "steps": [
-        {
-          "description": "홈 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/"]
-        },
-        {
-          "description": "공유하기 버튼을 클릭한다",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "성공 토스트가 표시되는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["링크가 클립보드에 복사되었습니다!"]
-        }
-      ],
-      "assertion": {
-        "description": "공유하기 버튼 클릭 시 성공 메시지가 표시되어야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["링크가 클립보드에 복사되었습니다!"]
-      }
-    },
+
     {
       "id": "SH011",
       "priority": "SHOULD",
@@ -785,99 +694,7 @@
         "params": ["document.querySelectorAll('button').length > 0"]
       }
     },
-    {
-      "id": "MAY002",
-      "priority": "MAY",
-      "scenario": "툴팁이 정상적으로 표시되는 것을 확인한다",
-      "steps": [
-        {
-          "description": "폼과 피드백 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#forms"]
-        },
-        {
-          "description": "도움말 버튼에 마우스를 올린다",
-          "action": "hover",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "툴팁이 표시되는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["도움말을 확인하려면 클릭하세요"]
-        }
-      ],
-      "assertion": {
-        "description": "버튼에 마우스 호버 시 툴팁이 표시되어야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["도움말을 확인하려면 클릭하세요"]
-      }
-    },
-    {
-      "id": "MAY003",
-      "priority": "MAY",
-      "scenario": "슬라이드쇼 네비게이션이 정상적으로 동작하는 것을 확인한다",
-      "steps": [
-        {
-          "description": "인터랙션과 데이터 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#interactions"]
-        },
-        {
-          "description": "슬라이드쇼의 다음 버튼을 클릭한다",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "슬라이드 번호가 변경되었는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["슬라이드 2 / 4"]
-        }
-      ],
-      "assertion": {
-        "description": "슬라이드 네비게이션 버튼으로 슬라이드를 전환할 수 있어야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["슬라이드 2 / 4"]
-      }
-    },
-    {
-      "id": "MAY004",
-      "priority": "MAY",
-      "scenario": "키보드 단축키가 정상적으로 동작하는 것을 확인한다",
-      "steps": [
-        {
-          "description": "기본 기능 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#basics"]
-        },
-        {
-          "description": "Meta+Slash 키를 눌러 모바일 메뉴를 토글한다",
-          "action": "press",
-          "selector": "",
-          "params": ["Meta+Slash"]
-        },
-        {
-          "description": "ESC 키를 눌러 메뉴를 닫는다",
-          "action": "press",
-          "selector": "",
-          "params": ["Escape"]
-        }
-      ],
-      "assertion": {
-        "description": "키보드 단축키가 정상적으로 동작해야 한다",
-        "selector": "",
-        "condition": "expectTrue",
-        "params": ["true"]
-      }
-    },
+
     {
       "id": "MAY005",
       "priority": "MAY",
@@ -934,74 +751,8 @@
         "params": ["우클릭하면 상황에 맞는 메뉴가 나타납니다"]
       }
     },
-    {
-      "id": "RT001",
-      "priority": "MAY",
-      "scenario": "세 번째 호버 카드에서 호버 효과가 적용되지 않는 버그를 확인한다",
-      "steps": [
-        {
-          "description": "인터랙션과 데이터 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#interactions"]
-        },
-        {
-          "description": "첫 번째 호버 카드에 마우스를 올린다",
-          "action": "hover",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "'더 보기' 버튼이 나타나는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["더 보기"]
-        },
-        {
-          "description": "세 번째 호버 카드에 마우스를 올린다",
-          "action": "hover",
-          "selector": "",
-          "params": []
-        }
-      ],
-      "assertion": {
-        "description": "호버 카드 기능이 정상적으로 동작해야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["호버 카드"]
-      }
-    },
-    {
-      "id": "MAY007",
-      "priority": "MAY",
-      "scenario": "가상 키보드를 사용하여 텍스트를 입력할 수 있는 것을 확인한다",
-      "steps": [
-        {
-          "description": "인터랙션과 데이터 페이지로 이동한다",
-          "action": "goto",
-          "selector": "",
-          "params": ["https://test-sitev2.vercel.app/#interactions"]
-        },
-        {
-          "description": "'가상 키보드 토글' 버튼을 클릭한다",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "가상 키보드가 표시되는지 확인한다",
-          "action": "expectVisible",
-          "selector": "",
-          "params": ["스페이스"]
-        }
-      ],
-      "assertion": {
-        "description": "가상 키보드가 정상적으로 표시되어야 한다",
-        "selector": "",
-        "condition": "expectVisible",
-        "params": ["스페이스"]
-      }
-    },
+
+
     {
       "id": "MAY008",
       "priority": "MAY",

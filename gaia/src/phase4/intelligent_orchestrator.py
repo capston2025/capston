@@ -315,6 +315,8 @@ class IntelligentOrchestrator:
                     "logs": ["Not executable on current page (LLM prioritization)"]
                 })
                 results["skipped"] += 1
+                if self.tracker:
+                    self.tracker.set_status(scenario.id, "skipped", evidence="LLM prioritization skipped this scenario")
 
         # Step 3: Execute prioritized scenarios (non-sequential based on DOM availability)
         for idx, scenario in enumerate(prioritized_scenarios, start=1):
@@ -329,22 +331,32 @@ class IntelligentOrchestrator:
                 )
                 results["scenarios"].append(result)
 
-                if result["status"] == "success":
+                status = result.get("status", "unknown")
+                logs_evidence = result.get("logs", "")
+                if isinstance(logs_evidence, list):
+                    logs_evidence = "\n".join(logs_evidence)
+                evidence_text = logs_evidence or None
+
+                if status == "success":
                     results["success"] += 1
-                    logs_evidence = result.get("logs", "")
-                    if isinstance(logs_evidence, list):
-                        logs_evidence = "\n".join(logs_evidence)
-                    self.tracker.mark_found(scenario.id, evidence=logs_evidence)
-                elif result["status"] == "partial":
+                    if self.tracker:
+                        self.tracker.set_status(scenario.id, "success", evidence=evidence_text)
+                elif status == "partial":
                     results["partial"] += 1
-                    logs_evidence = result.get("logs", "")
-                    if isinstance(logs_evidence, list):
-                        logs_evidence = "\n".join(logs_evidence)
-                    self.tracker.mark_found(scenario.id, evidence=logs_evidence + " (partial)")
-                elif result["status"] == "failed":
+                    note = f"{logs_evidence} (partial)" if logs_evidence else None
+                    if self.tracker:
+                        self.tracker.set_status(scenario.id, "partial", evidence=note)
+                elif status == "failed":
                     results["failed"] += 1
-                elif result["status"] == "skipped":
+                    if self.tracker:
+                        self.tracker.set_status(scenario.id, "failed", evidence=evidence_text)
+                elif status == "skipped":
                     results["skipped"] += 1
+                    if self.tracker:
+                        self.tracker.set_status(scenario.id, "skipped", evidence=evidence_text)
+                else:
+                    if self.tracker and evidence_text:
+                        self.tracker.set_status(scenario.id, status, evidence=evidence_text)
 
             except Exception as e:
                 import traceback
@@ -361,6 +373,8 @@ class IntelligentOrchestrator:
                     "error": str(e),
                     "logs": []
                 })
+                if self.tracker:
+                    self.tracker.set_status(scenario.id, "failed", evidence=str(e))
 
         self._log(f"\n📊 Execution complete: ✅{results['success']} success, ⚠️{results['partial']} partial, ❌{results['failed']} failed, ⏭️{results['skipped']} skipped", progress_callback)
 
@@ -435,7 +449,7 @@ Return ONLY a JSON array:
 
             client = openai.OpenAI()
             response = client.chat.completions.create(
-                model="gpt-5-mini",  # Multimodal reasoning model - 4x cheaper than o4-mini!
+                model="gpt-5",  # Multimodal reasoning model for demo
                 max_completion_tokens=2048,
                 messages=[
                     {
@@ -1765,7 +1779,7 @@ Respond with JSON only:
             api_key = os.getenv("OPENAI_API_KEY")
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
-                model="gpt-4o-2024-11-20",
+                model="gpt-5",  # For demo
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=300
@@ -2552,7 +2566,7 @@ Respond with JSON only:
             api_key = os.getenv("OPENAI_API_KEY")
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
-                model="gpt-4o-mini",  # Use mini for fast verification
+                model="gpt-5",  # For demo
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=150
