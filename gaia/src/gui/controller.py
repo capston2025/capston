@@ -256,6 +256,7 @@ class AppController(QObject):
                 steps_html = "".join(
                     f"<li>{html.escape(step)}</li>" for step in tc.steps
                 )
+                description = html.escape(getattr(tc, "scenario", tc.name))
                 precondition_html = (
                     f"<div class='case-pre'>{html.escape(tc.precondition)}</div>"
                     if getattr(tc, "precondition", "")
@@ -271,6 +272,7 @@ class AppController(QObject):
                     <div class="case-card">
                         <div class="case-id">{html.escape(tc.id)}</div>
                         <div class="case-title">{html.escape(tc.name)}</div>
+                        <div class="case-desc">{description}</div>
                         {precondition_html}
                         <ul class="step-list">{steps_html}</ul>
                         {expected_html}

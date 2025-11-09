@@ -92,7 +92,7 @@ class AgentServiceClient:
             error_msg = result.get("error", "Unknown error")
             raise ValueError(f"Analysis failed: {error_msg}")
 
-        # output_text를 추출해 파싱
+        # output_text를 추출해 파싱 (이제 RT JSON 형식)
         output_text = result["data"]["output_text"]
 
         # 마크다운 코드 블록이 있다면 제거
@@ -109,25 +109,90 @@ class AgentServiceClient:
         except json.JSONDecodeError as e:
             # 디버그: 원본 응답 출력
             print(f"DEBUG: Raw output_text: {repr(output_text[:500])}")
+            # 전체 output_text를 파일에 저장
+            import tempfile
+            with open("/tmp/agent_output_error.txt", "w") as f:
+                f.write(output_text)
+            print(f"DEBUG: Full output saved to /tmp/agent_output_error.txt")
             raise ValueError(f"Failed to parse output JSON: {e}\nRaw output: {output_text[:200]}")
 
-        # dataclass로 변환
-        checklist = [
-            TestCase(
-                id=tc["id"],
-                name=tc["name"],
-                category=tc["category"],
-                priority=tc["priority"],
-                precondition=tc["precondition"],
-                steps=tc["steps"],
-                expected_result=tc["expected_result"]
+        # 디버그: 받은 JSON 구조 확인
+        print(f"[DEBUG] Received JSON keys: {list(output_json.keys())}")
+        print(f"[DEBUG] Has test_scenarios: {'test_scenarios' in output_json}")
+        print(f"[DEBUG] Has checklist: {'checklist' in output_json}")
+
+        # RT JSON 형식을 TC 형식으로 변환
+        # RT JSON: { "profile": "realistic-test", "url": "...", "test_scenarios": [...] }
+        # TC 형식으로 변환: { "checklist": [...], "summary": {...} }
+
+        test_scenarios = output_json.get("test_scenarios", [])
+        print(f"[DEBUG] Found {len(test_scenarios)} test scenarios")
+        checklist = []
+
+        for scenario in test_scenarios:
+            # RT scenario를 TC로 변환
+            # RT steps를 TC steps로 변환 (description 필드 사용)
+            tc_steps = []
+            for step in scenario.get("steps", []):
+                # description 필드가 있으면 사용, 없으면 action 기반으로 생성
+                description = step.get("description", "")
+                if description:
+                    tc_steps.append(description)
+                else:
+                    # fallback: description이 없는 경우 action 기반으로 생성
+                    action = step.get("action", "")
+                    if action == "goto":
+                        params = step.get("params", [])
+                        tc_steps.append(f"페이지 이동: {params[0] if params else ''}")
+                    elif action == "wait":
+                        params = step.get("params", [])
+                        tc_steps.append(f"대기: {params[0] if params else '0'}ms")
+                    elif "expect" in action.lower():
+                        params = step.get("params", [])
+                        tc_steps.append(f"검증: {params[0] if params else ''}")
+                    elif action == "fill":
+                        params = step.get("params", [])
+                        tc_steps.append(f"입력: {params[0] if params else ''}")
+                    elif action == "click":
+                        tc_steps.append("클릭")
+                    else:
+                        tc_steps.append(action)
+
+            # assertion도 description 우선 사용
+            assertion_obj = scenario.get("assertion", {})
+            if isinstance(assertion_obj, dict):
+                expected_result = assertion_obj.get("description", "")
+                if not expected_result:
+                    # fallback: params에서 추출
+                    params = assertion_obj.get("params", [])
+                    expected_result = params[0] if params else ""
+            else:
+                expected_result = ""
+
+            test_case = TestCase(
+                id=scenario.get("id", ""),
+                name=scenario.get("scenario", ""),
+                category="ui",  # 기본값
+                priority=scenario.get("priority", "SHOULD"),
+                precondition="",  # RT에는 없음
+                steps=tc_steps,
+                expected_result=expected_result
             )
-            for tc in output_json["checklist"]
-        ]
+            checklist.append(test_case)
+
+        summary = {
+            "total": len(checklist),
+            "must": sum(1 for tc in checklist if tc.priority == "MUST"),
+            "should": sum(1 for tc in checklist if tc.priority == "SHOULD"),
+            "may": sum(1 for tc in checklist if tc.priority == "MAY"),
+        }
+
+        print(f"[DEBUG] Converted {len(checklist)} test cases successfully")
+        print(f"[DEBUG] Summary: {summary}")
 
         return AnalysisResult(
             checklist=checklist,
-            summary=output_json["summary"]
+            summary=summary
         )
 
 
