@@ -226,10 +226,11 @@ class CircularProgressWidget(QWidget):
 class TestProgressBadge(QFrame):
     """테스트 케이스 완료 여부를 나타내는 원형 배지."""
 
-    def __init__(self, title: str, percent: float, parent: QWidget | None = None) -> None:
+    def __init__(self, title: str, percent: float, status: str = "pending", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("TestProgressBadge")
         self._percent = 0.0
+        self._status = status
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -247,12 +248,43 @@ class TestProgressBadge(QFrame):
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._title_label)
 
-        self.set_progress(percent)
+        self.set_progress(percent, status)
 
-    def set_progress(self, percent: float) -> None:
+    def set_progress(self, percent: float, status: str | None = None) -> None:
         self._percent = max(0.0, min(100.0, float(percent)))
-        done = self._percent >= 99.0
-        if done:
+        if status is not None:
+            self._status = status
+
+        normalized_status = (self._status or "pending").lower()
+
+        if normalized_status == "failed":
+            indicator_style = (
+                "background: #ef4444;"
+                "border: 2px solid #ef4444;"
+                "border-radius: 20px;"
+                "color: white;"
+                "font-weight: 700;"
+            )
+            self._indicator.setText("✕")
+        elif normalized_status == "skipped":
+            indicator_style = (
+                "background: rgba(255,255,255,0.95);"
+                "border: 2px dashed #d1d5db;"
+                "border-radius: 20px;"
+                "color: #9ca3af;"
+                "font-weight: 700;"
+            )
+            self._indicator.setText("—")
+        elif normalized_status == "partial":
+            indicator_style = (
+                "background: #f97316;"
+                "border: 2px solid #f97316;"
+                "border-radius: 20px;"
+                "color: white;"
+                "font-weight: 700;"
+            )
+            self._indicator.setText("~")
+        elif self._percent >= 99.0 or normalized_status == "success":
             indicator_style = (
                 "background: #10b981;"
                 "border: 2px solid #10b981;"
@@ -944,10 +976,19 @@ class MainWindow(QMainWindow):
             else:
                 self._overall_progress_detail.setText(f"{int(round(max(0.0, min(100.0, percent))))}% 진행")
 
-    def update_test_progress(self, progress_items: Sequence[tuple[str, float]]) -> None:
+    def update_test_progress(self, progress_items: Sequence[tuple]) -> None:
         """개별 테스트 케이스 진행률 막대를 갱신합니다."""
         if not self._test_progress_layout:
             return
+
+        normalized_items: list[tuple[str, float, str]] = []
+        for entry in progress_items:
+            if len(entry) >= 3:
+                title, percent, status = entry[0], entry[1], entry[2]
+            else:
+                title, percent = entry[0], entry[1]
+                status = "pending"
+            normalized_items.append((str(title), float(percent), str(status)))
 
         # 기존 항목 제거
         while self._test_progress_layout.count():
@@ -958,8 +999,7 @@ class MainWindow(QMainWindow):
                     self._test_progress_empty_label = None
                 widget.deleteLater()
 
-        progress_items = list(progress_items)
-        if not progress_items:
+        if not normalized_items:
             empty_label = QLabel("아직 진행률 정보가 없습니다.", self)
             empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty_label.setProperty("role", "empty-state")
@@ -970,13 +1010,13 @@ class MainWindow(QMainWindow):
             return
 
         cols = 5
-        for idx, (title, percent) in enumerate(progress_items):
+        for idx, (title, percent, status) in enumerate(normalized_items):
             row = idx // cols
             col = idx % cols
-            item_widget = TestProgressBadge(title, percent, self)
+            item_widget = TestProgressBadge(title, percent, status, self)
             self._test_progress_layout.addWidget(item_widget, row, col, Qt.AlignmentFlag.AlignCenter)
 
-        final_row = (len(progress_items) + cols - 1) // cols
+        final_row = (len(normalized_items) + cols - 1) // cols
         self._test_progress_layout.setRowStretch(final_row, 1)
 
     def append_log(self, message: str) -> None:

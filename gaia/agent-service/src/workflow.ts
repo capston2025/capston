@@ -275,8 +275,8 @@ const jsonMergeAgent = new Agent({
 });
 
 function approvalRequest(_message: string) {
-  // TODO: hook up to real approval workflow. For now we always request targeted filtering.
-  return true;
+  // TODO: hook up to real approval workflow. For now we always use broad feature extraction.
+  return false;  // Changed to false to use broadFeatureAgent instead of targeted
 }
 
 export interface WorkflowInput {
@@ -291,18 +291,6 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
   return await withTrace("GAIA Agent Builder", async () => {
     const augmentedInput = await augmentSpecWithRepoContext(workflow.input_as_text);
 
-    const conversationHistory: AgentInputItem[] = [
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: augmentedInput,
-          },
-        ],
-      },
-    ];
-
     const runner = new Runner({
       traceMetadata: {
         __trace_source__: "agent-builder",
@@ -310,23 +298,38 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
       },
     });
 
+    const runAgentWithInput = async (agentInstance: Agent, inputText: string) => {
+      const sessionHistory: AgentInputItem[] = [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: inputText,
+            },
+          ],
+        },
+      ];
+
+      const result = await runner.run(agentInstance, sessionHistory);
+      if (!result.finalOutput) {
+        throw new Error(`Agent "${agentInstance.name}" returned empty output`);
+      }
+      return result.finalOutput;
+    };
+
     const approvalMessage = "어떤 기능을 집중해서 테스트할까요? (예: 로그인, 장바구니, 회원가입)";
     const pipeline = approvalRequest(approvalMessage)
       ? [targetedFeatureAgent, testCaseGeneratorAgent, scenarioSplitterAgent, jsonMergeAgent]
       : [broadFeatureAgent, testCaseGeneratorAgent, scenarioSplitterAgent, jsonMergeAgent];
 
-    let finalOutput = "";
-    for (const agent of pipeline) {
-      const result = await runner.run(agent, [...conversationHistory]);
-      conversationHistory.push(...result.newItems.map((item) => item.rawItem));
-      if (!result.finalOutput) {
-        throw new Error("Agent result is undefined");
-      }
-      finalOutput = result.finalOutput;
+    let stageOutput = augmentedInput;
+    for (const agentInstance of pipeline) {
+      stageOutput = await runAgentWithInput(agentInstance, stageOutput);
     }
 
     return {
-      output_text: finalOutput,
+      output_text: stageOutput,
     };
   });
 };
