@@ -570,8 +570,10 @@ Return ONLY a JSON array:
                 # Define action categories
                 actions_needing_llm = ["click", "fill", "press"]  # Actions that need LLM to find elements
                 actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab", "wait", "waitForTimeout"]  # Actions that execute directly
-                assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"]  # Assertion actions
-                actions_with_explicit_selector = ["hover", "focus", "select", "dragAndDrop", "scrollIntoView"]  # Actions that can use explicit selector
+                assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast"]  # Assertion actions
+                # 🚨 FIX: Added click, fill, expectVisible, expectText to explicit selector list
+                # These actions should use plan JSON selectors without re-running LLM Vision
+                actions_with_explicit_selector = ["click", "fill", "hover", "focus", "select", "dragAndDrop", "scrollIntoView", "expectVisible", "expectText"]
 
                 logs.append(f"Step {step_idx}: {step.description}")
 
@@ -787,10 +789,26 @@ Return ONLY a JSON array:
 
                     # EARLY CHECK: Detect multi-element matches and force fallback if needed
                     if llm_decision['selector']:
-                        matching_elements = [e for e in dom_elements if e.selector == llm_decision['selector']]
-                        if len(matching_elements) > 1:
-                            self._log(f"    ⚠️ WARNING: Selector matches {len(matching_elements)} elements!", progress_callback)
-                            self._log(f"    💡 Matched elements: {[e.text[:30] for e in matching_elements[:3]]}", progress_callback)
+                        # 🚨 FIX: Skip check for Playwright-specific selectors (they're already specific)
+                        # Selectors with :has-text(), :text(), or >> are Playwright-specific and already precise
+                        is_playwright_selector = any(marker in llm_decision['selector']
+                                                    for marker in [':has-text(', ':text(', '>>', ':has('])
+
+                        if is_playwright_selector:
+                            # Trust Playwright selectors, they're already specific
+                            match_count = 1
+                        else:
+                            # Use string comparison for simple CSS selectors
+                            matching_elements = [e for e in dom_elements if e.selector == llm_decision['selector']]
+                            match_count = len(matching_elements)
+
+                        if match_count > 1:
+                            # Get sample text from matching elements (for logging only)
+                            matching_elements = [e for e in dom_elements if e.selector == llm_decision['selector']]
+                            sample_texts = [e.text[:30] for e in matching_elements[:3]] if matching_elements else []
+                            self._log(f"    ⚠️ WARNING: Selector matches {match_count} elements!", progress_callback)
+                            if sample_texts:
+                                self._log(f"    💡 Sample elements: {sample_texts}", progress_callback)
 
                             # AUTO-FIX: Try to extract target text from step description and improve selector
                             import re
@@ -903,24 +921,37 @@ Return ONLY a JSON array:
 
                         # FALLBACK: Try single word matches (less specific)
                         if not found_by_text:
+                            # 🚨 FIX: Prioritize EXACT matches over partial matches
                             # Try longest matches first to avoid substring issues
                             for target_text in sorted(all_korean + all_english, key=len, reverse=True):
-                                # Search in ALL DOM elements - use exact match or word boundary
-                                text_match = next((e for e in dom_elements
-                                                 if target_text == e.text or  # Exact match first
-                                                    f' {target_text} ' in f' {e.text} ' or  # Word boundary
-                                                    e.text.startswith(target_text) or
-                                                    e.text.endswith(target_text)), None)
-                                if text_match:
-                                    element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
-                                    # Use :has-text() instead of :has-text() for better Playwright compatibility
+                                # Phase 1: Try EXACT match first (highest confidence)
+                                exact_match = next((e for e in dom_elements if target_text == e.text), None)
+                                if exact_match:
+                                    element_type = exact_match.tag if exact_match.tag in ['button', 'a', 'input', 'div'] else 'button'
                                     better_selector = f'{element_type}:has-text("{target_text}")'
-                                    self._log(f"    🔧 Aggressive text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                    self._log(f"    🔧 Exact text match: Found '{target_text}' → {better_selector}", progress_callback)
                                     llm_decision['selector'] = better_selector
-                                    llm_decision['confidence'] = 85
-                                    llm_decision['reasoning'] = f"Aggressive text match: '{target_text}'"
+                                    llm_decision['confidence'] = 95
+                                    llm_decision['reasoning'] = f"Exact text match: '{target_text}'"
+                                    text_match = exact_match
                                     found_by_text = True
                                     break
+
+                            # Phase 2: If no exact match, try partial matches (lower confidence)
+                            if not found_by_text:
+                                for target_text in sorted(all_korean + all_english, key=len, reverse=True):
+                                    # Search with word boundaries only (avoid "장바구니" matching "장바구니 추가" AND "장바구니 보기")
+                                    text_match = next((e for e in dom_elements
+                                                     if f' {target_text} ' in f' {e.text} '), None)  # Word boundary only
+                                    if text_match:
+                                        element_type = text_match.tag if text_match.tag in ['button', 'a', 'input', 'div'] else 'button'
+                                        better_selector = f'{element_type}:has-text("{target_text}")'
+                                        self._log(f"    🔧 Partial text match: Found '{target_text}' → {better_selector}", progress_callback)
+                                        llm_decision['selector'] = better_selector
+                                        llm_decision['confidence'] = 75
+                                        llm_decision['reasoning'] = f"Partial text match: '{target_text}'"
+                                        found_by_text = True
+                                        break
 
                         if found_by_text:
                             self._log(f"    ✅ Found element by aggressive text matching", progress_callback)
