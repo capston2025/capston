@@ -47,8 +47,9 @@ class AnalysisWorker(QObject):
         """플래너 시나리오를 GUI에서 사용하기 좋은 AnalysisResult로 변환합니다."""
         summary: Dict[str, int] = {"total": 0, "must": 0, "should": 0, "may": 0}
         test_cases: list[TestCase] = []
+        scenarios_list = list(scenarios)  # Iterable을 list로 변환
 
-        for scenario in scenarios:
+        for scenario in scenarios_list:
             summary["total"] += 1
             priority_label, summary_key = self._priority_mapping(scenario.priority)
             summary[summary_key] += 1
@@ -66,7 +67,10 @@ class AnalysisWorker(QObject):
                 )
             )
 
-        return AnalysisResult(checklist=test_cases, summary=summary)
+        result = AnalysisResult(checklist=test_cases, summary=summary)
+        # 🚨 FIX: RT scenarios를 AnalysisResult에 추가하여 action/selector 보존
+        result._rt_scenarios = scenarios_list
+        return result
 
     @staticmethod
     def _priority_mapping(priority: str) -> tuple[str, str]:

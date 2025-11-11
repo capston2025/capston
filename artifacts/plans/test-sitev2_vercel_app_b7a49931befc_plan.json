@@ -6,107 +6,93 @@
     {
       "id": "RT001",
       "priority": "MUST",
-      "scenario": "검색 디바운스 및 정렬 순환",
+      "scenario": "검색 디바운스 결과 표시",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "note",
+          "action": "goto",
           "selector": "",
-          "params": []
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
         },
         {
-          "description": "검색창에 '노트북' 입력",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "검색 입력: 노트북",
+          "action": "fill",
+          "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+          "params": [
+            "노트북"
+          ]
         },
         {
           "description": "300ms 대기",
-          "action": "note",
+          "action": "wait",
           "selector": "",
-          "params": []
+          "params": [
+            300
+          ]
         },
         {
-          "description": "결과 수 텍스트 확인",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "정렬 버튼 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "정렬 버튼 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "검색 결과 카드에 '노트북' 관련 텍스트 표시 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('노트북')",
+          "params": [
+            "노트북"
+          ]
         }
       ],
       "assertion": {
-        "description": "노트북 관련 결과 카드 표시되고 정렬 상태가 '관련도'로 복귀",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "노트북 관련 결과 카드와 결과 수 텍스트가 300ms 내 표시",
+        "selector": "div:has-text('결과')",
+        "condition": "expectVisible",
+        "params": [
+          "결과"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
       "id": "RT002",
-      "priority": "MUST",
-      "scenario": "로그인 성공 후 구매하기 활성화",
+      "priority": "MAY",
+      "scenario": "카드 드래그 앤 드롭 순서 변경",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#interactions",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#interactions"
+          ]
+        },
+        {
+          "description": "1번 카드 선택",
+          "action": "click",
+          "selector": "div:has-text('카드 1')",
           "params": []
         },
         {
-          "description": "사용자 인증 카드에서 '로그인' 탭 선택",
-          "action": "note",
-          "selector": "",
+          "description": "3번 위치로 놓기",
+          "action": "click",
+          "selector": "div:has-text('카드 3')",
           "params": []
         },
         {
-          "description": "이메일 입력: test@example.com",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "비밀번호 입력: P@ssw0rd!",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "로그인 버튼 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "첫 번째 상품 카드에서 '장바구니 추가' 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "'장바구니 보기' 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "새 순서 확인: 3번째 위치에 '카드 1' 표시",
+          "action": "expectVisible",
+          "selector": "ul li:nth-child(3):has-text('카드 1')",
+          "params": [
+            "카드 1"
+          ]
         }
       ],
       "assertion": {
-        "description": "성공 토스트 표시 및 사용자 이메일 노출, 장바구니 모달에서 '구매하기' 버튼 활성화",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "카드 순서가 변경된 상태로 고정되고 시각적 피드백이 적용",
+        "selector": "ul li:nth-child(3):has-text('카드 1')",
+        "condition": "expectVisible",
+        "params": [
+          "카드 1"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
@@ -114,77 +100,179 @@
     {
       "id": "RT003",
       "priority": "MUST",
-      "scenario": "비로그인 상태에서 구매하기 비활성화",
+      "scenario": "로그인 성공 시 구매하기 활성화",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "note",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "첫 번째 상품 카드에서 장바구니 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 추가')",
           "params": []
         },
         {
-          "description": "사용자 카드에 '로그아웃' 버튼이 보이면 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[role='tab']:has-text('로그인')",
           "params": []
         },
         {
-          "description": "첫 번째 상품 카드에서 '장바구니 추가' 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "이메일 입력: test@example.com",
+          "action": "fill",
+          "selector": "input[type=email]",
+          "params": [
+            "test@example.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: Passw0rd!",
+          "action": "fill",
+          "selector": "input[type=password]",
+          "params": [
+            "Passw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button[type='submit']:has-text('로그인')",
           "params": []
         },
         {
-          "description": "'장바구니 보기' 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "로그인 성공 후 이메일 표시 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('test@example.com')",
+          "params": [
+            "test@example.com"
+          ]
+        },
+        {
+          "description": "장바구니 보기 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
           "params": []
+        },
+        {
+          "description": "구매하기 버튼 표시 확인",
+          "action": "expectVisible",
+          "selector": "button:has-text('구매하기')",
+          "params": [
+            "구매하기"
+          ]
         }
       ],
       "assertion": {
-        "description": "'구매하기' 버튼이 비활성화(Disabled)이고 Tooltip 노출",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "성공 토스트 표시 및 구매하기 버튼 활성화",
+        "selector": "button:has-text('구매하기')",
+        "condition": "expectVisible",
+        "params": [
+          "구매하기"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
       "id": "RT004",
-      "priority": "MUST",
-      "scenario": "장바구니 수량 0에서 항목 제거",
+      "priority": "SHOULD",
+      "scenario": "로그아웃 시 사용자 정보 숨김 및 장바구니 비움",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "note",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[role='tab']:has-text('로그인')",
           "params": []
         },
         {
-          "description": "첫 번째 상품 카드에서 '장바구니 추가' 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "이메일 입력: qa@example.com",
+          "action": "fill",
+          "selector": "input[type=email]",
+          "params": [
+            "qa@example.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: Test1234!",
+          "action": "fill",
+          "selector": "input[type=password]",
+          "params": [
+            "Test1234!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button[type='submit']:has-text('로그인')",
           "params": []
         },
         {
-          "description": "'장바구니 보기' 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "첫 번째 상품 카드에서 장바구니 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 추가')",
           "params": []
         },
         {
-          "description": "해당 항목의 '-' 버튼 1회 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "장바구니 보기 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
           "params": []
+        },
+        {
+          "description": "Dialog 닫기",
+          "action": "click",
+          "selector": "button:has-text('닫기')",
+          "params": []
+        },
+        {
+          "description": "로그아웃 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그아웃')",
+          "params": []
+        },
+        {
+          "description": "로그아웃 안내 토스트 표시 확인",
+          "action": "expectVisible",
+          "selector": "div[role='alert']",
+          "params": [
+            "info"
+          ]
+        },
+        {
+          "description": "장바구니 보기 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "장바구니 비어있음 문구 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('장바구니가 비어')",
+          "params": [
+            "장바구니가 비어"
+          ]
         }
       ],
       "assertion": {
-        "description": "항목 제거되고 총 금액 0원 표시",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "아바타·이메일 숨김, 장바구니가 비워진 상태로 표시",
+        "selector": "div:has-text('장바구니가 비어')",
+        "condition": "expectVisible",
+        "params": [
+          "장바구니가 비어"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
@@ -192,110 +280,237 @@
     {
       "id": "RT005",
       "priority": "MUST",
-      "scenario": "테이블 검색+필터 교집합",
+      "scenario": "수량 감소로 항목 제거",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#interactions",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "첫 번째 상품 카드에서 장바구니 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 추가')",
           "params": []
         },
         {
-          "description": "데이터 표시 섹션으로 포커스",
-          "action": "note",
-          "selector": "",
+          "description": "장바구니 보기 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
           "params": []
         },
         {
-          "description": "검색창에 '김' 입력",
-          "action": "note",
-          "selector": "",
+          "description": "'-' 버튼 클릭 (1회)",
+          "action": "click",
+          "selector": "button:has-text('-')",
           "params": []
         },
         {
-          "description": "상태 필터를 'active'로 선택",
-          "action": "note",
-          "selector": "",
+          "description": "'-' 버튼 클릭 (2회)",
+          "action": "click",
+          "selector": "button:has-text('-')",
           "params": []
+        },
+        {
+          "description": "리스트 비움 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('장바구니가 비어')",
+          "params": [
+            "장바구니가 비어"
+          ]
         }
       ],
       "assertion": {
-        "description": "'김' 포함이면서 active 상태인 행만 표시되고 행 수 배지 업데이트",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "수량이 0이 되면 항목 자동 제거 및 총 금액 갱신",
+        "selector": "div:has-text('장바구니가 비어')",
+        "condition": "expectVisible",
+        "params": [
+          "장바구니가 비어"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
       "id": "RT006",
-      "priority": "SHOULD",
-      "scenario": "다중 파일 업로드 후 개별 삭제",
+      "priority": "MUST",
+      "scenario": "미로그인 상태에서 구매하기 비활성",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#forms",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "첫 번째 상품 카드에서 장바구니 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 추가')",
           "params": []
         },
         {
-          "description": "파일 업로드 영역에 'sample1.png (120KB)' 드롭",
-          "action": "note",
-          "selector": "",
+          "description": "장바구니 보기 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
           "params": []
         },
         {
-          "description": "파일 업로드 영역에 'doc.pdf (80KB)' 드롭",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "업로드 목록에서 'doc.pdf'의 삭제 버튼 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "구매하기 버튼 비활성 확인",
+          "action": "expectVisible",
+          "selector": "button[disabled]:has-text('구매하기')",
+          "params": [
+            "구매하기"
+          ]
         }
       ],
       "assertion": {
-        "description": "목록에 sample1.png (120KB)만 남고 삭제된 항목은 사라짐",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "구매하기 버튼이 비활성 상태",
+        "selector": "button[disabled]:has-text('구매하기')",
+        "condition": "expectVisible",
+        "params": [
+          "구매하기"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
       "id": "RT007",
-      "priority": "SHOULD",
-      "scenario": "다운로드 프로그레스 완료 토스트",
+      "priority": "MAY",
+      "scenario": "이미지 확대모달 배율 제한",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#forms",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "첫 번째 상품 이미지 클릭(hover 대체)",
+          "action": "click",
+          "selector": "img[alt]:nth-of-type(1)",
           "params": []
         },
         {
-          "description": "'다운로드 시뮬레이션' 버튼 클릭",
-          "action": "note",
-          "selector": "",
+          "description": "확대보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('확대보기')",
           "params": []
         },
         {
-          "description": "프로그레스 100% 텍스트 확인",
-          "action": "note",
-          "selector": "",
+          "description": "Zoom In 클릭 (1/4)",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 클릭 (2/4)",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 클릭 (3/4)",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 클릭 (4/4, 300% 도달 예상)",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "현재 배율 300% 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('300%')",
+          "params": [
+            "300%"
+          ]
+        },
+        {
+          "description": "300%에서 추가 Zoom In 시도",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "배율 변화 없음(여전히 300%) 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('300%')",
+          "params": [
+            "300%"
+          ]
+        },
+        {
+          "description": "Zoom Out 반복 클릭하여 50% 도달",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "현재 배율 50% 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('50%')",
+          "params": [
+            "50%"
+          ]
+        },
+        {
+          "description": "50%에서 추가 Zoom Out 시도",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "배율 변화 없음(여전히 50%) 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('50%')",
+          "params": [
+            "50%"
+          ]
+        },
+        {
+          "description": "닫기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('닫기')",
           "params": []
         }
       ],
       "assertion": {
-        "description": "프로그레스가 100%에서 멈추고 완료 토스트 표시",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "배율이 50%~300% 범위에서만 변경",
+        "selector": "div:has-text('50%'), div:has-text('300%')",
+        "condition": "expectVisible",
+        "params": [
+          "50%",
+          "300%"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
@@ -303,338 +518,148 @@
     {
       "id": "RT008",
       "priority": "SHOULD",
-      "scenario": "드래그 앤 드롭 카드 재배치 유지",
+      "scenario": "날짜만 선택 시 안내 문구 표시",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#interactions",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#forms",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#forms"
+          ]
+        },
+        {
+          "description": "예약 날짜 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('예약 날짜')",
           "params": []
         },
         {
-          "description": "첫 번째 카드를 네 번째 위치로 드래그 시작(대신 클릭)",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "달력에서 날짜 선택: 25",
+          "action": "click",
+          "selector": "div[role='dialog'] button:has-text('25')",
+          "params": [
+            "2025-12-25"
+          ]
         },
         {
-          "description": "네 번째 위치에 드롭(대신 대상 클릭)",
-          "action": "note",
+          "description": "시간 선택 건너뛰기",
+          "action": "wait",
           "selector": "",
-          "params": []
+          "params": [
+            300
+          ]
         },
         {
-          "description": "다른 영역 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "예약 요약 영역 안내 문구 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('시간 미선택')",
+          "params": [
+            "시간 미선택"
+          ]
         }
       ],
       "assertion": {
-        "description": "카드 순서가 변경된 상태로 유지",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "시간 미선택 안내 문구 표시",
+        "selector": "div:has-text('시간 미선택')",
+        "condition": "expectVisible",
+        "params": [
+          "시간 미선택"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
       "id": "RT009",
-      "priority": "MAY",
-      "scenario": "이미지 확대모달 배율 범위 제한",
+      "priority": "SHOULD",
+      "scenario": "다중 파일 업로드 후 개별 삭제",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#forms",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#forms"
+          ]
+        },
+        {
+          "description": "파일 선택(드래그 앤 드롭 대체): report.pdf",
+          "action": "select",
+          "selector": "input[type='file']",
+          "params": [
+            "report.pdf"
+          ]
+        },
+        {
+          "description": "파일 선택(드래그 앤 드롭 대체): photo.jpg",
+          "action": "select",
+          "selector": "input[type='file']",
+          "params": [
+            "photo.jpg"
+          ]
+        },
+        {
+          "description": "업로드 목록에서 photo.jpg의 삭제 버튼 클릭",
+          "action": "click",
+          "selector": "li:has-text('photo.jpg') button:has-text('삭제')",
           "params": []
         },
         {
-          "description": "첫 번째 상품 이미지 Hover 대체 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "'확대보기' 버튼 클릭",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 1/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 2/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 3/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 4/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 5/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 6/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 7/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 8/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 9/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 10/10",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 1/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 2/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 3/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 4/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 5/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 6/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 7/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 8/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 9/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 10/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 11/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 12/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 13/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 14/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 15/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 16/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 17/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 18/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 19/20",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 클릭 20/20",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "report.pdf 항목 표시 확인",
+          "action": "expectVisible",
+          "selector": "li:has-text('report.pdf')",
+          "params": [
+            "report.pdf"
+          ]
         }
       ],
       "assertion": {
-        "description": "배율이 50~300% 범위에서만 변경됨",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "photo.jpg만 제거되고 report.pdf 유지",
+        "selector": "li:has-text('report.pdf')",
+        "condition": "expectVisible",
+        "params": [
+          "report.pdf"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
       "id": "RT010",
-      "priority": "MAY",
-      "scenario": "무한 스크롤 100개 로드 후 종료 안내",
+      "priority": "MUST",
+      "scenario": "다운로드 시뮬레이션 완료 토스트",
       "steps": [
         {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#interactions",
-          "action": "note",
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#forms",
+          "action": "goto",
           "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#forms"
+          ]
+        },
+        {
+          "description": "다운로드 시뮬레이션 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('다운로드 시뮬레이션')",
           "params": []
         },
         {
-          "description": "무한 스크롤 리스트 로딩 인디케이터 확인",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 1회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 2회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 3회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 4회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 5회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 6회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 7회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 8회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 9회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "끝까지 스크롤 동작을 10회 대기",
-          "action": "note",
-          "selector": "",
-          "params": []
+          "description": "프로그레스가 100%가 될 때까지 대기",
+          "action": "expectText",
+          "selector": "[role='progressbar']",
+          "params": [
+            "100%"
+          ]
         }
       ],
       "assertion": {
-        "description": "아이템 100개 로드 후 '모든 아이템을 로드했습니다!' 안내 표시, 추가 로드 없음",
-        "selector": "",
-        "condition": "note",
-        "params": [],
+        "description": "프로그레스 완료 후 성공 토스트 표시",
+        "selector": "div[role='alert']",
+        "condition": "expectVisible",
+        "params": [
+          "성공"
+        ],
         "expected_outcome": null,
         "success_indicators": []
       }
