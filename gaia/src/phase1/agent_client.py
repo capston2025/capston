@@ -121,7 +121,14 @@ class AgentServiceClient:
         print(f"[DEBUG] Has test_scenarios: {'test_scenarios' in output_json}")
         print(f"[DEBUG] Has checklist: {'checklist' in output_json}")
 
-        # RT JSON 형식을 TC 형식으로 변환
+        # 🚨 NEW: Agent Service가 이미 완벽한 RT JSON을 반환하므로 그대로 사용
+        # RT JSON을 TC로 변환하지 않고 바로 반환
+        if 'test_scenarios' in output_json:
+            print(f"[DEBUG] RT JSON detected, returning as-is without TC conversion")
+            # RT JSON을 그대로 반환 (AnalysisResult 대신 dict 반환)
+            return output_json  # 이건 analyzer.py에서 처리
+
+        # OLD: RT JSON 형식을 TC 형식으로 변환 (하위 호환성을 위해 유지)
         # RT JSON: { "profile": "realistic-test", "url": "...", "test_scenarios": [...] }
         # TC 형식으로 변환: { "checklist": [...], "summary": {...} }
 

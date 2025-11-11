@@ -1,268 +1,4 @@
 {
-  "9dc79a633ca341ae0d31ffac0c392c3f": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762163637.32772,
-    "success_count": 4,
-    "step_description": "Find and click a button that opens a dialog or modal popup"
-  },
-  "82daf17074bb1308c795f9c48de30f0a": {
-    "selector": "button:has-text(\"기본 기능\")",
-    "timestamp": 1762163741.203868,
-    "success_count": 4,
-    "step_description": "Click on basics or 기본 기능 navigation link"
-  },
-  "be53107aca8b9197416ffd52b307e1e7": {
-    "selector": "button:has-text(\"인터랙션\")",
-    "timestamp": 1762163741.7725492,
-    "success_count": 3,
-    "step_description": "Click on interactions or 인터랙션 navigation link"
-  },
-  "7e4fcd5d5b49689fed7b27acf2ec3985": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762163747.873924,
-    "success_count": 4,
-    "step_description": "Press Tab key to navigate between focusable elements"
-  },
-  "9afe112b86fe4bd221b73064072fa27d": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762163748.218663,
-    "success_count": 4,
-    "step_description": "Press Tab again"
-  },
-  "a5937e47f46ab619c8c8e74e3752909f": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762163748.588104,
-    "success_count": 4,
-    "step_description": "Press Enter on focused element"
-  },
-  "fac8a992b38e2c0bdabeefc2b1530010": {
-    "selector": "button:has-text(\"둘러보기\")",
-    "timestamp": 1762164065.187553,
-    "success_count": 6,
-    "step_description": "Click 둘러보기 button in first card (기본 기능)"
-  },
-  "a8575f27849b1e977405181c6e3d9b21": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762164076.002918,
-    "success_count": 6,
-    "step_description": "Click 폼과 피드백 button at bottom section"
-  },
-  "cee375c96d7347b6a433ad92a21fa3ee": {
-    "selector": "button:has-text(\"홈으로\")",
-    "timestamp": 1762164086.170423,
-    "success_count": 6,
-    "step_description": "Click 홈으로 button"
-  },
-  "5cb45df9e08e6c0625ddff689398b748": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762164096.542817,
-    "success_count": 6,
-    "step_description": "Click 공유하기 button"
-  },
-  "c7f8edc1fbca32b286aaeff27607c83a": {
-    "selector": "#express",
-    "timestamp": 1762164101.361344,
-    "success_count": 3,
-    "step_description": "Click radio button for express shipping"
-  },
-  "9c30ec8d78b39f779a3a0a5afa4ff1a8": {
-    "selector": "[role=\"switch\"]",
-    "timestamp": 1762164111.961332,
-    "success_count": 5,
-    "step_description": "Click first toggle switch (알림 받기)"
-  },
-  "735a6eeecf3bca05afcca60e30985e56": {
-    "selector": "button:has-text(\"국가를 선택해주세요\")",
-    "timestamp": 1762164122.717521,
-    "success_count": 5,
-    "step_description": "Click select dropdown trigger"
-  },
-  "a706a296fe4ee7980f76387ea8eafbdc": {
-    "selector": "button:has-text(\"날짜를 선택하세요\")",
-    "timestamp": 1762164133.6443038,
-    "success_count": 5,
-    "step_description": "Click date picker button"
-  },
-  "eaf3dddcecdc2fa0b464e1b97ac6acaf": {
-    "selector": "button:has-text(\"모달 다이얼로그 열기\")",
-    "timestamp": 1762164144.476539,
-    "success_count": 5,
-    "step_description": "Click 모달 다이얼로그 열기 button"
-  },
-  "2b52cf026cfbcc7f14dddf3a02f1a4a3": {
-    "selector": "button:has-text(\"Close\")",
-    "timestamp": 1762164145.65176,
-    "success_count": 5,
-    "step_description": "Press Escape to close modal"
-  },
-  "ad3c558eb95c40bdbab075693b34ccda": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762164197.489942,
-    "success_count": 5,
-    "step_description": "Click sidebar button for 폼과 피드백"
-  },
-  "a61ae647f6000c8e9d469f56792843bc": {
-    "selector": "button:has-text(\"필터\")",
-    "timestamp": 1762164208.191743,
-    "success_count": 5,
-    "step_description": "Click filter button"
-  },
-  "8a5bdf00fd41e8d55ed9c732d448c586": {
-    "selector": "button:has-text(\"Toggle Sidebar\")",
-    "timestamp": 1762164233.315556,
-    "success_count": 5,
-    "step_description": "Click view toggle button"
-  },
-  "85d934453eb8d4432ea0160e6d7a58c3": {
-    "selector": "[role=\"tab\"]:has-text(\"분석\")",
-    "timestamp": 1762164156.2728162,
-    "success_count": 4,
-    "step_description": "Click 분석 tab"
-  },
-  "693e9cf1f2bb955ed45271d69c244454": {
-    "selector": "button:has-text(\"on\")",
-    "timestamp": 1762162353.797594,
-    "success_count": 0,
-    "step_description": "Click first accordion trigger"
-  },
-  "7563c7e2cf4da850b874aeebfb5181c2": {
-    "selector": "button:has-text(\"기본 기능\")",
-    "timestamp": 1762161851.4449449,
-    "success_count": 1,
-    "step_description": "Look for and click on a link or button that says home or 홈"
-  },
-  "7712ed1757b12ff16abcb6cd47f3a6c1": {
-    "selector": "button:has-text(\"on\")",
-    "timestamp": 1762161919.326475,
-    "success_count": 0,
-    "step_description": "Click the close button or X to close the dialog"
-  },
-  "af6e3ac544fec5d006ad79ae17423187": {
-    "selector": "button:has-text(\"기본 기능\")",
-    "timestamp": 1762163646.091838,
-    "success_count": 3,
-    "step_description": "Find tab navigation and click on the second or third tab"
-  },
-  "4453a3baba7b0e1a752a7f26d1c735c6": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163352.0889778,
-    "success_count": 2,
-    "step_description": "Navigate to the forms section by clicking a button that mentions forms or 폼"
-  },
-  "61748c98db4f5add67e37c38a28085ac": {
-    "selector": "#express",
-    "timestamp": 1762163373.3190012,
-    "success_count": 2,
-    "step_description": "Click on a radio button option for express delivery or 빠른 배송"
-  },
-  "2027fb87670bd71792d030bf5f3ef3a7": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163557.297875,
-    "success_count": 6,
-    "step_description": "Navigate to forms section"
-  },
-  "0923a54adbe71b1498a3a382ff828e62": {
-    "selector": "[role=\"switch\"]:has-text(\"on\")",
-    "timestamp": 1762163469.950804,
-    "success_count": 0,
-    "step_description": "Find and click a toggle switch for notifications or similar"
-  },
-  "1362b44606363eda33a57418064c0b4c": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163522.370187,
-    "success_count": 2,
-    "step_description": "Navigate to forms or feedback section"
-  },
-  "3a20b57eaf49a4b206bfd691ab340ffb": {
-    "selector": "button:has-text(\"성공\")",
-    "timestamp": 1762163530.385828,
-    "success_count": 2,
-    "step_description": "Click a button that triggers a success message or toast notification"
-  },
-  "adfda1f0bc5b74c5be4a091310205cec": {
-    "selector": "button:has-text(\"국가를 선택해주세요\")",
-    "timestamp": 1762163542.6388009,
-    "success_count": 2,
-    "step_description": "Click on a dropdown or select menu for choosing country or similar option"
-  },
-  "af59525984194fa801f510698bfcdab7": {
-    "selector": "div:has-text(\"대한민국\")",
-    "timestamp": 1762163551.227308,
-    "success_count": 2,
-    "step_description": "Select an option from the dropdown like Korea or 대한민국"
-  },
-  "fbc15e3676775388a7f3ff1a9d7d23bd": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163623.163239,
-    "success_count": 2,
-    "step_description": "Navigate to feedback section"
-  },
-  "a6700c880cc8b64ca250977eea05f5b9": {
-    "selector": "button:has-text(\"오류\")",
-    "timestamp": 1762163631.29478,
-    "success_count": 2,
-    "step_description": "Click a button that shows an error message or notification"
-  },
-  "711a2d25a4b40703e04acd6e0d96523c": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163665.878448,
-    "success_count": 2,
-    "step_description": "Navigate to a section with progress bars or loading indicators"
-  },
-  "989ffb26c3884d050fb9219feafb996b": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163687.5305028,
-    "success_count": 2,
-    "step_description": "Find and click on an accordion header or expandable section"
-  },
-  "98729e662ae99b98c9fc145d588c762e": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762162908.5345669,
-    "success_count": 1,
-    "step_description": "Click again to collapse the section"
-  },
-  "0f874f9c97cf1ba1c27b574d7456d58c": {
-    "selector": "button:has-text(\"폼과 피드백\")",
-    "timestamp": 1762163734.441919,
-    "success_count": 2,
-    "step_description": "Move mouse over an element that shows additional information on hover"
-  },
-  "3eab17cbdf877726775a59d3399a8080": {
-    "selector": "a:has-text(\"new\")",
-    "timestamp": 1762164828.640605,
-    "success_count": 1,
-    "step_description": "Click on 'new' link in header"
-  },
-  "7c0cf737e0df8a4572024f244b3ffa12": {
-    "selector": "a:has-text(\"ask\")",
-    "timestamp": 1762164851.469717,
-    "success_count": 1,
-    "step_description": "Click on 'ask' link in header"
-  },
-  "ca6e4977a6d1af66c5647ee8dae5a213": {
-    "selector": "a:has-text(\"show\")",
-    "timestamp": 1762164874.3543549,
-    "success_count": 1,
-    "step_description": "Click on 'show' link in header"
-  },
-  "5a9a12ab0bd51382f1add4bdb7819aca": {
-    "selector": "a:has-text(\"jobs\")",
-    "timestamp": 1762164899.8746738,
-    "success_count": 1,
-    "step_description": "Click on 'jobs' link in header"
-  },
-  "ec72b5fb1467c0cb7555237e1128267f": {
-    "selector": "a:has-text(\"comments\")",
-    "timestamp": 1762164915.651432,
-    "success_count": 1,
-    "step_description": "Click on comments link for first story"
-  },
-  "6894ec87e881b4b0a930cba5f0aba76a": {
-    "selector": "a:has-text(\"past\")",
-    "timestamp": 1762164939.7852669,
-    "success_count": 1,
-    "step_description": "Click on 'past' link in header"
-  },
   "c10c7ec4f5dde3b8c2a5b88d870af363": {
     "selector": "button:has-text(\"기본 기능\")",
     "timestamp": 1762250590.497259,
@@ -1640,5 +1376,520 @@
       "title": "",
       "role": ""
     }
+  },
+  "16a75aa1c48311235092fa1bfeae4a85": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762768730.773348,
+    "success_count": 0,
+    "step_description": "기본 기능 페이지(#essential-features)로 이동",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "e36ba9754db1906adc9b025d50063c2b": {
+    "selector": "button[type=\"submit\"]:has-text(\"폼과 피드백\")",
+    "timestamp": 1762768868.9166138,
+    "success_count": 0,
+    "step_description": "검색 결과가 2개 이상 표시된 상태 보장(필요 시 '가이드' 입력)",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "7e8d52ef5466a55ce07ca4d62d13e6f2": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762769339.0153751,
+    "success_count": 0,
+    "step_description": "기본 기능 페이지의 인증 카드로 스크롤",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "c6bc2d0ce39af51db786002f09150345": {
+    "selector": "#login-email",
+    "timestamp": 1762769357.796414,
+    "success_count": 1,
+    "step_description": "기본 기능 페이지의 인증 카드로 스크롤",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "email",
+      "id": "login-email",
+      "name": null,
+      "placeholder": "your@email.com",
+      "aria-label": ""
+    }
+  },
+  "dc5cae35d0e7181becb156195d4a445c": {
+    "selector": "[role=\"tab\"]:has-text(\"로그인\")",
+    "timestamp": 1762769359.2692978,
+    "success_count": 1,
+    "step_description": "로그인 탭 선택",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "6dd2a356c05154ffd673e14108a9518a": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762777296.0211148,
+    "success_count": 2,
+    "step_description": "https://test-sitev2.vercel.app/#basics로 이동",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "656896fe165a770596ea5950b8fcc5ea": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762777106.1820679,
+    "success_count": 0,
+    "step_description": "검색창에 '테스트' 입력",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "ccf960022a7d9cabb21de51241eed5fc": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762777170.630073,
+    "success_count": 0,
+    "step_description": "검색창에 '가' 입력",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "ff8791c8f90cd5b22606f29a5112fc39": {
+    "selector": "button:has-text(\"로그인\")",
+    "timestamp": 1762777258.575568,
+    "success_count": 1,
+    "step_description": "'로그인' 탭 선택",
+    "element_text": "로그인",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "21571a15ae3cdf5eacf8d70538a4037e": {
+    "selector": "button[type=\"submit\"]:has-text(\"로그인\")",
+    "timestamp": 1762777273.221641,
+    "success_count": 1,
+    "step_description": "이메일/비밀번호 미입력 상태에서 '로그인' 버튼 클릭",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "7fc0d0ade19831b6eeeb78607539b446": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762777529.7386081,
+    "success_count": 0,
+    "step_description": "'로그인' 탭 선택",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "f27afc9ff09565e33f8cdeb0e61b52f2": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762778901.7230132,
+    "success_count": 0,
+    "step_description": "섹션 '#essential-features'의 검색 카드 포커스",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "587f14d4e2a4eecd96e73031739a6247": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762778924.769162,
+    "success_count": 1,
+    "step_description": "섹션 '#essential-features'의 검색 카드 포커스",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "e7eaeb8573e26bfc5e9ec0f94867a2a2": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762778929.91346,
+    "success_count": 0,
+    "step_description": "검색 인풋 placeholder '검색어를 입력하세요...' 에 '노트북' 입력",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "637510cffa70af6ec11e481a8d5be9de": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762792685.037256,
+    "success_count": 0,
+    "step_description": "https://test-sitev2.vercel.app/#/basics 로 이동",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "35679e2cac979991b7752a9e5bb228e7": {
+    "selector": "button:has-text(\"장바구니 보기\")",
+    "timestamp": 1762779314.2148721,
+    "success_count": 1,
+    "step_description": "'장바구니 보기' 버튼 클릭",
+    "element_text": "장바구니 보기",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "bfc93bce6717030f9368065c6edb4781": {
+    "selector": "button[type=\"submit\"]:has-text(\"폼과 피드백\")",
+    "timestamp": 1762793543.941099,
+    "success_count": 0,
+    "step_description": "https://test-sitev2.vercel.app/#/forms 로 이동",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "78af7d5ce7d72118c2f98666b1eded94": {
+    "selector": "button[type=\"submit\"]:has-text(\"폼과 피드백\")",
+    "timestamp": 1762791240.354371,
+    "success_count": 0,
+    "step_description": "섹션 '#feedback'로 스크롤",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "328fb8b2e715fd73525ba1e600967886": {
+    "selector": "button[type=\"submit\"]:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762791476.783571,
+    "success_count": 0,
+    "step_description": "'다운로드 시뮬레이션' 버튼 클릭",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "88dc1aef191411e5aae6663c5ac29632": {
+    "selector": "button:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762791630.829514,
+    "success_count": 1,
+    "step_description": "프로그레스 증가 확인(일정 속도)",
+    "element_text": "다운로드 시뮬레이션",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "3245762c88e2e3b144dc3772fe9efa27": {
+    "selector": "button[type=\"submit\"]:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762791732.605793,
+    "success_count": 0,
+    "step_description": "100% 도달 후 토스트 확인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "edf815648a6adf6886eafb4b63efc4f2": {
+    "selector": "button[type=\"submit\"]:has-text(\"스낵바 표시\")",
+    "timestamp": 1762791983.0513752,
+    "success_count": 0,
+    "step_description": "'스낵바 표시' 클릭 후 4초 대기",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "72e40c615b8586112ae1693aca947100": {
+    "selector": "button[type=\"submit\"]:has-text(\"스낵바 표시\")",
+    "timestamp": 1762792147.0462148,
+    "success_count": 0,
+    "step_description": "스낵바 자동 종료 확인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "b6d8efc27bec6eebea52795b274f3975": {
+    "selector": "button[type=\"submit\"]:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1762792818.2485251,
+    "success_count": 0,
+    "step_description": "https://test-sitev2.vercel.app/#/interactions 로 이동",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "493936beb4fd676b2d313df729d9205e": {
+    "selector": "button[type=\"submit\"]:has-text(\"폼과 피드백\")",
+    "timestamp": 1762793094.930955,
+    "success_count": 0,
+    "step_description": "섹션 '#forms'로 스크롤",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "2bf68038e7f414494132b513f2f8d23c": {
+    "selector": "button[type=\"submit\"]:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1762793395.5477161,
+    "success_count": 0,
+    "step_description": "알림 및 이메일 알림 토글 ON",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "a23bd9c500e101bb2a28dd2220872b7a": {
+    "selector": "[role=\"tab\"]:has-text(\"로그인\")",
+    "timestamp": 1762845483.960305,
+    "success_count": 1,
+    "step_description": "탭 선택: 로그인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "5739ee78166199bb5fe1eceac22ae3d6": {
+    "selector": "#login-email",
+    "timestamp": 1762845489.678831,
+    "success_count": 0,
+    "step_description": "이메일 입력: test@example.com",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "email",
+      "id": "login-email",
+      "name": null,
+      "placeholder": "your@email.com",
+      "aria-label": ""
+    }
+  },
+  "5c22a29537125d9370d0300bec800d86": {
+    "selector": "button:has-text(\"장바구니 추가\")",
+    "timestamp": 1762845539.193813,
+    "success_count": 1,
+    "step_description": "첫 번째 상품 카드의 '장바구니 추가' 클릭",
+    "element_text": "장바구니 추가",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "76acf3ca61141efa5a3364daad36bf12": {
+    "selector": "button:has-text(\"장바구니 추가\")",
+    "timestamp": 1762845552.467784,
+    "success_count": 1,
+    "step_description": "동일 상품 카드의 '장바구니 추가' 다시 클릭",
+    "element_text": "장바구니 추가",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "eba51c0aa036f67c975f27028eb69c2c": {
+    "selector": "button:has-text(\"장바구니 보기\")",
+    "timestamp": 1762845560.830921,
+    "success_count": 1,
+    "step_description": "장바구니 보기 클릭",
+    "element_text": "장바구니 보기",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "45c21a290545d212bef1e34bf52bd5f5": {
+    "selector": "button[type=\"submit\"]:has-text(\"로그인이 필요합니다\")",
+    "timestamp": 1762845624.5566568,
+    "success_count": 1,
+    "step_description": "모달에서 해당 상품 수량 확인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "8583921edec1375b72250cf6d03fb166": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762845636.8901372,
+    "success_count": 0,
+    "step_description": "검색어 입력: 노트북",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "9e3ad6726dc54e9653118e175e697455": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762845677.326676,
+    "success_count": 0,
+    "step_description": "사용자 테이블 검색어 입력: 김",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "0374f2335e2eed7d8f944e5f421cbd84": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762846497.6190279,
+    "success_count": 0,
+    "step_description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "70eb2add262871061a094fceb8a1ddab": {
+    "selector": "button:has-text(\"보기\")",
+    "timestamp": 1762846707.406317,
+    "success_count": 1,
+    "step_description": "'장바구니 보기' 클릭",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "771642009d9ad4f4c05f5c5f7e1570e6": {
+    "selector": "button:has-text(\"필터\")",
+    "timestamp": 1762846973.065618,
+    "success_count": 1,
+    "step_description": "상태 필터에서 'active' 선택",
+    "element_text": "필터",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "be5c4fa9edfd5616a83baca84b625e3f": {
+    "selector": "button:has-text(\"장바구니 추가\")",
+    "timestamp": 1762847094.2447958,
+    "success_count": 1,
+    "step_description": "아무 상품 카드에서 '장바구니 추가' 클릭",
+    "element_text": "장바구니 추가",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "b1a4dc4d8bdbc31e0eda0cd348827aae": {
+    "selector": "button:has-text(\"장바구니 보기\")",
+    "timestamp": 1762847101.715643,
+    "success_count": 1,
+    "step_description": "'장바구니 보기' 클릭",
+    "element_text": "장바구니 보기",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "b0326b8261c63320785b675bb8d44251": {
+    "selector": "button[type=\"submit\"]:has-text(\"로그인이 필요합니다\")",
+    "timestamp": 1762847142.315944,
+    "success_count": 0,
+    "step_description": "'구매하기' 버튼 disabled 상태 확인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "313a34708a93ab030b26f141144b7d86": {
+    "selector": "button[type=\"submit\"]:has-text(\"기본 기능\")",
+    "timestamp": 1762847283.454549,
+    "success_count": 0,
+    "step_description": "첫 번째 카드를 선택(드래그 시작 가정)",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "1b8cba4aa865e5c8a47ecbfff1c88686": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762847309.6370308,
+    "success_count": 1,
+    "step_description": "첫 번째 카드를 선택(드래그 시작 가정)",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "b21b442690e18a41d6590c9b30c7d6e1": {
+    "selector": "button[type=\"submit\"]:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1762847428.43555,
+    "success_count": 0,
+    "step_description": "네 번째 위치로 드롭 타겟 선택(드래그 종료 가정)",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "80efb0ddc9082a20c3dc60b0cfc20e22": {
+    "selector": "div:has-text(\"🎯\n여기를 더블클릭하세요!\n\n빠르게 두 번 클릭하면 특별한 일이 일어납니다\")",
+    "timestamp": 1762847483.1248279,
+    "success_count": 0,
+    "step_description": "재정렬 반영 대기",
+    "element_text": "🎯\n여기를 더블클릭하세요!\n\n빠르게 두 번 클릭하면 특별한 일이 일어납니다",
+    "element_tag": "div",
+    "attributes": {
+      "class": "p-8 border-2 border-dashed border-muted-foreground/50 rounded-lg text-center cursor-pointer hover:border-muted-foreground transition-colors"
+    }
+  },
+  "9ae735ee02af113a57a197ae87d45d6e": {
+    "selector": "button[type=\"submit\"]:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1762847660.852298,
+    "success_count": 0,
+    "step_description": "무한 스크롤 리스트 포커스",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "779302e331b2a5732a5f23aee9f623cc": {
+    "selector": "button[type=\"submit\"]:has-text(\"인터랙션과 데이터\")",
+    "timestamp": 1762847954.372105,
+    "success_count": 0,
+    "step_description": "가상 키보드 토글 버튼 클릭",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
   }
 }
