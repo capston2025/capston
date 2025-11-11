@@ -25,14 +25,34 @@ class SpecAnalyzer:
     # ------------------------------------------------------------------
     def generate_from_spec(self, document_text: str) -> List[TestScenario]:
         try:
+            print(f"[SpecAnalyzer] Calling Agent Service with document length: {len(document_text)}")
             # AgentWorkflowRunner 대신 AgentServiceClient를 사용
             result = self._agent_client.analyze_document(document_text)
-            # 시나리오 형식으로 변환
+            print(f"[SpecAnalyzer] Agent Service returned result: {type(result)}")
+
+            # 🚨 NEW: RT JSON을 직접 받은 경우
+            if isinstance(result, dict) and 'test_scenarios' in result:
+                print(f"[SpecAnalyzer] Received RT JSON directly from Agent Service")
+                scenarios = self._convert_rt_json_to_scenarios(result)
+                print(f"[SpecAnalyzer] Converted {len(scenarios)} RT scenarios")
+                if not scenarios:
+                    print("[SpecAnalyzer] WARNING: No scenarios in RT JSON, using fallback")
+                    return self._fallback_plan()
+                return scenarios
+
+            # OLD: AnalysisResult (TC) 형식인 경우 (하위 호환성)
+            print(f"[SpecAnalyzer] Result content (first 500 chars): {str(result)[:500]}")
             scenarios = self._convert_analysis_result(result)
-            return scenarios or self._fallback_plan()
+            print(f"[SpecAnalyzer] Converted to {len(scenarios)} scenarios")
+            if not scenarios:
+                print("[SpecAnalyzer] WARNING: No scenarios generated, using fallback")
+                return self._fallback_plan()
+            return scenarios
         except Exception as e:
             # 오류 발생 시 로그를 남기고 폴백을 사용
-            print(f"Warning: Agent Builder failed, using fallback: {e}")
+            print(f"[SpecAnalyzer] ERROR: Agent Builder failed, using fallback: {e}")
+            import traceback
+            traceback.print_exc()
             return self._fallback_plan()
 
     def generate_from_context(
@@ -63,6 +83,58 @@ class SpecAnalyzer:
             return self._fallback_plan()
 
     # ------------------------------------------------------------------
+    def _convert_rt_json_to_scenarios(self, rt_json: dict) -> List[TestScenario]:
+        """RT JSON을 TestScenario 목록으로 직접 변환합니다."""
+        from gaia.src.utils.models import Assertion, TestStep
+
+        scenarios = []
+        for rt_scenario in rt_json.get("test_scenarios", []):
+            # RT steps를 TestStep 객체로 변환 (action, selector, params 유지!)
+            steps = []
+            for step in rt_scenario.get("steps", []):
+                action = step.get("action", "")
+                selector = step.get("selector", "")
+                params = step.get("params", [])
+
+                # 🚨 디버깅: action 확인
+                if action == "note" or action == "":
+                    print(f"[WARN] RT step has action='{action}' - this should not happen!")
+                    print(f"       Step: {step}")
+
+                test_step = TestStep(
+                    description=step.get("description", ""),
+                    action=action,
+                    selector=selector,
+                    params=params,
+                )
+                steps.append(test_step)
+
+                # 첫 번째 step 로깅
+                if len(steps) == 1:
+                    print(f"[DEBUG] First TestStep created: action={test_step.action}, selector={test_step.selector}")
+
+            # RT assertion을 Assertion 객체로 변환
+            rt_assertion = rt_scenario.get("assertion", {})
+            assertion = Assertion(
+                description=rt_assertion.get("description", ""),
+                selector=rt_assertion.get("selector", ""),
+                condition=rt_assertion.get("condition", "expectVisible"),
+                params=rt_assertion.get("params", []),
+                expected_outcome=rt_assertion.get("expected_outcome"),
+                success_indicators=rt_assertion.get("success_indicators", []),
+            )
+
+            scenario = TestScenario(
+                id=rt_scenario.get("id", ""),
+                priority=rt_scenario.get("priority", "SHOULD"),
+                scenario=rt_scenario.get("scenario", ""),
+                steps=steps,
+                assertion=assertion,
+            )
+            scenarios.append(scenario)
+
+        return scenarios
+
     def _convert_analysis_result(self, result) -> List[TestScenario]:
         """AgentServiceClient AnalysisResult를 TestScenario 목록으로 변환합니다."""
         from gaia.src.utils.models import Assertion, TestStep
