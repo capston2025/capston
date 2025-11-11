@@ -521,6 +521,26 @@ RT Step:
   "action": "click",
   "selector": ".login-btn",
   "params": []
+}
+
+TC Step: "'-' 버튼 클릭" or "수량 감소"
+Code: <button><svg class="lucide lucide-minus"><path d="M5 12h14"/></svg></button>
+RT Step:
+{
+  "description": "'-' 버튼 클릭 (1회)",
+  "action": "click",
+  "selector": "button:has(svg.lucide-minus)",
+  "params": []
+}
+
+TC Step: "닫기 버튼 클릭" or "Dialog 닫기"
+Code: <button><svg class="lucide lucide-x"><path d="M18 6 6 18"/></svg></button>
+RT Step:
+{
+  "description": "Dialog 닫기",
+  "action": "click",
+  "selector": "button:has(svg.lucide-x)",
+  "params": []
 }`,
   model: MODEL,
   modelSettings: {

@@ -256,6 +256,23 @@ async def _execute_assertion(page: Page, action: str, selector: str, value: Any,
             else:
                 return {"success": False, "message": f"Expression '{value}' evaluated to false"}
 
+        elif action == "expectText":
+            # 요소의 텍스트 내용을 확인합니다
+            if not selector or value is None:
+                return {"success": False, "message": "Selector and expected text value required for expectText"}
+
+            try:
+                element = page.locator(selector).first
+                text_content = await element.text_content(timeout=5000)
+
+                # Check if expected text is in the element's text content
+                if value in (text_content or ""):
+                    return {"success": True, "message": f"Found text '{value}' in element {selector}"}
+                else:
+                    return {"success": False, "message": f"Expected '{value}', found '{text_content}' in {selector}"}
+            except Exception as e:
+                return {"success": False, "message": f"Element {selector} not found or timeout: {str(e)}"}
+
         elif action == "expectAttribute":
             # 요소 속성 값을 확인합니다
             if not selector or value is None:
@@ -862,7 +879,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             element = page.locator(selector).first
             await element.select_option(value, timeout=30000)
 
-        elif action in ("expectVisible", "expectHidden", "expectTrue", "expectAttribute", "expectCountAtLeast"):
+        elif action in ("expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast"):
             # 검증 동작은 결과를 반환하는 방식으로 처리됩니다
             # 이 동작은 실행되지 않고 검증 결과만 반환합니다
             result = await _execute_assertion(page, action, selector, value, before_screenshot=before_screenshot)

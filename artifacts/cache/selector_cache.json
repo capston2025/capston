@@ -11,24 +11,6 @@
     "success_count": 2,
     "step_description": "비밀번호 입력"
   },
-  "bbaec3be060ac84d039a5c182905cfdd": {
-    "selector": "button:has-text(\"날짜를 선택하세요\")",
-    "timestamp": 1762251230.520109,
-    "success_count": 1,
-    "step_description": "날짜 피커에서 임의의 날짜 선택"
-  },
-  "a5427bb77d0dcccf6083b2cff25e0fa8": {
-    "selector": "button:has-text(\"시간을 선택하세요\")",
-    "timestamp": 1762251253.8531399,
-    "success_count": 1,
-    "step_description": "시간 드롭다운에서 '오전 10시' 선택"
-  },
-  "757b45accbb7a9b312754bfcd5077826": {
-    "selector": "button:has-text(\"다운로드 시뮬레이션\")",
-    "timestamp": 1762251292.422077,
-    "success_count": 0,
-    "step_description": "다운로드 시작 버튼 클릭"
-  },
   "db7fb4979259dcf9127e1fc18573fb8d": {
     "selector": "button:has-text(\"기본 기능\")",
     "timestamp": 1762256569.865494,
@@ -82,66 +64,6 @@
     "timestamp": 1762256637.855192,
     "success_count": 0,
     "step_description": "정렬 버튼 클릭 후 '제목순' 선택"
-  },
-  "223a3c960374a91b7bf4ddc9afe028e8": {
-    "selector": "button:has-text(\"프로필\")",
-    "timestamp": 1762252232.9559832,
-    "success_count": 0,
-    "step_description": "프로필 영역의 로그아웃 클릭"
-  },
-  "307bef752ed6e3cd9c49608b2a188a60": {
-    "selector": "input.file:text-foreground.placeholder:text-muted-foreground",
-    "timestamp": 1762252322.9564538,
-    "success_count": 0,
-    "step_description": "업로드 영역에 미지원 형식 파일 업로드 시도"
-  },
-  "62ae6f27963b1c399b3a65454d839aae": {
-    "selector": "button:has-text(\"날짜를 선택하세요\")",
-    "timestamp": 1762252393.5560079,
-    "success_count": 1,
-    "step_description": "날짜 피커에서 임의의 날짜 선택"
-  },
-  "61bd55162445df69e2a4e1634c3f6c0b": {
-    "selector": "button:has-text(\"시간을 선택하세요\")",
-    "timestamp": 1762252417.409469,
-    "success_count": 1,
-    "step_description": "시간 드롭다운에서 '오전 10시' 선택"
-  },
-  "27c5a14f5e18b52e6be1dfcfeb9496dd": {
-    "selector": "button:has-text(\"홈으로\")",
-    "timestamp": 1762252592.085044,
-    "success_count": 1,
-    "step_description": "메뉴에서 임의 항목 선택"
-  },
-  "d6f7778d8b13581cea4763fda007bb2f": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1762252663.137631,
-    "success_count": 1,
-    "step_description": "도움말/설정 등 툴팁 대상에 호버 또는 포커스"
-  },
-  "60ee39891b051542f1af908c430fa510": {
-    "selector": "button:has-text(\"다운로드 시뮬레이션\")",
-    "timestamp": 1762252672.769653,
-    "success_count": 1,
-    "step_description": "다운로드 시작 버튼 클릭"
-  },
-  "a57ec929600be80d83fe9a9c51ee0770": {
-    "selector": "button:has-text(\"가상 키보드 토글\")",
-    "timestamp": 1762252685.836391,
-    "success_count": 1,
-    "step_description": "뷰 전환 토글 클릭(그리드 → 리스트 또는 반대)"
-  },
-  "bd0ee01ac967ffef0f264a13f0ee5cbd": {
-    "selector": "button:has-text(\"자동재생 끄기\")",
-    "timestamp": 1762252708.062033,
-    "success_count": 1,
-    "step_description": "재생 버튼 클릭"
-  },
-  "f6692f32563fc11064a5d38bb077e4e6": {
-    "selector": "button:has-text(\"자동재생 켜기\")",
-    "timestamp": 1762252773.096809,
-    "success_count": 1,
-    "step_description": "일시정지 버튼 클릭"
   },
   "69822f50939f153e0ab71297d1fc91ee": {
     "selector": "button:has-text(\"기본 기능\")",
@@ -1852,8 +1774,8 @@
   },
   "d83419535af453d7a1b82b3db8817541": {
     "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
-    "timestamp": 1762855833.7386858,
-    "success_count": 1,
+    "timestamp": 1762857350.2282162,
+    "success_count": 3,
     "step_description": "검색 입력: 노트북",
     "element_text": "",
     "element_tag": "input",
@@ -1867,11 +1789,139 @@
   },
   "ee3cfb2d96e62690005cc0f200e678a6": {
     "selector": "button:has-text(\"장바구니\")",
-    "timestamp": 1762855864.816761,
-    "success_count": 1,
+    "timestamp": 1762857384.639263,
+    "success_count": 2,
     "step_description": "첫 번째 상품 카드에서 장바구니 추가 클릭",
     "element_text": "",
     "element_tag": "",
     "attributes": {}
+  },
+  "80ebd94bc56bc36782e4fb71c1364f80": {
+    "selector": "[role=\"tab\"]:has-text(\"로그인\")",
+    "timestamp": 1762857446.050418,
+    "success_count": 0,
+    "step_description": "탭 선택: 로그인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "49cc485c4ea64aa3340d5cf502ccdafd": {
+    "selector": "#login-email",
+    "timestamp": 1762857513.9359381,
+    "success_count": 1,
+    "step_description": "이메일 입력: test@example.com",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "email",
+      "id": "login-email",
+      "name": null,
+      "placeholder": "your@email.com",
+      "aria-label": ""
+    }
+  },
+  "d413138d39d147ef93d1199d1e407174": {
+    "selector": "#login-password",
+    "timestamp": 1762857521.8213902,
+    "success_count": 1,
+    "step_description": "비밀번호 입력: Passw0rd!",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "password",
+      "id": "login-password",
+      "name": null,
+      "placeholder": "비밀번호",
+      "aria-label": ""
+    }
+  },
+  "8b8b12da120ce486d0aa147bfd18d0f2": {
+    "selector": "button[type=\"submit\"]:has-text(\"로그인\")",
+    "timestamp": 1762857624.8149629,
+    "success_count": 0,
+    "step_description": "로그인 버튼 클릭",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "ec3a8f94fb6c169bea8938c51204b3f7": {
+    "selector": "button:has-text(\"장바구니 보기\")",
+    "timestamp": 1762857828.399768,
+    "success_count": 0,
+    "step_description": "장바구니 보기 클릭",
+    "element_text": "장바구니 보기",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "22d00760aa3e5ec5487bb7e6bfad6577": {
+    "selector": "button[type=\"submit\"]:has-text(\"다운로드 시뮬레이션\")",
+    "timestamp": 1762858384.2610729,
+    "success_count": 0,
+    "step_description": "프로그레스가 100%가 될 때까지 대기",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "abc9a6a34f9258193d6e08ccde943987": {
+    "selector": "button:has-text(\"Close\")",
+    "timestamp": 1762858535.5438871,
+    "success_count": 1,
+    "step_description": "Dialog 닫기",
+    "element_text": "Close",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "210e6f35b26624d1e99f971a3da46192": {
+    "selector": "button:has-text(\"날짜를 선택하세요\")",
+    "timestamp": 1762858656.5438662,
+    "success_count": 1,
+    "step_description": "예약 날짜 버튼 클릭",
+    "element_text": "날짜를 선택하세요",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "16bdca0a1aec5e72d973e2c05a073566": {
+    "selector": "input.file:text-foreground.placeholder:text-muted-foreground",
+    "timestamp": 1762858703.271343,
+    "success_count": 0,
+    "step_description": "파일 선택(드래그 앤 드롭 대체): report.pdf",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "file",
+      "id": null,
+      "name": null,
+      "placeholder": "",
+      "aria-label": ""
+    }
+  },
+  "33afd92f94dd9dd5e568e8d63ab5bd27": {
+    "selector": "span:has-text(\"MacBook Pro\")",
+    "timestamp": 1762858857.2418199,
+    "success_count": 0,
+    "step_description": "첫 번째 상품 이미지 클릭(hover 대체)",
+    "element_text": "MacBook Pro",
+    "element_tag": "span",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": "link"
+    }
   }
 }
