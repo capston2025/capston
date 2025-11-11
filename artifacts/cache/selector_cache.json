@@ -1,28 +1,4 @@
 {
-  "c10c7ec4f5dde3b8c2a5b88d870af363": {
-    "selector": "button:has-text(\"기본 기능\")",
-    "timestamp": 1762250590.497259,
-    "success_count": 1,
-    "step_description": "기본 기능 카드의 이동 버튼을 클릭"
-  },
-  "18481120f903e26c7deb95e1c6f9c7f1": {
-    "selector": "input[placeholder=\\\"검색어를 입력하세요...\\\"]",
-    "timestamp": 1762250630.124911,
-    "success_count": 0,
-    "step_description": "검색어 'button' 입력"
-  },
-  "696e3dc2e7a9783b94d34bb86046b05b": {
-    "selector": "button:has-text(\"전체 선택\")",
-    "timestamp": 1762250660.842172,
-    "success_count": 1,
-    "step_description": "필터 버튼을 클릭해 특정 카테고리를 선택"
-  },
-  "dae20b447517fb2488b2758eb8436ff2": {
-    "selector": "button:has-text(\"전체 선택\")",
-    "timestamp": 1762250693.360801,
-    "success_count": 0,
-    "step_description": "정렬 버튼 클릭 후 '제목순' 선택"
-  },
   "f6c507cb61fd158b3ef858f2bbf86033": {
     "selector": "#login-email",
     "timestamp": 1762257464.061428,
@@ -34,24 +10,6 @@
     "timestamp": 1762257524.2993011,
     "success_count": 2,
     "step_description": "비밀번호 입력"
-  },
-  "94247740f44172f5e4dfc6b9e603a9ab": {
-    "selector": "button:has-text(\"로그인\")",
-    "timestamp": 1762250746.8042262,
-    "success_count": 1,
-    "step_description": "로그인 버튼 클릭"
-  },
-  "167ec0d7df73c26c24fb3d2f99fe2ac2": {
-    "selector": "button:has-text(\"장바구니\")",
-    "timestamp": 1762250850.444061,
-    "success_count": 1,
-    "step_description": "임의의 상품 카드에서 '장바구니 추가' 클릭"
-  },
-  "04daeef1e80ff7d1650f97d25e1f79d6": {
-    "selector": "button:has-text(\"장바구니\")",
-    "timestamp": 1762250881.5230122,
-    "success_count": 0,
-    "step_description": "같은 상품에서 다시 '장바구니 추가' 클릭"
   },
   "bbaec3be060ac84d039a5c182905cfdd": {
     "selector": "button:has-text(\"날짜를 선택하세요\")",
@@ -1888,6 +1846,30 @@
     "timestamp": 1762847954.372105,
     "success_count": 0,
     "step_description": "가상 키보드 토글 버튼 클릭",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "d83419535af453d7a1b82b3db8817541": {
+    "selector": "input[placeholder=\"검색어를 입력하세요...\"]",
+    "timestamp": 1762855833.7386858,
+    "success_count": 1,
+    "step_description": "검색 입력: 노트북",
+    "element_text": "",
+    "element_tag": "input",
+    "attributes": {
+      "type": "text",
+      "id": null,
+      "name": null,
+      "placeholder": "검색어를 입력하세요...",
+      "aria-label": ""
+    }
+  },
+  "ee3cfb2d96e62690005cc0f200e678a6": {
+    "selector": "button:has-text(\"장바구니\")",
+    "timestamp": 1762855864.816761,
+    "success_count": 1,
+    "step_description": "첫 번째 상품 카드에서 장바구니 추가 클릭",
     "element_text": "",
     "element_tag": "",
     "attributes": {}

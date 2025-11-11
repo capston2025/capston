@@ -191,19 +191,13 @@ class AppController(QObject):
         # 글래스 카드 형태로 테스트 케이스 표시
         self._window.show_scenarios(analysis_result.checklist)
 
-        # 🚨 FIX: SpecAnalyzer를 사용하여 RT JSON을 직접 받아옴
-        # OLD: TC checklist를 변환 (action/selector 손실)
-        # NEW: RT JSON을 직접 사용 (action/selector 유지)
-        from gaia.src.phase1.analyzer import SpecAnalyzer
-        analyzer = SpecAnalyzer()
-        try:
-            # 원본 문서를 다시 분석하여 RT scenarios 얻기
-            # Note: analysis_result는 이미 있지만, RT 형식으로 다시 받아야 함
-            self._analysis_plan = analyzer.generate_from_spec(self._current_pdf_text or "")
-            self._window.append_log(f"📋 Converted to {len(self._analysis_plan)} RT scenarios with selectors")
-        except Exception as e:
-            self._window.append_log(f"⚠️ RT conversion failed, using fallback: {e}")
-            # Fallback: 기존 방식 사용
+        # 🚨 FIX: Agent Service에서 이미 RT JSON을 받았으므로 재사용
+        # analysis_result에 _rt_scenarios 속성이 있으면 사용, 없으면 변환
+        if hasattr(analysis_result, '_rt_scenarios') and analysis_result._rt_scenarios:
+            self._analysis_plan = analysis_result._rt_scenarios
+            self._window.append_log(f"📋 Using {len(self._analysis_plan)} RT scenarios with selectors")
+        else:
+            # Fallback: TC checklist를 변환 (하위 호환성)
             self._analysis_plan = self._convert_testcases_to_scenarios(
                 analysis_result.checklist
             )
