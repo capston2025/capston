@@ -1534,7 +1534,9 @@ Return ONLY a JSON array:
                             "scenario": scenario.scenario,
                             "status": "success",
                             "logs": logs,
-                            "verification": scenario_verification_result
+                            "verification": scenario_verification_result,
+                            "after_screenshot": after_scenario_screenshot,  # For Master Orchestrator
+                            "current_url": current_url
                         }
                     else:
                         # Actions passed but Vision AI says scenario failed
@@ -1545,7 +1547,9 @@ Return ONLY a JSON array:
                             "scenario": scenario.scenario,
                             "status": "partial",
                             "logs": logs,
-                            "verification": scenario_verification_result
+                            "verification": scenario_verification_result,
+                            "after_screenshot": after_scenario_screenshot,  # For Master Orchestrator
+                            "current_url": current_url
                         }
                 elif failed_assertion_steps == 0:
                     # No Vision AI, but step-based assertions passed
@@ -1563,7 +1567,9 @@ Return ONLY a JSON array:
                             "id": scenario.id,
                             "scenario": scenario.scenario,
                             "status": "success",
-                            "logs": logs
+                            "logs": logs,
+                            "after_screenshot": after_scenario_screenshot,
+                            "current_url": current_url
                         }
                     else:
                         # Some steps skipped but didn't fail
@@ -1574,7 +1580,9 @@ Return ONLY a JSON array:
                             "id": scenario.id,
                             "scenario": scenario.scenario,
                             "status": "partial",
-                            "logs": logs
+                            "logs": logs,
+                            "after_screenshot": after_scenario_screenshot,
+                            "current_url": current_url
                         }
                 else:
                     # Actions succeeded but assertions failed
@@ -1586,7 +1594,9 @@ Return ONLY a JSON array:
                         "status": "partial",  # Assertion 실패는 partial로 처리
                         "logs": logs,
                         "failed_assertions": failed_assertion_steps,
-                        "total_assertions": total_assertion_steps
+                        "total_assertions": total_assertion_steps,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
 
             # Optional: Still try LLM verification for additional confidence
@@ -1609,7 +1619,9 @@ Return ONLY a JSON array:
                         "id": scenario.id,
                         "scenario": scenario.scenario,
                         "status": "passed",
-                        "logs": logs
+                        "logs": logs,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
                 elif verification["confidence"] == 0:
                     # LLM verification failed (safety filter, timeout, etc.)
@@ -1619,7 +1631,9 @@ Return ONLY a JSON array:
                         "id": scenario.id,
                         "scenario": scenario.scenario,
                         "status": "passed",
-                        "logs": logs
+                        "logs": logs,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
                 else:
                     logs.append("  ❌ Verification failed")
@@ -1627,7 +1641,9 @@ Return ONLY a JSON array:
                         "id": scenario.id,
                         "scenario": scenario.scenario,
                         "status": "failed",
-                        "logs": logs
+                        "logs": logs,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
 
             # No assertion, assume success if all steps executed
@@ -1635,7 +1651,9 @@ Return ONLY a JSON array:
                 "id": scenario.id,
                 "scenario": scenario.scenario,
                 "status": "passed",
-                "logs": logs
+                "logs": logs,
+                "after_screenshot": after_scenario_screenshot,
+                "current_url": current_url
             }
 
         except Exception as e:
@@ -1650,12 +1668,22 @@ Return ONLY a JSON array:
             self._log(f"❌ Exception in step execution: {e}", progress_callback)
             self._log(f"📜 Traceback:\n{tb_str}", progress_callback)
 
+            # Try to capture screenshot even in exception case (for Master Orchestrator)
+            try:
+                exception_screenshot = self._capture_screenshot(None, send_to_gui=False) if 'after_scenario_screenshot' not in locals() else after_scenario_screenshot
+                exception_url = current_url if 'current_url' in locals() else ""
+            except:
+                exception_screenshot = ""
+                exception_url = ""
+
             return {
                 "id": scenario.id,
                 "scenario": scenario.scenario,
                 "status": "failed",
                 "error": str(e),
-                "logs": logs
+                "logs": logs,
+                "after_screenshot": exception_screenshot,
+                "current_url": exception_url
             }
 
     def _analyze_dom(self, url: str | None) -> List[DomElement]:

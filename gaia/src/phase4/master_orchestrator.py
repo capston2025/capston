@@ -177,31 +177,14 @@ class MasterOrchestrator:
                     if scenario_obj:
                         self._log(f"     🎯 Master Orchestrator final verification...", progress_callback)
 
-                        # Capture current screenshot to verify final state
+                        # Use screenshot captured by IntelligentOrchestrator (includes toast messages!)
+                        # This ensures we capture the screenshot immediately after scenario completion,
+                        # before temporary UI elements (toasts) disappear
+                        final_screenshot = scenario_result.get("after_screenshot", "")
+                        current_url = scenario_result.get("current_url", page_url)
+
+                        # Only verify if screenshot is available
                         try:
-                            import requests
-                            screenshot_payload = {"action": "capture_screenshot", "params": {"session_id": self.session_id}}
-                            response = requests.post(
-                                f"{self.mcp_config.host_url}/execute",
-                                json=screenshot_payload,
-                                timeout=90
-                            )
-                            response.raise_for_status()
-                            screenshot_data = response.json()
-                            final_screenshot = screenshot_data.get("screenshot", "")
-
-                            # Get current URL
-                            import requests
-                            url_payload = {"action": "get_current_url", "params": {"session_id": self.session_id}}
-                            response = requests.post(
-                                f"{self.mcp_config.host_url}/execute",
-                                json=url_payload,
-                                timeout=90
-                            )
-                            response.raise_for_status()
-                            url_data = response.json()
-                            current_url = url_data.get("url", page_url)
-
                             if final_screenshot:
                                 # Verify with LLM: Does this screenshot match the scenario description?
                                 master_verification = self.llm_client.verify_scenario_outcome(
