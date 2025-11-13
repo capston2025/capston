@@ -673,6 +673,62 @@ Return ONLY a JSON array:
 
                 logs.append(f"Step {step_idx}: {step.description}")
 
+                # NEW: Handle "llm" action - delegate verification entirely to Vision AI
+                if step.action == "llm":
+                    self._log(f"    🧠 LLM Verification Action", progress_callback)
+                    logs.append(f"  LLM Verification: {step.description}")
+
+                    # Get verification details from step
+                    verify_info = getattr(step, 'verify', None)
+                    if not verify_info:
+                        self._log(f"    ⚠️ No 'verify' field found in llm action, skipping", progress_callback)
+                        logs.append(f"  ⚠️ Missing verify field")
+                        continue
+
+                    # Extract expected outcome and indicators
+                    expected_outcome = getattr(verify_info, 'expected', step.description)
+                    success_indicators = getattr(verify_info, 'indicators', [])
+
+                    # Capture screenshot for verification
+                    time.sleep(0.5)  # Brief pause to let UI settle
+                    after_screenshot = self._capture_screenshot(current_url, send_to_gui=False)
+
+                    # Use LLM Vision to verify
+                    from .llm_vision_client import LLMVisionClient
+                    vision_client = LLMVisionClient()
+
+                    verification_result = vision_client.verify_scenario_success(
+                        scenario_description=step.description,
+                        expected_outcome=expected_outcome,
+                        success_indicators=success_indicators,
+                        before_screenshot=screenshot,  # Use previous screenshot as "before"
+                        after_screenshot=after_screenshot,
+                        url=current_url
+                    )
+
+                    # Log results
+                    verified = verification_result.get('success', False)
+                    confidence = verification_result.get('confidence', 0)
+                    reasoning = verification_result.get('reasoning', '')
+                    matched = verification_result.get('matched_indicators', [])
+
+                    self._log(f"    {'✅' if verified else '❌'} Verification result: {verified} (confidence: {confidence}%)", progress_callback)
+                    self._log(f"    💭 Reasoning: {reasoning[:100]}...", progress_callback)
+                    if matched:
+                        self._log(f"    🎯 Matched indicators: {', '.join(matched[:3])}", progress_callback)
+
+                    logs.append(f"  Verified: {verified} (confidence: {confidence}%)")
+                    logs.append(f"  Reasoning: {reasoning}")
+
+                    if not verified or confidence < 60:
+                        failed_assertion_steps += 1
+                        self._log(f"    ⚠️ LLM verification failed, continuing...", progress_callback)
+
+                    # Update screenshot for next step
+                    screenshot = after_screenshot
+
+                    continue
+
                 # Check if this is an action that doesn't need LLM element selection
                 if step.action in actions_not_needing_selector or step.action in assertion_actions:
                     # Execute directly without LLM

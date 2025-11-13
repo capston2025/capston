@@ -106,5 +106,79 @@
     "element_text": "",
     "element_tag": "",
     "attributes": {}
+  },
+  "318266474831dff41d6b4144c2bd9ad7": {
+    "selector": "button[type=\"submit\"]:has-text(\"공유하기\")",
+    "timestamp": 1763022045.37081,
+    "success_count": 3,
+    "step_description": "Cmd+/ 또는 Ctrl+/ 단축키 입력",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "bb06f5fdd28aadf5937965b26b880243": {
+    "selector": "button:has-text(\"다운로드\")",
+    "timestamp": 1763016330.287053,
+    "success_count": 1,
+    "step_description": "다운로드 파일 링크가 생성되고 표시됨",
+    "element_text": "다운로드",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "d0cef28c6c987bab99ec945741d5fbe7": {
+    "selector": "button:has-text(\"홈\")",
+    "timestamp": 1763016377.705771,
+    "success_count": 1,
+    "step_description": "홈 아이콘이 사라졌는지 확인",
+    "element_text": "홈",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "홈",
+      "role": ""
+    }
+  },
+  "fef6bc5f21f8eca8da59880a280db36b": {
+    "selector": "button:has-text(\"공유하기\")",
+    "timestamp": 1763016493.216307,
+    "success_count": 1,
+    "step_description": "툴팁이 표시되는지 확인",
+    "element_text": "공유하기",
+    "element_tag": "button",
+    "attributes": {
+      "type": "submit",
+      "aria-label": "",
+      "title": "",
+      "role": ""
+    }
+  },
+  "860c4cc958f5ec471b940add4bde6208": {
+    "selector": "button:has-text(\"알림\")",
+    "timestamp": 1763016551.925392,
+    "success_count": 0,
+    "step_description": "알림 배너가 사라졌는지 확인",
+    "element_text": "",
+    "element_tag": "",
+    "attributes": {}
+  },
+  "cd6590fe2cf8edb2a2098d4ebcfb22b3": {
+    "selector": "button:has-text(\"아시아/서울 (GMT+9)\")",
+    "timestamp": 1763023026.0015612,
+    "success_count": 0,
+    "step_description": "국가 드롭다운 닫기 (같은 버튼 다시 클릭) → 시간대 드롭다운 열기",
+    "element_text": "아시아/서울 (GMT+9)",
+    "element_tag": "button",
+    "attributes": {
+      "type": "button",
+      "aria-label": "",
+      "title": "",
+      "role": "combobox"
+    }
   }
 }
