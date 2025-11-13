@@ -1,6 +1,6 @@
 {
   "profile": "test-sitev2_vercel_app",
-  "url": "https://test-sitev2.vercel.app/#basics",
+  "url": "https://test-sitev2.vercel.app",
   "pdf_hash": "d88f3f23e335",
   "test_scenarios": [
     {
@@ -11,15 +11,15 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
-            "https://test-sitev2.vercel.app"
+            "https://test-sitev2.vercel.app/#basics"
           ]
         },
         {
           "description": "로그인 탭 선택",
           "action": "click",
-          "selector": "input[value='login']",
+          "selector": "",
           "params": []
         },
         {
@@ -52,7 +52,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
           ]
@@ -60,7 +60,7 @@
         {
           "description": "로그인 탭 선택",
           "action": "click",
-          "selector": "input[value='login']",
+          "selector": "",
           "params": []
         },
         {
@@ -80,15 +80,15 @@
           ]
         },
         {
-          "description": "로그인 버튼 클릭",
+          "description": "로그인 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
+          "selector": "",
           "params": []
         },
         {
           "description": "로그인 처리 대기",
           "action": "wait",
-          "selector": "html",
+          "selector": "",
           "params": [
             1000
           ]
@@ -182,9 +182,9 @@
           ]
         },
         {
-          "description": "로그인 버튼 클릭",
+          "description": "로그인 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
+          "selector": "",
           "params": []
         },
         {
@@ -213,7 +213,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
           ]
@@ -221,7 +221,7 @@
         {
           "description": "로그인 탭 선택",
           "action": "click",
-          "selector": "input[value='login']",
+          "selector": "",
           "params": []
         },
         {
@@ -241,15 +241,15 @@
           ]
         },
         {
-          "description": "로그인 버튼 클릭",
+          "description": "로그인 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
+          "selector": "",
           "params": []
         },
         {
           "description": "오류 메시지 대기",
           "action": "wait",
-          "selector": "html",
+          "selector": "",
           "params": [
             500
           ]
@@ -272,7 +272,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
           ]
@@ -280,7 +280,7 @@
         {
           "description": "로그인 탭 선택",
           "action": "click",
-          "selector": "input[value='login']",
+          "selector": "",
           "params": []
         },
         {
@@ -300,15 +300,15 @@
           ]
         },
         {
-          "description": "로그인 버튼 클릭",
+          "description": "로그인 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
+          "selector": "",
           "params": []
         },
         {
           "description": "오류 메시지 대기",
           "action": "wait",
-          "selector": "html",
+          "selector": "",
           "params": [
             500
           ]
@@ -331,7 +331,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app"
           ]
@@ -339,7 +339,7 @@
         {
           "description": "회원가입 탭 선택",
           "action": "click",
-          "selector": "input[value='signup']",
+          "selector": "",
           "params": []
         },
         {
@@ -378,7 +378,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
           ]
@@ -386,7 +386,7 @@
         {
           "description": "회원가입 탭 선택",
           "action": "click",
-          "selector": "input[value='signup']",
+          "selector": "",
           "params": []
         },
         {
@@ -414,15 +414,15 @@
           ]
         },
         {
-          "description": "회원가입 버튼 클릭",
+          "description": "회원가입 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('회원가입')",
+          "selector": "",
           "params": []
         },
         {
           "description": "회원가입 처리 대기",
           "action": "wait",
-          "selector": "html",
+          "selector": "",
           "params": [
             1000
           ]
@@ -445,7 +445,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
           ]
@@ -453,7 +453,7 @@
         {
           "description": "회원가입 탭 선택",
           "action": "click",
-          "selector": "input[value='signup']",
+          "selector": "",
           "params": []
         },
         {
@@ -481,15 +481,15 @@
           ]
         },
         {
-          "description": "회원가입 버튼 클릭",
+          "description": "회원가입 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('회원가입')",
+          "selector": "",
           "params": []
         },
         {
           "description": "오류 메시지 대기",
           "action": "wait",
-          "selector": "html",
+          "selector": "",
           "params": [
             500
           ]
@@ -512,7 +512,7 @@
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": "html",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
           ]
@@ -520,7 +520,7 @@
         {
           "description": "회원가입 탭 선택",
           "action": "click",
-          "selector": "input[value='signup']",
+          "selector": "",
           "params": []
         },
         {
@@ -548,15 +548,15 @@
           ]
         },
         {
-          "description": "회원가입 버튼 클릭",
+          "description": "회원가입 제출 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('회원가입')",
+          "selector": "",
           "params": []
         },
         {
           "description": "오류 메시지 대기",
           "action": "wait",
-          "selector": "html",
+          "selector": "",
           "params": [
             500
           ]

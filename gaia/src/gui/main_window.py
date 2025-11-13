@@ -322,6 +322,7 @@ class ScenarioCard(QFrame):
         header.setSpacing(10)
 
         scenario_id = getattr(scenario, "id", "TC")
+        self.setProperty("scenario_id", str(scenario_id))  # Store scenario ID for highlight tracking
         id_label = QLabel(str(scenario_id), self)
         id_label.setObjectName("ScenarioId")
         header.addWidget(id_label)
@@ -383,10 +384,14 @@ class MainWindow(QMainWindow):
     cancelRequested = Signal()
     urlSubmitted = Signal(str)
     planFileSelected = Signal(str)
+    bugJsonSelected = Signal(str)
 
     def __init__(self, *, controller_factory: Callable[["MainWindow"], object] | None = None) -> None:
         super().__init__()
         self.setWindowTitle("QA Automation Desktop")
+
+        # 특정 기능 테스트 쿼리 저장
+        self._current_feature_query = ""
 
         app_instance = QApplication.instance()
         self._available_geometry = None
@@ -757,7 +762,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title_label)
 
         self._drop_area = DropArea(
-            on_file_dropped=self.fileDropped.emit,
+            on_file_dropped=self._handle_file_drop,
             title="체크리스트 PDF를 드래그하거나 선택해 주세요",
             parent=page,
         )
@@ -793,12 +798,36 @@ class MainWindow(QMainWindow):
         self._load_plan_button.clicked.connect(self._open_plan_dialog)
         button_row.addWidget(self._load_plan_button)
 
+        self._feature_test_button = QPushButton("특정 기능 테스트", page)
+        self._feature_test_button.setObjectName("GhostButton")
+        self._feature_test_button.clicked.connect(self._toggle_feature_input)
+        button_row.addWidget(self._feature_test_button)
+
         self._start_button = QPushButton("자동화 시작", page)
         self._start_button.clicked.connect(self.startRequested.emit)
         button_row.addWidget(self._start_button)
 
         button_row.addStretch()
         layout.addLayout(button_row)
+
+        # 특정 기능 테스트 입력창 (처음엔 숨김)
+        self._feature_input_container = QFrame(page)
+        self._feature_input_container.setObjectName("FeatureInputContainer")
+        self._feature_input_container.hide()
+        feature_input_layout = QVBoxLayout(self._feature_input_container)
+        feature_input_layout.setContentsMargins(12, 12, 12, 12)
+        feature_input_layout.setSpacing(8)
+
+        feature_label = QLabel("테스트할 기능을 설명해주세요:", self._feature_input_container)
+        feature_label.setObjectName("FeatureLabel")
+        feature_input_layout.addWidget(feature_label)
+
+        self._feature_input = QLineEdit(self._feature_input_container)
+        self._feature_input.setPlaceholderText("예: 로그인 기능, 장바구니 추가, 검색 기능")
+        self._feature_input.setObjectName("FeatureInput")
+        feature_input_layout.addWidget(self._feature_input)
+
+        layout.addWidget(self._feature_input_container)
         layout.addStretch(1)
 
         return page
@@ -964,6 +993,30 @@ class MainWindow(QMainWindow):
             card = ScenarioCard(scenario, self._checklist_view)
             list_item.setSizeHint(card.sizeHint())
             self._checklist_view.setItemWidget(list_item, card)
+
+    def highlight_current_scenario(self, scenario_id: str) -> None:
+        """현재 실행 중인 시나리오만 보이게 하고 나머지는 숨깁니다."""
+        for i in range(self._checklist_view.count()):
+            item = self._checklist_view.item(i)
+            card = self._checklist_view.itemWidget(item)
+            if isinstance(card, ScenarioCard):
+                card_id = card.property("scenario_id")
+                if card_id == scenario_id:
+                    # 현재 실행 중인 시나리오: 보이기
+                    item.setHidden(False)
+                    card.setStyleSheet("QFrame#ScenarioCard { border: 2px solid #5b5ff7; }")
+                else:
+                    # 나머지: 숨기기
+                    item.setHidden(True)
+
+    def reset_scenario_highlights(self) -> None:
+        """모든 시나리오 다시 보이게 복원 (테스트 완료 후)"""
+        for i in range(self._checklist_view.count()):
+            item = self._checklist_view.item(i)
+            card = self._checklist_view.itemWidget(item)
+            if isinstance(card, ScenarioCard):
+                item.setHidden(False)  # 모두 다시 보이기
+                card.setStyleSheet("")  # 기본 스타일로 복원
 
     def update_overall_progress(self, percent: float, completed: int | None = None, total: int | None = None) -> None:
         """전체 진행률 원형 그래프를 갱신합니다."""
@@ -1246,7 +1299,27 @@ class MainWindow(QMainWindow):
             "PDF Files (*.pdf)",
         )
         if file_path:
+            # feature_input에 값이 있으면 특정 기능 테스트 모드
+            feature_query = self._feature_input.text().strip() if hasattr(self, '_feature_input') else ""
+            self._current_feature_query = feature_query
             self.fileDropped.emit(file_path)
+
+    def _handle_file_drop(self, file_path: str) -> None:
+        """파일이 드롭되었을 때 feature_query를 저장하고 시그널을 발생시킵니다."""
+        feature_query = self._feature_input.text().strip() if hasattr(self, '_feature_input') else ""
+        self._current_feature_query = feature_query
+        self.fileDropped.emit(file_path)
+
+    def _toggle_feature_input(self) -> None:
+        """특정 기능 테스트 입력창을 토글합니다."""
+        if self._feature_input_container.isVisible():
+            self._feature_input_container.hide()
+        else:
+            self._feature_input_container.show()
+
+    def get_feature_query(self) -> str:
+        """현재 설정된 feature query를 반환합니다."""
+        return self._current_feature_query
 
     def _open_plan_dialog(self) -> None:
         # 수동 생성 플랜은 mock_data를 먼저 확인하고, 없으면 plans 디렉터리를 확인
@@ -1272,6 +1345,35 @@ class MainWindow(QMainWindow):
         if file_path:
             self._last_plan_directory = Path(file_path).parent
             self.planFileSelected.emit(file_path)
+
+    def ask_for_bug_json(self) -> None:
+        """플랜 불러오기 후 bug.json 선택 여부를 묻습니다."""
+        from PySide6.QtWidgets import QMessageBox
+
+        reply = QMessageBox.question(
+            self,
+            "Bug JSON 파일 선택",
+            "ER (Error Rate) 측정을 위한 bug.json 파일을 선택하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            # bug.json 선택 다이얼로그 열기
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Bug JSON 파일 선택",
+                str(Path.cwd()),
+                "JSON Files (*.json);;All Files (*)",
+            )
+            if file_path:
+                self.bugJsonSelected.emit(file_path)
+            else:
+                # 선택 안 함
+                self.bugJsonSelected.emit("")
+        else:
+            # 선택 안 함
+            self.bugJsonSelected.emit("")
 
     # ------------------------------------------------------------------
     def resizeEvent(self, event) -> None:  # noqa: D401

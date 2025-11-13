@@ -17,6 +17,8 @@ class IntelligentWorker(QObject):
 
     progress = Signal(str)
     screenshot = Signal(str, object)  # (base64, click_position dict 또는 None)
+    scenario_started = Signal(str)  # scenario_id
+    scenario_finished = Signal(str)  # scenario_id
     finished = Signal()
 
     def __init__(
@@ -80,7 +82,15 @@ class IntelligentWorker(QObject):
 
     def _on_progress(self, message: str) -> None:
         """진행 메시지를 GUI에 전달합니다"""
-        self.progress.emit(message)
+        # 특별한 마커를 감지하여 시나리오 시작/완료 신호 발생
+        if message.startswith("[SCENARIO_START:"):
+            scenario_id = message.split(":", 1)[1].split("]")[0]
+            self.scenario_started.emit(scenario_id)
+        elif message.startswith("[SCENARIO_END:"):
+            scenario_id = message.split(":", 1)[1].split("]")[0]
+            self.scenario_finished.emit(scenario_id)
+        else:
+            self.progress.emit(message)
 
     def _on_screenshot(self, screenshot_base64: str, click_position: dict = None) -> None:
         """실시간 미리보기를 위해 스크린샷을 GUI로 전달합니다"""

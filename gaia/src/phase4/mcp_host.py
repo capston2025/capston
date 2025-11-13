@@ -879,6 +879,19 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             element = page.locator(selector).first
             await element.select_option(value, timeout=30000)
 
+        elif action == "uploadFile":
+            # 파일을 업로드합니다 (input[type='file']에 파일 경로 설정)
+            if not selector or value is None:
+                raise ValueError("Selector and file path required for 'uploadFile' action")
+            element = page.locator(selector).first
+            # value는 파일 경로 문자열 또는 파일 경로 리스트
+            if isinstance(value, str):
+                await element.set_input_files(value, timeout=30000)
+            elif isinstance(value, list):
+                await element.set_input_files(value, timeout=30000)
+            else:
+                raise ValueError(f"Invalid value type for uploadFile: {type(value)}")
+
         elif action in ("expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast"):
             # 검증 동작은 결과를 반환하는 방식으로 처리됩니다
             # 이 동작은 실행되지 않고 검증 결과만 반환합니다

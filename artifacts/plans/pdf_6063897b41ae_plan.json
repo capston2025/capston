@@ -1,0 +1,782 @@
+{
+  "profile": "ui-components-test-site",
+  "url": "https://test-sitev2.vercel.app/",
+  "test_scenarios": [
+    {
+      "id": "TC001",
+      "priority": "MUST",
+      "scenario": "비밀번호에 특수문자가 없으면 회원가입이 실패하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "회원가입 탭을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "회원가입 이름 입력란에 '테스터'를 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["테스터"]
+        },
+        {
+          "description": "회원가입 이메일 입력란에 'test@example.com'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["test@example.com"]
+        },
+        {
+          "description": "회원가입 비밀번호 입력란에 'Password123'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["Password123"]
+        },
+        {
+          "description": "회원가입 제출 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "비밀번호 특수문자 오류 토스트가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["비밀번호에 특수문자를 포함해야 합니다."]
+        }
+      ],
+      "assertion": {
+        "description": "특수문자 미포함 시 회원가입이 실패하고 오류 메시지가 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["비밀번호에 특수문자를 포함해야 합니다."]
+      }
+    },
+    {
+      "id": "TC002",
+      "priority": "MUST",
+      "scenario": "이메일에 특수문자를 포함하면 회원가입이 성공하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "회원가입 탭을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "이름 입력란에 '홍길동'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["홍길동"]
+        },
+        {
+          "description": "이메일 입력란에 'test!@example.com'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["test!@example.com"]
+        },
+        {
+          "description": "비밀번호 입력란에 'AnyPassword'를 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["AnyPassword"]
+        },
+        {
+          "description": "회원가입 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "회원가입 성공 토스트가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["회원가입이 완료되었습니다!"]
+        }
+      ],
+      "assertion": {
+        "description": "이메일에 특수문자가 포함되면 회원가입이 성공해야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["회원가입이 완료되었습니다!"]
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "로그인 기능이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "로그인 이메일 입력란에 'user@test.com'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["user@test.com"]
+        },
+        {
+          "description": "로그인 비밀번호 입력란에 'password123'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["password123"]
+        },
+        {
+          "description": "로그인 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "로그인 성공 메시지가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["로그인되었습니다!"]
+        }
+      ],
+      "assertion": {
+        "description": "로그인이 성공하고 성공 메시지가 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["로그인되었습니다!"]
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "MUST",
+      "scenario": "로그인 없이 장바구니에 상품을 추가하려고 시도할 때 경고가 표시되지만 상품이 추가되는 버그를 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "첫 번째 상품의 '장바구니 추가' 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "로그인 필요 경고 토스트가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["로그인이 필요합니다."]
+        },
+        {
+          "description": "장바구니 추가 성공 토스트도 함께 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["이(가) 장바구니에 추가되었습니다."]
+        }
+      ],
+      "assertion": {
+        "description": "로그인 없이도 장바구니에 상품이 추가되는 버그가 존재해야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["이(가) 장바구니에 추가되었습니다."]
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "MUST",
+      "scenario": "로그인 후 장바구니에서 상품 수량을 조정할 수 있는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "로그인 이메일 입력란에 'user@test.com'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["user@test.com"]
+        },
+        {
+          "description": "로그인 비밀번호 입력란에 'password'를 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["password"]
+        },
+        {
+          "description": "로그인 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "첫 번째 상품의 '장바구니 추가' 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "'장바구니 보기' 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "장바구니 모달이 열리는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["장바구니"]
+        },
+        {
+          "description": "상품 수량 증가 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "장바구니에서 상품 수량을 조정할 수 있어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["장바구니"]
+      }
+    },
+    {
+      "id": "SH001",
+      "priority": "SHOULD",
+      "scenario": "검색 기능이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "검색 입력란에 '헤드폰'을 입력한다",
+          "action": "fill",
+          "selector": "",
+          "params": ["헤드폰"]
+        },
+        {
+          "description": "잠시 대기하여 검색 결과가 로드되도록 한다",
+          "action": "wait",
+          "selector": "",
+          "params": ["500"]
+        },
+        {
+          "description": "검색 결과 목록이 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["무선 헤드폰 사용법"]
+        }
+      ],
+      "assertion": {
+        "description": "검색어에 맞는 결과가 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["무선 헤드폰 사용법"]
+      }
+    },
+    {
+      "id": "SH002",
+      "priority": "SHOULD",
+      "scenario": "탭 전환이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "분석 탭을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "분석 데이터 내용이 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["일일 활성 사용자"]
+        },
+        {
+          "description": "보고서 탭을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "보고서 내용이 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["주간 성과 보고서"]
+        }
+      ],
+      "assertion": {
+        "description": "탭 클릭 시 해당 탭의 컨텐츠가 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["주간 성과 보고서"]
+      }
+    },
+    {
+      "id": "SH003",
+      "priority": "SHOULD",
+      "scenario": "드롭다운 선택이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "국가 선택 드롭다운을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "대한민국 옵션을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": ["대한민국"]
+        },
+        {
+          "description": "선택된 국가가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["선택된 국가: kr"]
+        }
+      ],
+      "assertion": {
+        "description": "드롭다운에서 선택한 값이 정상적으로 반영되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["선택된 국가: kr"]
+      }
+    },
+    {
+      "id": "SH004",
+      "priority": "SHOULD",
+      "scenario": "토글 스위치가 정상적으로 ON/OFF 되는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "알림 받기 스위치를 클릭하여 OFF로 전환한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "현재 설정에서 알림이 꺼짐으로 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["알림 꺼짐"]
+        },
+        {
+          "description": "알림 받기 스위치를 다시 클릭하여 ON으로 전환한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "현재 설정에서 알림이 켜짐으로 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["알림 켜짐"]
+        }
+      ],
+      "assertion": {
+        "description": "토글 스위치의 상태가 정상적으로 변경되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["알림 켜짐"]
+      }
+    },
+    {
+      "id": "SH005",
+      "priority": "SHOULD",
+      "scenario": "테이블 정렬 기능이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "인터랙션과 데이터 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#interactions"]
+        },
+        {
+          "description": "이름 컬럼 헤더를 클릭하여 정렬한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "이름 컬럼 헤더를 다시 클릭하여 역순 정렬한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "테이블 컬럼 클릭 시 정렬이 정상적으로 동작해야 한다",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelectorAll('table tbody tr').length > 0"]
+      }
+    },
+
+    {
+      "id": "SH008",
+      "priority": "SHOULD",
+      "scenario": "날짜 피커가 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "예약 날짜 선택 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "달력 팝오버가 표시되는지 확인한다",
+          "action": "wait",
+          "selector": "",
+          "params": ["300"]
+        }
+      ],
+      "assertion": {
+        "description": "날짜 선택 버튼 클릭 시 달력이 표시되어야 한다",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelector('[role=\"dialog\"]') !== null || document.querySelector('.rdp') !== null"]
+      }
+    },
+    {
+      "id": "SH009",
+      "priority": "SHOULD",
+      "scenario": "아코디언이 정상적으로 열리고 닫히는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "첫 번째 아코디언 항목을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "아코디언 내용이 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["서비스 이용을 위해서는"]
+        }
+      ],
+      "assertion": {
+        "description": "아코디언 클릭 시 해당 내용이 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["서비스 이용을 위해서는"]
+      }
+    },
+
+    {
+      "id": "SH011",
+      "priority": "SHOULD",
+      "scenario": "프로그레스 바가 정상적으로 진행되는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "다운로드 시뮬레이션 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "잠시 대기하여 다운로드가 완료되도록 한다",
+          "action": "wait",
+          "selector": "",
+          "params": ["2500"]
+        },
+        {
+          "description": "다운로드 완료 토스트가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["다운로드가 완료되었습니다!"]
+        }
+      ],
+      "assertion": {
+        "description": "프로그레스 바가 100%까지 진행되고 완료 메시지가 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["다운로드가 완료되었습니다!"]
+      }
+    },
+    {
+      "id": "SH012",
+      "priority": "SHOULD",
+      "scenario": "라디오 버튼 선택이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "'빠른 배송 (1-2일, 3,000원)' 라디오 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "선택된 옵션이 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["선택된 옵션: express"]
+        }
+      ],
+      "assertion": {
+        "description": "라디오 버튼 선택 시 선택 상태가 변경되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["선택된 옵션: express"]
+      }
+    },
+    {
+      "id": "SH013",
+      "priority": "SHOULD",
+      "scenario": "슬라이더 값 변경이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "가격 범위 슬라이더가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["가격 범위"]
+        }
+      ],
+      "assertion": {
+        "description": "슬라이더 컴포넌트가 페이지에 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["가격 범위"]
+      }
+    },
+    {
+      "id": "SH014",
+      "priority": "SHOULD",
+      "scenario": "체크박스 전체 선택 기능이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "기본 기능 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#basics"]
+        },
+        {
+          "description": "'전체 선택' 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "선택된 상품 개수가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["개 상품이 선택되었습니다."]
+        }
+      ],
+      "assertion": {
+        "description": "전체 선택 버튼 클릭 시 모든 상품이 선택되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["개 상품이 선택되었습니다."]
+      }
+    },
+    {
+      "id": "SH015",
+      "priority": "SHOULD",
+      "scenario": "스켈레톤 로더가 정상적으로 표시되는 것을 확인한다",
+      "steps": [
+        {
+          "description": "폼과 피드백 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#forms"]
+        },
+        {
+          "description": "로딩 시뮬레이션 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "로딩 중 텍스트가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["로딩 중..."]
+        }
+      ],
+      "assertion": {
+        "description": "로딩 시뮬레이션 시 로딩 상태가 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["로딩 중..."]
+      }
+    },
+    {
+      "id": "MAY001",
+      "priority": "MAY",
+      "scenario": "카드 뷰와 리스트 뷰 전환이 정상적으로 동작하는 것을 확인한다",
+      "steps": [
+        {
+          "description": "인터랙션과 데이터 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#interactions"]
+        },
+        {
+          "description": "리스트 뷰 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "그리드 뷰 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "뷰 모드 전환 버튼이 정상적으로 동작해야 한다",
+        "selector": "",
+        "condition": "expectTrue",
+        "params": ["document.querySelectorAll('button').length > 0"]
+      }
+    },
+
+    {
+      "id": "MAY005",
+      "priority": "MAY",
+      "scenario": "모달 다이얼로그가 정상적으로 열리고 닫히는 것을 확인한다",
+      "steps": [
+        {
+          "description": "인터랙션과 데이터 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#interactions"]
+        },
+        {
+          "description": "'모달 다이얼로그 열기' 버튼을 클릭한다",
+          "action": "click",
+          "selector": "",
+          "params": []
+        },
+        {
+          "description": "모달 다이얼로그가 열렸는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["모달 다이얼로그"]
+        }
+      ],
+      "assertion": {
+        "description": "모달 다이얼로그가 정상적으로 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["모달 다이얼로그"]
+      }
+    },
+    {
+      "id": "MAY006",
+      "priority": "MAY",
+      "scenario": "컨텍스트 메뉴가 정상적으로 표시되는 것을 확인한다",
+      "steps": [
+        {
+          "description": "인터랙션과 데이터 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#interactions"]
+        },
+        {
+          "description": "컨텍스트 메뉴 설명 텍스트가 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["우클릭하면 상황에 맞는 메뉴가 나타납니다"]
+        }
+      ],
+      "assertion": {
+        "description": "컨텍스트 메뉴 섹션이 페이지에 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["우클릭하면 상황에 맞는 메뉴가 나타납니다"]
+      }
+    },
+
+
+    {
+      "id": "MAY008",
+      "priority": "MAY",
+      "scenario": "비디오 플레이어 컨트롤이 정상적으로 표시되는 것을 확인한다",
+      "steps": [
+        {
+          "description": "인터랙션과 데이터 페이지로 이동한다",
+          "action": "goto",
+          "selector": "",
+          "params": ["https://test-sitev2.vercel.app/#interactions"]
+        },
+        {
+          "description": "비디오 플레이어가 페이지에 표시되는지 확인한다",
+          "action": "expectVisible",
+          "selector": "",
+          "params": ["동영상 재생 기능"]
+        }
+      ],
+      "assertion": {
+        "description": "비디오 플레이어 섹션이 페이지에 표시되어야 한다",
+        "selector": "",
+        "condition": "expectVisible",
+        "params": ["동영상 재생 기능"]
+      }
+    }
+  ]
+}

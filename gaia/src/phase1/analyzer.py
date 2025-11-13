@@ -23,11 +23,13 @@ class SpecAnalyzer:
         self._agent_client = agent_client or AgentServiceClient()
 
     # ------------------------------------------------------------------
-    def generate_from_spec(self, document_text: str) -> List[TestScenario]:
+    def generate_from_spec(self, document_text: str, feature_query: str = "") -> List[TestScenario]:
         try:
             print(f"[SpecAnalyzer] Calling Agent Service with document length: {len(document_text)}")
+            if feature_query:
+                print(f"[SpecAnalyzer] Feature query: {feature_query}")
             # AgentWorkflowRunner 대신 AgentServiceClient를 사용
-            result = self._agent_client.analyze_document(document_text)
+            result = self._agent_client.analyze_document(document_text, feature_query=feature_query)
             print(f"[SpecAnalyzer] Agent Service returned result: {type(result)}")
 
             # 🚨 NEW: RT JSON을 직접 받은 경우

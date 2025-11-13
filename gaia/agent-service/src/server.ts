@@ -23,7 +23,7 @@ app.get("/health", (req: Request, res: Response) => {
 // 워크플로 실행 엔드포인트
 app.post("/api/analyze", async (req: Request, res: Response) => {
   try {
-    const { input_as_text } = req.body as WorkflowInput;
+    const { input_as_text, feature_query } = req.body as WorkflowInput;
 
     if (!input_as_text) {
       res.status(400).json({
@@ -34,8 +34,11 @@ app.post("/api/analyze", async (req: Request, res: Response) => {
 
     console.log(`[${new Date().toISOString()}] Starting workflow analysis...`);
     console.log(`Input length: ${input_as_text.length} characters`);
+    if (feature_query) {
+      console.log(`Feature query: "${feature_query}"`);
+    }
 
-    const result = await runWorkflow({ input_as_text });
+    const result = await runWorkflow({ input_as_text, feature_query });
 
     console.log(`[${new Date().toISOString()}] Workflow completed successfully`);
 
