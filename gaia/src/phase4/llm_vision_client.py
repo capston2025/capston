@@ -940,5 +940,151 @@ JSON response:"""
             print(f"[Aggregator] Failed: {e}, using vision result")
             return vision_result
 
+    def verify_scenario_outcome(
+        self,
+        scenario_description: str,
+        final_screenshot: str,
+        url: str,
+    ) -> Dict[str, Any]:
+        """
+        Verify if the final screenshot matches the scenario description.
+
+        This is a Master Orchestrator-level verification that checks:
+        "Does this final state match what the scenario intended to achieve?"
+
+        Unlike verify_scenario_success() which compares before/after and looks for
+        specific indicators, this method takes a holistic view and asks:
+        "Is the natural language scenario description reflected in this screenshot?"
+
+        Args:
+            scenario_description: Natural language description of the scenario
+                                 (e.g., "사용자가 로그인할 수 있다")
+            final_screenshot: Screenshot of the final state after scenario execution
+            url: Current page URL
+
+        Returns:
+            Dict with:
+                - matches: Boolean indicating if screenshot matches scenario
+                - confidence: Confidence score (0-100)
+                - reasoning: Detailed explanation of why it matches/doesn't match
+                - observations: List of key observations from the screenshot
+        """
+        prompt = f"""You are a test verification expert. Your task is to verify if a scenario was successfully executed.
+
+**Scenario Description (Natural Language):**
+{scenario_description}
+
+**Current Page URL:**
+{url}
+
+**Task:**
+Look at the screenshot and determine: Does this final state match what the scenario intended to achieve?
+
+**Verification Guidelines:**
+1. **Focus on the INTENT** of the scenario, not exact text matching
+2. **Consider semantic equivalence**:
+   - "로그인할 수 있다" → Look for signs user is logged in (profile, logout button, welcome message)
+   - "장바구니에 추가" → Look for cart count increase, success message, or item in cart
+   - "검색할 수 있다" → Look for search results, result count, relevant items
+3. **UI State Changes** are valid evidence:
+   - Modal opened/closed
+   - New content displayed
+   - Navigation occurred
+   - Form submitted/cleared
+   - Items added/removed from lists
+4. **Error states** are important:
+   - If error message visible → scenario likely failed
+   - If stuck on same page without change → scenario likely failed
+5. **Success indicators** to look for:
+   - Confirmation messages (toasts, alerts, banners)
+   - UI state changes consistent with scenario goal
+   - New content/page reflecting the intended action
+   - Expected elements visible (buttons, forms, data)
+
+**Important Notes:**
+- Some success messages may be temporary (toasts) - look for OTHER evidence
+- Korean and English messages are both valid
+- Focus on OUTCOME, not the exact steps taken
+
+Required JSON format (no markdown):
+{{
+    "matches": true,
+    "confidence": 85,
+    "reasoning": "detailed explanation of why the screenshot matches or doesn't match the scenario description",
+    "observations": ["key observation 1", "key observation 2", "key observation 3"]
+}}
+
+JSON response:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{final_screenshot}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            # Extract text from response
+            response_text = response.choices[0].message.content or ""
+
+            # Parse JSON
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            # Handle empty response
+            if not response_text:
+                print("LLM scenario outcome verification returned empty response")
+                return {
+                    "matches": False,
+                    "confidence": 0,
+                    "reasoning": "LLM returned empty response",
+                    "observations": []
+                }
+
+            # Try to parse JSON
+            try:
+                result = json.loads(response_text)
+                # Ensure required fields exist
+                if "observations" not in result:
+                    result["observations"] = []
+                return result
+            except json.JSONDecodeError as json_err:
+                print(f"LLM scenario outcome verification returned non-JSON response: {response_text[:200]}")
+                return {
+                    "matches": False,
+                    "confidence": 0,
+                    "reasoning": f"LLM returned non-JSON: {response_text[:100]}",
+                    "observations": []
+                }
+
+        except Exception as e:
+            print(f"LLM scenario outcome verification failed: {e}")
+            return {
+                "matches": False,
+                "confidence": 0,
+                "reasoning": f"Verification failed: {e}",
+                "observations": []
+            }
+
 
 __all__ = ["LLMVisionClient"]
