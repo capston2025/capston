@@ -213,123 +213,136 @@ async function callGithubMcpTool(toolName: string, args: Record<string, unknown>
   });
 }
 
+// 소스 코드에서 셀렉터 정보만 추출 (토큰 절약)
+function extractSelectorsFromCode(code: string): string {
+  const lines: string[] = [];
+
+  // data-testid 추출
+  const testidMatches = code.matchAll(/data-testid=["']([^"']+)["']/g);
+  for (const match of testidMatches) {
+    lines.push(`[data-testid="${match[1]}"]`);
+  }
+
+  // id 추출
+  const idMatches = code.matchAll(/\bid=["']([^"']+)["']/g);
+  for (const match of idMatches) {
+    lines.push(`#${match[1]}`);
+  }
+
+  // className 추출 (간단한 것만)
+  const classMatches = code.matchAll(/className=["']([^"']+)["']/g);
+  for (const match of classMatches) {
+    const classes = match[1].split(/\s+/).filter(c =>
+      c.length > 0 &&
+      !c.includes('${') && // 템플릿 리터럴 제외
+      !c.includes(':') &&  // Tailwind 동적 클래스 제외
+      c.length < 30        // 너무 긴 클래스명 제외
+    );
+    classes.forEach(c => lines.push(`.${c}`));
+  }
+
+  // button, svg, input 같은 주요 태그의 구조 추출
+  const tagMatches = code.matchAll(/<(button|input|select|textarea|svg|form)[^>]*>/g);
+  for (const match of tagMatches) {
+    const tag = match[0];
+    if (tag.includes('data-testid')) {
+      const testid = tag.match(/data-testid=["']([^"']+)["']/)?.[1];
+      if (testid) lines.push(`${match[1]}[data-testid="${testid}"]`);
+    }
+    if (tag.includes('svg') && tag.includes('class')) {
+      const classes = tag.match(/className=["']([^"']+)["']/)?.[1];
+      if (classes) lines.push(`svg.${classes.split(/\s+/)[0]}`);
+    }
+  }
+
+  return [...new Set(lines)].join('\n');
+}
+
 async function collectRepoContext(keywords: string[]): Promise<string> {
-  console.log(`[MCP] Fetching repository files from GitHub...`);
+  console.log(`[GitHub API] Fetching repository files directly from GitHub API...`);
 
   try {
-    // Step 1: 루트 디렉토리 내용 가져오기
-    const rootContent = await callGithubMcpTool("get_file_contents", {
-      owner: DEFAULT_REPO_OWNER,
-      repo: DEFAULT_REPO_NAME,
-      path: "/"
-    });
-
-    if (!rootContent) {
-      console.warn("[MCP] Failed to get root directory");
+    const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (!token) {
+      console.warn("[GitHub API] Token not found, using local fallback");
       return buildLocalFallbackContext() || "";
     }
 
-    // Step 2: 모든 파일/폴더 경로 수집
-    const allPaths: string[] = [];
-    const parseDirectory = (data: any, basePath: string = "") => {
-      try {
-        const items = Array.isArray(data) ? data : [data];
-        for (const item of items) {
-          const itemPath = basePath ? `${basePath}/${item.name}` : item.name;
-
-          if (item.type === "file") {
-            // 소스 파일만 추가
-            if ((itemPath.endsWith(".ts") || itemPath.endsWith(".tsx") || itemPath.endsWith(".js") || itemPath.endsWith(".jsx")) &&
-                !itemPath.includes("node_modules") && !itemPath.includes("dist/") && !itemPath.includes(".next/")) {
-              allPaths.push(itemPath);
-            }
-          }
-        }
-      } catch (e) {
-        console.warn(`[MCP] Failed to parse directory:`, e);
-      }
+    // 직접 GitHub API 호출
+    const headers = {
+      "Authorization": `token ${token}`,
+      "Accept": "application/vnd.github.v3+json",
+      "User-Agent": "gaia-agent-builder"
     };
 
-    parseDirectory(JSON.parse(rootContent));
+    // Step 1: src 디렉토리의 파일 목록 가져오기
+    const srcPath = "Test Site with UI Elements2/src";
+    const treeUrl = `https://api.github.com/repos/${DEFAULT_REPO_OWNER}/${DEFAULT_REPO_NAME}/contents/${encodeURIComponent(srcPath)}`;
 
-    // Test Site with UI Elements2/src 디렉토리 확인 (실제 소스코드 위치)
-    try {
-      const srcContent = await callGithubMcpTool("get_file_contents", {
-        owner: DEFAULT_REPO_OWNER,
-        repo: DEFAULT_REPO_NAME,
-        path: "Test Site with UI Elements2/src/"
-      });
-      if (srcContent) {
-        parseDirectory(JSON.parse(srcContent), "Test Site with UI Elements2/src");
-        console.log(`[MCP] Found Test Site with UI Elements2/src directory`);
-      }
-    } catch (e) {
-      console.log(`[MCP] Failed to read Test Site directory: ${e}`);
+    console.log(`[GitHub API] Fetching directory: ${treeUrl}`);
+    const treeResponse = await fetch(treeUrl, { headers });
+
+    if (!treeResponse.ok) {
+      console.warn(`[GitHub API] Failed to fetch directory: ${treeResponse.status}`);
+      return buildLocalFallbackContext() || "";
     }
 
-    console.log(`[MCP] Found ${allPaths.length} source files`);
+    const files: any = await treeResponse.json();
+    const sourceFiles = files.filter((file: any) =>
+      file.type === "file" &&
+      (file.name.endsWith(".tsx") || file.name.endsWith(".ts") || file.name.endsWith(".jsx") || file.name.endsWith(".js"))
+    );
 
-    // Step 3: 모든 소스 파일 내용 가져오기
-    const fileContents: string[] = [];
-    const batchSize = 5;
+    console.log(`[GitHub API] Found ${sourceFiles.length} source files`);
 
-    for (let i = 0; i < allPaths.length; i += batchSize) {
-      const batch = allPaths.slice(i, i + batchSize);
-      console.log(`[MCP] Fetching batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(allPaths.length / batchSize)}...`);
+    // Step 2: 각 파일에서 셀렉터 정보만 추출
+    const selectorInfo: string[] = [];
 
-      const batchPromises = batch.map(async (filePath: string) => {
-        const content = await callGithubMcpTool("get_file_contents", {
-          owner: DEFAULT_REPO_OWNER,
-          repo: DEFAULT_REPO_NAME,
-          path: filePath
-        });
+    for (const file of sourceFiles) {
+      console.log(`[GitHub API] Fetching ${file.name}...`);
+      const fileResponse = await fetch(file.download_url, { headers });
 
-        if (content) {
-          // base64 디코딩이 필요하면 처리
-          let decoded = content;
-          try {
-            const parsed = JSON.parse(content);
-            if (parsed.content && parsed.encoding === "base64") {
-              decoded = Buffer.from(parsed.content, "base64").toString("utf-8");
-            }
-          } catch (e) {
-            // 이미 텍스트인 경우
-          }
-          return `=== FILE: ${filePath} ===\n${decoded}\n`;
+      if (fileResponse.ok) {
+        const content = await fileResponse.text();
+        const selectors = extractSelectorsFromCode(content);
+        if (selectors) {
+          selectorInfo.push(`=== SELECTORS FROM: ${file.name} ===\n${selectors}\n`);
+          console.log(`[GitHub API] ✅ Extracted ${selectors.split('\n').length} selectors from ${file.name}`);
+          console.log(`[GitHub API] 📋 Preview: ${selectors.split('\n').slice(0, 5).join(', ')}`);
+        } else {
+          console.log(`[GitHub API] ⚠️ No selectors found in ${file.name}`);
         }
-        return null;
-      });
-
-      const batchResults = await Promise.all(batchPromises);
-      fileContents.push(...batchResults.filter(Boolean) as string[]);
+      } else {
+        console.warn(`[GitHub API] ⚠️ Failed to fetch ${file.name}`);
+      }
     }
 
-    console.log(`[MCP] Successfully fetched ${fileContents.length}/${allPaths.length} files`);
-    const totalChars = fileContents.reduce((sum, content) => sum + content.length, 0);
-    console.log(`[MCP] Total source code: ${totalChars} chars`);
+    const totalChars = selectorInfo.reduce((sum, content) => sum + content.length, 0);
+    console.log(`[GitHub API] Successfully processed ${selectorInfo.length}/${sourceFiles.length} files`);
+    console.log(`[GitHub API] Total selector info: ${totalChars} chars (compressed)`);
 
-    return fileContents.join("\n");
+    return selectorInfo.join("\n");
 
   } catch (error) {
-    console.error(`[MCP] Error fetching repo files:`, error);
+    console.error(`[GitHub API] Error fetching repo files:`, error);
     return buildLocalFallbackContext() || "";
   }
 }
 
 async function augmentSpecWithRepoContext(specText: string): Promise<string> {
-  console.log("[MCP] Starting GitHub repo file collection...");
+  console.log("[GitHub API] Starting GitHub repo file collection...");
 
   const repoContext = await collectRepoContext([]);
-  console.log(`[MCP] Collected repo context: ${repoContext.length} chars`);
+  console.log(`[GitHub API] Collected repo context: ${repoContext.length} chars`);
 
   if (!repoContext.trim()) {
-    console.log("[MCP] WARNING: Repo context is empty");
+    console.log("[GitHub API] WARNING: Repo context is empty");
     return specText;
   }
 
   // 전체 소스코드 포함
   const augmented = `${specText}\n\n### Full Repository Source Code (from GitHub) ###\n${repoContext}`;
-  console.log(`[MCP] Successfully augmented spec: ${specText.length} → ${augmented.length} chars`);
+  console.log(`[GitHub API] Successfully augmented spec: ${specText.length} → ${augmented.length} chars`);
   return augmented;
 }
 
@@ -343,6 +356,11 @@ const tcSimplifierAgent = new Agent({
   instructions: `🎯 Goal: 기획서/스펙 문서에서 테스트 케이스를 간결하게 추출하라.
 
 입력: 기획서 텍스트 (+ GitHub 소스코드는 나중에 사용)
+
+⚠️ FEATURE FILTER: If the input starts with "🎯 FEATURE FILTER:", ONLY generate test cases for that specific feature.
+   - Extract the feature name from the FEATURE FILTER line
+   - Ignore all other features in the spec document
+   - If no FEATURE FILTER is present, generate test cases for ALL features (default behavior)
 
 출력: 간결한 TC JSON 목록
 
@@ -377,18 +395,20 @@ OUTPUT FORMAT (CRITICAL):
 
 RULES:
 1. Output ONLY valid JSON (no markdown, no extra text)
-2. Create EXACTLY 10 TCs (for quick testing)
+2. Create all necessary TCs (no limit) - OR filter by FEATURE FILTER if present
 3. Steps는 자연어로 간결하게 (구체적인 값 포함)
 4. Priority: MUST (50%), SHOULD (30%), MAY (20%)
 5. 기획서에 명시된 기능 위주로 추출
 6. 각 TC는 독립적으로 실행 가능해야 함
+7. ⚠️ If FEATURE FILTER is present, focus ONLY on that feature and related sub-features
+8. ⚠️ DO NOT create "로그아웃 상태 보장" or "로그아웃 버튼 클릭" steps - each test automatically starts with a clean browser state (cookies/storage cleared)
 
 예시:
 - "로그인 페이지로 이동" → "페이지 이동"
 - "이메일 필드에 test@example.com 입력" → "이메일 입력: test@example.com"
 - "로그인 버튼을 클릭한다" → "로그인 버튼 클릭"
 
-출력 제한: 정확히 10개 TC`,
+출력: 기획서에서 추출 가능한 모든 TC를 생성 (FEATURE FILTER 적용 시 해당 기능의 TC만)`,
   model: MODEL,
   modelSettings: {
     store: true,
@@ -442,8 +462,11 @@ YOUR TASK: 각 TC의 step을 코드에서 찾아서 실행 가능한 RT step으�
    - Selector: "select[name=x]" 또는 롤 기반
    - Params: [선택할 값]
 
-7. **셀렉터 우선순위:**
-   - id > data-testid > aria-label > type > className > text
+7. **셀렉터 우선순위 (실제 코드에 있는 것만 사용!):**
+   - ONLY use selectors that exist in the provided source code
+   - id (if exists in code) > aria-label > type > className > :has-text()
+   - ⚠️ DO NOT invent data-testid or any attributes not in the source code
+   - ⚠️ NEVER use selectors like [data-testid='x'] unless you see it in "=== FILE: ===" sections
 
 📋 OUTPUT FORMAT (CRITICAL):
 {
@@ -493,55 +516,66 @@ YOUR TASK: 각 TC의 step을 코드에서 찾아서 실행 가능한 RT step으�
 🚨 CRITICAL RULES:
 1. Output ONLY valid JSON (first char: {, last char: })
 2. NO markdown code blocks (no \`\`\`json)
-3. 모든 TC를 RT로 변환 (입력 10개 → 출력 10개)
+3. 모든 TC를 RT로 변환 (입력한 모든 TC를 RT로 1:1 변환)
 4. action은 반드시: goto, fill, click, wait, expectVisible, expectText, select 중 하나
-5. selector는 코드에서 실제로 찾은 값 사용
+5. ⚠️ SELECTOR RULE:
+   a) **ALWAYS start each test scenario with a "goto" action to the test URL**
+   b) **ALWAYS use empty string "" for selector unless you are 100% certain**
+   c) Only fill in selector if it's a simple input field (e.g., input[type="email"])
+   d) For clicks, expectations, use "" - let the runtime find the element via description
+   e) NEVER invent id or data-testid that are not in "=== FILE: ===" sections
 6. params는 자연어 step이나 코드에서 추출
-7. 코드에서 찾을 수 없으면 합리적인 기본값 사용
+7. ⚠️ FORBIDDEN: Inventing selectors when uncertain
 8. ⚠️ NEVER use action="note" or action="" - these are NOT executable!
-9. ⚠️ ALWAYS search the "=== FILE: ===" sections for real selectors
-10. ⚠️ If you output action="note", YOU HAVE FAILED THE TASK
+9. ⚠️ Default to selector="" - it's safer and more accurate than guessing
+10. ⚠️ Example GOOD: selector="" (let runtime handle), selector="input[type='email']" (simple)
+11. ⚠️ Example BAD: selector="button:has-text('로그인')" when label wraps input
 
-EXAMPLE MATCHING:
+EXAMPLE MATCHING (PREFER EMPTY SELECTOR):
+
+Example 1 - Start of test (ALWAYS goto first):
+TC: "로그인 기능 테스트"
+RT Steps:
+[
+  {
+    "description": "테스트 페이지로 이동",
+    "action": "goto",
+    "selector": "",
+    "params": ["https://test-sitev2.vercel.app/#basics"]
+  },
+  ...
+]
+
+Example 2 - Input field (use simple type selector):
 TC Step: "이메일 입력: test@example.com"
-Code: <input id="email-input" type="email" placeholder="이메일" />
 RT Step:
 {
   "description": "이메일 입력: test@example.com",
   "action": "fill",
-  "selector": "#email-input",
+  "selector": "input[type='email']",
   "params": ["test@example.com"]
 }
 
+Example 3 - Button click (use EMPTY selector):
 TC Step: "로그인 버튼 클릭"
-Code: <button className="login-btn" onClick={handleLogin}>로그인</button>
 RT Step:
 {
   "description": "로그인 버튼 클릭",
   "action": "click",
-  "selector": ".login-btn",
+  "selector": "",
   "params": []
 }
 
-TC Step: "'-' 버튼 클릭" or "수량 감소"
-Code: <button><svg class="lucide lucide-minus"><path d="M5 12h14"/></svg></button>
+Example 4 - Expectation (use EMPTY selector):
+TC Step: "로그인 성공 메시지 확인"
 RT Step:
 {
-  "description": "'-' 버튼 클릭 (1회)",
-  "action": "click",
-  "selector": "button:has(svg.lucide-minus)",
-  "params": []
+  "description": "로그인 성공 메시지 확인",
+  "action": "expectVisible",
+  "selector": "",
+  "params": ["로그인되었습니다"]
 }
-
-TC Step: "닫기 버튼 클릭" or "Dialog 닫기"
-Code: <button><svg class="lucide lucide-x"><path d="M18 6 6 18"/></svg></button>
-RT Step:
-{
-  "description": "Dialog 닫기",
-  "action": "click",
-  "selector": "button:has(svg.lucide-x)",
-  "params": []
-}`,
+`,
   model: MODEL,
   modelSettings: {
     store: true,
@@ -621,6 +655,16 @@ YOUR JOB: For EACH test case, find the concrete implementation details in the co
 - API endpoints and data structures
 - State variable names
 - Event handler names
+
+🚨 SPECIAL SELECTOR RULES:
+- SVG Icon Buttons: When you see buttons with SVG icons (e.g., <button><svg class="lucide lucide-minus">), use Playwright's :has() selector
+  Example: <button><svg class="lucide lucide-minus"></svg></button> → selector: "button:has(svg.lucide-minus)"
+  Example: <button><svg class="lucide lucide-x"></svg></button> → selector: "button:has(svg.lucide-x)"
+  Example: <button><svg class="lucide lucide-trash2"></svg></button> → selector: "button:has(svg.lucide-trash2)"
+- File Upload: For <input type="file">, use action "uploadFile" with absolute file paths, NOT "fill"
+- Scrollable Containers: For infinite scroll or scrollable lists with overflow-y-auto, max-h-*, use the container class selector
+  Example: <div class="overflow-y-auto max-h-96"> → selector: ".overflow-y-auto.max-h-96" or combined with parent context
+  Do NOT use non-existent data-testid like "infinite-list" unless you actually see it in the code
 
 OUTPUT FORMAT (JSON):
 {
@@ -759,6 +803,7 @@ function approvalRequest(_message: string) {
 
 export interface WorkflowInput {
   input_as_text: string;
+  feature_query?: string;  // 특정 기능 필터링 쿼리 (선택사항)
 }
 
 export interface WorkflowOutput {
@@ -779,13 +824,25 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
       },
     });
 
+    // feature_query가 있으면 필터링 지시사항 추가
+    let stage1Input = augmentedInput;
+    if (workflow.feature_query && workflow.feature_query.trim()) {
+      console.log(`[AgentBuilder] 🎯 Feature filtering enabled: "${workflow.feature_query}"`);
+      stage1Input = `🎯 FEATURE FILTER: "${workflow.feature_query}"\n\n` +
+                    `IMPORTANT: Generate test cases ONLY for the feature described above. ` +
+                    `Ignore all other features in the spec document.\n\n` +
+                    `If the feature filter matches multiple related features, include all of them.\n` +
+                    `For example: "로그인" should include "로그인", "회원가입", "비밀번호 찾기" if they are related.\n\n` +
+                    `${augmentedInput}`;
+    }
+
     const conversationHistory: AgentInputItem[] = [
       {
         role: "user",
         content: [
           {
             type: "input_text",
-            text: augmentedInput,
+            text: stage1Input,
           },
         ],
       },

@@ -54,12 +54,13 @@ class AgentServiceClient:
             print(f"Health check failed: {e}")
             return False
 
-    def analyze_document(self, text: str, timeout: int = 1500) -> AnalysisResult:
+    def analyze_document(self, text: str, feature_query: str = "", timeout: int = 1500) -> AnalysisResult:
         """
         문서를 분석해 테스트 케이스를 생성합니다.
 
         매개변수:
             text: 분석할 문서 텍스트
+            feature_query: 특정 기능 필터링 쿼리 (비어있으면 전체 TC 생성)
             timeout: 요청 타임아웃(초). 기본값 1500초(= GPT-5 기준 약 25분)
 
         반환:
@@ -72,13 +73,18 @@ class AgentServiceClient:
         if not text or not text.strip():
             raise ValueError("Document text cannot be empty")
 
+        # 요청 payload 구성
+        payload = {"input_as_text": text}
+        if feature_query:
+            payload["feature_query"] = feature_query
+
         # 요청 전송
         # 타임아웃=(connect_timeout, read_timeout)
         # connect_timeout: 서버 연결까지 대기 시간
         # read_timeout: 응답 읽기까지 대기 시간 (GPT-5는 길어질 수 있음)
         response = requests.post(
             f"{self.base_url}/api/analyze",
-            json={"input_as_text": text},
+            json=payload,
             headers={"Content-Type": "application/json"},
             timeout=(10, timeout)  # (연결: 10초, 읽기: 1500초)
         )

@@ -1,0 +1,166 @@
+{
+  "icr": {
+    "feature_query": "로그인",
+    "target_intents": [
+      "로그인"
+    ],
+    "total_ground_truth_test_cases": 6,
+    "gaia_generated_test_cases": 10,
+    "covered_test_cases_count": 3,
+    "icr_percentage": 50.0,
+    "target_80_passed": false,
+    "stretch_90_passed": false,
+    "matched_test_cases": [
+      {
+        "gaia_test_case": "로그인 실패 - 비밀번호 미입력",
+        "intent": "로그인",
+        "ground_truth_test_case": "로그인 실패 - 비밀번호 미입력",
+        "similarity": 1.0
+      },
+      {
+        "gaia_test_case": "로그인 성공",
+        "intent": "로그인",
+        "ground_truth_test_case": "로그인 성공 토스트 메시지 확인",
+        "similarity": 0.5217391304347826
+      },
+      {
+        "gaia_test_case": "회원가입 실패 - 비밀번호에 특수문자 없음",
+        "intent": "로그인",
+        "ground_truth_test_case": "로그인 실패 - 비밀번호 미입력",
+        "similarity": 0.55
+      },
+      {
+        "gaia_test_case": "로그인 실패 - 이메일 형식 오류",
+        "intent": "로그인",
+        "ground_truth_test_case": "로그인 실패 - 이메일 미입력",
+        "similarity": 0.7647058823529411
+      }
+    ],
+    "unmatched_test_cases": [
+      {
+        "gaia_test_case": "로그아웃 시 상태 초기화 및 장바구니 비움",
+        "best_score": 0.4864864864864865
+      },
+      {
+        "gaia_test_case": "회원가입 이메일 형식 브라우저 검증",
+        "best_score": 0.34146341463414637
+      },
+      {
+        "gaia_test_case": "회원가입 성공",
+        "best_score": 0.25
+      },
+      {
+        "gaia_test_case": "동일 계정 연속 로그인/로그아웃 일관성",
+        "best_score": 0.32558139534883723
+      },
+      {
+        "gaia_test_case": "탭 전환 시 UI 요소 노출 검증",
+        "best_score": 0.2777777777777778
+      },
+      {
+        "gaia_test_case": "로그인 상태에서 결제 버튼 활성화",
+        "best_score": 0.4375
+      }
+    ]
+  },
+  "er": {
+    "total_seeded": 20,
+    "detected_bugs": 0,
+    "missed_seeded": 20,
+    "bad_test_fails": 0,
+    "total_tests": 10,
+    "failed_tests_count": 0,
+    "er_percentage": 66.66666666666666,
+    "target_20_passed": false,
+    "detected_bug_details": [],
+    "missed_bug_details": [
+      {
+        "bug_id": "BUG-001",
+        "bug_description": "단축키 반응 없음"
+      },
+      {
+        "bug_id": "BUG-002",
+        "bug_description": "브레드크럼 네비게이션 오류"
+      },
+      {
+        "bug_id": "BUG-003",
+        "bug_description": "탭 메뉴의 보고서 다운로드 버튼 무반응"
+      },
+      {
+        "bug_id": "BUG-004",
+        "bug_description": "사이드바를 닫았다면 홈 아이콘이 남아있음"
+      },
+      {
+        "bug_id": "BUG-005",
+        "bug_description": "드랍다운 엘레먼트에서 텍스트 깨짐"
+      },
+      {
+        "bug_id": "BUG-006",
+        "bug_description": "툴팁 클릭 무반응"
+      },
+      {
+        "bug_id": "BUG-007",
+        "bug_description": "알림받기 토글 비활성화 오류"
+      },
+      {
+        "bug_id": "BUG-008",
+        "bug_description": "슬라이더 값이 화면가치가 일관성 없이 회전가기에 성공함"
+      },
+      {
+        "bug_id": "BUG-009",
+        "bug_description": "오류 버튼 클릭 시 성공 메시지 발생"
+      },
+      {
+        "bug_id": "BUG-010",
+        "bug_description": "다크모드/자동저장 토글 기능 미작동"
+      },
+      {
+        "bug_id": "BUG-011",
+        "bug_description": "데이터 피커 무반응"
+      },
+      {
+        "bug_id": "BUG-012",
+        "bug_description": "카드/리스트뷰 전환구나 추가 무반응"
+      },
+      {
+        "bug_id": "BUG-013",
+        "bug_description": "마우스 호버 기반 '더 끄기' 버튼 무반응"
+      },
+      {
+        "bug_id": "BUG-014",
+        "bug_description": "마우스 호버 시 '닫기' 버튼 표시"
+      },
+      {
+        "bug_id": "BUG-015",
+        "bug_description": "검색 기능 입력 무반응"
+      },
+      {
+        "bug_id": "BUG-016",
+        "bug_description": "취소/확인 버튼 동작 안 함"
+      },
+      {
+        "bug_id": "BUG-017",
+        "bug_description": "공유하기 클릭 시 창이 뜨지만 URL이 복사 안 됨"
+      },
+      {
+        "bug_id": "BUG-018",
+        "bug_description": "URL 복사 시 클립보드에 복사 안 됨"
+      },
+      {
+        "bug_id": "BUG-019",
+        "bug_description": "비로그인 상태에서 장바구니에 담아짐"
+      },
+      {
+        "bug_id": "BUG-020",
+        "bug_description": "범위 슬라이더의 종료 오류"
+      }
+    ]
+  },
+  "summary": {
+    "icr_percentage": 50.0,
+    "icr_target_passed": false,
+    "icr_stretch_passed": false,
+    "er_percentage": 66.66666666666666,
+    "er_target_passed": false
+  }
+}

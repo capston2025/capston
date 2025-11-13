@@ -52,6 +52,9 @@ class AppController(QObject):
         self._current_pdf_text: str | None = None
         self._current_pdf_hash: str | None = None
         self._current_url: str | None = None
+        self._current_feature_query: str | None = None  # ICR 측정용
+        self._current_plan_file: str | None = None  # ICR 측정용
+        self._current_bug_json: str | None = None  # ER 측정용 (이전 테스트 불러오기 시 bug.json)
         self._plan: Sequence[TestScenario] = ()
         self._analysis_plan: Sequence[TestScenario] = ()
         self._worker_thread: QThread | None = None
@@ -65,6 +68,7 @@ class AppController(QObject):
     def _connect_signals(self) -> None:
         self._window.fileDropped.connect(self._on_file_dropped)
         self._window.planFileSelected.connect(self._on_plan_file_selected)
+        self._window.bugJsonSelected.connect(self._on_bug_json_selected)
         self._window.startRequested.connect(self._on_start_requested)
         self._window.cancelRequested.connect(self._on_cancel_requested)
         self._window.urlSubmitted.connect(self._on_url_submitted)
@@ -115,8 +119,12 @@ class AppController(QObject):
             self._window.append_log("⚠️ Analysis already in progress, please wait...")
             return
 
+        # GUI에서 feature_query 가져오기
+        feature_query = self._window.get_feature_query()
+        self._current_feature_query = feature_query  # ICR 측정용 저장
+
         thread = QThread(self)
-        worker = AnalysisWorker(pdf_text, analyzer=self._analyzer)
+        worker = AnalysisWorker(pdf_text, analyzer=self._analyzer, feature_query=feature_query)
         worker.moveToThread(thread)
 
         # 시그널 연결
@@ -161,6 +169,7 @@ class AppController(QObject):
         self._plan = ()
         self._current_pdf_text = None
         self._current_pdf_hash = metadata.get("pdf_hash") if metadata else None
+        self._current_plan_file = str(path)  # ICR 측정을 위해 플랜 파일 경로 저장
         loaded_url = (metadata.get("url") if metadata else "") or ""
 
         if loaded_url:
@@ -177,6 +186,23 @@ class AppController(QObject):
             f"(MUST {summary['must']}, SHOULD {summary['should']}, MAY {summary['may']})"
         )
         self._reset_tracker_with_plan(plan_list)
+
+        # 플랜 불러오기 후 bug.json 선택 여부 묻기
+        self._window.ask_for_bug_json()
+
+    @Slot(str)
+    def _on_bug_json_selected(self, file_path: str) -> None:
+        """Bug JSON 파일이 선택되었을 때 처리합니다."""
+        if file_path and Path(file_path).exists():
+            self._current_bug_json = file_path
+            self._window.append_log(f"🐛 Bug JSON 파일 선택됨: {Path(file_path).name}")
+            self._window.append_log("ℹ️ 테스트 완료 후 ER (Error Rate)이 자동으로 측정됩니다.")
+
+            # "로그인" 관련 테스트인 경우 ICR도 측정
+            if self._plan and any("로그인" in s.get("scenario", "") for s in self._plan):
+                self._window.append_log("ℹ️ 로그인 기능 테스트 감지: ICR (Intent Coverage Rate)도 측정됩니다.")
+        else:
+            self._current_bug_json = None
 
     @Slot(object)
     def _on_analysis_finished(self, analysis_result) -> None:
@@ -212,6 +238,7 @@ class AppController(QObject):
                     self._analysis_plan,
                     pdf_hash=self._current_pdf_hash
                 )
+                self._current_plan_file = str(saved_path)  # ICR 측정용 저장
                 self._window.append_log(f"💾 Plan cached: {saved_path.name}")
             except Exception as e:
                 self._window.append_log(f"⚠️ Failed to cache plan: {e}")
@@ -547,6 +574,8 @@ class AppController(QObject):
         thread.started.connect(worker.start)
         worker.progress.connect(self._handle_worker_progress)
         worker.screenshot.connect(self._window.update_live_preview)
+        worker.scenario_started.connect(self._window.highlight_current_scenario)
+        worker.scenario_finished.connect(lambda _: None)  # Could add completion logic here
         worker.finished.connect(self._on_intelligent_worker_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -578,6 +607,84 @@ class AppController(QObject):
         """IntelligentOrchestrator 완료를 처리합니다."""
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ LLM-powered automation completed. Coverage: {summary:.1f}%")
+
+        # 모든 시나리오 하이라이트 초기화
+        self._window.reset_scenario_highlights()
+
+        # 이전 테스트를 불러온 경우 ICR 측정 수행
+        if self._current_plan_file and self._analysis_plan:
+            # 로그인 관련 플랜인지 확인
+            is_login_related = any(
+                "로그인" in str(getattr(s, "scenario", "")).lower() or
+                "login" in str(getattr(s, "scenario", "")).lower()
+                for s in self._analysis_plan
+            )
+
+            if is_login_related:
+                self._window.append_log("\n" + "="*60)
+                self._window.append_log("📊 로그인 기능 테스트 감지 - ICR 지표를 측정합니다")
+                self._window.append_log("="*60)
+
+                try:
+                    from measure_metrics import calculate_icr
+                    import json
+                    from pathlib import Path
+
+                    # 성공한 시나리오만 필터링하여 임시 플랜 파일 생성
+                    with open(self._current_plan_file, 'r', encoding='utf-8') as f:
+                        plan_data = json.load(f)
+
+                    # tracker에서 성공한 시나리오 ID 가져오기
+                    successful_ids = set()
+                    for scenario in self._analysis_plan:
+                        item = self._tracker.items.get(scenario.id)
+                        if item and item.status == 'success':
+                            successful_ids.add(scenario.id)
+
+                    # 성공한 시나리오만 포함한 필터링된 플랜 데이터
+                    filtered_scenarios = [
+                        s for s in plan_data.get('test_scenarios', [])
+                        if s.get('id') in successful_ids
+                    ]
+
+                    # 임시 플랜 파일 생성
+                    filtered_plan_data = plan_data.copy()
+                    filtered_plan_data['test_scenarios'] = filtered_scenarios
+
+                    temp_plan_path = Path(self._current_plan_file).parent / "temp_filtered_plan.json"
+                    with open(temp_plan_path, 'w', encoding='utf-8') as f:
+                        json.dump(filtered_plan_data, f, ensure_ascii=False, indent=2)
+
+                    self._window.append_log(f"   🔍 성공한 시나리오만 포함: {len(filtered_scenarios)}/{len(plan_data.get('test_scenarios', []))}개")
+
+                    icr_result = calculate_icr(
+                        plan_file=str(temp_plan_path),
+                        ground_truth_file="ground_truth.json",
+                        feature_query="로그인"
+                    )
+
+                    # 임시 파일 삭제
+                    temp_plan_path.unlink(missing_ok=True)
+
+                    # ICR 결과를 GUI에 표시
+                    icr_pct = icr_result['icr_percentage']
+                    covered = icr_result['covered_test_cases_count']
+                    total = icr_result['total_ground_truth_test_cases']
+                    target_passed = "✅ PASS" if icr_result['target_80_passed'] else "❌ FAIL"
+
+                    self._window.append_log(f"\n{'='*60}")
+                    self._window.append_log(f"📈 정량지표: ICR (Intent Coverage Rate)")
+                    self._window.append_log(f"{'='*60}")
+                    self._window.append_log(f"🎯 측정 기능: 로그인")
+                    self._window.append_log(f"📊 Ground Truth Test Cases: {total}개")
+                    self._window.append_log(f"✅ 커버된 Test Cases: {covered}개")
+                    self._window.append_log(f"📈 ICR: {icr_pct:.2f}%")
+                    self._window.append_log(f"🎯 목표 달성 (≥80%): {target_passed}")
+                    self._window.append_log(f"{'='*60}\n")
+
+                except Exception as e:
+                    self._window.append_log(f"⚠️ ICR 측정 실패: {e}")
+
         self._window.set_busy(False)
         self._update_overall_progress_display()
         self._worker_thread = None
@@ -587,6 +694,111 @@ class AppController(QObject):
     def _on_worker_finished(self) -> None:
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ Automation completed. Coverage: {summary:.1f}%")
+
+        # ICR 측정 (특정 기능 테스트인 경우에만)
+        if self._current_feature_query and self._current_plan_file:
+            self._window.append_log(f"\n📊 정량지표 측정 중... (Feature: {self._current_feature_query})")
+
+            # 1. ICR 측정
+            try:
+                from measure_metrics import calculate_icr
+                icr_result = calculate_icr(
+                    plan_file=self._current_plan_file,
+                    ground_truth_file="ground_truth.json",
+                    feature_query=self._current_feature_query
+                )
+
+                # ICR 결과를 GUI에 표시
+                icr_pct = icr_result['icr_percentage']
+                covered = icr_result['covered_test_cases_count']
+                total = icr_result['total_ground_truth_test_cases']
+                target_passed = "✅ PASS" if icr_result['target_80_passed'] else "❌ FAIL"
+
+                self._window.append_log(f"\n{'='*60}")
+                self._window.append_log(f"📈 정량지표 1: ICR (Intent Coverage Rate)")
+                self._window.append_log(f"{'='*60}")
+                self._window.append_log(f"🎯 측정 기능: {self._current_feature_query}")
+                self._window.append_log(f"📊 Ground Truth Test Cases: {total}개")
+                self._window.append_log(f"✅ 커버된 Test Cases: {covered}개")
+                self._window.append_log(f"📈 ICR: {icr_pct:.2f}%")
+                self._window.append_log(f"🎯 목표 달성 (≥80%): {target_passed}")
+                self._window.append_log(f"{'='*60}\n")
+
+            except Exception as e:
+                self._window.append_log(f"⚠️ ICR 측정 실패: {e}")
+
+            # 1.5. ICR 측정 (이전 테스트 불러오기 + 로그인 기능인 경우)
+            if self._current_bug_json and self._plan and any("로그인" in s.get("scenario", "") for s in self._plan):
+                try:
+                    from measure_metrics import calculate_icr
+
+                    icr_result = calculate_icr(
+                        plan_file=self._current_plan_file,
+                        ground_truth_file="ground_truth.json",
+                        feature_query="로그인"
+                    )
+
+                    # ICR 결과를 GUI에 표시
+                    icr_pct = icr_result['icr_percentage']
+                    covered = icr_result['covered_test_cases_count']
+                    total = icr_result['total_ground_truth_test_cases']
+                    target_passed = "✅ PASS" if icr_result['target_80_passed'] else "❌ FAIL"
+
+                    self._window.append_log(f"\n{'='*60}")
+                    self._window.append_log(f"📈 정량지표 1: ICR (Intent Coverage Rate)")
+                    self._window.append_log(f"{'='*60}")
+                    self._window.append_log(f"🎯 측정 기능: 로그인")
+                    self._window.append_log(f"📊 Ground Truth Test Cases: {total}개")
+                    self._window.append_log(f"✅ 커버된 Test Cases: {covered}개")
+                    self._window.append_log(f"📈 ICR: {icr_pct:.2f}%")
+                    self._window.append_log(f"🎯 목표 달성 (≥80%): {target_passed}")
+                    self._window.append_log(f"{'='*60}\n")
+
+                except Exception as e:
+                    self._window.append_log(f"⚠️ ICR 측정 실패: {e}")
+
+            # 2. ER 측정 (이전 테스트 불러오기 시 bug.json을 선택한 경우)
+            if self._current_bug_json:
+                try:
+                    from measure_metrics import extract_bugs_from_logs
+                    import os
+
+                    # 로그 파일 경로 찾기
+                    log_file = "/tmp/agent-service-metrics-test.log"
+
+                    # 로그 파일이 없으면 다른 경로 시도
+                    if not os.path.exists(log_file):
+                        # GUI에서 실행한 경우 워커 로그 확인
+                        # (현재는 간단히 파일이 없으면 스킵)
+                        self._window.append_log(f"⚠️ ER 측정 스킵: 로그 파일을 찾을 수 없습니다 ({log_file})")
+                    else:
+                        er_result = extract_bugs_from_logs(
+                            log_file=log_file,
+                            audit_file=self._current_bug_json
+                        )
+
+                        # ER 결과를 GUI에 표시
+                        er_pct = er_result['er_percentage']
+                        total_seeded = er_result['total_seeded']
+                        detected = er_result['detected_bugs']
+                        missed = er_result['missed_seeded']
+                        false_pos = er_result['bad_test_fails']
+                        target_passed = "✅ PASS" if er_result['target_20_passed'] else "❌ FAIL"
+
+                        self._window.append_log(f"\n{'='*60}")
+                        self._window.append_log(f"📈 정량지표 2: ER (Error Rate)")
+                        self._window.append_log(f"{'='*60}")
+                        self._window.append_log(f"🐛 시드 버그 총 개수: {total_seeded}개")
+                        self._window.append_log(f"✅ 탐지된 버그: {detected}개")
+                        self._window.append_log(f"❌ 미탐지된 버그: {missed}개")
+                        self._window.append_log(f"⚠️  False Positive: {false_pos}개")
+                        self._window.append_log(f"📈 ER: {er_pct:.2f}%")
+                        self._window.append_log(f"🎯 목표 달성 (≤20%): {target_passed}")
+                        self._window.append_log(f"{'='*60}\n")
+
+                except Exception as e:
+                    self._window.append_log(f"⚠️ ER 측정 실패: {e}")
+
         self._window.set_busy(False)
         self._update_overall_progress_display()
         self._worker_thread = None

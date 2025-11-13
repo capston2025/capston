@@ -291,35 +291,15 @@ class IntelligentOrchestrator:
         # Record home page elements for smart navigation
         self._record_page_elements(url, dom_elements)
 
-        # Step 2: Ask LLM to prioritize scenarios based on DOM
-        self._log(f"  🤖 LLM analyzing which tests are executable...", progress_callback)
-        prioritized_scenarios = self._prioritize_scenarios(
-            scenarios, dom_elements, screenshot, url, progress_callback
-        )
+        # Step 2: SKIP LLM prioritization - execute all scenarios on current page
+        # All scenarios on the same page are executable (same URL = same context)
+        self._log(f"  ✅ All {len(scenarios)} tests will be executed (same page context)", progress_callback)
+        prioritized_scenarios = list(scenarios)  # Execute all scenarios
 
-        if not prioritized_scenarios:
-            self._log("⚠️ No executable tests found on this page", progress_callback)
-            results["skipped"] = len(scenarios)
-            return results
-
-        self._log(f"  ✅ Found {len(prioritized_scenarios)} executable tests (skipping {len(scenarios) - len(prioritized_scenarios)})", progress_callback)
-
-        # Mark non-prioritized scenarios as skipped
-        prioritized_ids = {s.id for s in prioritized_scenarios}
-        for scenario in scenarios:
-            if scenario.id not in prioritized_ids:
-                results["scenarios"].append({
-                    "id": scenario.id,
-                    "scenario": scenario.scenario,
-                    "status": "skipped",
-                    "logs": ["Not executable on current page (LLM prioritization)"]
-                })
-                results["skipped"] += 1
-                if self.tracker:
-                    self.tracker.set_status(scenario.id, "skipped", evidence="LLM prioritization skipped this scenario")
-
-        # Step 3: Execute prioritized scenarios (non-sequential based on DOM availability)
+        # Step 3: Execute all scenarios (non-sequential based on DOM availability)
         for idx, scenario in enumerate(prioritized_scenarios, start=1):
+            # Send scenario start marker for GUI highlighting
+            self._log(f"[SCENARIO_START:{scenario.id}]", progress_callback)
             self._log(f"\n[{idx}/{len(prioritized_scenarios)}] Testing: {scenario.scenario} (Priority: {scenario.priority})", progress_callback)
 
             try:
@@ -358,6 +338,9 @@ class IntelligentOrchestrator:
                     if self.tracker and evidence_text:
                         self.tracker.set_status(scenario.id, status, evidence=evidence_text)
 
+                # Send scenario end marker for GUI
+                self._log(f"[SCENARIO_END:{scenario.id}]", progress_callback)
+
             except Exception as e:
                 import traceback
                 tb_str = traceback.format_exc()
@@ -373,6 +356,9 @@ class IntelligentOrchestrator:
                     "error": str(e),
                     "logs": []
                 })
+
+                # Send scenario end marker even on exception
+                self._log(f"[SCENARIO_END:{scenario.id}]", progress_callback)
                 if self.tracker:
                     self.tracker.set_status(scenario.id, "failed", evidence=str(e))
 
@@ -540,6 +526,63 @@ Return ONLY a JSON array:
                 url=current_url
             )
 
+            # Clear browser state (cookies, localStorage, sessionStorage) before each scenario
+            # This ensures tests start from a clean slate (e.g., logged out state)
+            self._log(f"  🧹 Clearing browser state (cookies, storage)", progress_callback)
+            clear_script = """
+                // Clear all cookies
+                document.cookie.split(';').forEach(c => {
+                    document.cookie = c.replace(/^ +/, '').replace(/=.*/, `=;expires=${new Date().toUTCString()};path=/`);
+                });
+                // Clear storage
+                localStorage.clear();
+                sessionStorage.clear();
+                // Force hard reload to completely reset React state
+                true;
+            """
+            payload = {
+                "action": "execute_action",
+                "params": {
+                    "url": current_url,
+                    "selector": "",
+                    "action": "evaluate",
+                    "value": clear_script,
+                    "session_id": self.session_id
+                }
+            }
+            try:
+                response = requests.post(
+                    f"{self.mcp_config.host_url}/execute",
+                    json=payload,
+                    timeout=30
+                )
+                response.raise_for_status()
+            except Exception as e:
+                self._log(f"  ⚠️ Browser state clear failed (non-critical): {e}", progress_callback)
+
+            # CRITICAL: Hard reload with cache bypass to completely reset state
+            self._log(f"  🔄 Hard reloading page to apply clean state", progress_callback)
+
+            # First reload to clear state
+            self._execute_action(
+                action="goto",
+                selector="",
+                params=[current_url],
+                url=current_url
+            )
+            time.sleep(2.0)  # Wait for first reload
+
+            # Second reload to ensure React state is completely fresh
+            self._execute_action(
+                action="goto",
+                selector="",
+                params=[current_url],
+                url=current_url
+            )
+            time.sleep(3.0)  # Wait for SPA to fully reset
+
+            self._log(f"  ✅ Browser reset complete - starting with fresh state", progress_callback)
+
             # Step 1: Use pre-analyzed DOM or analyze now
             if initial_dom_elements and initial_screenshot:
                 dom_elements = initial_dom_elements
@@ -564,7 +607,60 @@ Return ONLY a JSON array:
             # Step 2: Execute each step with LLM guidance or direct execution
             total_steps = len(scenario.steps)
             self._log(f"  📝 Total steps to execute: {total_steps}", progress_callback)
-            for step_idx, step in enumerate(scenario.steps, start=1):
+
+            # 🚨 FIX: Auto-detect drag-and-drop patterns and convert click sequences to dragAndDrop
+            steps_to_execute = []
+            skip_next = False
+            for idx, step in enumerate(scenario.steps):
+                if skip_next:
+                    skip_next = False
+                    continue
+
+                # Skip logout-related steps since browser state is already reset
+                logout_keywords = ["로그아웃", "로그 아웃", "logout", "로그아웃 상태", "로그아웃 버튼"]
+                if any(kw in step.description.lower() for kw in logout_keywords):
+                    self._log(f"  ⏭️  Auto-skipping logout step (browser already reset): {step.description}", progress_callback)
+                    continue
+
+                # Check if current step is a drag-start click and next step is a drop click
+                if (step.action == "click" and
+                    idx + 1 < len(scenario.steps) and
+                    scenario.steps[idx + 1].action == "click"):
+
+                    next_step = scenario.steps[idx + 1]
+
+                    # More strict drag-and-drop detection
+                    # Both descriptions must contain drag-related keywords
+                    drag_start_keywords = ["드래그", "순서", "이동", "변경"]
+                    drag_end_keywords = ["드롭", "아래로", "위치"]
+
+                    has_drag_start = any(kw in step.description for kw in drag_start_keywords)
+                    has_drag_end = any(kw in next_step.description for kw in drag_end_keywords)
+
+                    # Both selectors must have [draggable="true"] attribute
+                    has_draggable_attr = ('[draggable' in step.selector.lower() or
+                                         'draggable' in step.description.lower())
+
+                    if (has_drag_start or has_drag_end or has_draggable_attr) and step.selector and next_step.selector:
+                        # Convert to dragAndDrop action
+                        self._log(f"  🔄 Auto-converting click sequence to dragAndDrop: {step.description} + {next_step.description}", progress_callback)
+                        drag_step = type(step)(
+                            description=f"{step.description} → {next_step.description}",
+                            action="dragAndDrop",
+                            selector=step.selector,
+                            params=[next_step.selector]  # Target selector as list (Pydantic requirement)
+                        )
+                        steps_to_execute.append(drag_step)
+                        skip_next = True
+                        continue
+
+                steps_to_execute.append(step)
+
+            # Update total steps after conversion
+            total_steps = len(steps_to_execute)
+            self._log(f"  📝 Total steps to execute (after auto-conversion): {total_steps}", progress_callback)
+
+            for step_idx, step in enumerate(steps_to_execute, start=1):
                 self._log(f"  🤖 Step {step_idx}/{total_steps}: {step.description}", progress_callback)
 
                 # Define action categories
@@ -1415,6 +1511,13 @@ Return ONLY a JSON array:
                     if scenario_verified:
                         logs.append(f"  ✅ All {total_non_assertion_steps} action steps passed + Vision AI verified")
                         self._log(f"  ✅ Test SUCCESS: Vision AI verified", progress_callback)
+
+                        # CRITICAL: Force navigate to home URL to completely reset state for next test
+                        self._log(f"  🏠 Navigating to home URL to reset for next test", progress_callback)
+                        home_url = url.split('#')[0] if '#' in url else url  # Remove hash
+                        self._execute_action(action="goto", selector="", params=[home_url], url=home_url)
+                        time.sleep(1.0)
+
                         return {
                             "id": scenario.id,
                             "scenario": scenario.scenario,
@@ -1438,6 +1541,13 @@ Return ONLY a JSON array:
                     if skipped_steps == 0:
                         logs.append(f"  ✅ All {total_non_assertion_steps} action steps and {total_assertion_steps} assertions passed")
                         self._log(f"  ✅ Test SUCCESS: 100% completion", progress_callback)
+
+                        # CRITICAL: Force navigate to home URL to completely reset state for next test
+                        self._log(f"  🏠 Navigating to home URL to reset for next test", progress_callback)
+                        home_url = url.split('#')[0] if '#' in url else url  # Remove hash
+                        self._execute_action(action="goto", selector="", params=[home_url], url=home_url)
+                        time.sleep(1.0)
+
                         return {
                             "id": scenario.id,
                             "scenario": scenario.scenario,

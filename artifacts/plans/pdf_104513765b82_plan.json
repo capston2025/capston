@@ -1,0 +1,743 @@
+{
+  "profile": "104513765b82",
+  "url": "",
+  "pdf_hash": "104513765b82",
+  "test_scenarios": [
+    {
+      "id": "RT001",
+      "priority": "MUST",
+      "scenario": "비로그인 상태 장바구니 추가 차단",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그아웃 상태 보장: 로그아웃 버튼 클릭(있다면)",
+          "action": "click",
+          "selector": "button:has-text('로그아웃')",
+          "params": []
+        },
+        {
+          "description": "상품 카드 '샘플 상품 1'의 '장바구니 추가' 버튼 클릭",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "장바구니 모달 표시 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('장바구니')",
+          "params": [
+            "장바구니"
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "로그인 필요 안내 문구가 표시된다",
+        "selector": "div:has-text('로그인')",
+        "condition": "expectVisible",
+        "params": [
+          "로그인"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT002",
+      "priority": "MUST",
+      "scenario": "로그인 후 장바구니 추가 성공",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "상품 카드 '샘플 상품 1'의 '장바구니 추가' 버튼 클릭",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "장바구니 모달에 '샘플 상품 1' 항목 표시",
+        "selector": "div:has-text('샘플 상품 1')",
+        "condition": "expectVisible",
+        "params": [
+          "샘플 상품 1"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT003",
+      "priority": "MUST",
+      "scenario": "동일 상품 2회 담기 시 수량 누적",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그아웃 버튼 클릭(초기화용, 있으면)",
+          "action": "click",
+          "selector": "button:has-text('로그아웃')",
+          "params": []
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "상품 카드 '샘플 상품 2'의 '장바구니 추가' 버튼 1회 클릭",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 2') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "200ms 대기",
+          "action": "wait",
+          "selector": ".min-h-screen",
+          "params": [
+            200
+          ]
+        },
+        {
+          "description": "상품 카드 '샘플 상품 2'의 '장바구니 추가' 버튼 1회 추가 클릭",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 2') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "'샘플 상품 2' 수량이 2로 표시",
+        "selector": "div:has-text('샘플 상품 2')",
+        "condition": "expectText",
+        "params": [
+          "2"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT004",
+      "priority": "MUST",
+      "scenario": "수량 감소로 0이 되면 항목 제거",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "상품 카드 '샘플 상품 3'의 '장바구니 추가' 버튼 클릭",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 3') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "수량 감소 버튼 클릭 (1회)",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 3') button:has-text('-')",
+          "params": []
+        },
+        {
+          "description": "200ms 대기",
+          "action": "wait",
+          "selector": ".min-h-screen",
+          "params": [
+            200
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "장바구니 총 금액이 0으로 표시되거나 항목이 제거됨",
+        "selector": "div:has-text('총 금액')",
+        "condition": "expectText",
+        "params": [
+          "0"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT005",
+      "priority": "MUST",
+      "scenario": "총 금액 계산 정확성(다품목 + 수량 증감)",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그아웃 버튼 클릭(초기화용, 있으면)",
+          "action": "click",
+          "selector": "button:has-text('로그아웃')",
+          "params": []
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "'샘플 상품 1' 장바구니 추가",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "'샘플 상품 2' 장바구니 추가",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 2') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "'샘플 상품 1' 수량 증가 버튼 클릭 (1회)",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 1') button:has-text('+')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "총 금액 텍스트가 표시됨",
+        "selector": "div:has-text('총 금액')",
+        "condition": "expectVisible",
+        "params": [
+          "총 금액"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT006",
+      "priority": "SHOULD",
+      "scenario": "비로그인 상태에서 구매하기 버튼 비활성",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그아웃 상태 보장: 로그아웃 버튼 클릭(있다면)",
+          "action": "click",
+          "selector": "button:has-text('로그아웃')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "구매하기 버튼 표시 확인",
+          "action": "expectVisible",
+          "selector": "button:has-text('구매하기')",
+          "params": [
+            "구매하기"
+          ]
+        }
+      ],
+      "assertion": {
+        "description": "로그인 필요 안내 문구 표시",
+        "selector": "div:has-text('로그인')",
+        "condition": "expectVisible",
+        "params": [
+          "로그인"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT007",
+      "priority": "SHOULD",
+      "scenario": "로그인 상태에서 구매하기 버튼 활성 및 동작",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "'샘플 상품 4' 장바구니 추가",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 4') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "구매하기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('구매하기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "결제 진행 관련 안내 표시",
+        "selector": "div:has-text('결제')",
+        "condition": "expectVisible",
+        "params": [
+          "결제"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT008",
+      "priority": "SHOULD",
+      "scenario": "상품 이미지 확대 모달 Zoom 범위(50%~300%)",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "'샘플 상품 5' 카드에서 '확대보기' 버튼 클릭",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 5') button:has-text('확대보기')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 버튼 클릭 (여러 번)",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "100ms 대기",
+          "action": "wait",
+          "selector": ".min-h-screen",
+          "params": [
+            100
+          ]
+        },
+        {
+          "description": "Zoom In 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom In 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom In')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 버튼 여러 번 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "100ms 대기",
+          "action": "wait",
+          "selector": ".min-h-screen",
+          "params": [
+            100
+          ]
+        },
+        {
+          "description": "Zoom Out 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "Zoom Out 버튼 추가 클릭",
+          "action": "click",
+          "selector": "button:has-text('Zoom Out')",
+          "params": []
+        },
+        {
+          "description": "닫기 버튼 클릭으로 모달 닫기",
+          "action": "click",
+          "selector": "button:has-text('닫기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "'샘플 상품 5'의 '확대보기' 트리거가 다시 보임(모달 닫힘)",
+        "selector": "div:has-text('샘플 상품 5') button:has-text('확대보기')",
+        "condition": "expectVisible",
+        "params": [
+          "확대보기"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT009",
+      "priority": "MAY",
+      "scenario": "장바구니 아이콘 카운트 증가 확인",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "'샘플 상품 6' 장바구니 추가",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 6') button:has-text('장바구니 추가')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "성공 토스트 또는 성공 안내 표시",
+        "selector": "div:has-text('성공')",
+        "condition": "expectVisible",
+        "params": [
+          "성공"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "RT010",
+      "priority": "MAY",
+      "scenario": "장바구니 모달 닫기 후 상태 유지",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": ".min-h-screen",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ]
+        },
+        {
+          "description": "로그인 탭 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "이메일 입력: qa-cart@test.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "qa-cart@test.com"
+          ]
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ]
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('로그인')",
+          "params": []
+        },
+        {
+          "description": "'샘플 상품 1' 장바구니 추가",
+          "action": "click",
+          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        },
+        {
+          "description": "모달 내 '샘플 상품 1' 표시 확인",
+          "action": "expectVisible",
+          "selector": "div:has-text('샘플 상품 1')",
+          "params": [
+            "샘플 상품 1"
+          ]
+        },
+        {
+          "description": "모달 닫기",
+          "action": "click",
+          "selector": "button:has-text('닫기')",
+          "params": []
+        },
+        {
+          "description": "장바구니 보기 버튼 재클릭",
+          "action": "click",
+          "selector": "button:has-text('장바구니 보기')",
+          "params": []
+        }
+      ],
+      "assertion": {
+        "description": "모달 재오픈 시 '샘플 상품 1' 유지 표시",
+        "selector": "div:has-text('샘플 상품 1')",
+        "condition": "expectVisible",
+        "params": [
+          "샘플 상품 1"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    }
+  ]
+}
