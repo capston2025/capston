@@ -673,6 +673,62 @@ Return ONLY a JSON array:
 
                 logs.append(f"Step {step_idx}: {step.description}")
 
+                # NEW: Handle "llm" action - delegate verification entirely to Vision AI
+                if step.action == "llm":
+                    self._log(f"    🧠 LLM Verification Action", progress_callback)
+                    logs.append(f"  LLM Verification: {step.description}")
+
+                    # Get verification details from step
+                    verify_info = getattr(step, 'verify', None)
+                    if not verify_info:
+                        self._log(f"    ⚠️ No 'verify' field found in llm action, skipping", progress_callback)
+                        logs.append(f"  ⚠️ Missing verify field")
+                        continue
+
+                    # Extract expected outcome and indicators
+                    expected_outcome = getattr(verify_info, 'expected', step.description)
+                    success_indicators = getattr(verify_info, 'indicators', [])
+
+                    # Capture screenshot for verification
+                    time.sleep(0.5)  # Brief pause to let UI settle
+                    after_screenshot = self._capture_screenshot(current_url, send_to_gui=False)
+
+                    # Use LLM Vision to verify
+                    from .llm_vision_client import LLMVisionClient
+                    vision_client = LLMVisionClient()
+
+                    verification_result = vision_client.verify_scenario_success(
+                        scenario_description=step.description,
+                        expected_outcome=expected_outcome,
+                        success_indicators=success_indicators,
+                        before_screenshot=screenshot,  # Use previous screenshot as "before"
+                        after_screenshot=after_screenshot,
+                        url=current_url
+                    )
+
+                    # Log results
+                    verified = verification_result.get('success', False)
+                    confidence = verification_result.get('confidence', 0)
+                    reasoning = verification_result.get('reasoning', '')
+                    matched = verification_result.get('matched_indicators', [])
+
+                    self._log(f"    {'✅' if verified else '❌'} Verification result: {verified} (confidence: {confidence}%)", progress_callback)
+                    self._log(f"    💭 Reasoning: {reasoning[:100]}...", progress_callback)
+                    if matched:
+                        self._log(f"    🎯 Matched indicators: {', '.join(matched[:3])}", progress_callback)
+
+                    logs.append(f"  Verified: {verified} (confidence: {confidence}%)")
+                    logs.append(f"  Reasoning: {reasoning}")
+
+                    if not verified or confidence < 60:
+                        failed_assertion_steps += 1
+                        self._log(f"    ⚠️ LLM verification failed, continuing...", progress_callback)
+
+                    # Update screenshot for next step
+                    screenshot = after_screenshot
+
+                    continue
+
                 # Check if this is an action that doesn't need LLM element selection
                 if step.action in actions_not_needing_selector or step.action in assertion_actions:
                     # Execute directly without LLM
@@ -1455,47 +1511,58 @@ Return ONLY a JSON array:
 
                     # Screenshot is already sent by _execute_action with click_position
 
-            # Step 3: Scenario-level Vision AI verification (NEW!)
+            # Step 3: Scenario-level Vision AI verification (IMPROVED!)
             # Capture AFTER screenshot and verify entire scenario success
+            # NOW RUNS ON ALL SCENARIOS, not just those with success_indicators
             after_scenario_screenshot = self._capture_screenshot(current_url, send_to_gui=False)
             scenario_verified = False
             scenario_verification_result = None
 
-            # Only do scenario verification if assertion field exists
-            if hasattr(scenario, 'assertion') and scenario.assertion:
-                self._log(f"  🔍 Running scenario-level Vision AI verification...", progress_callback)
+            # Run verification on ALL scenarios (not just those with assertion field)
+            self._log(f"  🔍 Running scenario-level Vision AI verification...", progress_callback)
 
-                # Extract assertion details (handle both old and new format)
+            # Extract assertion details (handle both old and new format)
+            expected_outcome = scenario.scenario  # Default to scenario description
+            success_indicators = []
+
+            if hasattr(scenario, 'assertion') and scenario.assertion:
+                # Try to extract from assertion
                 expected_outcome = getattr(scenario.assertion, "expected_outcome", None) or scenario.scenario
                 success_indicators = getattr(scenario.assertion, "success_indicators", [])
 
-                if success_indicators:
-                    from gaia.src.phase4.llm_vision_client import LLMVisionClient
-                    vision_client = LLMVisionClient()
+            # If no success_indicators, generate them automatically from scenario description
+            if not success_indicators:
+                self._log(f"  💡 No success_indicators found, generating from scenario description...", progress_callback)
+                success_indicators = self._generate_success_indicators(scenario.scenario, scenario.steps)
+                self._log(f"  📝 Generated indicators: {success_indicators}", progress_callback)
 
-                    scenario_verification_result = vision_client.verify_scenario_success(
-                        scenario_description=scenario.scenario,
-                        expected_outcome=expected_outcome,
-                        success_indicators=success_indicators,
-                        before_screenshot=before_scenario_screenshot,
-                        after_screenshot=after_scenario_screenshot,
-                        url=current_url
-                    )
+            # Always run verification (even if success_indicators were auto-generated)
+            from gaia.src.phase4.llm_vision_client import LLMVisionClient
+            vision_client = LLMVisionClient()
 
-                    scenario_verified = scenario_verification_result.get("success", False)
-                    confidence = scenario_verification_result.get("confidence", 0)
-                    reasoning = scenario_verification_result.get("reasoning", "")
-                    matched_indicators = scenario_verification_result.get("matched_indicators", [])
+            scenario_verification_result = vision_client.verify_scenario_success(
+                scenario_description=scenario.scenario,
+                expected_outcome=expected_outcome,
+                success_indicators=success_indicators,
+                before_screenshot=before_scenario_screenshot,
+                after_screenshot=after_scenario_screenshot,
+                url=current_url
+            )
 
-                    self._log(f"  🔍 Vision AI Result:", progress_callback)
-                    self._log(f"     - Success: {scenario_verified}", progress_callback)
-                    self._log(f"     - Confidence: {confidence}%", progress_callback)
-                    self._log(f"     - Matched: {matched_indicators}", progress_callback)
-                    self._log(f"     - Reasoning: {reasoning}", progress_callback)
+            scenario_verified = scenario_verification_result.get("success", False)
+            confidence = scenario_verification_result.get("confidence", 0)
+            reasoning = scenario_verification_result.get("reasoning", "")
+            matched_indicators = scenario_verification_result.get("matched_indicators", [])
 
-                    logs.append(f"  🔍 Vision AI Verification: {'✅ PASS' if scenario_verified else '❌ FAIL'}")
-                    logs.append(f"     Confidence: {confidence}%, Matched: {matched_indicators}")
-                    logs.append(f"     Reasoning: {reasoning}")
+            self._log(f"  🔍 Vision AI Result:", progress_callback)
+            self._log(f"     - Success: {scenario_verified}", progress_callback)
+            self._log(f"     - Confidence: {confidence}%", progress_callback)
+            self._log(f"     - Matched: {matched_indicators}", progress_callback)
+            self._log(f"     - Reasoning: {reasoning}", progress_callback)
+
+            logs.append(f"  🔍 Vision AI Verification: {'✅ PASS' if scenario_verified else '❌ FAIL'}")
+            logs.append(f"     Confidence: {confidence}%, Matched: {matched_indicators}")
+            logs.append(f"     Reasoning: {reasoning}")
 
             # Step 4: Decide on pass/fail based on step execution AND Vision AI
             # 4-tier status system:
@@ -1523,7 +1590,9 @@ Return ONLY a JSON array:
                             "scenario": scenario.scenario,
                             "status": "success",
                             "logs": logs,
-                            "verification": scenario_verification_result
+                            "verification": scenario_verification_result,
+                            "after_screenshot": after_scenario_screenshot,  # For Master Orchestrator
+                            "current_url": current_url
                         }
                     else:
                         # Actions passed but Vision AI says scenario failed
@@ -1534,7 +1603,9 @@ Return ONLY a JSON array:
                             "scenario": scenario.scenario,
                             "status": "partial",
                             "logs": logs,
-                            "verification": scenario_verification_result
+                            "verification": scenario_verification_result,
+                            "after_screenshot": after_scenario_screenshot,  # For Master Orchestrator
+                            "current_url": current_url
                         }
                 elif failed_assertion_steps == 0:
                     # No Vision AI, but step-based assertions passed
@@ -1552,7 +1623,9 @@ Return ONLY a JSON array:
                             "id": scenario.id,
                             "scenario": scenario.scenario,
                             "status": "success",
-                            "logs": logs
+                            "logs": logs,
+                            "after_screenshot": after_scenario_screenshot,
+                            "current_url": current_url
                         }
                     else:
                         # Some steps skipped but didn't fail
@@ -1563,7 +1636,9 @@ Return ONLY a JSON array:
                             "id": scenario.id,
                             "scenario": scenario.scenario,
                             "status": "partial",
-                            "logs": logs
+                            "logs": logs,
+                            "after_screenshot": after_scenario_screenshot,
+                            "current_url": current_url
                         }
                 else:
                     # Actions succeeded but assertions failed
@@ -1575,7 +1650,9 @@ Return ONLY a JSON array:
                         "status": "partial",  # Assertion 실패는 partial로 처리
                         "logs": logs,
                         "failed_assertions": failed_assertion_steps,
-                        "total_assertions": total_assertion_steps
+                        "total_assertions": total_assertion_steps,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
 
             # Optional: Still try LLM verification for additional confidence
@@ -1598,7 +1675,9 @@ Return ONLY a JSON array:
                         "id": scenario.id,
                         "scenario": scenario.scenario,
                         "status": "passed",
-                        "logs": logs
+                        "logs": logs,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
                 elif verification["confidence"] == 0:
                     # LLM verification failed (safety filter, timeout, etc.)
@@ -1608,7 +1687,9 @@ Return ONLY a JSON array:
                         "id": scenario.id,
                         "scenario": scenario.scenario,
                         "status": "passed",
-                        "logs": logs
+                        "logs": logs,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
                 else:
                     logs.append("  ❌ Verification failed")
@@ -1616,7 +1697,9 @@ Return ONLY a JSON array:
                         "id": scenario.id,
                         "scenario": scenario.scenario,
                         "status": "failed",
-                        "logs": logs
+                        "logs": logs,
+                        "after_screenshot": after_scenario_screenshot,
+                        "current_url": current_url
                     }
 
             # No assertion, assume success if all steps executed
@@ -1624,7 +1707,9 @@ Return ONLY a JSON array:
                 "id": scenario.id,
                 "scenario": scenario.scenario,
                 "status": "passed",
-                "logs": logs
+                "logs": logs,
+                "after_screenshot": after_scenario_screenshot,
+                "current_url": current_url
             }
 
         except Exception as e:
@@ -1639,12 +1724,22 @@ Return ONLY a JSON array:
             self._log(f"❌ Exception in step execution: {e}", progress_callback)
             self._log(f"📜 Traceback:\n{tb_str}", progress_callback)
 
+            # Try to capture screenshot even in exception case (for Master Orchestrator)
+            try:
+                exception_screenshot = self._capture_screenshot(None, send_to_gui=False) if 'after_scenario_screenshot' not in locals() else after_scenario_screenshot
+                exception_url = current_url if 'current_url' in locals() else ""
+            except:
+                exception_screenshot = ""
+                exception_url = ""
+
             return {
                 "id": scenario.id,
                 "scenario": scenario.scenario,
                 "status": "failed",
                 "error": str(e),
-                "logs": logs
+                "logs": logs,
+                "after_screenshot": exception_screenshot,
+                "current_url": exception_url
             }
 
     def _analyze_dom(self, url: str | None) -> List[DomElement]:
@@ -2070,6 +2165,119 @@ Respond with JSON only:
         except Exception as e:
             self._log(f"      ❌ Recovery navigation failed: {e}", progress_callback)
             return False
+
+    def _generate_success_indicators(
+        self,
+        scenario_description: str,
+        steps: List[TestStep]
+    ) -> List[str]:
+        """
+        Generate success indicators automatically from scenario description and steps.
+
+        This method analyzes the scenario and its steps to infer what success looks like.
+        Used when explicit success_indicators are not provided.
+
+        Args:
+            scenario_description: The scenario description (e.g., "사용자가 로그인할 수 있다")
+            steps: List of test steps executed in the scenario
+
+        Returns:
+            List of success indicators to look for in the final screenshot
+        """
+        indicators = []
+
+        # Analyze scenario description for common patterns
+        scenario_lower = scenario_description.lower()
+
+        # Login scenarios
+        if "로그인" in scenario_description or "login" in scenario_lower:
+            indicators.extend([
+                "로그아웃 버튼이 표시됨",
+                "사용자 프로필이 표시됨",
+                "환영 메시지가 표시됨",
+                "로그인 버튼이 사라짐"
+            ])
+
+        # Signup/Registration scenarios
+        if "회원가입" in scenario_description or "가입" in scenario_description or "signup" in scenario_lower or "register" in scenario_lower:
+            indicators.extend([
+                "회원가입 완료 메시지가 표시됨",
+                "자동으로 로그인됨",
+                "가입 완료 페이지로 이동됨"
+            ])
+
+        # Form submission scenarios
+        if "제출" in scenario_description or "등록" in scenario_description or "submit" in scenario_lower:
+            indicators.extend([
+                "제출 완료 메시지가 표시됨",
+                "성공 알림이 표시됨",
+                "폼이 초기화됨"
+            ])
+
+        # Add to cart scenarios
+        if "장바구니" in scenario_description or "카트" in scenario_description or "cart" in scenario_lower:
+            indicators.extend([
+                "장바구니 개수가 증가함",
+                "장바구니에 추가 메시지가 표시됨",
+                "상품이 장바구니 목록에 표시됨"
+            ])
+
+        # Search scenarios
+        if "검색" in scenario_description or "search" in scenario_lower:
+            indicators.extend([
+                "검색 결과가 표시됨",
+                "결과 목록이 업데이트됨",
+                "검색어와 관련된 항목이 표시됨"
+            ])
+
+        # Navigation scenarios
+        if "이동" in scenario_description or "navigate" in scenario_lower or "페이지" in scenario_description:
+            indicators.extend([
+                "페이지가 변경됨",
+                "새로운 콘텐츠가 표시됨",
+                "URL이 업데이트됨"
+            ])
+
+        # Delete/Remove scenarios
+        if "삭제" in scenario_description or "제거" in scenario_description or "delete" in scenario_lower or "remove" in scenario_lower:
+            indicators.extend([
+                "항목이 목록에서 사라짐",
+                "삭제 완료 메시지가 표시됨",
+                "개수가 감소함"
+            ])
+
+        # Analyze steps for additional indicators
+        for step in steps:
+            step_desc_lower = step.description.lower()
+
+            # Click button steps
+            if "클릭" in step.description or "click" in step_desc_lower:
+                if "제출" in step.description or "submit" in step_desc_lower:
+                    indicators.append("제출 후 확인 메시지나 페이지 변경")
+                elif "저장" in step.description or "save" in step_desc_lower:
+                    indicators.append("저장 완료 메시지 표시")
+
+            # Fill form steps
+            if "입력" in step.description or "fill" in step_desc_lower or "type" in step_desc_lower:
+                indicators.append("입력한 값이 폼에 표시됨")
+
+        # If no specific indicators found, add generic ones
+        if not indicators:
+            indicators.extend([
+                "시나리오 설명에 맞는 화면 변화가 발생함",
+                "에러 메시지가 표시되지 않음",
+                "예상한 UI 상태로 변경됨"
+            ])
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_indicators = []
+        for indicator in indicators:
+            if indicator not in seen:
+                seen.add(indicator)
+                unique_indicators.append(indicator)
+
+        return unique_indicators
 
     def _log(self, message: str, callback=None) -> None:
         """Log a message and optionally call progress callback."""

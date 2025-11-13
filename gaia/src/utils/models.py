@@ -6,13 +6,21 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class VerifyInfo(BaseModel):
+    """Verification details for LLM action type."""
+
+    expected: str = Field(..., description="Expected outcome after this step")
+    indicators: List[str] = Field(default_factory=list, description="List of success indicators")
+
+
 class TestStep(BaseModel):
     """Single action inside a generated test scenario."""
 
     description: str
     action: str
-    selector: str
+    selector: str = ""
     params: List[Any] = Field(default_factory=list)
+    verify: Optional[VerifyInfo] = Field(None, description="Verification info for 'llm' action type")
 
 
 class Assertion(BaseModel):

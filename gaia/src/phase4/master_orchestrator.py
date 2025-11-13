@@ -149,9 +149,79 @@ class MasterOrchestrator:
             for scenario_result in page_results["scenarios"]:
                 scenario_id = scenario_result["id"]
                 status = scenario_result["status"]
+                verification = scenario_result.get("verification")
 
-                # DEBUG: Log each result
-                self._log(f"  🔍 DEBUG: Processing {scenario_id} with status={status}", progress_callback)
+                # Log scenario result with verification details
+                self._log(f"  🔍 Processing {scenario_id} with status={status}", progress_callback)
+
+                # Log IntelligentOrchestrator's Vision AI verification results
+                if verification:
+                    verified = verification.get("success", False)
+                    confidence = verification.get("confidence", 0)
+                    matched_indicators = verification.get("matched_indicators", [])
+                    reasoning = verification.get("reasoning", "")
+
+                    self._log(f"     🔬 Step-level Vision AI Verification:", progress_callback)
+                    self._log(f"        - Verified: {'✅ YES' if verified else '❌ NO'}", progress_callback)
+                    self._log(f"        - Confidence: {confidence}%", progress_callback)
+                    if matched_indicators:
+                        self._log(f"        - Matched Indicators: {', '.join(matched_indicators)}", progress_callback)
+                    self._log(f"        - Reasoning: {reasoning[:100]}...", progress_callback)
+
+                # MASTER ORCHESTRATOR-LEVEL VERIFICATION
+                # Perform additional verification: Does the final screenshot match the scenario description?
+                if status not in ("skipped",):  # Only verify scenarios that were actually executed
+                    # Find the original scenario object to get the description
+                    scenario_obj = next((s for s in remaining_scenarios if s.id == scenario_id), None)
+
+                    if scenario_obj:
+                        self._log(f"     🎯 Master Orchestrator final verification...", progress_callback)
+
+                        # Use screenshot captured by IntelligentOrchestrator (includes toast messages!)
+                        # This ensures we capture the screenshot immediately after scenario completion,
+                        # before temporary UI elements (toasts) disappear
+                        final_screenshot = scenario_result.get("after_screenshot", "")
+                        current_url = scenario_result.get("current_url", page_url)
+
+                        # Only verify if screenshot is available
+                        try:
+                            if final_screenshot:
+                                # Verify with LLM: Does this screenshot match the scenario description?
+                                master_verification = self.llm_client.verify_scenario_outcome(
+                                    scenario_description=scenario_obj.scenario,
+                                    final_screenshot=final_screenshot,
+                                    url=current_url
+                                )
+
+                                matches = master_verification.get("matches", False)
+                                master_confidence = master_verification.get("confidence", 0)
+                                master_reasoning = master_verification.get("reasoning", "")
+                                observations = master_verification.get("observations", [])
+
+                                self._log(f"     🎯 Master Verification Result:", progress_callback)
+                                self._log(f"        - Matches Scenario: {'✅ YES' if matches else '❌ NO'}", progress_callback)
+                                self._log(f"        - Confidence: {master_confidence}%", progress_callback)
+                                self._log(f"        - Observations: {', '.join(observations[:3])}", progress_callback)
+                                self._log(f"        - Reasoning: {master_reasoning[:100]}...", progress_callback)
+
+                                # Store master verification in result
+                                scenario_result["master_verification"] = master_verification
+
+                                # Adjust status based on Master Orchestrator verification
+                                # If Master says it doesn't match, downgrade success to partial
+                                if status == "success" and not matches and master_confidence >= 60:
+                                    self._log(f"     ⚠️ Master verification disagrees with step-level verification", progress_callback)
+                                    self._log(f"     ⚠️ Downgrading status from 'success' to 'partial'", progress_callback)
+                                    status = "partial"
+                                    scenario_result["status"] = "partial"
+                                    scenario_result["status_adjusted_by_master"] = True
+                                # If Master says it matches but step-level failed, log but keep failed
+                                elif status in ("failed", "partial") and matches and master_confidence >= 80:
+                                    self._log(f"     💡 Master verification suggests success despite step issues", progress_callback)
+                                    self._log(f"     💡 Keeping status as '{status}' (step-level issues detected)", progress_callback)
+
+                        except Exception as e:
+                            self._log(f"     ⚠️ Master verification failed: {e}", progress_callback)
 
                 # Only count each scenario once (skip if already executed on another page)
                 if scenario_id not in self._executed_test_ids:
@@ -161,19 +231,19 @@ class MasterOrchestrator:
                         aggregated_results["passed"] += 1
                         # Mark passed tests as executed
                         self._executed_test_ids.add(scenario_id)
-                        self._log(f"  ✅ DEBUG: Marked {scenario_id} as executed", progress_callback)
+                        self._log(f"     ✅ Scenario passed, moving to next scenario", progress_callback)
                     elif status in ("failed", "partial"):  # Also handle "partial" status
                         aggregated_results["failed"] += 1
                         # Mark failed tests as executed
                         self._executed_test_ids.add(scenario_id)
-                        self._log(f"  ❌ DEBUG: Marked {scenario_id} as executed (failed)", progress_callback)
+                        self._log(f"     ❌ Scenario {'failed' if status == 'failed' else 'partially completed'}, moving to next scenario", progress_callback)
                     elif status == "skipped":
                         # Don't mark skipped tests as executed
                         # They might be executable on another page
-                        self._log(f"  ⏭️ DEBUG: {scenario_id} skipped, NOT marking as executed", progress_callback)
+                        self._log(f"     ⏭️ Scenario skipped on this page, will retry on other pages", progress_callback)
                         pass
                 else:
-                    self._log(f"  🔁 DEBUG: {scenario_id} already executed, skipping", progress_callback)
+                    self._log(f"  🔁 Scenario already executed on another page, skipping", progress_callback)
 
             # IntelligentOrchestrator returns "success"/"partial"/"failed"/"skipped", not "passed"
             success_count = page_results.get('success', 0)
