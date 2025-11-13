@@ -149,9 +149,24 @@ class MasterOrchestrator:
             for scenario_result in page_results["scenarios"]:
                 scenario_id = scenario_result["id"]
                 status = scenario_result["status"]
+                verification = scenario_result.get("verification")
 
-                # DEBUG: Log each result
-                self._log(f"  🔍 DEBUG: Processing {scenario_id} with status={status}", progress_callback)
+                # Log scenario result with verification details
+                self._log(f"  🔍 Processing {scenario_id} with status={status}", progress_callback)
+
+                # Log Vision AI verification results if available
+                if verification:
+                    verified = verification.get("success", False)
+                    confidence = verification.get("confidence", 0)
+                    matched_indicators = verification.get("matched_indicators", [])
+                    reasoning = verification.get("reasoning", "")
+
+                    self._log(f"     🔬 Vision AI Verification:", progress_callback)
+                    self._log(f"        - Verified: {'✅ YES' if verified else '❌ NO'}", progress_callback)
+                    self._log(f"        - Confidence: {confidence}%", progress_callback)
+                    if matched_indicators:
+                        self._log(f"        - Matched Indicators: {', '.join(matched_indicators)}", progress_callback)
+                    self._log(f"        - Reasoning: {reasoning[:100]}...", progress_callback)
 
                 # Only count each scenario once (skip if already executed on another page)
                 if scenario_id not in self._executed_test_ids:
@@ -161,19 +176,19 @@ class MasterOrchestrator:
                         aggregated_results["passed"] += 1
                         # Mark passed tests as executed
                         self._executed_test_ids.add(scenario_id)
-                        self._log(f"  ✅ DEBUG: Marked {scenario_id} as executed", progress_callback)
+                        self._log(f"     ✅ Scenario passed, moving to next scenario", progress_callback)
                     elif status in ("failed", "partial"):  # Also handle "partial" status
                         aggregated_results["failed"] += 1
                         # Mark failed tests as executed
                         self._executed_test_ids.add(scenario_id)
-                        self._log(f"  ❌ DEBUG: Marked {scenario_id} as executed (failed)", progress_callback)
+                        self._log(f"     ❌ Scenario {'failed' if status == 'failed' else 'partially completed'}, moving to next scenario", progress_callback)
                     elif status == "skipped":
                         # Don't mark skipped tests as executed
                         # They might be executable on another page
-                        self._log(f"  ⏭️ DEBUG: {scenario_id} skipped, NOT marking as executed", progress_callback)
+                        self._log(f"     ⏭️ Scenario skipped on this page, will retry on other pages", progress_callback)
                         pass
                 else:
-                    self._log(f"  🔁 DEBUG: {scenario_id} already executed, skipping", progress_callback)
+                    self._log(f"  🔁 Scenario already executed on another page, skipping", progress_callback)
 
             # IntelligentOrchestrator returns "success"/"partial"/"failed"/"skipped", not "passed"
             success_count = page_results.get('success', 0)
