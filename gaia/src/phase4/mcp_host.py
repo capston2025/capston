@@ -55,7 +55,7 @@ class BrowserSession:
                     'quality': 80,
                     'maxWidth': 1280,
                     'maxHeight': 720,
-                    'everyNthFrame': 1  # 모든 프레임 전송 (부드러운 스트리밍)
+                    'everyNthFrame': 5  # 5프레임마다 1번 전송 (깜빡임 감소, 부하 감소)
                 })
 
                 self.screencast_active = True
