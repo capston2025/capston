@@ -969,8 +969,22 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 except Exception as scroll_error:
                     print(f"Warning: Could not scroll element into view: {scroll_error}")
 
+                # For switch/toggle elements, use JavaScript click for reliability
+                # Playwright's click() sometimes doesn't trigger onChange handlers properly
+                use_js_click = any(pattern in selector for pattern in [
+                    "[data-slot='switch']",
+                    "[role='switch']",
+                    "switch",
+                    "toggle"
+                ])
+
                 try:
-                    await element.click(timeout=30000)
+                    if use_js_click:
+                        print(f"🔧 Using JavaScript click for switch/toggle element")
+                        await element.evaluate("el => el.click()")
+                        await page.wait_for_timeout(300)  # Wait for state change
+                    else:
+                        await element.click(timeout=30000)
                 except Exception as click_error:
                     # Fallback 시도: :has-text() → :text(), [type="submit"] 제거 등
                     if fallback_selectors and 'Timeout' in str(click_error):
