@@ -88,12 +88,15 @@
       "scenario": "장바구니 2회 추가 시 카운트 증가",
       "steps": [
         { "description": "기본 기능 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
-        { "description": "‘장바구니 추가’ 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
-        { "description": "장바구니 카운트가 1로 증가했는지 확인", "action": "assert", "selector": "text=장바구니 (1)", "condition": "expectText", "params": ["1"] },
-        { "description": "‘장바구니 추가’ 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
-        { "description": "장바구니 카운트가 2로 증가했는지 확인","action": "assert", "selector": "text=장바구니 (2)", "condition": "expectText","params": ["2"]}
+        { "description": "'장바구니 추가' 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
+        { "description": "'장바구니 보기' 버튼 클릭", "action": "click", "selector": "button:has-text(\"장바구니 보기\")", "params": [] },
+        { "description": "장바구니 모달에서 수량이 1인지 확인", "action": "assert", "selector": "[role='dialog'] .flex.items-center.gap-2 span.w-8.text-center", "condition": "expectText", "params": ["1"] },
+        { "description": "장바구니 모달 닫기", "action": "click", "selector": "[role='dialog'] button[type='button']:has(svg.lucide-x)", "params": [] },
+        { "description": "'장바구니 추가' 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
+        { "description": "'장바구니 보기' 버튼 클릭", "action": "click", "selector": "button:has-text(\"장바구니 보기\")", "params": [] },
+        { "description": "장바구니 모달에서 수량이 2로 증가했는지 확인", "action": "assert", "selector": "[role='dialog'] .flex.items-center.gap-2 span.w-8.text-center", "condition": "expectText", "params": ["2"] }
       ],
-      "assertion": { "description": "장바구니 옆 카운트가 정상적으로 증가함", "selector": "text=장바구니 (2)", "condition": "expectText", "params": ["2"] }
+      "assertion": { "description": "장바구니 수량이 정상적으로 1에서 2로 증가함", "selector": "[role='dialog'] .flex.items-center.gap-2 span.w-8.text-center", "condition": "expectText", "params": ["2"] }
     },
     {
       "id": "TC013",
