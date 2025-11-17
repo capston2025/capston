@@ -435,7 +435,7 @@ Return ONLY a JSON array:
 
             client = openai.OpenAI()
             response = client.chat.completions.create(
-                model="gpt-5",  # Multimodal reasoning model for demo
+                model="gpt-5.1",  # Multimodal reasoning model for demo
                 max_completion_tokens=2048,
                 messages=[
                     {
@@ -622,37 +622,41 @@ Return ONLY a JSON array:
                     self._log(f"  ⏭️  Auto-skipping logout step (browser already reset): {step.description}", progress_callback)
                     continue
 
-                # Check if current step is a drag-start click and next step is a drop click
-                if (step.action == "click" and
-                    idx + 1 < len(scenario.steps) and
-                    scenario.steps[idx + 1].action == "click"):
+                # DISABLED: dragAndDrop auto-conversion was causing issues with dropdowns
+                # Users should explicitly specify dragAndDrop action in test plans if needed
+                # (Keeping the code commented for reference)
 
-                    next_step = scenario.steps[idx + 1]
-
-                    # More strict drag-and-drop detection
-                    # Both descriptions must contain drag-related keywords
-                    drag_start_keywords = ["드래그", "순서", "이동", "변경"]
-                    drag_end_keywords = ["드롭", "아래로", "위치"]
-
-                    has_drag_start = any(kw in step.description for kw in drag_start_keywords)
-                    has_drag_end = any(kw in next_step.description for kw in drag_end_keywords)
-
-                    # Both selectors must have [draggable="true"] attribute
-                    has_draggable_attr = ('[draggable' in step.selector.lower() or
-                                         'draggable' in step.description.lower())
-
-                    if (has_drag_start or has_drag_end or has_draggable_attr) and step.selector and next_step.selector:
-                        # Convert to dragAndDrop action
-                        self._log(f"  🔄 Auto-converting click sequence to dragAndDrop: {step.description} + {next_step.description}", progress_callback)
-                        drag_step = type(step)(
-                            description=f"{step.description} → {next_step.description}",
-                            action="dragAndDrop",
-                            selector=step.selector,
-                            params=[next_step.selector]  # Target selector as list (Pydantic requirement)
-                        )
-                        steps_to_execute.append(drag_step)
-                        skip_next = True
-                        continue
+                # # Check if current step is a drag-start click and next step is a drop click
+                # if (step.action == "click" and
+                #     idx + 1 < len(scenario.steps) and
+                #     scenario.steps[idx + 1].action == "click"):
+                #
+                #     next_step = scenario.steps[idx + 1]
+                #
+                #     # More strict drag-and-drop detection
+                #     # Both descriptions must contain drag-related keywords
+                #     drag_start_keywords = ["드래그", "순서", "이동", "변경"]
+                #     drag_end_keywords = ["드롭", "아래로", "위치"]
+                #
+                #     has_drag_start = any(kw in step.description for kw in drag_start_keywords)
+                #     has_drag_end = any(kw in next_step.description for kw in drag_end_keywords)
+                #
+                #     # Both selectors must have [draggable="true"] attribute
+                #     has_draggable_attr = ('[draggable' in step.selector.lower() or
+                #                          'draggable' in step.description.lower())
+                #
+                #     if (has_drag_start or has_drag_end or has_draggable_attr) and step.selector and next_step.selector:
+                #         # Convert to dragAndDrop action
+                #         self._log(f"  🔄 Auto-converting click sequence to dragAndDrop: {step.description} + {next_step.description}", progress_callback)
+                #         drag_step = type(step)(
+                #             description=f"{step.description} → {next_step.description}",
+                #             action="dragAndDrop",
+                #             selector=step.selector,
+                #             params=[next_step.selector]  # Target selector as list (Pydantic requirement)
+                #         )
+                #         steps_to_execute.append(drag_step)
+                #         skip_next = True
+                #         continue
 
                 steps_to_execute.append(step)
 
@@ -726,6 +730,95 @@ Return ONLY a JSON array:
 
                     # Update screenshot for next step
                     screenshot = after_screenshot
+
+                    continue
+
+                # NEW: Handle "assert" action with Vision AI verification
+                if step.action == "assert":
+                    self._log(f"    🔍 Assert action detected - using Vision AI verification", progress_callback)
+                    logs.append(f"  Assert: {step.description}")
+                    total_assertion_steps += 1
+
+                    # Capture current screenshot
+                    current_screenshot = self._capture_screenshot(url=current_url, send_to_gui=True)
+
+                    # Use Vision AI to verify the assertion
+                    from .llm_vision_client import LLMVisionClient
+                    vision_client = LLMVisionClient()
+
+                    # Build verification prompt
+                    expected_result = step.description
+                    if step.params and len(step.params) > 0:
+                        expected_result = f"{step.description}: {step.params[0]}"
+
+                    self._log(f"    🤖 Asking Vision AI: {expected_result}", progress_callback)
+
+                    # Simple prompt for vision verification
+                    verification_prompt = f"""Look at this screenshot and verify: {expected_result}
+
+**CRITICAL - Text Quality Check:**
+If the assertion involves checking text (like "텍스트가 올바르게 표시", "text is displayed correctly"), you MUST verify:
+1. Text is NOT garbled (no � symbols, broken characters, or encoding errors)
+2. Korean/Chinese/Japanese characters render properly (not as boxes or ???)
+3. Special characters and symbols are intact
+
+**Task**: Does the screenshot show what's expected?
+
+Return JSON (no markdown):
+{{
+    "success": true or false,
+    "reasoning": "detailed explanation of what you see and why it passes/fails",
+    "confidence": 85
+}}"""
+
+                    try:
+                        response_text = vision_client.analyze_with_vision(
+                            prompt=verification_prompt,
+                            screenshot_base64=current_screenshot
+                        )
+
+                        import json
+                        result = json.loads(response_text.strip())
+
+                        success = result.get("success", False)
+                        reasoning = result.get("reasoning", "No reasoning provided")
+                        confidence = result.get("confidence", 0)
+
+                        self._log(f"    🎯 Vision AI Result: {'✅ PASS' if success else '❌ FAIL'} (confidence: {confidence}%)", progress_callback)
+                        self._log(f"    💭 Reasoning: {reasoning}", progress_callback)
+
+                        if success:
+                            logs.append(f"  ✅ Assert passed: {step.description}")
+                        else:
+                            logs.append(f"  ❌ Assert failed: {step.description}")
+                            logs.append(f"  💭 Vision AI: {reasoning}")
+                            failed_assertion_steps += 1
+                            self._log(f"    ❌ Assertion failed - stopping scenario execution", progress_callback)
+
+                            # Return immediately with failure status
+                            return {
+                                "id": scenario.id,
+                                "scenario": scenario.scenario,
+                                "status": "failed",
+                                "logs": logs,
+                                "failed_assertions": failed_assertion_steps,
+                                "total_assertions": total_assertion_steps
+                            }
+
+                    except Exception as e:
+                        self._log(f"    ❌ Vision AI verification failed: {e}", progress_callback)
+                        logs.append(f"  ❌ Assert verification error: {e}")
+                        failed_assertion_steps += 1
+
+                        # Return immediately with failure status
+                        return {
+                            "id": scenario.id,
+                            "scenario": scenario.scenario,
+                            "status": "failed",
+                            "logs": logs,
+                            "failed_assertions": failed_assertion_steps,
+                            "total_assertions": total_assertion_steps
+                        }
 
                     continue
 
@@ -862,23 +955,30 @@ Return ONLY a JSON array:
 
                 # Check if action has explicit selector provided
                 elif step.action in actions_with_explicit_selector and step.selector:
-                    # Use explicit selector without LLM
-                    self._log(f"    🎯 Using explicit selector: {step.selector}", progress_callback)
+                    # Use explicit selector with self-healing
+                    self._log(f"    🎯 Using explicit selector with self-healing: {step.selector}", progress_callback)
                     logs.append(f"  Action: {step.action} on {step.selector}")
 
                     # Track non-assertion step
                     total_non_assertion_steps += 1
 
                     before_screenshot = screenshot
-                    success = self._execute_action(
+                    # Use self-healing action execution
+                    success = self._execute_action_with_self_healing(
                         action=step.action,
                         selector=step.selector,
                         params=step.params or [],
-                        url=current_url
+                        url=current_url,
+                        screenshot=screenshot,
+                        dom_elements=dom_elements,
+                        step_description=step.description,
+                        before_screenshot=before_screenshot,
+                        progress_callback=progress_callback,
+                        max_retries=2  # Limit to 2 retries to avoid long delays
                     )
 
                     if not success:
-                        logs.append(f"  ❌ Explicit selector failed: {step.selector}")
+                        logs.append(f"  ❌ Explicit selector failed even after self-healing: {step.selector}")
                         self._log(f"    ⚠️ Explicit selector failed, falling back to LLM...", progress_callback)
                         # Don't fail immediately - fall through to LLM section below
                     else:
@@ -1208,35 +1308,7 @@ Return ONLY a JSON array:
                                 else:
                                     self._log(f"    ❌ Navigation failed", progress_callback)
 
-                        # STEP 3: Try scrolling (only if both text matching and smart nav failed)
-                        if not found_by_text:
-                            smart_nav_worked = False
-                            if 'smart_nav' in locals() and smart_nav.get("found"):
-                                smart_nav_worked = True
-
-                            if not smart_nav_worked:
-                                self._log(f"    📜 Attempting to scroll and find element...", progress_callback)
-                                scroll_success = self._try_scroll_to_find_element(
-                                    description=step.description,
-                                    screenshot=screenshot,
-                                    dom_elements=dom_elements,
-                                    url=current_url,
-                                    progress_callback=progress_callback
-                                )
-
-                                if scroll_success:
-                                    # Re-analyze page after scrolling
-                                    screenshot, dom_elements, current_url = self._get_page_state()
-                                    self._log(f"    📊 After scroll - DOM elements: {len(dom_elements)}", progress_callback)
-                                    llm_decision = self.llm_client.select_element_for_step(
-                                        step_description=step.description,
-                                        dom_elements=dom_elements,
-                                        screenshot_base64=screenshot,
-                                        url=current_url
-                                    )
-                                    self._log(f"    🔄 Re-analyzed after scroll, new confidence: {llm_decision['confidence']}%", progress_callback)
-
-                        # STEP 4: If still low confidence, try vision-based coordinate click
+                        # STEP 3: If low confidence, try vision-based coordinate click
                         # Increased threshold from 30 to 50 to trigger vision more aggressively
                         if not found_by_text and llm_decision["confidence"] < 50:
                             self._log(f"    🎯 Trying vision-based coordinate detection...", progress_callback)
@@ -1377,74 +1449,69 @@ Return ONLY a JSON array:
 
                     if not success:
                         logs.append(f"  ❌ Action failed on {llm_decision['selector']}")
-                        self._log(f"    ❌ Action failed, triggering aggressive fallback...", progress_callback)
+                        self._log(f"    ❌ Action failed, trying intelligent fallback...", progress_callback)
 
-                        # AGGRESSIVE FALLBACK: Trigger regardless of initial confidence
-                        # Stage 1: Try scrolling to find element
-                        self._log(f"    📜 Fallback Stage 1: Scroll to find element...", progress_callback)
-                        scroll_success = self._try_scroll_to_find_element(
-                            description=step.description,
-                            screenshot=screenshot,
-                            dom_elements=dom_elements,
-                            url=current_url,
-                            progress_callback=progress_callback
+                        # INTELLIGENT FALLBACK: Check for overlay first, then try vision-based click
+
+                        # Check if error is due to overlay interception
+                        # Common error patterns: "intercepts pointer events", "covered by", "not clickable"
+                        self._log(f"    🔍 Checking for overlay interference...", progress_callback)
+
+                        # Try pressing Escape to close any open overlay/modal/dropdown
+                        self._log(f"    ⌨️  Pressing Escape to close potential overlay...", progress_callback)
+                        escape_success = self._execute_action(
+                            action="press",
+                            selector="body",
+                            params=["Escape"],
+                            url=current_url
                         )
 
-                        if scroll_success:
-                            # Re-analyze after scroll
-                            screenshot, dom_elements, current_url = self._get_page_state()
-                            # Retry action with new selector
-                            llm_decision = self.llm_client.select_element_for_step(
-                                step_description=step.description,
-                                dom_elements=dom_elements,
-                                screenshot_base64=screenshot,
+                        if escape_success:
+                            time.sleep(0.3)  # Wait for overlay to close
+                            # Retry original action
+                            self._log(f"    🔄 Retrying original action after Escape...", progress_callback)
+                            success = self._execute_action(
+                                action=llm_decision["action"],
+                                selector=llm_decision["selector"],
+                                params=step.params or [],
                                 url=current_url
                             )
-                            if llm_decision["selector"]:
-                                self._log(f"    🔄 Retrying with new selector: {llm_decision['selector']}", progress_callback)
-                                success = self._execute_action(
-                                    action=llm_decision["action"],
+
+                            if success:
+                                self._log(f"    ✅ Action succeeded after closing overlay!", progress_callback)
+                                logs.append(f"  ✅ Escape key resolved overlay issue")
+                                logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+
+                                # Update cache
+                                target_element = next((e for e in dom_elements if e.selector == llm_decision['selector']), None)
+                                element_text = target_element.text if target_element else ""
+                                element_tag = target_element.tag if target_element else ""
+                                element_attrs = target_element.attributes if target_element else {}
+
+                                self._update_cache(
+                                    step_description=step.description,
+                                    action=step.action,
+                                    page_url=current_url,
                                     selector=llm_decision["selector"],
-                                    params=step.params or [],
-                                    url=current_url
+                                    success=True,
+                                    dom_context=dom_context,
+                                    element_text=element_text,
+                                    element_tag=element_tag,
+                                    attributes=element_attrs
                                 )
-                                if success:
-                                    self._log(f"    ✅ Scroll fallback succeeded!", progress_callback)
-                                    logs.append(f"  ✅ Found element after scrolling")
-                                    # Continue to next step
-                                    logs.append(f"  ✅ Action executed: {llm_decision['action']} on {llm_decision['selector']}")
+                                time.sleep(0.2)
+                                # Update current_url after navigation
+                                if llm_decision["action"].lower() in ("click", "press", "goto"):
+                                    screenshot_new, dom_elements_new, current_url_new = self._get_page_state()
+                                    dom_elements = dom_elements_new
+                                    if current_url_new:
+                                        current_url = current_url_new
+                                        self._log(f"    🔄 Browser navigated to: {current_url}", progress_callback)
+                                continue
 
-                                    # Find element to get metadata
-                                    target_element = next((e for e in dom_elements if e.selector == llm_decision['selector']), None)
-                                    element_text = target_element.text if target_element else ""
-                                    element_tag = target_element.tag if target_element else ""
-                                    element_attrs = target_element.attributes if target_element else {}
-
-                                    # Update cache with successful selector
-                                    self._update_cache(
-                                        step_description=step.description,
-                                        action=step.action,
-                                        page_url=current_url,
-                                        selector=llm_decision["selector"],
-                                        success=True,
-                                        dom_context=dom_context,
-                                        element_text=element_text,
-                                        element_tag=element_tag,
-                                        attributes=element_attrs
-                                    )
-                                    time.sleep(0.2)
-                                    # Update current_url after navigation
-                                    if llm_decision["action"].lower() in ("click", "press", "goto"):
-                                        screenshot_new, dom_elements_new, current_url_new = self._get_page_state()
-                                        dom_elements = dom_elements_new
-                                        if current_url_new:
-                                            current_url = current_url_new
-                                            self._log(f"    🔄 Browser navigated to: {current_url}", progress_callback)
-                                    continue
-
-                        # Stage 2: Try vision-based coordinate click
+                        # If Escape didn't help, try vision-based coordinate click
                         if llm_decision["action"] in ["click", "press"]:
-                            self._log(f"    🎯 Fallback Stage 2: Vision-based coordinate click...", progress_callback)
+                            self._log(f"    🎯 Trying vision-based coordinate click...", progress_callback)
                             logs.append(f"  🔄 Fallback: Using vision-based coordinates")
 
                             # Get coordinates from LLM Vision
@@ -1457,31 +1524,47 @@ Return ONLY a JSON array:
                                 self._log(f"    📍 Found at ({coords['x']}, {coords['y']}) - confidence: {coords['confidence']:.0%}", progress_callback)
                                 logs.append(f"  📍 Coordinates: ({coords['x']}, {coords['y']})")
 
-                                # Try coordinate click
-                                success = self._execute_coordinate_click(
-                                    x=coords['x'],
-                                    y=coords['y'],
+                                # Try JavaScript click first (more reliable for overlays)
+                                self._log(f"    💻 Trying JavaScript click...", progress_callback)
+                                js_script = f"document.elementFromPoint({coords['x']}, {coords['y']}).click()"
+                                js_success = self._execute_action(
+                                    action="evaluate",
+                                    selector="",
+                                    params=[js_script],
                                     url=current_url
                                 )
 
-                                if success:
-                                    self._log(f"    ✅ Vision fallback succeeded!", progress_callback)
-                                    logs.append(f"  ✅ Coordinate-based click succeeded")
-                                    # Continue to next step
-                                    logs.append(f"  ✅ Action executed via coordinates")
+                                if js_success:
+                                    self._log(f"    ✅ JavaScript click succeeded!", progress_callback)
+                                    logs.append(f"  ✅ JavaScript click succeeded")
                                     time.sleep(0.5)
                                     screenshot, dom_elements, current_url = self._get_page_state()
                                     continue
                                 else:
-                                    self._log(f"    ❌ Coordinate click failed", progress_callback)
-                                    logs.append(f"  ❌ Coordinate-based click failed")
+                                    # Try physical coordinate click as last resort
+                                    self._log(f"    🖱️  Trying physical coordinate click...", progress_callback)
+                                    success = self._execute_coordinate_click(
+                                        x=coords['x'],
+                                        y=coords['y'],
+                                        url=current_url
+                                    )
+
+                                    if success:
+                                        self._log(f"    ✅ Coordinate click succeeded!", progress_callback)
+                                        logs.append(f"  ✅ Coordinate-based click succeeded")
+                                        time.sleep(0.5)
+                                        screenshot, dom_elements, current_url = self._get_page_state()
+                                        continue
+                                    else:
+                                        self._log(f"    ❌ Coordinate click failed", progress_callback)
+                                        logs.append(f"  ❌ Coordinate-based click failed")
                             else:
                                 self._log(f"    ❌ Low confidence ({coords['confidence']:.0%}), cannot locate element visually", progress_callback)
                                 logs.append(f"  ❌ Could not find element in screenshot")
 
                         # All fallbacks failed
                         if not success:
-                            self._log(f"    ❌ All fallback stages failed", progress_callback)
+                            self._log(f"    ❌ All fallback attempts failed", progress_callback)
                             logs.append(f"  ❌ All fallback attempts exhausted")
                             failed_non_assertion_steps += 1
                             return {
@@ -1799,6 +1882,152 @@ Return ONLY a JSON array:
             print(f"Screenshot capture failed: {e}")
             return ""
 
+    def _execute_action_with_self_healing(
+        self,
+        action: str,
+        selector: str,
+        params: List[Any],
+        url: str,
+        screenshot: str,
+        dom_elements: List[DomElement],
+        step_description: str,
+        before_screenshot: str = None,
+        progress_callback=None,
+        max_retries: int = 3
+    ) -> bool:
+        """
+        Execute action with self-healing capabilities.
+
+        This method implements dynamic execution by:
+        1. Trying the original action
+        2. If it fails, analyzing why with LLM Vision
+        3. Applying suggested fixes (close overlay, scroll, JavaScript, etc.)
+        4. Retrying the action
+
+        Args:
+            action: Action type (click, fill, press, etc.)
+            selector: CSS selector
+            params: Action parameters
+            url: Current page URL
+            screenshot: Current screenshot base64
+            dom_elements: Available DOM elements
+            step_description: Human-readable step description
+            before_screenshot: Screenshot before action (for assertions)
+            progress_callback: Callback for logging
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            True if action succeeded (either immediately or after healing), False otherwise
+        """
+        # Try original action first
+        success = self._execute_action(action, selector, params, url, before_screenshot)
+
+        if success:
+            return True
+
+        # Action failed - start self-healing
+        self._log(f"    🔧 Action failed, initiating self-healing...", progress_callback)
+
+        # Get error message from last execution (we'll need to capture this from MCP response)
+        error_message = "Action execution failed"  # Default error message
+
+        retry_count = 0
+        while retry_count < max_retries:
+            retry_count += 1
+            self._log(f"    🔄 Self-healing attempt {retry_count}/{max_retries}", progress_callback)
+
+            # Capture current screenshot for error analysis
+            current_screenshot = self._capture_screenshot(url, send_to_gui=False)
+
+            # Use LLM to analyze failure and suggest fixes
+            from .llm_vision_client import LLMVisionClient
+            vision_client = LLMVisionClient()
+
+            error_analysis = vision_client.analyze_action_failure(
+                action=action,
+                selector=selector,
+                error_message=error_message,
+                screenshot_base64=current_screenshot,
+                dom_elements=dom_elements,
+                url=url
+            )
+
+            failure_reason = error_analysis.get('failure_reason', 'unknown')
+            suggested_fixes = error_analysis.get('suggested_fixes', [])
+            confidence = error_analysis.get('confidence', 0)
+            reasoning = error_analysis.get('reasoning', '')
+
+            self._log(f"    💡 Failure reason: {failure_reason} (confidence: {confidence}%)", progress_callback)
+            self._log(f"    💭 Analysis: {reasoning[:100]}...", progress_callback)
+
+            if not suggested_fixes:
+                self._log(f"    ❌ No fixes suggested, giving up", progress_callback)
+                return False
+
+            # Try each suggested fix in priority order
+            for fix_idx, fix in enumerate(suggested_fixes[:2], 1):  # Try top 2 fixes
+                fix_type = fix.get('type')
+                fix_description = fix.get('description', '')
+
+                self._log(f"    🛠️  Fix {fix_idx}: {fix_description}", progress_callback)
+
+                try:
+                    if fix_type == 'close_overlay':
+                        method = fix.get('method', 'press_escape')
+                        if method == 'press_escape':
+                            self._execute_action('press', '', ['Escape'], url)
+                        elif method == 'click_backdrop':
+                            # Click outside modal area (center of screen, assuming modal is in middle)
+                            self._execute_action('click', 'body', [], url)
+                        time.sleep(0.3)  # Brief wait for overlay to close
+
+                    elif fix_type == 'scroll':
+                        scroll_selector = fix.get('selector', selector)
+                        if scroll_selector:
+                            self._execute_action('scrollIntoView', scroll_selector, [], url)
+                        else:
+                            self._execute_action('scroll', 'body', ['down'], url)
+                        time.sleep(0.3)  # Brief wait for scroll
+
+                    elif fix_type == 'javascript':
+                        script = fix.get('script')
+                        if script:
+                            self._execute_action('evaluate', '', [script], url)
+                        time.sleep(0.3)
+
+                    elif fix_type == 'wait':
+                        duration = fix.get('duration', 500)
+                        time.sleep(duration / 1000.0)
+
+                    elif fix_type == 'open_container':
+                        # Try to open parent container (dropdown, accordion, etc.)
+                        # This would need element selection logic
+                        self._log(f"    ⚠️ 'open_container' fix not yet implemented", progress_callback)
+
+                    elif fix_type == 'use_alternative_selector':
+                        alternative_selector = fix.get('selector')
+                        if alternative_selector:
+                            selector = alternative_selector  # Update selector for retry
+
+                    # After applying fix, retry the original action
+                    self._log(f"    🔁 Retrying original action after fix...", progress_callback)
+                    success = self._execute_action(action, selector, params, url, before_screenshot)
+
+                    if success:
+                        self._log(f"    ✅ Self-healing successful! Action succeeded after fix", progress_callback)
+                        return True
+
+                except Exception as e:
+                    self._log(f"    ⚠️ Fix failed: {e}", progress_callback)
+                    continue
+
+            # All fixes for this retry attempt failed
+            self._log(f"    ❌ All fixes failed for attempt {retry_count}", progress_callback)
+
+        # Exhausted all retries
+        self._log(f"    ❌ Self-healing failed after {max_retries} attempts", progress_callback)
+        return False
+
     def _execute_action(self, action: str, selector: str, params: List[Any], url: str, before_screenshot: str = None) -> bool:
         """Execute a browser action using MCP host."""
         try:
@@ -1850,69 +2079,6 @@ Return ONLY a JSON array:
             print(f"Action execution error: {e}")
             return False
 
-    def _try_scroll_to_find_element(
-        self,
-        description: str,
-        screenshot: str,
-        dom_elements: List[DomElement],
-        url: str,
-        progress_callback=None
-    ) -> bool:
-        """
-        Try scrolling the page to find an element that matches the description.
-
-        Returns:
-            True if scroll was performed (element might now be visible), False otherwise
-        """
-        # Scroll down a few times to try to find the element
-        for scroll_attempt in range(3):  # Try scrolling 3 times
-            self._log(f"      📜 Scroll attempt {scroll_attempt + 1}/3...", progress_callback)
-
-            # Execute scroll action
-            self._log(f"      ⬇️  Scrolling page down...", progress_callback)
-            # Don't send empty URL - use None to let MCP use current page
-            payload = {
-                "action": "execute_action",
-                "params": {
-                    "url": url if url else None,  # Don't send empty string
-                    "selector": "body",
-                    "action": "scroll",
-                    "value": "down",
-                    "session_id": self.session_id
-                }
-            }
-
-            try:
-                response = requests.post(
-                    f"{self.mcp_config.host_url}/execute",
-                    json=payload,
-                    timeout=90
-                )
-                response.raise_for_status()
-
-                # Wait for page to settle
-                time.sleep(0.5)
-
-                # Check if element is now visible using vision
-                self._log(f"      📸 Re-analyzing DOM after scroll...", progress_callback)
-                new_screenshot = self._capture_screenshot(url=None, send_to_gui=True)
-
-                self._log(f"      🤖 Using {self.llm_client.model} vision to detect element...", progress_callback)
-                coord_result = self.llm_client.find_element_coordinates(
-                    screenshot_base64=new_screenshot,
-                    description=description
-                )
-
-                if coord_result.get("confidence", 0) > 0.6:
-                    self._log(f"      ✅ Found element after scroll! Confidence: {coord_result['confidence']*100:.0f}%", progress_callback)
-                    return True
-
-            except Exception as e:
-                self._log(f"      ⚠️ Scroll failed: {e}", progress_callback)
-                continue
-
-        self._log(f"      ❌ Element not found after scrolling", progress_callback)
-        return False
 
     def _execute_coordinate_click(self, x: int, y: int, url: str) -> bool:
         """
@@ -2015,7 +2181,7 @@ Respond with JSON only:
             api_key = os.getenv("OPENAI_API_KEY")
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
-                model="gpt-5",  # For demo
+                model="gpt-5.1",  # For demo
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=300
@@ -2915,7 +3081,7 @@ Respond with JSON only:
             api_key = os.getenv("OPENAI_API_KEY")
             client = openai.OpenAI(api_key=api_key)
             response = client.chat.completions.create(
-                model="gpt-5",  # For demo
+                model="gpt-5.1",  # For demo
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=150

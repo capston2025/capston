@@ -1087,4 +1087,210 @@ JSON response:"""
             }
 
 
+    def analyze_action_failure(
+        self,
+        action: str,
+        selector: str,
+        error_message: str,
+        screenshot_base64: str,
+        dom_elements: List[DomElement],
+        url: str,
+    ) -> Dict[str, Any]:
+        """
+        Analyze why an action failed and suggest recovery strategies.
+
+        This method implements dynamic execution by understanding failure context
+        and suggesting concrete fixes like closing overlays, scrolling, or using JavaScript.
+
+        Args:
+            action: The action that failed (click, fill, press, etc.)
+            selector: The selector that was used
+            error_message: The error message from Playwright
+            screenshot_base64: Screenshot showing current state
+            dom_elements: Available DOM elements
+            url: Current page URL
+
+        Returns:
+            Dict with:
+                - failure_reason: Why the action failed (overlay, not_visible, invalid_selector, etc.)
+                - suggested_fixes: List of fix strategies to try
+                - confidence: Confidence in the analysis (0-100)
+                - reasoning: Detailed explanation
+        """
+        # Format DOM elements (limited to 50 for error analysis)
+        dom_list = []
+        for idx, elem in enumerate(dom_elements[:50]):
+            attrs = elem.attributes or {}
+            dom_list.append({
+                "index": idx,
+                "tag": elem.tag,
+                "selector": elem.selector,
+                "text": elem.text,
+                "role": attrs.get("role"),
+                "aria_hidden": attrs.get("aria-hidden"),
+            })
+
+        dom_json = json.dumps(dom_list, ensure_ascii=False, indent=2)
+
+        # Check if there are open overlays/modals in DOM
+        overlay_elements = []
+        for elem in dom_elements[:50]:
+            attrs = elem.attributes or {}
+            role = attrs.get('role', '')
+            aria_modal = attrs.get('aria-modal', '')
+            tag = elem.tag
+
+            # Detect modals, dialogs, dropdowns, popovers
+            if (role in ['dialog', 'alertdialog', 'menu', 'listbox'] or
+                aria_modal == 'true' or
+                tag in ['dialog'] or
+                'modal' in (elem.text or '').lower()):
+                overlay_elements.append({
+                    "tag": tag,
+                    "role": role,
+                    "text": elem.text[:50] if elem.text else "",
+                    "selector": elem.selector
+                })
+
+        overlay_context = ""
+        if overlay_elements:
+            overlay_context = f"\n**⚠️ DETECTED OPEN OVERLAYS:** {len(overlay_elements)} overlay element(s) found:\n"
+            for ov in overlay_elements[:3]:
+                overlay_context += f"  - {ov['tag']} role={ov['role']} text=\"{ov['text']}\"\n"
+            overlay_context += "This strongly suggests overlay interception is the cause.\n"
+
+        prompt = f"""You are a test automation expert analyzing why an action failed.
+
+**Failed Action:** {action}
+**Selector:** {selector}
+**Error Message:** {error_message}
+**Page URL:** {url}
+{overlay_context}
+**Available DOM Elements (top 50):**
+{dom_json}
+
+**Common Failure Patterns:**
+
+1. **Overlay/Modal Interception**
+   - Error contains: "intercepts pointer events", "covered by", "not clickable"
+   - Fix: Close overlay with Escape key, click backdrop, or wait for it to disappear
+   - Example fixes:
+     * {{"type": "close_overlay", "method": "press_escape", "description": "Press Escape to close modal/dropdown"}}
+     * {{"type": "close_overlay", "method": "click_backdrop", "description": "Click outside modal to close it"}}
+
+2. **Element Not Visible**
+   - Error contains: "not visible", "hidden", "outside viewport"
+   - Fix: Scroll element into view, wait for animation, or check if it's in a closed dropdown/tab
+   - Example fixes:
+     * {{"type": "scroll", "method": "scroll_into_view", "selector": "{selector}", "description": "Scroll element into viewport"}}
+     * {{"type": "wait", "duration": 500, "description": "Wait for animation to complete"}}
+     * {{"type": "open_container", "method": "click_parent", "description": "Open parent dropdown/accordion"}}
+
+3. **Invalid/Ambiguous Selector**
+   - Error contains: "failed", "no element", "multiple elements"
+   - Fix: Use JavaScript to find element by text, use more specific selector, or try alternative approach
+   - Example fixes:
+     * {{"type": "javascript", "script": "document.querySelector('button').click()", "description": "Direct JavaScript click"}}
+     * {{"type": "use_alternative_selector", "selector": "alternative selector", "description": "Try different selector"}}
+
+4. **Timing Issues**
+   - Error contains: "timeout", "detached", "stale"
+   - Fix: Wait for element to be stable, retry after delay
+   - Example fixes:
+     * {{"type": "wait", "duration": 1000, "description": "Wait for element to stabilize"}}
+     * {{"type": "retry", "delay": 500, "description": "Retry action after delay"}}
+
+**Your Task:**
+1. Analyze the error message and screenshot
+2. Identify the most likely failure reason
+3. Suggest 1-3 concrete fixes to try (in priority order)
+4. Each fix should be actionable and specific
+
+Required JSON format (no markdown):
+{{
+    "failure_reason": "overlay_interception" | "not_visible" | "invalid_selector" | "timing_issue" | "element_disabled" | "unknown",
+    "suggested_fixes": [
+        {{
+            "type": "close_overlay" | "scroll" | "javascript" | "wait" | "retry" | "open_container" | "use_alternative_selector",
+            "priority": 1,
+            "description": "Human-readable description of the fix",
+            "method": "press_escape" | "click_backdrop" | "scroll_into_view" | "direct_click" | null,
+            "selector": "selector if needed" | null,
+            "script": "JavaScript code if type is javascript" | null,
+            "duration": "wait duration in ms if type is wait" | null
+        }}
+    ],
+    "confidence": 85,
+    "reasoning": "Detailed explanation of why this failure occurred and why these fixes should work"
+}}
+
+JSON response:"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=1024,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{screenshot_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            response_text = response.choices[0].message.content or ""
+
+            # Parse JSON
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            if not response_text:
+                print("LLM error analysis returned empty response")
+                return {
+                    "failure_reason": "unknown",
+                    "suggested_fixes": [],
+                    "confidence": 0,
+                    "reasoning": "LLM returned empty response"
+                }
+
+            try:
+                result = json.loads(response_text)
+                if "suggested_fixes" not in result:
+                    result["suggested_fixes"] = []
+                return result
+            except json.JSONDecodeError:
+                print(f"LLM error analysis returned non-JSON: {response_text[:200]}")
+                return {
+                    "failure_reason": "unknown",
+                    "suggested_fixes": [],
+                    "confidence": 0,
+                    "reasoning": f"LLM returned non-JSON: {response_text[:100]}"
+                }
+
+        except Exception as e:
+            print(f"LLM error analysis failed: {e}")
+            return {
+                "failure_reason": "unknown",
+                "suggested_fixes": [],
+                "confidence": 0,
+                "reasoning": f"Analysis failed: {e}"
+            }
+
+
 __all__ = ["LLMVisionClient"]
