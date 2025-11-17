@@ -1,575 +1,193 @@
 {
-  "profile": "test-sitev2_vercel_app",
+  "profile": "test-site-profile",
   "url": "https://test-sitev2.vercel.app",
-  "pdf_hash": "d88f3f23e335",
   "test_scenarios": [
     {
-      "id": "RT001",
+      "id": "TC005",
+      "priority": "MUST",
+      "scenario": "폼의 국가/언어/시간대 드롭다운에서 옵션 텍스트가 깨지지 않고 올바르게 표시되는지 확인한다",
+      "steps": [
+        { "description": "폼과 피드백 페이지로 이동한다", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"]},
+        { "description": "국가 선택 드롭다운을 연다", "action": "click", "selector": "section#forms label:has-text(\"국가 선택\") + [data-slot='select-trigger']", "params": []},
+        { "description": "'미국' 옵션을 선택해 드롭다운을 닫는다", "action": "click", "selector": "[data-slot='select-content'] [data-slot='select-item']:has-text(\"미국\")", "params": [] },
+        { "description": "언어 설정 드롭다운을 연다", "action": "click", "selector": "section#forms label:has-text(\"언어 설정\") + [data-slot='select-trigger']", "params": []},
+        { "description": "'English' 옵션을 선택해 드롭다운을 닫는다", "action": "click", "selector": "[data-slot='select-content'] [data-slot='select-item']:has-text(\"English\")", "params": []},
+        { "description": "시간대 드롭다운을 연다", "action": "click", "selector": "section#forms label:has-text(\"시간대\") + [data-slot='select-trigger']", "params": [] },
+        { "description": "시간대 옵션 목록에 '미국/뉴욕 (GMT-5)' 텍스트가 올바르게 표시되는지 확인한다", "action": "assert", "selector": "[data-slot='select-content'] [data-slot='select-item']:has-text(\"미국/뉴욕 (GMT-5)\")", "condition": "expectVisible", "params": []},
+        { "description": "'미국/뉴욕 (GMT-5)' 옵션을 선택해 드롭다운을 닫는다", "action": "click", "selector": "[data-slot='select-content'] [data-slot='select-item']:has-text(\"미국/뉴욕 (GMT-5)\")", "params": []}
+      ],
+      "assertion": { "description": "시간대 선택 트리거에 '미국/뉴욕 (GMT-5)'가 그대로 표시되어 텍스트가 깨지지 않았음을 확인한다", "selector": "section#forms label:has-text(\"시간대\") + [data-slot='select-trigger']", "condition": "expectTextContains", "params": ["미국/뉴욕 (GMT-5)"]}      
+    },
+    {
+      "id": "TC006",
       "priority": "SHOULD",
-      "scenario": "로그인 탭 기본 표시 및 필드 확인",
+      "scenario": "툴팁 아이콘 버튼을 클릭하면 관련 설명 텍스트가 표시되어야 한다",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이메일 필드 표시 확인",
-          "action": "expectVisible",
-          "selector": "#login-email",
-          "params": []
-        },
-        {
-          "description": "비밀번호 필드 표시 확인",
-          "action": "expectVisible",
-          "selector": "#login-password",
-          "params": []
-        }
+        { "description": "폼과 피드백 페이지로 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+
+        { "description": "도움말 아이콘 버튼 클릭", "action": "click", "selector": "section#feedback .text-center:has(p:has-text(\"도움말\")) button", "params": [] },
+        { "description": "도움말 툴팁 텍스트 확인", "action": "assert", "selector": "div[data-state='delayed-open']:has-text(\"도움말을 확인하려면 클릭하세요\")", "condition": "expectVisible", "params": [] }
       ],
-      "assertion": {
-        "description": "로그인 폼(이메일, 비밀번호)이 표시됨",
-        "selector": "#login-email",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "모든 툴팁 버튼 클릭 후 각 설명 텍스트가 표시되어야 한다", "selector": "div[data-state='delayed-open']", "condition": "expectVisible", "params": ["도움말을 확인하려면 클릭하세요"]}
     },
     {
-      "id": "RT002",
+      "id": "TC007",
       "priority": "MUST",
-      "scenario": "정상 로그인",
+      "scenario": "배송 방법 라디오 버튼 변경 시 선택 옵션이 바뀌어야 한다",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: test@example.com",
-          "action": "fill",
-          "selector": "#login-email",
-          "params": [
-            "test@example.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: password123",
-          "action": "fill",
-          "selector": "#login-password",
-          "params": [
-            "password123"
-          ]
-        },
-        {
-          "description": "로그인 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "로그인 처리 대기",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        }
-      ],
-      "assertion": {
-        "description": "성공 메시지 표시 및 사용자 정보와 로그아웃 버튼 노출",
-        "selector": "button:has-text('로그아웃')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+        { "description": "폼과 피드백 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "배송 방법 라디오 그룹 표시 확인", "action": "assert", "selector": "section#forms label:has-text(\"배송 방법을 선택해주세요\")", "condition": "expectVisible", "params": [] },
+        { "description": "현재 기본값이 'standard'인지 확인", "action": "assert", "selector": "section#forms p:has-text(\"선택된 옵션:\")", "condition": "expectTextMatch", "params": ["standard"] },
+        { "description": "빠른 배송(express) 옵션 클릭", "action": "click", "selector": "section#forms label[for='express']", "params": [] },
+        { "description": "선택된 옵션이 express로 바뀌었는지 확인", "action": "assert", "selector": "section#forms p:has-text(\"선택된 옵션:\")", "condition": "expectTextMatch", "params": ["express"] }
+     ],
+      "assertion": {"description": "배송 방법 변경 시 선택한 옵션(express)으로 표시되어야 한다", "selector": "section#forms p:has-text(\"선택된 옵션:\")", "condition": "expectTextMatch", "params": ["express"]}
     },
     {
-      "id": "RT003",
+      "id": "TC009",
       "priority": "MUST",
-      "scenario": "로그인 실패 - 이메일만 입력",
+      "scenario": "토스트 알림 오류 버튼 클릭 시 오류 토스트 표시",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "html",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 선택",
-          "action": "click",
-          "selector": "input[value='login']",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: test@example.com",
-          "action": "fill",
-          "selector": "#login-email",
-          "params": [
-            "test@example.com"
-          ]
-        },
-        {
-          "description": "로그인 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "오류 메시지 대기",
-          "action": "wait",
-          "selector": "html",
-          "params": [
-            500
-          ]
-        }
+        { "description": "폼 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "‘오류 발생’ 버튼 클릭", "action": "click", "selector": "section#feedback button:has-text(\"오류\")", "params": [] },
+        { "description": "오류 메시지 표시 확인", "action": "assert", "selector": "text=오류가 발생했습니다. 다시 시도해주세요.", "condition": "expectVisible", "params": [] }
       ],
-      "assertion": {
-        "description": "오류 메시지 표시",
-        "selector": "div:has-text('오류')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "오류 메시지가 정상적으로 표시됨", "selector": "text=오류가 발생했습니다. 다시 시도해주세요.", "condition": "expectVisible", "params": [] }
     },
     {
-      "id": "RT004",
+      "id": "TC010",
+      "priority": "SHOULD",
+      "scenario": "다크모드 토글 시 dark 클래스 적용",
+      "steps": [
+        { "description": "폼 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "다크모드 토글 클릭", "action": "click", "selector": ".flex.items-center.justify-between:has(label:has-text(\"다크 모드\")) button[role='switch']", "params": [] },
+        { "description": "body에 dark 클래스 적용 확인", "action": "assert", "selector": "html", "condition": "expectClassContains", "params": ["dark"] }
+      ],
+      "assertion": { "description": "body에 dark 클래스가 정상적으로 적용됨", "selector": "html", "condition": "expectClassContains", "params": ["dark"] }
+    },
+    {
+  "id": "TC011",
+  "priority": "SHOULD",
+  "scenario": "동영상 특정 위치 진행바 클릭 시 해당 지점에서 재생이 시작되어야 한다",
+  "steps": [
+    { "description": "인터랙션 & 데이터 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+    { "description": "동영상 컴포넌트 로드 확인", "action": "assert", "selector": "section#special-features video", "condition": "expectVisible", "params": [] },
+    { "description": "재생 버튼 클릭", "action": "click", "selector": "section#special-features .flex.items-center.gap-2 button:nth-of-type(2)", "params": [] },
+    { "description": "진행바 특정 지점을 클릭해 재생 위치 변경 시도", "action": "click", "selector": "section#special-features input[type='range']", "params": ["{ \"offsetX\": 150 }"] },
+    { "description": "진행바 클릭 후 잠시 대기", "action": "waitForTimeout", "selector": "", "params": ["300"] },
+    { "description": "video.currentTime 값이 변경되었는지 확인", "action": "assert", "selector": "section#special-features video", "condition": "expectChanged", "params": ["currentTime"] }
+      ],
+  "assertion": { "description": "동영상 진행바 클릭 시 currentTime이 변해야 한다",
+    "selector": "section#special-features video",
+    "condition": "expectChanged",
+    "params": ["currentTime"]}
+    },
+    {
+      "id": "TC012",
       "priority": "MUST",
-      "scenario": "로그인 실패 - 비밀번호만 입력",
+      "scenario": "장바구니 2회 추가 시 카운트 증가",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "html",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 선택",
-          "action": "click",
-          "selector": "input[value='login']",
-          "params": []
-        },
-        {
-          "description": "비밀번호 입력: password123",
-          "action": "fill",
-          "selector": "#login-password",
-          "params": [
-            "password123"
-          ]
-        },
-        {
-          "description": "로그인 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "오류 메시지 대기",
-          "action": "wait",
-          "selector": "html",
-          "params": [
-            500
-          ]
-        }
+        { "description": "기본 기능 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "‘장바구니 추가’ 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
+        { "description": "장바구니 카운트가 1로 증가했는지 확인", "action": "assert", "selector": "text=장바구니 (1)", "condition": "expectText", "params": ["1"] },
+        { "description": "‘장바구니 추가’ 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
+        { "description": "장바구니 카운트가 2로 증가했는지 확인","action": "assert", "selector": "text=장바구니 (2)", "condition": "expectText","params": ["2"]}
       ],
-      "assertion": {
-        "description": "오류 메시지 표시",
-        "selector": "div:has-text('오류')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "장바구니 옆 카운트가 정상적으로 증가함", "selector": "text=장바구니 (2)", "condition": "expectText", "params": ["2"] }
     },
     {
-      "id": "RT005",
+      "id": "TC013",
       "priority": "MAY",
-      "scenario": "로그인 실패 - 잘못된 이메일 형식",
+      "scenario": "호버카드 2번에서 '더보기'를 클릭하면 상세 내용이 표시되어야 한다",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: invalid-email",
-          "action": "fill",
-          "selector": "#login-email",
-          "params": [
-            "invalid-email"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: password123",
-          "action": "fill",
-          "selector": "#login-password",
-          "params": [
-            "password123"
-          ]
-        },
-        {
-          "description": "로그인 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "오류 메시지 대기",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "인터랙션 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "호버카드 2번에 마우스를 올려 '더보기' 버튼을 표시", "action": "hover", "selector": "section#special-features .grid .relative:has(h4:has-text(\"호버 카드 2\"))", "params": [] },
+        { "description": "호버카드 2번의 '더보기' 버튼 클릭", "action": "click", "selector": "section#special-features .grid .relative:has(h4:has-text(\"호버 카드 2\")) button:has-text(\"더 보기\")", "params": [] },
+        { "description": "'더보기' 클릭 후 상세 내용이 나타났는지 확인", "action": "assert", "selector": "section#special-features .grid .relative:has(h4:has-text(\"호버 카드 2\")) .detail-content", "condition": "expectVisible", "params": [] }
       ],
-      "assertion": {
-        "description": "이메일 형식 오류 메시지 표시",
-        "selector": "div:has-text('오류')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "'더보기' 버튼 클릭 후 상세 콘텐츠가 보여야 한다", "selector": "section#special-features .grid .relative:has(h4:has-text(\"호버 카드 2\")) .detail-content", "condition": "expectVisible", "params": [] }
     },
     {
-      "id": "RT006",
+      "id": "TC014",
       "priority": "MAY",
-      "scenario": "로그인 실패 - 존재하지 않는 계정",
+      "scenario": "마지막 요소 호버 시 배경색 변경 확인",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: nobody@example.com",
-          "action": "fill",
-          "selector": "#login-email",
-          "params": [
-            "nobody@example.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: password123",
-          "action": "fill",
-          "selector": "#login-password",
-          "params": [
-            "password123"
-          ]
-        },
-        {
-          "description": "로그인 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "오류 메시지 대기",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "인터랙션 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "호버 전 배경색 값 저장", "action": "storeCSSValue", "selector": "section#special-features .grid div:nth-child(3)", "params": ["background-color"] },
+        { "description": "마지막 카드에 마우스 호버", "action": "hover", "selector": "section#special-features .grid div:nth-child(3)", "params": [] },
+        { "description": "호버 후 배경색이 이전과 다름", "action": "assert", "selector": "section#special-features .grid div:nth-child(3)", "condition": "expectCSSChanged", "params": ["background-color"] }
       ],
-      "assertion": {
-        "description": "자격 증명 오류 메시지 표시",
-        "selector": "div:has-text('오류')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "hover 시 배경색이 변경됨", "selector": "section#special-features .grid div:nth-child(3)", "condition": "expectCSSChanged", "params": ["background-color"] }
     },
     {
-      "id": "RT007",
-      "priority": "SHOULD",
-      "scenario": "회원가입 탭 전환 및 필드 확인",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app"
-          ]
-        },
-        {
-          "description": "회원가입 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이름 필드 표시 확인",
-          "action": "expectVisible",
-          "selector": "#signup-name",
-          "params": []
-        },
-        {
-          "description": "이메일 필드 표시 확인",
-          "action": "expectVisible",
-          "selector": "#signup-email",
-          "params": []
-        },
-        {
-          "description": "비밀번호 필드 표시 확인",
-          "action": "expectVisible",
-          "selector": "#signup-password",
-          "params": []
-        }
-      ],
-      "assertion": {
-        "description": "회원가입 폼(이름, 이메일, 비밀번호)이 표시됨",
-        "selector": "#signup-name",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT008",
+      "id": "TC015",
       "priority": "MUST",
-      "scenario": "회원가입 성공 - 특수문자 포함 비밀번호",
+      "scenario": "기본 기능 페이지에서 스크롤 시 상단 인디케이터가 움직이는지 확인한다",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "회원가입 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이름 입력: 홍길동",
-          "action": "fill",
-          "selector": "#signup-name",
-          "params": [
-            "홍길동"
-          ]
-        },
-        {
-          "description": "이메일 입력: newuser@example.com",
-          "action": "fill",
-          "selector": "#signup-email",
-          "params": [
-            "newuser@example.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: P@ssword123!",
-          "action": "fill",
-          "selector": "#signup-password",
-          "params": [
-            "P@ssword123!"
-          ]
-        },
-        {
-          "description": "회원가입 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "회원가입 처리 대기",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            1000
-          ]
-        }
+        { "description": "기본 기능 페이지로 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "상단 스크롤 인디케이터(고정된 바)가 표시되는지 확인", "action": "assert", "selector": "div.fixed.top-0.left-0.right-0 h-1 motion-div", "condition": "expectVisible", "params": [] },
+        { "description": "페이지를 아래로 스크롤", "action": "scroll", "selector": "body", "params": ["500"] },
+        { "description": "스크롤 전후 인디케이터 width가 변경되었는지 확인", "action": "assert", "selector": "div.fixed.top-0.left-0.right-0 h-1 motion-div", "condition": "expectChanged", "params": ["style.width"] }
       ],
-      "assertion": {
-        "description": "성공 메시지 표시 및 사용자 정보 노출",
-        "selector": "button:has-text('로그아웃')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "스크롤 진행률 바의 width가 변해야 한다", "selector": "div.fixed.top-0.left-0.right-0 h-1 motion-div", "condition": "expectChanged", "params": ["style.width"]}
     },
     {
-      "id": "RT009",
+      "id": "TC016",
       "priority": "MUST",
-      "scenario": "회원가입 실패 - 비밀번호에 특수문자 없음",
+      "scenario": "모달 확인/취소 버튼이 정상적으로 동작해야 한다",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "회원가입 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이름 입력: 김테스터",
-          "action": "fill",
-          "selector": "#signup-name",
-          "params": [
-            "김테스터"
-          ]
-        },
-        {
-          "description": "이메일 입력: plainpw@example.com",
-          "action": "fill",
-          "selector": "#signup-email",
-          "params": [
-            "plainpw@example.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: Password123",
-          "action": "fill",
-          "selector": "#signup-password",
-          "params": [
-            "Password123"
-          ]
-        },
-        {
-          "description": "회원가입 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "오류 메시지 대기",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "인터랙션 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#interactions"] },
+        { "description": "모달 열기 버튼 클릭", "action": "click", "selector": "section#special-features button:has-text(\"모달 다이얼로그 열기\")", "params": [] },
+        { "description": "확인 버튼 클릭", "action": "click", "selector": "[data-slot='dialog-content'] button:has-text(\"확인\")", "params": [] },
+        { "description": "취소 버튼 클릭", "action": "click", "selector": "[data-slot='dialog-content'] button:has-text(\"취소\")", "params": [] },
+        { "description": "모달이 닫혔는지 확인", "action": "assert", "selector": "[data-slot='dialog-content']", "condition": "expectNotVisible", "params": [] }
       ],
-      "assertion": {
-        "description": "비밀번호 규칙 오류 메시지 표시",
-        "selector": "div:has-text('오류')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": { "description": "모달이 정상적으로 닫힘", "selector": "[data-slot='dialog-content']", "condition": "expectNotVisible", "params": [] }
     },
     {
-      "id": "RT010",
-      "priority": "SHOULD",
-      "scenario": "회원가입 실패 - 잘못된 이메일 형식",
+      "id": "TC017",
+      "priority": "MUST",
+      "scenario": "파일 선택 영역 클릭 시 파일 선택 창이 열려야 한다",
       "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": "",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "회원가입 탭 선택",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "이름 입력: 이사용자",
-          "action": "fill",
-          "selector": "#signup-name",
-          "params": [
-            "이사용자"
-          ]
-        },
-        {
-          "description": "이메일 입력: invalid-email",
-          "action": "fill",
-          "selector": "#signup-email",
-          "params": [
-            "invalid-email"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: P@ssword123!",
-          "action": "fill",
-          "selector": "#signup-password",
-          "params": [
-            "P@ssword123!"
-          ]
-        },
-        {
-          "description": "회원가입 제출 버튼 클릭",
-          "action": "click",
-          "selector": "",
-          "params": []
-        },
-        {
-          "description": "오류 메시지 대기",
-          "action": "wait",
-          "selector": "",
-          "params": [
-            500
-          ]
-        }
+        { "description": "폼과 피드백 페이지 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "파일 업로드 영역 표시 확인", "action": "assert", "selector": "section#forms label:has-text(\"파일 선택\") + div", "condition": "expectVisible", "params": [] },
+        { "description": "파일 업로드 영역 클릭(파일 선택 시도)", "action": "click", "selector": "section#forms label:has-text(\"파일 선택\") + div", "params": [] },
+        { "description": "숨겨진 파일 입력이 활성 상태인지 확인", "action": "assert", "selector": "section#forms input[type='file']", "condition": "expectAttributeEquals", "params": ["disabled", "false"] }
       ],
-      "assertion": {
-        "description": "이메일 형식 오류 메시지 표시",
-        "selector": "div:has-text('오류')",
-        "condition": "expectVisible",
-        "params": [],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
+      "assertion": {"description": "파일 선택 영역 클릭 후 파일 입력이 활성화되어 있어야 한다", "selector": "section#forms input[type='file']", "condition": "expectAttributeEquals", "params": ["disabled", "false"]}
+    },
+    {
+      "id": "TC018",
+      "priority": "SHOULD",
+      "scenario": "URL 복사 버튼 클릭 시 복사 토스트 표시",
+      "steps": [
+        { "description": "공유하기 모달 열기", "action": "click", "selector": "", "params": [] },
+        { "description": "'URL 복사' 버튼 클릭", "action": "click", "selector": "", "params": [] },
+        { "description": "‘복사되었습니다’ 토스트 표시 확인", "action": "assert", "selector": "", "condition": "expectVisible", "params": [] }
+      ],
+      "assertion": { "description": "복사 완료 토스트 메시지가 정상적으로 표시됨", "selector": "", "condition": "expectVisible", "params": [] }
+    },
+    {
+      "id": "TC019",
+      "priority": "MUST",
+      "scenario": "비로그인 상태에서 장바구니 접근 시 로그인 요청 발생",
+      "steps": [
+        { "description": "로그인하지 않은 상태로 홈페이지 접속", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#basics"] },
+        { "description": "상품의 '장바구니 추가' 버튼 클릭", "action": "click", "selector": "section#essential-features button:has-text(\"장바구니 추가\")", "params": [] },
+        { "description": "로그인 요청 메시지 표시 확인", "action": "assert", "selector": "text=로그인이 필요합니다.", "condition": "expectVisible", "params": [] }
+      ],
+      "assertion": { "description": "로그인 요청 메시지 또는 로그인 페이지로 리디렉션 확인", "selector": "text=로그인이 필요합니다.", "condition": "expectVisible", "params": [] }
+    },
+    {
+      "id": "TC020",
+      "priority": "MUST",
+      "scenario": "가격 범위 슬라이더를 최댓값으로 이동 시 값 일치 확인",
+      "steps": [
+        { "description": "폼(Form) 페이지로 이동", "action": "goto", "selector": "", "params": ["https://test-sitev2.vercel.app/#forms"] },
+        { "description": "가격 범위 슬라이더 값을 최댓값으로 설정", "action": "setValue", "selector": "section#forms div:has(label:has-text(\"가격 범위\")) [data-slot='slider']", "params": ["1000"] },
+        { "description": "최댓값 표시가 ₩1,000,000으로 일치함", "action": "assert", "selector": "section#forms div:has(label:has-text(\"가격 범위\")) span:has-text(\"₩1,000,000\")", "condition": "expectText", "params": ["₩1,000,000"] }
+      ],
+      "assertion": { "description": "최댓값 이동 시 오른쪽 값 표시가 정상적으로 ₩1,000,000으로 일치함", "selector": "section#forms div:has(label:has-text(\"가격 범위\")) span:has-text(\"₩1,000,000\")", "condition": "expectText", "params": ["₩1,000,000"] }
     }
   ]
 }
