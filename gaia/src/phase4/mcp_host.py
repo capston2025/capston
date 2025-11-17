@@ -31,7 +31,7 @@ class BrowserSession:
             if not playwright_instance:
                 raise HTTPException(status_code=503, detail="Playwright not initialized")
             self.browser = await playwright_instance.chromium.launch(
-                headless=True,  # CDP 스크린캐스트 사용하므로 headless로 실행
+                headless=False,  # 실제 브라우저 창 표시 (screencast는 GUI 미리보기용)
             )
             self.page = await self.browser.new_page()
 
