@@ -81,6 +81,9 @@ class IntelligentOrchestrator:
         # Enable LLM validation (can be disabled for faster execution)
         self.enable_llm_validation = os.getenv("GAIA_ENABLE_LLM_VALIDATION", "false").lower() == "true"
 
+        # Store last action error for self-healing
+        self.last_action_error: str = ""
+
     # ==================== Dynamic ID Detection & Stable Selector Generation ====================
 
     def _is_dynamic_selector(self, selector: str) -> bool:
@@ -748,13 +751,49 @@ Return ONLY a JSON array:
 
                     # Build verification prompt
                     expected_result = step.description
+                    expected_value = None
                     if step.params and len(step.params) > 0:
-                        expected_result = f"{step.description}: {step.params[0]}"
+                        expected_value = step.params[0]
+                        expected_result = f"{step.description}: {expected_value}"
 
                     self._log(f"    🤖 Asking Vision AI: {expected_result}", progress_callback)
 
+                    # Build enhanced prompt with explicit value checking
+                    value_check = ""
+                    if expected_value:
+                        # Special handling for visual state checks (like dark mode)
+                        if expected_value.lower() in ["dark", "light", "다크", "라이트"]:
+                            value_check = f"""
+
+**CRITICAL - Visual State Verification:**
+The expected state is: "{expected_value}"
+This is likely a UI theme/mode check. You should verify the VISUAL APPEARANCE:
+- If expected is "dark": Check if the UI has a dark/black background (dark mode is ON)
+- If expected is "light": Check if the UI has a light/white background (light mode is ON)
+- Look at the overall background color and theme of the interface
+- You do NOT need to find the text "{expected_value}" - just verify the visual state matches
+
+For example:
+- Dark mode: Dark/black background, light text
+- Light mode: Light/white background, dark text"""
+                        else:
+                            value_check = f"""
+
+**CRITICAL - Exact Value Verification:**
+The expected value is: "{expected_value}"
+You MUST find this EXACT value in the screenshot. Look for:
+- Text that contains "{expected_value}"
+- Labels, status text, or display fields showing "{expected_value}"
+- Do NOT accept similar or related values - it must match exactly
+
+For example:
+- If expected is "express", you must find text containing "express" (NOT just a selected radio button)
+- If expected is "standard", you must find text containing "standard"
+- Visual selection state alone is NOT enough - the text value must be visible"""
+
                     # Simple prompt for vision verification
                     verification_prompt = f"""Look at this screenshot and verify: {expected_result}
+{value_check}
 
 **CRITICAL - Text Quality Check:**
 If the assertion involves checking text (like "텍스트가 올바르게 표시", "text is displayed correctly"), you MUST verify:
@@ -1928,8 +1967,8 @@ Return JSON (no markdown):
         # Action failed - start self-healing
         self._log(f"    🔧 Action failed, initiating self-healing...", progress_callback)
 
-        # Get error message from last execution (we'll need to capture this from MCP response)
-        error_message = "Action execution failed"  # Default error message
+        # Get error message from last execution
+        error_message = self.last_action_error if self.last_action_error else "Action execution failed"
 
         retry_count = 0
         while retry_count < max_retries:
@@ -2064,7 +2103,10 @@ Return JSON (no markdown):
 
             success = data.get("success", False)
             if not success:
-                print(f"Action execution failed: {data.get('message', 'Unknown error')}")
+                error_msg = data.get('message', 'Unknown error')
+                print(f"Action execution failed: {error_msg}")
+                # Store error message for self-healing
+                self.last_action_error = error_msg
 
             # Send screenshot to GUI if action succeeded and callback is set
             if success and self._screenshot_callback:
@@ -2076,7 +2118,10 @@ Return JSON (no markdown):
             return success
 
         except Exception as e:
-            print(f"Action execution error: {e}")
+            error_msg = str(e)
+            print(f"Action execution error: {error_msg}")
+            # Store error message for self-healing
+            self.last_action_error = error_msg
             return False
 
 
