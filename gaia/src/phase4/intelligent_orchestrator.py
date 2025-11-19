@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
-from gaia.src.phase4.llm_vision_client import LLMVisionClient
+from gaia.src.phase4.llm_vision_client import LLMVisionClient, get_vision_client
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG, MCPConfig
 from gaia.src.utils.models import DomElement, TestScenario, TestStep
@@ -55,7 +55,7 @@ class IntelligentOrchestrator:
         """
         self.tracker = tracker or ChecklistTracker()
         self.mcp_config = mcp_config or CONFIG.mcp
-        self.llm_client = llm_client or LLMVisionClient()
+        self.llm_client = llm_client or get_vision_client()
         self._execution_logs: List[str] = []
         self._screenshot_callback = screenshot_callback
         self.session_id = session_id
@@ -673,10 +673,10 @@ Return ONLY a JSON array:
                 # Define action categories
                 actions_needing_llm = ["click", "fill", "press"]  # Actions that need LLM to find elements
                 actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab", "wait", "waitForTimeout"]  # Actions that execute directly
-                assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast"]  # Assertion actions
+                assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast", "expectCSSChanged"]  # Assertion actions
                 # 🚨 FIX: Added click, fill, expectVisible, expectText to explicit selector list
                 # These actions should use plan JSON selectors without re-running LLM Vision
-                actions_with_explicit_selector = ["click", "fill", "hover", "focus", "select", "dragAndDrop", "scrollIntoView", "expectVisible", "expectText"]
+                actions_with_explicit_selector = ["click", "fill", "hover", "focus", "select", "dragAndDrop", "scrollIntoView", "expectVisible", "expectText", "storeCSSValue", "dragSlider", "expectCSSChanged"]
 
                 logs.append(f"Step {step_idx}: {step.description}")
 
@@ -701,8 +701,7 @@ Return ONLY a JSON array:
                     after_screenshot = self._capture_screenshot(current_url, send_to_gui=False)
 
                     # Use LLM Vision to verify
-                    from .llm_vision_client import LLMVisionClient
-                    vision_client = LLMVisionClient()
+                    vision_client = get_vision_client()
 
                     verification_result = vision_client.verify_scenario_success(
                         scenario_description=step.description,
@@ -746,8 +745,7 @@ Return ONLY a JSON array:
                     current_screenshot = self._capture_screenshot(url=current_url, send_to_gui=True)
 
                     # Use Vision AI to verify the assertion
-                    from .llm_vision_client import LLMVisionClient
-                    vision_client = LLMVisionClient()
+                    vision_client = get_vision_client()
 
                     # Build verification prompt
                     expected_result = step.description
@@ -1659,8 +1657,7 @@ Return JSON (no markdown):
                 self._log(f"  📝 Generated indicators: {success_indicators}", progress_callback)
 
             # Always run verification (even if success_indicators were auto-generated)
-            from gaia.src.phase4.llm_vision_client import LLMVisionClient
-            vision_client = LLMVisionClient()
+            vision_client = get_vision_client()
 
             scenario_verification_result = vision_client.verify_scenario_success(
                 scenario_description=scenario.scenario,
@@ -1979,8 +1976,8 @@ Return JSON (no markdown):
             current_screenshot = self._capture_screenshot(url, send_to_gui=False)
 
             # Use LLM to analyze failure and suggest fixes
-            from .llm_vision_client import LLMVisionClient
-            vision_client = LLMVisionClient()
+            from .llm_vision_client import get_vision_client
+            vision_client = get_vision_client()
 
             error_analysis = vision_client.analyze_action_failure(
                 action=action,
