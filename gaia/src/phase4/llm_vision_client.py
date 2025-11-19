@@ -1293,4 +1293,29 @@ JSON response:"""
             }
 
 
-__all__ = ["LLMVisionClient"]
+def get_vision_client():
+    """
+    Factory function to get the appropriate vision client based on VISION_PROVIDER env var.
+
+    Set VISION_PROVIDER=gemini in .env to use Gemini, otherwise uses OpenAI.
+    """
+    # Load .env file
+    env_file = Path(__file__).parent.parent.parent.parent / ".env"
+    provider = os.getenv("VISION_PROVIDER", "openai")
+
+    if env_file.exists():
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("VISION_PROVIDER="):
+                    provider = line.split("=", 1)[1].strip()
+                    break
+
+    if provider.lower() == "gemini":
+        from gaia.src.phase4.llm_vision_client_gemini import GeminiVisionClient
+        return GeminiVisionClient()
+    else:
+        return LLMVisionClient()
+
+
+__all__ = ["LLMVisionClient", "get_vision_client"]
