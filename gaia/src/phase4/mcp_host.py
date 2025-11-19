@@ -24,6 +24,7 @@ class BrowserSession:
         self.current_url: str = ""
         self.cdp_session: Optional[CDPSession] = None
         self.screencast_active: bool = False
+        self.stored_css_values: Dict[str, str] = {}  # CSS 값 저장소 (storeCSSValue/expectCSSChanged용)
 
     async def get_or_create_page(self) -> Page:
         """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다"""
@@ -31,7 +32,7 @@ class BrowserSession:
             if not playwright_instance:
                 raise HTTPException(status_code=503, detail="Playwright not initialized")
             self.browser = await playwright_instance.chromium.launch(
-                headless=False,  # 실제 브라우저 창 표시 (screencast는 GUI 미리보기용)
+                headless=True,  # CDP 스크린캐스트 사용하므로 headless로 실행
             )
             self.page = await self.browser.new_page()
 
@@ -55,7 +56,7 @@ class BrowserSession:
                     'quality': 80,
                     'maxWidth': 1280,
                     'maxHeight': 720,
-                    'everyNthFrame': 5  # 5프레임마다 1번 전송 (깜빡임 감소, 부하 감소)
+                    'everyNthFrame': 3  # 3프레임마다 1번 전송 (깜빡임 감소, 부하 감소)
                 })
 
                 self.screencast_active = True
@@ -858,6 +859,137 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             target = page.locator(value).first
             await source.drag_to(target, timeout=30000)
 
+        elif action == "dragSlider":
+            # Radix UI 슬라이더를 특정 값으로 드래그합니다
+            # value는 목표 값 (예: "1000")
+            if not selector:
+                raise ValueError("Selector is required for 'dragSlider' action")
+            if value is None:
+                raise ValueError("Value (target value) is required for 'dragSlider' action")
+
+            # 슬라이더 thumb 요소 찾기
+            thumb = page.locator(selector).first
+
+            try:
+                # 슬라이더의 aria 속성에서 범위 정보 가져오기
+                aria_min = await thumb.get_attribute("aria-valuemin") or "0"
+                aria_max = await thumb.get_attribute("aria-valuemax") or "100"
+                aria_now = await thumb.get_attribute("aria-valuenow") or "0"
+
+                min_val = float(aria_min)
+                max_val = float(aria_max)
+                target_val = float(value)
+
+                print(f"🎚️ Slider: min={min_val}, max={max_val}, current={aria_now}, target={target_val}")
+
+                # 방법 1: 키보드로 슬라이더 조작 (가장 안정적)
+                # End 키로 최댓값, Home 키로 최솟값
+                if target_val >= max_val:
+                    await thumb.focus()
+                    await thumb.press("End")
+                    print(f"🎚️ Pressed End key to move slider to max value")
+                elif target_val <= min_val:
+                    await thumb.focus()
+                    await thumb.press("Home")
+                    print(f"🎚️ Pressed Home key to move slider to min value")
+                else:
+                    # 중간 값으로 이동: JavaScript로 직접 값 설정
+                    await thumb.focus()
+
+                    # Radix 슬라이더는 aria-valuenow로 현재 값을 추적
+                    # 키보드로 한 스텝씩 이동하거나, 드래그로 위치 조정
+                    # 여기서는 비율 계산 후 드래그 사용
+
+                    # 슬라이더 트랙 찾기 (thumb의 부모 요소)
+                    track_box = await thumb.evaluate('''el => {
+                        const track = el.closest('[data-slot="slider"]')?.querySelector('[data-slot="slider-track"]');
+                        if (track) {
+                            const rect = track.getBoundingClientRect();
+                            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+                        }
+                        return null;
+                    }''')
+
+                    if track_box:
+                        # 목표 위치 계산
+                        ratio = (target_val - min_val) / (max_val - min_val)
+                        target_x = track_box["x"] + (track_box["width"] * ratio)
+                        target_y = track_box["y"] + track_box["height"] / 2
+
+                        # thumb의 현재 위치
+                        thumb_box = await thumb.bounding_box()
+                        if thumb_box:
+                            start_x = thumb_box["x"] + thumb_box["width"] / 2
+                            start_y = thumb_box["y"] + thumb_box["height"] / 2
+
+                            # 드래그 실행
+                            await page.mouse.move(start_x, start_y)
+                            await page.mouse.down()
+                            await page.mouse.move(target_x, target_y, steps=10)
+                            await page.mouse.up()
+
+                            print(f"🎚️ Dragged slider from ({start_x:.0f}, {start_y:.0f}) to ({target_x:.0f}, {target_y:.0f})")
+                    else:
+                        # 트랙을 찾지 못하면 키보드로 이동
+                        # 현재 값에서 목표 값까지의 스텝 수 계산
+                        current_val = float(aria_now)
+                        steps = int(abs(target_val - current_val))
+                        key = "ArrowRight" if target_val > current_val else "ArrowLeft"
+
+                        for _ in range(min(steps, 100)):  # 최대 100번
+                            await thumb.press(key)
+
+                        print(f"🎚️ Pressed {key} {min(steps, 100)} times")
+
+                # 값 변경 후 잠시 대기
+                await page.wait_for_timeout(300)
+
+                # 클릭 위치 저장 (애니메이션용)
+                thumb_box = await thumb.bounding_box()
+                if thumb_box:
+                    click_position = {
+                        "x": thumb_box["x"] + thumb_box["width"] / 2,
+                        "y": thumb_box["y"] + thumb_box["height"] / 2
+                    }
+
+            except Exception as slider_error:
+                print(f"❌ Slider drag failed: {slider_error}")
+                raise ValueError(f"Failed to drag slider: {str(slider_error)}")
+
+        elif action == "storeCSSValue":
+            # CSS 값을 저장합니다 (나중에 expectCSSChanged로 비교)
+            # value는 CSS 속성명 (예: "background-color", "opacity")
+            if not selector:
+                raise ValueError("Selector is required for 'storeCSSValue' action")
+            if value is None:
+                raise ValueError("Value (CSS property name) is required for 'storeCSSValue' action")
+
+            element = page.locator(selector).first
+            css_property = value if isinstance(value, str) else value[0]
+
+            # CSS 값 가져오기
+            css_value = await element.evaluate(f'''el => {{
+                const style = window.getComputedStyle(el);
+                return style.getPropertyValue("{css_property}");
+            }}''')
+
+            # 세션에 저장 (selector + property를 키로 사용)
+            storage_key = f"{selector}::{css_property}"
+            session.stored_css_values[storage_key] = css_value
+
+            print(f"💾 Stored CSS value: {storage_key} = {css_value}")
+
+            # 클릭 위치 저장 (애니메이션용)
+            try:
+                bounding_box = await element.bounding_box()
+                if bounding_box:
+                    click_position = {
+                        "x": bounding_box["x"] + bounding_box["width"] / 2,
+                        "y": bounding_box["y"] + bounding_box["height"] / 2
+                    }
+            except Exception:
+                pass
+
         elif action == "scrollIntoView":
             # 요소가 화면에 보이도록 스크롤합니다
             if not selector:
@@ -891,6 +1023,59 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 await element.set_input_files(value, timeout=30000)
             else:
                 raise ValueError(f"Invalid value type for uploadFile: {type(value)}")
+
+        elif action == "expectCSSChanged":
+            # 저장된 CSS 값과 현재 값을 비교하여 변경 여부 확인
+            if not selector:
+                raise ValueError("Selector is required for 'expectCSSChanged' action")
+            if value is None:
+                raise ValueError("Value (CSS property name) is required for 'expectCSSChanged' action")
+
+            element = page.locator(selector).first
+            css_property = value if isinstance(value, str) else value[0]
+
+            # 현재 CSS 값 가져오기
+            current_css_value = await element.evaluate(f'''el => {{
+                const style = window.getComputedStyle(el);
+                return style.getPropertyValue("{css_property}");
+            }}''')
+
+            # 저장된 값과 비교
+            storage_key = f"{selector}::{css_property}"
+            stored_value = session.stored_css_values.get(storage_key)
+
+            if stored_value is None:
+                # 저장된 값이 없으면 실패
+                screenshot_bytes = await page.screenshot(full_page=False)
+                screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                return {
+                    "success": False,
+                    "message": f"No stored CSS value for '{storage_key}'. Use storeCSSValue first.",
+                    "screenshot": screenshot_base64
+                }
+
+            # 값이 변경되었는지 확인
+            changed = stored_value != current_css_value
+            print(f"🔍 CSS comparison: {storage_key}")
+            print(f"   Before: {stored_value}")
+            print(f"   After:  {current_css_value}")
+            print(f"   Changed: {changed}")
+
+            screenshot_bytes = await page.screenshot(full_page=False)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+            if changed:
+                return {
+                    "success": True,
+                    "message": f"CSS '{css_property}' changed from '{stored_value}' to '{current_css_value}'",
+                    "screenshot": screenshot_base64
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"CSS '{css_property}' did not change (still '{current_css_value}')",
+                    "screenshot": screenshot_base64
+                }
 
         elif action in ("expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast"):
             # 검증 동작은 결과를 반환하는 방식으로 처리됩니다

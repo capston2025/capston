@@ -673,10 +673,10 @@ Return ONLY a JSON array:
                 # Define action categories
                 actions_needing_llm = ["click", "fill", "press"]  # Actions that need LLM to find elements
                 actions_not_needing_selector = ["goto", "setViewport", "evaluate", "scroll", "tab", "wait", "waitForTimeout"]  # Actions that execute directly
-                assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast"]  # Assertion actions
+                assertion_actions = ["expectVisible", "expectHidden", "expectTrue", "expectText", "expectAttribute", "expectCountAtLeast", "expectCSSChanged"]  # Assertion actions
                 # 🚨 FIX: Added click, fill, expectVisible, expectText to explicit selector list
                 # These actions should use plan JSON selectors without re-running LLM Vision
-                actions_with_explicit_selector = ["click", "fill", "hover", "focus", "select", "dragAndDrop", "scrollIntoView", "expectVisible", "expectText"]
+                actions_with_explicit_selector = ["click", "fill", "hover", "focus", "select", "dragAndDrop", "scrollIntoView", "expectVisible", "expectText", "storeCSSValue", "dragSlider", "expectCSSChanged"]
 
                 logs.append(f"Step {step_idx}: {step.description}")
 
