@@ -1095,6 +1095,7 @@ JSON response:"""
         screenshot_base64: str,
         dom_elements: List[DomElement],
         url: str,
+        step_description: str = "",
     ) -> Dict[str, Any]:
         """
         Analyze why an action failed and suggest recovery strategies.
@@ -1109,6 +1110,7 @@ JSON response:"""
             screenshot_base64: Screenshot showing current state
             dom_elements: Available DOM elements
             url: Current page URL
+            step_description: Human-readable description of what the step is trying to do
 
         Returns:
             Dict with:
@@ -1159,13 +1161,18 @@ JSON response:"""
                 overlay_context += f"  - {ov['tag']} role={ov['role']} text=\"{ov['text']}\"\n"
             overlay_context += "This strongly suggests overlay interception is the cause.\n"
 
+        # Add step description context if available
+        description_context = ""
+        if step_description:
+            description_context = f"\n**Step Description:** {step_description}\n(Use this to understand what the action is trying to accomplish - e.g., if description says '이름 입력' (name input), look for name input field in the user registration section, not search field)\n"
+
         prompt = f"""You are a test automation expert analyzing why an action failed.
 
 **Failed Action:** {action}
 **Selector:** {selector}
 **Error Message:** {error_message}
 **Page URL:** {url}
-{overlay_context}
+{description_context}{overlay_context}
 **Available DOM Elements (top 50):**
 {dom_json}
 

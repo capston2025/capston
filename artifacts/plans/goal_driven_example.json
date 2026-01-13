@@ -1,0 +1,60 @@
+{
+  "profile": "test-sitev2",
+  "url": "https://test-sitev2.vercel.app/",
+  "version": "2.0",
+  "goals": [
+    {
+      "id": "TC001",
+      "name": "로그인 성공",
+      "description": "유효한 자격 증명으로 로그인한다",
+      "start_url": "https://test-sitev2.vercel.app/#basics",
+      "preconditions": ["로그아웃 상태"],
+      "test_data": {
+        "email": "test.user@example.com",
+        "password": "P@ssw0rd!"
+      },
+      "success_criteria": [
+        "성공 토스트 메시지",
+        "로그아웃 버튼 표시",
+        "사용자 아바타 표시"
+      ],
+      "failure_criteria": [
+        "오류 메시지",
+        "로그인 폼이 그대로 남아있음"
+      ],
+      "max_steps": 15
+    },
+    {
+      "id": "TC002",
+      "name": "회원가입 폼 검증",
+      "description": "회원가입 폼의 필수 입력 검증을 테스트한다",
+      "start_url": "https://test-sitev2.vercel.app/#basics",
+      "test_data": {
+        "email": "",
+        "password": ""
+      },
+      "success_criteria": [
+        "이메일 필수 오류 메시지",
+        "비밀번호 필수 오류 메시지"
+      ],
+      "max_steps": 10
+    },
+    {
+      "id": "TC003",
+      "name": "다크 모드 전환",
+      "description": "다크 모드 토글을 클릭하여 테마를 변경한다",
+      "start_url": "https://test-sitev2.vercel.app/#advanced",
+      "test_data": {},
+      "success_criteria": [
+        "배경색 변경",
+        "다크 모드 활성화"
+      ],
+      "max_steps": 8
+    }
+  ],
+  "metadata": {
+    "created_at": "2025-12-19",
+    "format_version": "2.0",
+    "description": "Goal-Driven 테스트 플랜 예시 - 세부 스텝 없이 목표만 정의"
+  }
+}

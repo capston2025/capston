@@ -1,63 +1,36 @@
 {
-  "9d41f4a437b0c7a2b0aa8b28dc807d34": {
-    "selector": "[role=\"tab\"]:has-text(\"로그인\")",
-    "timestamp": 1762937349.634629,
-    "success_count": 36,
-    "step_description": "로그인 탭 선택",
+  "318266474831dff41d6b4144c2bd9ad7": {
+    "selector": "button[type=\"submit\"]:has-text(\"공유하기\")",
+    "timestamp": 1763537743.2144141,
+    "success_count": 5,
+    "step_description": "Cmd+/ 또는 Ctrl+/ 단축키 입력",
     "element_text": "",
     "element_tag": "",
     "attributes": {}
   },
-  "c53d9901b9617cba335589f8038daee1": {
-    "selector": "button[type=\"submit\"]:has-text(\"로그인\")",
-    "timestamp": 1762934559.627327,
-    "success_count": 17,
-    "step_description": "로그인 제출 버튼 클릭",
-    "element_text": "",
-    "element_tag": "",
-    "attributes": {}
-  },
-  "ac8bb6be84528e873185ed6787d94a4c": {
-    "selector": "[role=\"tab\"]:has-text(\"회원가입\")",
-    "timestamp": 1762933038.70902,
-    "success_count": 10,
-    "step_description": "회원가입 탭 선택",
-    "element_text": "",
-    "element_tag": "",
-    "attributes": {}
-  },
-  "5813628e437ca6ca158fd36c1051fc48": {
-    "selector": "button[type=\"submit\"]:has-text(\"회원가입\")",
-    "timestamp": 1762933050.94083,
-    "success_count": 9,
-    "step_description": "회원가입 제출 버튼 클릭",
-    "element_text": "",
-    "element_tag": "",
-    "attributes": {}
-  },
-  "a9e84d61c6d6b0f795c4f0baf5e76186": {
-    "selector": "button[type=\"submit\"]:has-text(\"폼과 피드백\")",
-    "timestamp": 1762932926.0398989,
+  "18d97b65d6a62ce58876d72a03fb25d8": {
+    "selector": "button[type=\"submit\"]:has-text(\"공유하기\")",
+    "timestamp": 1763538515.9318779,
     "success_count": 0,
-    "step_description": "회원가입 탭 선택",
+    "step_description": "공유하기 모달 열기",
     "element_text": "",
     "element_tag": "",
     "attributes": {}
   },
-  "44cc8409e8aa19f1f902b67e256792ca": {
-    "selector": "[role=\"tab\"]:has-text(\"회원가입\")",
-    "timestamp": 1762931689.144823,
+  "06bb2dd545e2d48dd3f04132299d1981": {
+    "selector": "button[type=\"submit\"]:has-text(\"공유하기\")",
+    "timestamp": 1763538638.341724,
     "success_count": 1,
-    "step_description": "회원가입 탭을 클릭한다",
+    "step_description": "'URL 복사' 버튼 클릭",
     "element_text": "",
     "element_tag": "",
     "attributes": {}
   },
-  "f6d0c2647aeba939802c1219ab166d61": {
+  "a974cfd703f22f0b21741416a662c4f4": {
     "selector": "#signup-name",
-    "timestamp": 1762931694.49353,
+    "timestamp": 1763549474.808015,
     "success_count": 1,
-    "step_description": "회원가입 이름 입력란에 '테스터'를 입력한다",
+    "step_description": "이름 입력: Tester",
     "element_text": "",
     "element_tag": "input",
     "attributes": {
@@ -68,117 +41,13 @@
       "aria-label": ""
     }
   },
-  "4102f6fa395672d31afd3ac43a77f7df": {
-    "selector": "#signup-email",
-    "timestamp": 1762931701.658985,
+  "8b8b12da120ce486d0aa147bfd18d0f2": {
+    "selector": "button[type=\"submit\"]:has-text(\"로그인\")",
+    "timestamp": 1763550264.483079,
     "success_count": 1,
-    "step_description": "회원가입 이메일 입력란에 'test@example.com'을 입력한다",
-    "element_text": "",
-    "element_tag": "input",
-    "attributes": {
-      "type": "email",
-      "id": "signup-email",
-      "name": null,
-      "placeholder": "your@email.com",
-      "aria-label": ""
-    }
-  },
-  "ac9facaea4286fdf8e7d71df393a6f28": {
-    "selector": "#signup-password",
-    "timestamp": 1762931717.8766642,
-    "success_count": 1,
-    "step_description": "회원가입 비밀번호 입력란에 'Password123'을 입력한다",
-    "element_text": "",
-    "element_tag": "input",
-    "attributes": {
-      "type": "password",
-      "id": "signup-password",
-      "name": null,
-      "placeholder": "비밀번호",
-      "aria-label": ""
-    }
-  },
-  "479118ad7305a7e88ddb4a40858f315f": {
-    "selector": "button[type=\"submit\"]:has-text(\"회원가입\")",
-    "timestamp": 1762931729.3777878,
-    "success_count": 1,
-    "step_description": "회원가입 제출 버튼을 클릭한다",
+    "step_description": "로그인 버튼 클릭",
     "element_text": "",
     "element_tag": "",
     "attributes": {}
-  },
-  "318266474831dff41d6b4144c2bd9ad7": {
-    "selector": "button[type=\"submit\"]:has-text(\"공유하기\")",
-    "timestamp": 1763022045.37081,
-    "success_count": 3,
-    "step_description": "Cmd+/ 또는 Ctrl+/ 단축키 입력",
-    "element_text": "",
-    "element_tag": "",
-    "attributes": {}
-  },
-  "bb06f5fdd28aadf5937965b26b880243": {
-    "selector": "button:has-text(\"다운로드\")",
-    "timestamp": 1763016330.287053,
-    "success_count": 1,
-    "step_description": "다운로드 파일 링크가 생성되고 표시됨",
-    "element_text": "다운로드",
-    "element_tag": "button",
-    "attributes": {
-      "type": "submit",
-      "aria-label": "",
-      "title": "",
-      "role": ""
-    }
-  },
-  "d0cef28c6c987bab99ec945741d5fbe7": {
-    "selector": "button:has-text(\"홈\")",
-    "timestamp": 1763016377.705771,
-    "success_count": 1,
-    "step_description": "홈 아이콘이 사라졌는지 확인",
-    "element_text": "홈",
-    "element_tag": "button",
-    "attributes": {
-      "type": "submit",
-      "aria-label": "",
-      "title": "홈",
-      "role": ""
-    }
-  },
-  "fef6bc5f21f8eca8da59880a280db36b": {
-    "selector": "button:has-text(\"공유하기\")",
-    "timestamp": 1763016493.216307,
-    "success_count": 1,
-    "step_description": "툴팁이 표시되는지 확인",
-    "element_text": "공유하기",
-    "element_tag": "button",
-    "attributes": {
-      "type": "submit",
-      "aria-label": "",
-      "title": "",
-      "role": ""
-    }
-  },
-  "860c4cc958f5ec471b940add4bde6208": {
-    "selector": "button:has-text(\"알림\")",
-    "timestamp": 1763016551.925392,
-    "success_count": 0,
-    "step_description": "알림 배너가 사라졌는지 확인",
-    "element_text": "",
-    "element_tag": "",
-    "attributes": {}
-  },
-  "cd6590fe2cf8edb2a2098d4ebcfb22b3": {
-    "selector": "button:has-text(\"아시아/서울 (GMT+9)\")",
-    "timestamp": 1763023026.0015612,
-    "success_count": 0,
-    "step_description": "국가 드롭다운 닫기 (같은 버튼 다시 클릭) → 시간대 드롭다운 열기",
-    "element_text": "아시아/서울 (GMT+9)",
-    "element_tag": "button",
-    "attributes": {
-      "type": "button",
-      "aria-label": "",
-      "title": "",
-      "role": "combobox"
-    }
   }
 }

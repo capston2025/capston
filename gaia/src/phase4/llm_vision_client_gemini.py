@@ -292,7 +292,9 @@ Look at the screenshot and determine: Does this final state match what the scena
 4. **Error states** indicate failure
 5. **Success indicators**: Confirmation messages, UI state changes, new content
 
-Required JSON format (no markdown):
+CRITICAL: You MUST respond with ONLY a valid JSON object. Do NOT include any text, explanation, or markdown before or after the JSON. Start your response with {{ and end with }}.
+
+Required JSON format:
 {{
     "matches": true,
     "confidence": 85,
@@ -300,7 +302,7 @@ Required JSON format (no markdown):
     "observations": ["key observation 1", "key observation 2"]
 }}
 
-JSON response:"""
+JSON response (start with {{):"""
 
         try:
             response_text = self._call_vision_api(prompt, [final_screenshot], max_tokens=8192)
@@ -323,6 +325,17 @@ JSON response:"""
                     result["observations"] = []
                 return result
             except json.JSONDecodeError:
+                # Try to extract JSON from text response
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', response_text)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group())
+                        if "observations" not in result:
+                            result["observations"] = []
+                        return result
+                    except json.JSONDecodeError:
+                        pass
                 return {"matches": False, "confidence": 0, "reasoning": f"Invalid JSON: {response_text[:100]}", "observations": []}
 
         except Exception as e:
@@ -337,6 +350,7 @@ JSON response:"""
         screenshot_base64: str,
         dom_elements: List[DomElement],
         url: str,
+        step_description: str = "",
     ) -> Dict[str, Any]:
         """
         Analyze why an action failed and suggest recovery strategies.
@@ -382,13 +396,18 @@ JSON response:"""
                 overlay_context += f"  - {ov['tag']} role={ov['role']} text=\"{ov['text']}\"\n"
             overlay_context += "This strongly suggests overlay interception is the cause.\n"
 
+        # Add step description context if available
+        description_context = ""
+        if step_description:
+            description_context = f"\n**Step Description:** {step_description}\n(Use this to understand what the action is trying to accomplish - e.g., if description says '이름 입력' (name input), look for name input field, not search field)\n"
+
         prompt = f"""You are a test automation expert analyzing why an action failed.
 
 **Failed Action:** {action}
 **Selector:** {selector}
 **Error Message:** {error_message}
 **Page URL:** {url}
-{overlay_context}
+{description_context}{overlay_context}
 **Available DOM Elements (top 50):**
 {dom_json}
 
@@ -415,7 +434,9 @@ JSON response:"""
 2. Identify the most likely failure reason
 3. Suggest 1-3 concrete fixes to try (in priority order)
 
-Required JSON format (no markdown):
+CRITICAL: You MUST respond with ONLY a valid JSON object. Do NOT include any text, explanation, or markdown before or after the JSON. Start your response with {{ and end with }}.
+
+Required JSON format:
 {{
     "failure_reason": "overlay_interception" | "not_visible" | "invalid_selector" | "timing_issue" | "element_disabled" | "unknown",
     "suggested_fixes": [
@@ -433,7 +454,7 @@ Required JSON format (no markdown):
     "reasoning": "Detailed explanation of why this failure occurred and why these fixes should work"
 }}
 
-JSON response:"""
+JSON response (start with {{):"""
 
         try:
             response_text = self._call_vision_api(prompt, [screenshot_base64], max_tokens=8192)
@@ -461,6 +482,17 @@ JSON response:"""
                     result["suggested_fixes"] = []
                 return result
             except json.JSONDecodeError:
+                # Try to extract JSON from text response
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', response_text)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group())
+                        if "suggested_fixes" not in result:
+                            result["suggested_fixes"] = []
+                        return result
+                    except json.JSONDecodeError:
+                        pass
                 return {
                     "failure_reason": "unknown",
                     "suggested_fixes": [],

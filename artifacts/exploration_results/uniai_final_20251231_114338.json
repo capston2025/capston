@@ -1,0 +1,41 @@
+{
+  "session_id": "exploration_1767149010",
+  "start_url": "https://uniai.inu.ac.kr/web/main/main.do?mId=1&epTicket=ST-28116-bKxFIhBtwonNcJPDZlHovZHNuMimBS9zHEh-26#none",
+  "total_actions": 1,
+  "total_pages_visited": 1,
+  "total_elements_tested": 0,
+  "coverage": {
+    "total_interactive_elements": 0,
+    "tested_elements": 0,
+    "coverage_percentage": 0,
+    "total_pages": 1
+  },
+  "issues_found": [],
+  "steps": [
+    {
+      "step_number": 1,
+      "url": "https://uniai.inu.ac.kr/web/main/main.do?mId=1&epTicket=ST-28116-bKxFIhBtwonNcJPDZlHovZHNuMimBS9zHEh-26#none",
+      "decision": {
+        "should_continue": false,
+        "selected_action": null,
+        "input_values": {},
+        "reasoning": "더 이상 테스트할 요소가 없습니다",
+        "confidence": 1.0,
+        "expected_outcome": ""
+      },
+      "success": true,
+      "error_message": null,
+      "issues_found": [],
+      "new_elements_found": 0,
+      "new_pages_found": 0,
+      "screenshot_before": null,
+      "screenshot_after": null,
+      "duration_ms": 57,
+      "timestamp": "2025-12-31T11:43:38.867121"
+    }
+  ],
+  "completion_reason": "더 이상 테스트할 요소가 없습니다",
+  "started_at": "2025-12-31T11:43:38.867137",
+  "completed_at": "2025-12-31T11:43:38.867129",
+  "duration_seconds": 8.81903600692749
+}

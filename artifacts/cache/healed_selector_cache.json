@@ -1,0 +1,231 @@
+{
+  "TC001": {
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text('로그인')",
+      "timestamp": 1763603041.65999,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763603041.6599932,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:not([role=\"tab\"]):has-text(\"로그인\")",
+      "timestamp": 1763603041.6599941,
+      "success_count": 1
+    }
+  },
+  "TC002": {
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text('로그인')",
+      "timestamp": 1763603270.688533,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763603270.6885371,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:has-text(\"로그인\")",
+      "timestamp": 1763603270.688538,
+      "success_count": 1
+    }
+  },
+  "TC003": {
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text('로그인')",
+      "timestamp": 1763603482.724271,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763603482.724273,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:has-text(\"로그인\"):not([role=\"tab\"])",
+      "timestamp": 1763603482.724273,
+      "success_count": 1
+    }
+  },
+  "TC004": {
+    "[data-tab='signup']": {
+      "healed_selector": "button:has-text(\"회원가입\")",
+      "timestamp": 1763603719.605417,
+      "success_count": 1
+    },
+    "input[type='text']": {
+      "healed_selector": "#signup-name",
+      "timestamp": 1763603719.605418,
+      "success_count": 1
+    },
+    "#signup-password-input": {
+      "healed_selector": "#signup-password",
+      "timestamp": 1763603719.605418,
+      "success_count": 1
+    },
+    "#signup-submit-button": {
+      "healed_selector": "button:has-text(\"회원가입\"):not([role=\"tab\"])",
+      "timestamp": 1763603719.605419,
+      "success_count": 1
+    }
+  },
+  "TC005": {
+    "[data-tab='signup']": {
+      "healed_selector": "button:has-text(\"회원가입\")",
+      "timestamp": 1763603952.795713,
+      "success_count": 1
+    },
+    "input[type='text']": {
+      "healed_selector": "#signup-name",
+      "timestamp": 1763603952.795715,
+      "success_count": 1
+    },
+    "#signup-password-input": {
+      "healed_selector": "#signup-password",
+      "timestamp": 1763603952.795715,
+      "success_count": 1
+    },
+    "#signup-submit-button": {
+      "healed_selector": "button:not([role=\"tab\"]):has-text(\"회원가입\")",
+      "timestamp": 1763603952.795715,
+      "success_count": 1
+    }
+  },
+  "TC006": {
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text('로그인')",
+      "timestamp": 1763604193.5276,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763604193.527603,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:not([role=\"tab\"]):has-text(\"로그인\")",
+      "timestamp": 1763604193.5276039,
+      "success_count": 1
+    }
+  },
+  "TC007": {
+    "[data-tab='login']": {
+      "healed_selector": "button:has-text(\"로그인\")",
+      "timestamp": 1763604444.5927339,
+      "success_count": 1
+    },
+    "[data-tab='signup']": {
+      "healed_selector": "button:has-text(\"회원가입\")",
+      "timestamp": 1763604444.592737,
+      "success_count": 1
+    }
+  },
+  "TC008": {
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text('로그인')",
+      "timestamp": 1763604647.047817,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763604647.047819,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:not([role=\"tab\"]):has-text(\"로그인\")",
+      "timestamp": 1763604647.047819,
+      "success_count": 1
+    }
+  },
+  "TC009": {
+    "[data-tab='signup']": {
+      "healed_selector": "button:has-text(\"회원가입\")",
+      "timestamp": 1763604902.816275,
+      "success_count": 1
+    },
+    "input[type='text']": {
+      "healed_selector": "#signup-name",
+      "timestamp": 1763604902.816275,
+      "success_count": 1
+    },
+    "#signup-password-input": {
+      "healed_selector": "#signup-password",
+      "timestamp": 1763604902.816276,
+      "success_count": 1
+    },
+    "#signup-submit-button": {
+      "healed_selector": "button:has-text(\"회원가입\"):not([role=\"tab\"])",
+      "timestamp": 1763604902.816276,
+      "success_count": 1
+    }
+  },
+  "TC010": {
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text('로그인')",
+      "timestamp": 1763605289.3076649,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "input[placeholder=\"your@email.com\"]",
+      "timestamp": 1763605289.307667,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:not([role=\"tab\"]):has-text(\"로그인\")",
+      "timestamp": 1763605289.307668,
+      "success_count": 1
+    }
+  },
+  "TC011": {
+    "[data-testid='view-cart-button']": {
+      "healed_selector": "button:has-text(\"장바구니 보기\")",
+      "timestamp": 1763605712.5164642,
+      "success_count": 1
+    },
+    "#shopping-cart-dialog": {
+      "healed_selector": "button:has-text(\"Close\")",
+      "timestamp": 1763605712.516466,
+      "success_count": 1
+    },
+    "[data-tab='login']": {
+      "healed_selector": "button[role='tab']:has-text(\"로그인\")",
+      "timestamp": 1763605712.5164669,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763605712.516468,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:not([role=\"tab\"]):has-text(\"로그인\")",
+      "timestamp": 1763605712.516468,
+      "success_count": 1
+    }
+  },
+  "TC012": {
+    "[data-tab='login']": {
+      "healed_selector": "button:has-text(\"로그아웃\")",
+      "timestamp": 1763606888.275678,
+      "success_count": 1
+    },
+    "#login-email-input": {
+      "healed_selector": "#login-email",
+      "timestamp": 1763606888.2756789,
+      "success_count": 1
+    },
+    "#login-submit-button": {
+      "healed_selector": "button:has-text(\"로그인\")",
+      "timestamp": 1763606888.27568,
+      "success_count": 1
+    },
+    "button:has-text(\"로그아웃\")": {
+      "healed_selector": "button:has-text(\"로그인\")",
+      "timestamp": 1764135009.4666932,
+      "success_count": 13
+    }
+  }
+}

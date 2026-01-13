@@ -1,0 +1,19 @@
+{
+  "session_id": "exploration_1767105041",
+  "start_url": "https://uniai.inu.ac.kr/web/main/main.do?mId=1&epTicket=ST-24682-sxcDKDJHre3uTpCmzHCcOq6LwQpJOs9sjjw-27#none",
+  "total_actions": 1,
+  "total_pages_visited": 0,
+  "total_elements_tested": 0,
+  "coverage": {
+    "total_interactive_elements": 0,
+    "tested_elements": 0,
+    "coverage_percentage": 0,
+    "total_pages": 0
+  },
+  "issues_found": [],
+  "steps": [],
+  "completion_reason": "탐색 완료",
+  "started_at": "2025-12-30T23:30:45.909673",
+  "completed_at": "2025-12-30T23:30:45.909592",
+  "duration_seconds": 4.024718284606934
+}

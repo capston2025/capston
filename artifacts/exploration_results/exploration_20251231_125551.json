@@ -1,0 +1,41 @@
+{
+  "session_id": "exploration_1767153349",
+  "start_url": "https://www.acmicpc.net/",
+  "total_actions": 1,
+  "total_pages_visited": 1,
+  "total_elements_tested": 0,
+  "coverage": {
+    "total_interactive_elements": 0,
+    "tested_elements": 0,
+    "coverage_percentage": 0,
+    "total_pages": 1
+  },
+  "issues_found": [],
+  "steps": [
+    {
+      "step_number": 1,
+      "url": "https://www.acmicpc.net/",
+      "decision": {
+        "should_continue": false,
+        "selected_action": null,
+        "input_values": {},
+        "reasoning": "더 이상 테스트할 요소가 없습니다",
+        "confidence": 1.0,
+        "expected_outcome": ""
+      },
+      "success": true,
+      "error_message": null,
+      "issues_found": [],
+      "new_elements_found": 0,
+      "new_pages_found": 0,
+      "screenshot_before": null,
+      "screenshot_after": null,
+      "duration_ms": 8,
+      "timestamp": "2025-12-31T12:55:51.391246"
+    }
+  ],
+  "completion_reason": "더 이상 테스트할 요소가 없습니다",
+  "started_at": "2025-12-31T12:55:51.391275",
+  "completed_at": "2025-12-31T12:55:51.391259",
+  "duration_seconds": 2.0116350650787354
+}

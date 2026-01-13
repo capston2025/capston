@@ -31,10 +31,53 @@ class BrowserSession:
         if not self.browser:
             if not playwright_instance:
                 raise HTTPException(status_code=503, detail="Playwright not initialized")
+
+            # 자동화 감지 우회 설정
             self.browser = await playwright_instance.chromium.launch(
-                headless=True,  # CDP 스크린캐스트 사용하므로 headless로 실행
+                headless=False,  # 사용자 개입(로그인 등)을 위해 브라우저 표시
+                args=[
+                    '--disable-blink-features=AutomationControlled',  # 자동화 감지 비활성화
+                    '--disable-dev-shm-usage',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                ]
             )
+
+            # 페이지 생성 및 자동화 감지 우회 스크립트 주입
             self.page = await self.browser.new_page()
+
+            # navigator.webdriver 속성 제거 및 기타 자동화 감지 우회
+            await self.page.add_init_script("""
+                // navigator.webdriver 제거
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                });
+
+                // Chrome 객체 추가 (자동화 도구는 보통 없음)
+                window.chrome = {
+                    runtime: {},
+                };
+
+                // Permissions API 오버라이드
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+
+                // Plugin 배열 추가
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5],
+                });
+
+                // Languages 설정
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['ko-KR', 'ko', 'en-US', 'en'],
+                });
+            """)
 
             # 페이지 생성 후 바로 CDP 스크린캐스트 시작
             await self.start_screencast()
@@ -370,26 +413,31 @@ async def shutdown_event():
         print("Playwright stopped.")
 
 async def analyze_page_elements(page) -> Dict[str, Any]:
-    """현재 페이지에서 상호작용 가능한 요소를 추출합니다."""
+    """현재 페이지에서 상호작용 가능한 요소를 추출합니다 (iframe 포함)."""
     try:
         try:
             await page.wait_for_load_state("networkidle", timeout=2000)
         except Exception:
             await page.wait_for_timeout(2000)
 
-        elements_data = await page.evaluate('''
+        # 모든 프레임(메인 + iframe)에서 요소 수집
+        all_elements = []
+        frames = page.frames
+
+        print(f"Analyzing {len(frames)} frames (main + iframes)...")
+
+        for frame_index, frame in enumerate(frames):
+            try:
+                # 각 프레임에서 요소 수집
+                frame_elements = await frame.evaluate('''
             () => {
                 const elements = [];
 
                 function isVisible(el) {
                     const style = window.getComputedStyle(el);
-                    // React SPA를 위한 더 완화된 표시 여부 검사
-                    // DOM에 있지만 화면 밖이거나 애니메이션 중인 요소도 허용
-                    return style.display !== 'none' &&
-                        style.visibility !== 'hidden' &&
-                        parseFloat(style.opacity) > 0.1 &&  // Allow fade-in animations (changed from strict '0' check)
-                        el.offsetWidth > 0 &&
-                        el.offsetHeight > 0;
+                    // 매우 완화된 표시 여부 검사 - iframe 내부 요소도 감지
+                    // display:none과 visibility:hidden만 제외
+                    return style.display !== 'none' && style.visibility !== 'hidden';
                 }
 
                 function getUniqueSelector(el) {
@@ -563,12 +611,49 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
             }
         ''')
 
-        print(f"Found {len(elements_data)} interactive elements")
+                # None 체크
+                if frame_elements is None:
+                    frame_elements = []
+
+                # 프레임 정보 추가
+                frame_name = frame.name or f"frame_{frame_index}"
+                is_main_frame = frame == page.main_frame
+
+                print(f"  Frame {frame_index} ({frame_name}): {len(frame_elements)} elements")
+
+                # 각 요소에 프레임 정보 추가
+                for elem in frame_elements:
+                    elem['frame_index'] = frame_index
+                    elem['frame_name'] = frame_name
+                    elem['is_main_frame'] = is_main_frame
+
+                    # iframe 내부 요소는 selector에 frame 정보 추가
+                    if not is_main_frame:
+                        # iframe selector 생성 (name 또는 index 사용)
+                        if frame.name:
+                            frame_selector = f'iframe[name="{frame.name}"]'
+                        else:
+                            frame_selector = f'iframe:nth-of-type({frame_index})'
+                        elem['frame_selector'] = frame_selector
+                        # 전체 selector는 "frame_selector >>> element_selector" 형식
+                        elem['full_selector'] = f"{frame_selector} >>> {elem['selector']}"
+                    else:
+                        elem['full_selector'] = elem['selector']
+
+                all_elements.extend(frame_elements)
+
+            except Exception as frame_error:
+                import traceback
+                print(f"  Error analyzing frame {frame_index} ({frame.name or 'unnamed'}): {frame_error}")
+                print(f"  Traceback: {traceback.format_exc()}")
+                continue
+
+        print(f"Total found {len(all_elements)} interactive elements across all frames")
         # 디버깅용으로 처음 10개 요소를 출력합니다
-        if len(elements_data) <= 10:
-            element_strs = [f"{e.get('tag', '')}:{e.get('text', '')[:20]}" for e in elements_data]
+        if len(all_elements) <= 10:
+            element_strs = [f"{e.get('tag', '')}:{e.get('text', '')[:20]}" for e in all_elements]
             print(f"  Elements: {element_strs}")
-        return {"elements": elements_data}
+        return {"elements": all_elements}
 
     except Exception as e:
         current_url = getattr(page, "url", "unknown")
@@ -830,10 +915,21 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
             if selector:
                 # 특정 요소에서 평가합니다
                 element = page.locator(selector).first
-                await element.evaluate(value)
+                eval_result = await element.evaluate(value)
             else:
                 # 페이지에서 평가합니다
-                await page.evaluate(value)
+                eval_result = await page.evaluate(value)
+
+            # 평가 결과를 스크린샷과 함께 반환합니다
+            screenshot_bytes = await page.screenshot(full_page=False)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            return {
+                "success": True,
+                "message": "JavaScript evaluation completed",
+                "result": eval_result,
+                "screenshot": screenshot_base64,
+                "current_url": session.current_url
+            }
 
         elif action == "hover":
             # 요소 위에 호버합니다
@@ -1169,17 +1265,81 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                         await element.evaluate("el => el.click()")
                         await page.wait_for_timeout(300)  # Wait for state change
                     else:
-                        await element.click(timeout=30000)
+                        await element.click(timeout=10000)
                 except Exception as click_error:
+                    error_msg = str(click_error)
+
+                    # "element is not visible" 에러 감지 시 부모 hover 시도
+                    if 'element is not visible' in error_msg or 'not visible' in error_msg:
+                        print(f"⚠️  Element not visible, trying to hover parent menu first...")
+                        try:
+                            # JavaScript로 부모 셀렉터 찾기
+                            parent_selector = await element.evaluate("""
+                                el => {
+                                    // 부모 요소 찾기 (li > a 구조에서 li, nav, 또는 부모 링크)
+                                    let parent = el.parentElement;
+                                    while (parent && parent !== document.body) {
+                                        const tagName = parent.tagName.toLowerCase();
+                                        const role = parent.getAttribute('role');
+                                        const className = parent.className || '';
+
+                                        // 네비게이션 메뉴 아이템 찾기
+                                        if (tagName === 'li' || role === 'menuitem') {
+                                            // li 내부의 최상위 링크/버튼 찾기
+                                            const topLink = parent.querySelector(':scope > a, :scope > button');
+                                            if (topLink && topLink !== el) {
+                                                return topLink.textContent.trim();
+                                            }
+                                        }
+
+                                        parent = parent.parentElement;
+                                    }
+                                    return null;
+                                }
+                            """)
+
+                            if parent_selector:
+                                print(f"🎯 Found parent menu: {parent_selector}")
+                                # Playwright의 실제 hover() 사용
+                                parent_locator = page.locator(f"a:text('{parent_selector}'), button:text('{parent_selector}')").first
+                                await parent_locator.hover(timeout=5000)
+                                print(f"✅ Hovered parent menu, waiting for submenu...")
+                                await page.wait_for_timeout(1000)  # 서브메뉴 나타날 시간 증가
+
+                                # 다시 클릭 시도
+                                await element.click(timeout=10000)
+                                print(f"✅ Successfully clicked after hovering parent")
+                            else:
+                                print(f"⚠️  No suitable parent found for hovering")
+                                raise click_error
+                        except Exception as hover_error:
+                            print(f"⚠️  Parent hover failed: {hover_error}")
+                            # 부모 hover 실패 시 원래 fallback 로직 계속
+                            if fallback_selectors and 'Timeout' in error_msg:
+                                for fb_selector in fallback_selectors:
+                                    try:
+                                        print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
+                                        element = page.locator(fb_selector).first
+                                        await element.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
+                                        await page.wait_for_timeout(500)
+                                        await element.click(timeout=10000)
+                                        break  # 성공하면 루프 종료
+                                    except Exception:
+                                        continue  # 다음 fallback 시도
+                                else:
+                                    # 모든 fallback 실패
+                                    raise click_error
+                            else:
+                                raise click_error
                     # Fallback 시도: :has-text() → :text(), [type="submit"] 제거 등
-                    if fallback_selectors and 'Timeout' in str(click_error):
+                    elif fallback_selectors and 'Timeout' in error_msg:
                         for fb_selector in fallback_selectors:
                             try:
                                 print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
                                 element = page.locator(fb_selector).first
                                 await element.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
                                 await page.wait_for_timeout(500)
-                                await element.click(timeout=30000)
+                                await element.click(timeout=10000)
                                 break  # 성공하면 루프 종료
                             except Exception:
                                 continue  # 다음 fallback 시도
@@ -1192,7 +1352,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 if value is None:
                     raise ValueError("Value is required for 'fill' action")
                 try:
-                    await element.fill(value, timeout=30000)
+                    await element.fill(value, timeout=10000)
                 except Exception as fill_error:
                     # Fallback 시도
                     if fallback_selectors and 'Timeout' in str(fill_error):
@@ -1200,7 +1360,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                             try:
                                 print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
                                 element = page.locator(fb_selector).first
-                                await element.fill(value, timeout=30000)
+                                await element.fill(value, timeout=10000)
                                 break
                             except Exception:
                                 continue
@@ -1212,7 +1372,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                 if value is None:
                     raise ValueError("Value is required for 'press' action")
                 try:
-                    await element.press(value, timeout=30000)
+                    await element.press(value, timeout=10000)
                 except Exception as press_error:
                     # Fallback 시도
                     if fallback_selectors and 'Timeout' in str(press_error):
@@ -1220,7 +1380,7 @@ async def execute_simple_action(url: str, selector: str, action: str, value: str
                             try:
                                 print(f"⚠️  Original selector failed, retrying with: {fb_selector}")
                                 element = page.locator(fb_selector).first
-                                await element.press(value, timeout=30000)
+                                await element.press(value, timeout=10000)
                                 break
                             except Exception:
                                 continue
@@ -1275,8 +1435,24 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
     logs = []
     network_requests = []
 
-    browser = await playwright_instance.chromium.launch(headless=True)
+    # 자동화 감지 우회 설정
+    browser = await playwright_instance.chromium.launch(
+        headless=False,
+        args=[
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+        ]
+    )
     page = await browser.new_page()
+
+    # 자동화 감지 우회 스크립트 주입
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => false,
+        });
+        window.chrome = { runtime: {} };
+    """)
 
     # 네트워크 요청/응답 리스너
     import time
@@ -1341,11 +1517,11 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
             element = page.locator(step.selector).first
 
             if step.action == 'click':
-                await element.click(timeout=30000)  # 10초에서 30초로 증가시켰습니다
+                await element.click(timeout=10000)
             elif step.action == 'fill':
-                await element.fill(str(step.params[0]), timeout=30000)  # 10초에서 30초로 증가시켰습니다
+                await element.fill(str(step.params[0]), timeout=10000)
             elif step.action == 'press':
-                await element.press(str(step.params[0]), timeout=30000)  # 10초에서 30초로 증가시켰습니다
+                await element.press(str(step.params[0]), timeout=10000)
             else:
                 raise ValueError(f"Unsupported action: {step.action}")
             logs.append(f"SUCCESS: {step.action} on '{step.selector}'")
