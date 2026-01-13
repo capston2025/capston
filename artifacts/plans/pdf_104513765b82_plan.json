@@ -4,82 +4,34 @@
   "pdf_hash": "104513765b82",
   "test_scenarios": [
     {
-      "id": "RT001",
+      "id": "TC001",
       "priority": "MUST",
-      "scenario": "비로그인 상태 장바구니 추가 차단",
+      "scenario": "로그인 성공",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": ".min-h-screen",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
-          ]
+          ],
+          "verify": null
         },
         {
-          "description": "로그아웃 상태 보장: 로그아웃 버튼 클릭(있다면)",
+          "description": "탭 선택: 로그인",
           "action": "click",
-          "selector": "button:has-text('로그아웃')",
-          "params": []
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "상품 카드 '샘플 상품 1'의 '장바구니 추가' 버튼 클릭",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
-        },
-        {
-          "description": "장바구니 모달 표시 확인",
-          "action": "expectVisible",
-          "selector": "div:has-text('장바구니')",
-          "params": [
-            "장바구니"
-          ]
-        }
-      ],
-      "assertion": {
-        "description": "로그인 필요 안내 문구가 표시된다",
-        "selector": "div:has-text('로그인')",
-        "condition": "expectVisible",
-        "params": [
-          "로그인"
-        ],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT002",
-      "priority": "MUST",
-      "scenario": "로그인 후 장바구니 추가 성공",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": ".min-h-screen",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: qa-cart@test.com",
+          "description": "이메일 입력: test.user@example.com",
           "action": "fill",
-          "selector": "input[type='email']",
+          "selector": "#login-email-input",
           "params": [
-            "qa-cart@test.com"
-          ]
+            "test.user@example.com"
+          ],
+          "verify": null
         },
         {
           "description": "비밀번호 입력: P@ssw0rd!",
@@ -87,653 +39,818 @@
           "selector": "input[type='password']",
           "params": [
             "P@ssw0rd!"
-          ]
+          ],
+          "verify": null
         },
         {
           "description": "로그인 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "상품 카드 '샘플 상품 1'의 '장바구니 추가' 버튼 클릭",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
         }
       ],
       "assertion": {
-        "description": "장바구니 모달에 '샘플 상품 1' 항목 표시",
-        "selector": "div:has-text('샘플 상품 1')",
+        "description": "성공 토스트 표시, 아바타·이메일·로그아웃 버튼 노출, 입력 필드 초기화",
+        "selector": "#global-toaster-container",
         "condition": "expectVisible",
         "params": [
-          "샘플 상품 1"
+          "success"
         ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
-      "id": "RT003",
+      "id": "TC002",
       "priority": "MUST",
-      "scenario": "동일 상품 2회 담기 시 수량 누적",
+      "scenario": "로그인 이메일 형식 검증",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": ".min-h-screen",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
-          ]
+          ],
+          "verify": null
         },
         {
-          "description": "로그아웃 버튼 클릭(초기화용, 있으면)",
+          "description": "탭 선택: 로그인",
           "action": "click",
-          "selector": "button:has-text('로그아웃')",
-          "params": []
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "로그인 탭 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: qa-cart@test.com",
+          "description": "이메일 입력: invalid-email",
           "action": "fill",
-          "selector": "input[type='email']",
+          "selector": "#login-email-input",
           "params": [
-            "qa-cart@test.com"
-          ]
+            "invalid-email"
+          ],
+          "verify": null
         },
         {
-          "description": "비밀번호 입력: P@ssw0rd!",
+          "description": "비밀번호 입력: Abc!1234",
           "action": "fill",
           "selector": "input[type='password']",
           "params": [
-            "P@ssw0rd!"
-          ]
+            "Abc!1234"
+          ],
+          "verify": null
         },
         {
           "description": "로그인 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "브라우저 이메일 형식 검증으로 제출 차단, 성공 토스트 미노출",
+        "selector": "#login-email-input",
+        "condition": "expectVisible",
+        "params": [
+          "invalid"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC003",
+      "priority": "MUST",
+      "scenario": "로그인 필수값 미입력 오류",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
         },
         {
-          "description": "상품 카드 '샘플 상품 2'의 '장바구니 추가' 버튼 1회 클릭",
+          "description": "탭 선택: 로그인",
           "action": "click",
-          "selector": "div:has-text('샘플 상품 2') button:has-text('장바구니 추가')",
-          "params": []
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "200ms 대기",
+          "description": "이메일 입력: empty.user@example.com",
+          "action": "fill",
+          "selector": "#login-email-input",
+          "params": [
+            "empty.user@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력 생략 대기",
           "action": "wait",
-          "selector": ".min-h-screen",
+          "selector": "",
           "params": [
-            200
-          ]
+            300
+          ],
+          "verify": null
         },
         {
-          "description": "상품 카드 '샘플 상품 2'의 '장바구니 추가' 버튼 1회 추가 클릭",
+          "description": "로그인 버튼 클릭",
           "action": "click",
-          "selector": "div:has-text('샘플 상품 2') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
         }
       ],
       "assertion": {
-        "description": "'샘플 상품 2' 수량이 2로 표시",
-        "selector": "div:has-text('샘플 상품 2')",
+        "description": "오류 토스트 표시, 로그인 상태로 전환되지 않음",
+        "selector": "#global-toaster-container",
+        "condition": "expectVisible",
+        "params": [
+          "error"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC004",
+      "priority": "MUST",
+      "scenario": "회원가입 성공",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 회원가입",
+          "action": "click",
+          "selector": "[data-tab='signup']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이름 입력: Tester",
+          "action": "fill",
+          "selector": "input[type='text']",
+          "params": [
+            "Tester"
+          ],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: new.user@example.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "new.user@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: NewUser!23",
+          "action": "fill",
+          "selector": "#signup-password-input",
+          "params": [
+            "NewUser!23"
+          ],
+          "verify": null
+        },
+        {
+          "description": "회원가입 버튼 클릭",
+          "action": "click",
+          "selector": "#signup-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "성공 토스트 표시, 사용자 카드 노출, 입력 필드 초기화",
+        "selector": "#global-toaster-container",
+        "condition": "expectVisible",
+        "params": [
+          "success"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC005",
+      "priority": "MUST",
+      "scenario": "회원가입 비밀번호 특수문자 요구",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 회원가입",
+          "action": "click",
+          "selector": "[data-tab='signup']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이름 입력: Alpha",
+          "action": "fill",
+          "selector": "input[type='text']",
+          "params": [
+            "Alpha"
+          ],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: alpha@example.com",
+          "action": "fill",
+          "selector": "input[type='email']",
+          "params": [
+            "alpha@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: Abc12345",
+          "action": "fill",
+          "selector": "#signup-password-input",
+          "params": [
+            "Abc12345"
+          ],
+          "verify": null
+        },
+        {
+          "description": "회원가입 버튼 클릭",
+          "action": "click",
+          "selector": "#signup-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "오류 토스트 표시(특수문자 요구), 회원가입 불가",
+        "selector": "#global-toaster-container",
+        "condition": "expectVisible",
+        "params": [
+          "error"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC006",
+      "priority": "MUST",
+      "scenario": "로그아웃 시 상태 초기화",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: test.user@example.com",
+          "action": "fill",
+          "selector": "#login-email-input",
+          "params": [
+            "test.user@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: P@ssw0rd!",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "P@ssw0rd!"
+          ],
+          "verify": null
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "로그아웃 실행",
+          "action": "click",
+          "selector": "[data-testid='logout-button']",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "info 토스트 표시, 아바타·이메일 숨김, 장바구니 상태 초기화",
+        "selector": "#global-toaster-container",
+        "condition": "expectVisible",
+        "params": [
+          "info"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC007",
+      "priority": "SHOULD",
+      "scenario": "탭 전환에 따른 필드 표시 확인",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "로그인 이메일 필드(id=login-email-input) 표시 확인",
+          "action": "expectVisible",
+          "selector": "#login-email-input",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 회원가입",
+          "action": "click",
+          "selector": "[data-tab='signup']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "회원가입 비밀번호 필드(id=signup-password-input) 표시 확인",
+          "action": "expectVisible",
+          "selector": "#signup-password-input",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "로그인 제출 버튼(id=login-submit-button) 표시 확인",
+          "action": "expectVisible",
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "선택한 탭에 해당하는 필드와 버튼만 노출",
+        "selector": "#login-submit-button",
+        "condition": "expectVisible",
+        "params": [],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC008",
+      "priority": "SHOULD",
+      "scenario": "아바타 이니셜 표시 검증",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: tester@example.com",
+          "action": "fill",
+          "selector": "#login-email-input",
+          "params": [
+            "tester@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: T3st!ng@1",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "T3st!ng@1"
+          ],
+          "verify": null
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "성공 토스트 표시, 아바타 이니셜 'T' 표시",
+        "selector": "",
         "condition": "expectText",
         "params": [
-          "2"
+          "T"
         ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
-      "id": "RT004",
-      "priority": "MUST",
-      "scenario": "수량 감소로 0이 되면 항목 제거",
+      "id": "TC009",
+      "priority": "SHOULD",
+      "scenario": "회원가입 이메일 미입력 오류",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": ".min-h-screen",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
-          ]
+          ],
+          "verify": null
         },
         {
-          "description": "로그인 탭 클릭",
+          "description": "탭 선택: 회원가입",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
+          "selector": "[data-tab='signup']",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "이메일 입력: qa-cart@test.com",
+          "description": "이름 입력: NoEmail",
           "action": "fill",
-          "selector": "input[type='email']",
+          "selector": "input[type='text']",
           "params": [
-            "qa-cart@test.com"
-          ]
+            "NoEmail"
+          ],
+          "verify": null
         },
         {
-          "description": "비밀번호 입력: P@ssw0rd!",
+          "description": "비밀번호 입력: HasSpec!1",
+          "action": "fill",
+          "selector": "#signup-password-input",
+          "params": [
+            "HasSpec!1"
+          ],
+          "verify": null
+        },
+        {
+          "description": "회원가입 버튼 클릭",
+          "action": "click",
+          "selector": "#signup-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "오류 토스트 표시(필수값 누락), 사용자 카드 미노출",
+        "selector": "#global-toaster-container",
+        "condition": "expectVisible",
+        "params": [
+          "error"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC010",
+      "priority": "SHOULD",
+      "scenario": "연속 로그인/로그아웃 일관성",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: repeat.user@example.com",
+          "action": "fill",
+          "selector": "#login-email-input",
+          "params": [
+            "repeat.user@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: Repe@t123",
           "action": "fill",
           "selector": "input[type='password']",
           "params": [
-            "P@ssw0rd!"
-          ]
+            "Repe@t123"
+          ],
+          "verify": null
         },
         {
           "description": "로그인 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "상품 카드 '샘플 상품 3'의 '장바구니 추가' 버튼 클릭",
+          "description": "로그아웃 실행",
           "action": "click",
-          "selector": "div:has-text('샘플 상품 3') button:has-text('장바구니 추가')",
-          "params": []
+          "selector": "[data-testid='logout-button']",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
-        },
-        {
-          "description": "수량 감소 버튼 클릭 (1회)",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 3') button:has-text('-')",
-          "params": []
-        },
-        {
-          "description": "200ms 대기",
-          "action": "wait",
-          "selector": ".min-h-screen",
-          "params": [
-            200
-          ]
-        }
-      ],
-      "assertion": {
-        "description": "장바구니 총 금액이 0으로 표시되거나 항목이 제거됨",
-        "selector": "div:has-text('총 금액')",
-        "condition": "expectText",
-        "params": [
-          "0"
-        ],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT005",
-      "priority": "MUST",
-      "scenario": "총 금액 계산 정확성(다품목 + 수량 증감)",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": ".min-h-screen",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그아웃 버튼 클릭(초기화용, 있으면)",
-          "action": "click",
-          "selector": "button:has-text('로그아웃')",
-          "params": []
-        },
-        {
-          "description": "로그인 탭 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: qa-cart@test.com",
+          "description": "이메일 입력: repeat.user@example.com",
           "action": "fill",
-          "selector": "input[type='email']",
+          "selector": "#login-email-input",
           "params": [
-            "qa-cart@test.com"
-          ]
+            "repeat.user@example.com"
+          ],
+          "verify": null
         },
         {
-          "description": "비밀번호 입력: P@ssw0rd!",
+          "description": "비밀번호 입력: Repe@t123",
           "action": "fill",
           "selector": "input[type='password']",
           "params": [
-            "P@ssw0rd!"
-          ]
+            "Repe@t123"
+          ],
+          "verify": null
         },
         {
           "description": "로그인 버튼 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "'샘플 상품 1' 장바구니 추가",
+          "description": "로그아웃 실행",
           "action": "click",
-          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "'샘플 상품 2' 장바구니 추가",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 2') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
-        },
-        {
-          "description": "'샘플 상품 1' 수량 증가 버튼 클릭 (1회)",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 1') button:has-text('+')",
-          "params": []
+          "selector": "[data-testid='logout-button']",
+          "params": [],
+          "verify": null
         }
       ],
       "assertion": {
-        "description": "총 금액 텍스트가 표시됨",
-        "selector": "div:has-text('총 금액')",
+        "description": "각 로그인 시 성공 토스트와 사용자 카드 노출, 각 로그아웃 시 info 토스트와 사용자 정보 즉시 숨김 및 장바구니 초기화",
+        "selector": "#global-toaster-container",
         "condition": "expectVisible",
         "params": [
-          "총 금액"
+          "info"
         ],
         "expected_outcome": null,
         "success_indicators": []
       }
     },
     {
-      "id": "RT006",
-      "priority": "SHOULD",
-      "scenario": "비로그인 상태에서 구매하기 버튼 비활성",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": ".min-h-screen",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그아웃 상태 보장: 로그아웃 버튼 클릭(있다면)",
-          "action": "click",
-          "selector": "button:has-text('로그아웃')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
-        },
-        {
-          "description": "구매하기 버튼 표시 확인",
-          "action": "expectVisible",
-          "selector": "button:has-text('구매하기')",
-          "params": [
-            "구매하기"
-          ]
-        }
-      ],
-      "assertion": {
-        "description": "로그인 필요 안내 문구 표시",
-        "selector": "div:has-text('로그인')",
-        "condition": "expectVisible",
-        "params": [
-          "로그인"
-        ],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT007",
-      "priority": "SHOULD",
-      "scenario": "로그인 상태에서 구매하기 버튼 활성 및 동작",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": ".min-h-screen",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: qa-cart@test.com",
-          "action": "fill",
-          "selector": "input[type='email']",
-          "params": [
-            "qa-cart@test.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: P@ssw0rd!",
-          "action": "fill",
-          "selector": "input[type='password']",
-          "params": [
-            "P@ssw0rd!"
-          ]
-        },
-        {
-          "description": "로그인 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "'샘플 상품 4' 장바구니 추가",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 4') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
-        },
-        {
-          "description": "구매하기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('구매하기')",
-          "params": []
-        }
-      ],
-      "assertion": {
-        "description": "결제 진행 관련 안내 표시",
-        "selector": "div:has-text('결제')",
-        "condition": "expectVisible",
-        "params": [
-          "결제"
-        ],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT008",
-      "priority": "SHOULD",
-      "scenario": "상품 이미지 확대 모달 Zoom 범위(50%~300%)",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": ".min-h-screen",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "'샘플 상품 5' 카드에서 '확대보기' 버튼 클릭",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 5') button:has-text('확대보기')",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 클릭 (여러 번)",
-          "action": "click",
-          "selector": "button:has-text('Zoom In')",
-          "params": []
-        },
-        {
-          "description": "100ms 대기",
-          "action": "wait",
-          "selector": ".min-h-screen",
-          "params": [
-            100
-          ]
-        },
-        {
-          "description": "Zoom In 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom In')",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom In')",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom In')",
-          "params": []
-        },
-        {
-          "description": "Zoom In 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom In')",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 여러 번 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom Out')",
-          "params": []
-        },
-        {
-          "description": "100ms 대기",
-          "action": "wait",
-          "selector": ".min-h-screen",
-          "params": [
-            100
-          ]
-        },
-        {
-          "description": "Zoom Out 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom Out')",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom Out')",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom Out')",
-          "params": []
-        },
-        {
-          "description": "Zoom Out 버튼 추가 클릭",
-          "action": "click",
-          "selector": "button:has-text('Zoom Out')",
-          "params": []
-        },
-        {
-          "description": "닫기 버튼 클릭으로 모달 닫기",
-          "action": "click",
-          "selector": "button:has-text('닫기')",
-          "params": []
-        }
-      ],
-      "assertion": {
-        "description": "'샘플 상품 5'의 '확대보기' 트리거가 다시 보임(모달 닫힘)",
-        "selector": "div:has-text('샘플 상품 5') button:has-text('확대보기')",
-        "condition": "expectVisible",
-        "params": [
-          "확대보기"
-        ],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT009",
+      "id": "TC011",
       "priority": "MAY",
-      "scenario": "장바구니 아이콘 카운트 증가 확인",
+      "scenario": "로그인 상태에서 장바구니 결제 버튼 활성화",
       "steps": [
         {
           "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
           "action": "goto",
-          "selector": ".min-h-screen",
+          "selector": "",
           "params": [
             "https://test-sitev2.vercel.app/#basics"
-          ]
+          ],
+          "verify": null
         },
         {
-          "description": "로그인 탭 클릭",
+          "description": "임의 상품 카드에서 '장바구니 추가' 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
+          "selector": "button:has-text('장바구니 추가')",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "이메일 입력: qa-cart@test.com",
-          "action": "fill",
-          "selector": "input[type='email']",
-          "params": [
-            "qa-cart@test.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: P@ssw0rd!",
-          "action": "fill",
-          "selector": "input[type='password']",
-          "params": [
-            "P@ssw0rd!"
-          ]
-        },
-        {
-          "description": "로그인 버튼 클릭",
+          "description": "장바구니 보기 버튼(data-testid=view-cart-button) 클릭",
           "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
+          "selector": "[data-testid='view-cart-button']",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "'샘플 상품 6' 장바구니 추가",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 6') button:has-text('장바구니 추가')",
-          "params": []
-        }
-      ],
-      "assertion": {
-        "description": "성공 토스트 또는 성공 안내 표시",
-        "selector": "div:has-text('성공')",
-        "condition": "expectVisible",
-        "params": [
-          "성공"
-        ],
-        "expected_outcome": null,
-        "success_indicators": []
-      }
-    },
-    {
-      "id": "RT010",
-      "priority": "MAY",
-      "scenario": "장바구니 모달 닫기 후 상태 유지",
-      "steps": [
-        {
-          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
-          "action": "goto",
-          "selector": ".min-h-screen",
-          "params": [
-            "https://test-sitev2.vercel.app/#basics"
-          ]
-        },
-        {
-          "description": "로그인 탭 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "이메일 입력: qa-cart@test.com",
-          "action": "fill",
-          "selector": "input[type='email']",
-          "params": [
-            "qa-cart@test.com"
-          ]
-        },
-        {
-          "description": "비밀번호 입력: P@ssw0rd!",
-          "action": "fill",
-          "selector": "input[type='password']",
-          "params": [
-            "P@ssw0rd!"
-          ]
-        },
-        {
-          "description": "로그인 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('로그인')",
-          "params": []
-        },
-        {
-          "description": "'샘플 상품 1' 장바구니 추가",
-          "action": "click",
-          "selector": "div:has-text('샘플 상품 1') button:has-text('장바구니 추가')",
-          "params": []
-        },
-        {
-          "description": "장바구니 보기 버튼 클릭",
-          "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
-        },
-        {
-          "description": "모달 내 '샘플 상품 1' 표시 확인",
+          "description": "구매하기 버튼(id=checkout-button) 비활성 상태 확인",
           "action": "expectVisible",
-          "selector": "div:has-text('샘플 상품 1')",
+          "selector": "#checkout-button",
           "params": [
-            "샘플 상품 1"
-          ]
+            "disabled"
+          ],
+          "verify": null
         },
         {
           "description": "모달 닫기",
           "action": "click",
-          "selector": "button:has-text('닫기')",
-          "params": []
+          "selector": "#shopping-cart-dialog",
+          "params": [],
+          "verify": null
         },
         {
-          "description": "장바구니 보기 버튼 재클릭",
+          "description": "탭 선택: 로그인",
           "action": "click",
-          "selector": "button:has-text('장바구니 보기')",
-          "params": []
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: buyer@example.com",
+          "action": "fill",
+          "selector": "#login-email-input",
+          "params": [
+            "buyer@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: Buy3r!23",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "Buy3r!23"
+          ],
+          "verify": null
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "장바구니 보기 버튼(data-testid=view-cart-button) 클릭",
+          "action": "click",
+          "selector": "[data-testid='view-cart-button']",
+          "params": [],
+          "verify": null
         }
       ],
       "assertion": {
-        "description": "모달 재오픈 시 '샘플 상품 1' 유지 표시",
-        "selector": "div:has-text('샘플 상품 1')",
+        "description": "로그인 후 동일 장바구니에서 구매하기 버튼 활성화",
+        "selector": "#checkout-button",
         "condition": "expectVisible",
         "params": [
-          "샘플 상품 1"
+          "enabled"
+        ],
+        "expected_outcome": null,
+        "success_indicators": []
+      }
+    },
+    {
+      "id": "TC012",
+      "priority": "MAY",
+      "scenario": "토스트 종류 검증(성공/오류)",
+      "steps": [
+        {
+          "description": "페이지 이동: https://test-sitev2.vercel.app/#basics",
+          "action": "goto",
+          "selector": "",
+          "params": [
+            "https://test-sitev2.vercel.app/#basics"
+          ],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력: toast.ok@example.com",
+          "action": "fill",
+          "selector": "#login-email-input",
+          "params": [
+            "toast.ok@example.com"
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: Ok!12345",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "Ok!12345"
+          ],
+          "verify": null
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "성공 토스트(variant=success) 확인",
+          "action": "expectVisible",
+          "selector": "#global-toaster-container",
+          "params": [
+            "success"
+          ],
+          "verify": null
+        },
+        {
+          "description": "로그아웃 실행",
+          "action": "click",
+          "selector": "[data-testid='logout-button']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "탭 선택: 로그인",
+          "action": "click",
+          "selector": "[data-tab='login']",
+          "params": [],
+          "verify": null
+        },
+        {
+          "description": "이메일 입력 생략 대기",
+          "action": "wait",
+          "selector": "",
+          "params": [
+            200
+          ],
+          "verify": null
+        },
+        {
+          "description": "비밀번호 입력: NoEmail!1",
+          "action": "fill",
+          "selector": "input[type='password']",
+          "params": [
+            "NoEmail!1"
+          ],
+          "verify": null
+        },
+        {
+          "description": "로그인 버튼 클릭",
+          "action": "click",
+          "selector": "#login-submit-button",
+          "params": [],
+          "verify": null
+        }
+      ],
+      "assertion": {
+        "description": "두 번째 제출은 오류 토스트 노출",
+        "selector": "#global-toaster-container",
+        "condition": "expectVisible",
+        "params": [
+          "error"
         ],
         "expected_outcome": null,
         "success_indicators": []

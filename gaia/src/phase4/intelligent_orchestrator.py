@@ -84,6 +84,14 @@ class IntelligentOrchestrator:
         # Store last action error for self-healing
         self.last_action_error: str = ""
 
+        # Track healed selectors during test execution
+        # Will be saved to cache only if test succeeds
+        self.healed_selectors: Dict[str, Dict[str, str]] = {}  # {scenario_id: {original_selector: healed_selector}}
+
+        # Load healed selector cache from previous runs
+        self.healed_selector_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._load_healed_selector_cache()
+
     # ==================== Dynamic ID Detection & Stable Selector Generation ====================
 
     def _is_dynamic_selector(self, selector: str) -> bool:
@@ -992,9 +1000,16 @@ Return JSON (no markdown):
 
                 # Check if action has explicit selector provided
                 elif step.action in actions_with_explicit_selector and step.selector:
-                    # Use explicit selector with self-healing
-                    self._log(f"    🎯 Using explicit selector with self-healing: {step.selector}", progress_callback)
-                    logs.append(f"  Action: {step.action} on {step.selector}")
+                    # Check healed selector cache first
+                    healed_selector = self._get_healed_selector(scenario.id, step.selector)
+                    actual_selector = healed_selector if healed_selector else step.selector
+
+                    if healed_selector:
+                        self._log(f"    🔄 Using healed selector from cache: {step.selector} → {healed_selector}", progress_callback)
+                    else:
+                        self._log(f"    🎯 Using explicit selector with self-healing: {step.selector}", progress_callback)
+
+                    logs.append(f"  Action: {step.action} on {actual_selector}")
 
                     # Track non-assertion step
                     total_non_assertion_steps += 1
@@ -1003,7 +1018,7 @@ Return JSON (no markdown):
                     # Use self-healing action execution
                     success = self._execute_action_with_self_healing(
                         action=step.action,
-                        selector=step.selector,
+                        selector=actual_selector,
                         params=step.params or [],
                         url=current_url,
                         screenshot=screenshot,
@@ -1011,7 +1026,8 @@ Return JSON (no markdown):
                         step_description=step.description,
                         before_screenshot=before_screenshot,
                         progress_callback=progress_callback,
-                        max_retries=2  # Limit to 2 retries to avoid long delays
+                        max_retries=2,  # Limit to 2 retries to avoid long delays
+                        scenario_id=scenario.id
                     )
 
                     if not success:
@@ -1698,6 +1714,9 @@ Return JSON (no markdown):
                         logs.append(f"  ✅ All {total_non_assertion_steps} action steps passed + Vision AI verified")
                         self._log(f"  ✅ Test SUCCESS: Vision AI verified", progress_callback)
 
+                        # Save healed selectors to cache (only on success)
+                        self._save_healed_selectors(scenario.id, progress_callback)
+
                         # CRITICAL: Force navigate to home URL to completely reset state for next test
                         self._log(f"  🏠 Navigating to home URL to reset for next test", progress_callback)
                         home_url = url.split('#')[0] if '#' in url else url  # Remove hash
@@ -1731,6 +1750,9 @@ Return JSON (no markdown):
                     if skipped_steps == 0:
                         logs.append(f"  ✅ All {total_non_assertion_steps} action steps and {total_assertion_steps} assertions passed")
                         self._log(f"  ✅ Test SUCCESS: 100% completion", progress_callback)
+
+                        # Save healed selectors to cache (only on success)
+                        self._save_healed_selectors(scenario.id, progress_callback)
 
                         # CRITICAL: Force navigate to home URL to completely reset state for next test
                         self._log(f"  🏠 Navigating to home URL to reset for next test", progress_callback)
@@ -1929,7 +1951,8 @@ Return JSON (no markdown):
         step_description: str,
         before_screenshot: str = None,
         progress_callback=None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        scenario_id: str = ""
     ) -> bool:
         """
         Execute action with self-healing capabilities.
@@ -1955,6 +1978,9 @@ Return JSON (no markdown):
         Returns:
             True if action succeeded (either immediately or after healing), False otherwise
         """
+        # Save original selector for tracking healed selectors
+        original_selector = selector
+
         # Try original action first
         success = self._execute_action(action, selector, params, url, before_screenshot)
 
@@ -1985,7 +2011,8 @@ Return JSON (no markdown):
                 error_message=error_message,
                 screenshot_base64=current_screenshot,
                 dom_elements=dom_elements,
-                url=url
+                url=url,
+                step_description=step_description
             )
 
             failure_reason = error_analysis.get('failure_reason', 'unknown')
@@ -2051,6 +2078,12 @@ Return JSON (no markdown):
 
                     if success:
                         self._log(f"    ✅ Self-healing successful! Action succeeded after fix", progress_callback)
+                        # Track healed selector for later caching (only if test succeeds)
+                        if scenario_id and selector != original_selector:
+                            if scenario_id not in self.healed_selectors:
+                                self.healed_selectors[scenario_id] = {}
+                            self.healed_selectors[scenario_id][original_selector] = selector
+                            self._log(f"    📝 Tracked healed selector: {original_selector} → {selector}", progress_callback)
                         return True
 
                 except Exception as e:
@@ -2589,6 +2622,91 @@ Respond with JSON only:
                 json.dump(self.selector_cache, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"[Cache] Failed to save cache: {e}")
+
+    def _save_healed_selectors(self, scenario_id: str, progress_callback=None) -> None:
+        """
+        Save healed selectors to a separate cache file for use in next run.
+        Only called when test succeeds.
+
+        Args:
+            scenario_id: The scenario ID whose healed selectors to save
+            progress_callback: Callback for logging
+        """
+        if scenario_id not in self.healed_selectors:
+            return
+
+        healed = self.healed_selectors[scenario_id]
+        if not healed:
+            return
+
+        # Load existing healed selector cache
+        healed_cache_file = os.path.join(
+            os.path.dirname(self.cache_file), "healed_selector_cache.json"
+        )
+
+        try:
+            if os.path.exists(healed_cache_file):
+                with open(healed_cache_file, 'r', encoding='utf-8') as f:
+                    healed_cache = json.load(f)
+            else:
+                healed_cache = {}
+
+            # Add/update healed selectors for this scenario
+            if scenario_id not in healed_cache:
+                healed_cache[scenario_id] = {}
+
+            for original, healed_selector in healed.items():
+                healed_cache[scenario_id][original] = {
+                    "healed_selector": healed_selector,
+                    "timestamp": time.time(),
+                    "success_count": healed_cache.get(scenario_id, {}).get(original, {}).get("success_count", 0) + 1
+                }
+
+            # Save to file
+            os.makedirs(os.path.dirname(healed_cache_file), exist_ok=True)
+            with open(healed_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(healed_cache, f, indent=2, ensure_ascii=False)
+
+            self._log(f"  💾 Saved {len(healed)} healed selector(s) to cache", progress_callback)
+            print(f"[Healed Cache] Saved {len(healed)} healed selectors for {scenario_id}")
+
+        except Exception as e:
+            print(f"[Healed Cache] Failed to save: {e}")
+
+    def _load_healed_selector_cache(self) -> None:
+        """Load healed selector cache from disk."""
+        healed_cache_file = os.path.join(
+            os.path.dirname(self.cache_file), "healed_selector_cache.json"
+        )
+        try:
+            if os.path.exists(healed_cache_file):
+                with open(healed_cache_file, 'r', encoding='utf-8') as f:
+                    self.healed_selector_cache = json.load(f)
+                total_selectors = sum(len(v) for v in self.healed_selector_cache.values())
+                print(f"[Healed Cache] Loaded {total_selectors} healed selectors for {len(self.healed_selector_cache)} scenarios")
+        except Exception as e:
+            print(f"[Healed Cache] Failed to load: {e}")
+            self.healed_selector_cache = {}
+
+    def _get_healed_selector(self, scenario_id: str, original_selector: str) -> str | None:
+        """
+        Get healed selector from cache if available.
+
+        Args:
+            scenario_id: The scenario ID
+            original_selector: The original selector that may have been healed
+
+        Returns:
+            Healed selector if found in cache, None otherwise
+        """
+        if scenario_id not in self.healed_selector_cache:
+            return None
+
+        if original_selector not in self.healed_selector_cache[scenario_id]:
+            return None
+
+        cached = self.healed_selector_cache[scenario_id][original_selector]
+        return cached.get("healed_selector")
 
     def _get_cache_key(self, step_description: str, action: str, page_url: str, dom_context: str = "") -> str:
         """
