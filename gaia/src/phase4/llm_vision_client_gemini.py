@@ -48,7 +48,7 @@ class GeminiVisionClient:
             api_key=gemini_key,
             http_options={'api_version': 'v1alpha'}
         )
-        self.model = "gemini-3-pro-preview"
+        self.model = "gemini-3-pro-preview"  # most accurate
         print(f"🤖 Vision AI: Using Gemini ({self.model})")
 
     def analyze_with_vision(

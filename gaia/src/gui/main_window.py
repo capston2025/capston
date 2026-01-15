@@ -369,6 +369,10 @@ class ScenarioCard(QFrame):
             expected_text = getattr(assertion_source, "description", None)
         if not expected_text:
             expected_text = getattr(scenario, "expected_result", "")
+        if not expected_text:
+            success_criteria = getattr(scenario, "success_criteria", None)
+            if success_criteria:
+                expected_text = ", ".join(success_criteria)
 
         if expected_text:
             assertion = QLabel(f"✅ {expected_text}", self)

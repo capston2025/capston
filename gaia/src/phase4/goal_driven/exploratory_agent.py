@@ -53,6 +53,7 @@ class ExploratoryAgent:
 
         # Gemini 클라이언트 초기화
         from gaia.src.phase4.llm_vision_client_gemini import GeminiVisionClient
+
         self.llm = GeminiVisionClient(api_key=gemini_api_key)
 
         # 탐색 상태 추적
@@ -64,6 +65,7 @@ class ExploratoryAgent:
         # 현재 페이지 상태
         self._current_url: str = ""
         self._element_selectors: Dict[int, str] = {}  # DOM ID -> selector
+        self._element_full_selectors: Dict[int, str] = {}  # DOM ID -> full selector
 
     def _log(self, message: str):
         """로그 출력"""
@@ -82,7 +84,7 @@ class ExploratoryAgent:
             bool: 사용자 개입이 필요한 로그인 페이지인 경우 True
         """
         # URL에 로그인 관련 키워드가 포함되어 있는지 확인
-        login_keywords = ['login', 'signin', 'auth', 'sso', 'portal']
+        login_keywords = ["login", "signin", "auth", "sso", "portal"]
         url_lower = page_state.url.lower()
         has_login_keyword = any(keyword in url_lower for keyword in login_keywords)
 
@@ -117,9 +119,13 @@ class ExploratoryAgent:
         print(f"이유: {reason}")
         print(f"현재 URL: {current_url}")
         print(f"\n브라우저에서 필요한 작업(로그인 등)을 완료한 후,")
-        user_input = input("계속하려면 'c' 또는 'continue'를 입력하세요 (중단: 'q'): ").strip().lower()
+        user_input = (
+            input("계속하려면 'c' 또는 'continue'를 입력하세요 (중단: 'q'): ")
+            .strip()
+            .lower()
+        )
 
-        if user_input in ['c', 'continue', 'yes', 'y']:
+        if user_input in ["c", "continue", "yes", "y"]:
             self._log("✅ 사용자가 작업을 완료했습니다. 탐색을 계속합니다.")
             return True
         else:
@@ -170,18 +176,22 @@ class ExploratoryAgent:
 
             self._log(f"📊 페이지 분석 완료:")
             self._log(f"   - URL: {page_state.url}")
-            self._log(f"   - 상호작용 가능한 요소: {len(page_state.interactive_elements)}개")
+            self._log(
+                f"   - 상호작용 가능한 요소: {len(page_state.interactive_elements)}개"
+            )
 
             untested = [e for e in page_state.interactive_elements if not e.tested]
             self._log(f"   - 미테스트 요소: {len(untested)}개")
 
             # 로그인 페이지 감지 및 사용자 개입 요청
             if self._is_login_page_with_no_elements(page_state):
-                self._log("🔐 로그인 페이지 감지됨 (요소 접근 불가 - cross-origin iframe 또는 특수 인증)")
+                self._log(
+                    "🔐 로그인 페이지 감지됨 (요소 접근 불가 - cross-origin iframe 또는 특수 인증)"
+                )
 
                 if not self._request_user_intervention(
                     reason="로그인이 필요합니다. 브라우저에서 수동으로 로그인해주세요.",
-                    current_url=page_state.url
+                    current_url=page_state.url,
                 ):
                     self._log("탐색 중단")
                     break
@@ -191,7 +201,9 @@ class ExploratoryAgent:
                 time.sleep(3)
                 page_state = self._analyze_current_page()
                 if page_state:
-                    self._log(f"✅ 로그인 후 {len(page_state.interactive_elements)}개 요소 발견")
+                    self._log(
+                        f"✅ 로그인 후 {len(page_state.interactive_elements)}개 요소 발견"
+                    )
                 else:
                     self._log("⚠️  페이지 재분석 실패")
                     break
@@ -346,10 +358,13 @@ class ExploratoryAgent:
             interactive_elements = []
             for idx, el in enumerate(dom_elements):
                 # 클릭 가능하거나 입력 가능한 요소만
-                is_interactive = (
-                    el.tag in ["button", "a", "input", "select", "textarea"]
-                    or el.role in ["button", "link", "tab", "menuitem"]
-                )
+                is_interactive = el.tag in [
+                    "button",
+                    "a",
+                    "input",
+                    "select",
+                    "textarea",
+                ] or el.role in ["button", "link", "tab", "menuitem"]
 
                 if not is_interactive:
                     continue
@@ -360,10 +375,22 @@ class ExploratoryAgent:
 
                 # 제외할 키워드
                 exclude_keywords = [
-                    'advertisement', 'ad-', 'adsbygoogle', 'google_ads',
-                    'footer', 'cookie', 'privacy', 'terms',
-                    'share', 'facebook', 'twitter', 'instagram',
-                    '광고', '공유', '쿠키', '개인정보',
+                    "advertisement",
+                    "ad-",
+                    "adsbygoogle",
+                    "google_ads",
+                    "footer",
+                    "cookie",
+                    "privacy",
+                    "terms",
+                    "share",
+                    "facebook",
+                    "twitter",
+                    "instagram",
+                    "광고",
+                    "공유",
+                    "쿠키",
+                    "개인정보",
                 ]
 
                 should_exclude = any(
@@ -374,7 +401,10 @@ class ExploratoryAgent:
                 if should_exclude:
                     continue
 
-                element_id = f"{url_hash}:{el.tag}:{el.text[:30]}"
+                selector = self._element_full_selectors.get(
+                    idx
+                ) or self._element_selectors.get(idx, "")
+                element_id = self._build_element_id(url_hash, el, selector)
                 tested = element_id in self._tested_elements
 
                 interactive_elements.append(
@@ -382,10 +412,12 @@ class ExploratoryAgent:
                         element_id=element_id,
                         tag=el.tag,
                         text=el.text,
-                        selector=self._element_selectors.get(idx, ""),
+                        selector=selector,
                         role=el.role,
                         type=el.type,
                         aria_label=el.aria_label,
+                        placeholder=el.placeholder,
+                        bounding_box=el.bounding_box,
                         tested=tested,
                     )
                 )
@@ -394,7 +426,9 @@ class ExploratoryAgent:
             if len(interactive_elements) > 30:
                 untested = [e for e in interactive_elements if not e.tested]
                 tested = [e for e in interactive_elements if e.tested]
-                interactive_elements = untested[:25] + tested[:5]  # 미테스트 25개 + 테스트됨 5개
+                interactive_elements = (
+                    untested[:25] + tested[:5]
+                )  # 미테스트 25개 + 테스트됨 5개
                 self._log(f"⚡ 요소 샘플링: {len(untested) + len(tested)}개 → 30개")
 
             # PageState 생성
@@ -440,6 +474,7 @@ class ExploratoryAgent:
 
             # 셀렉터 맵 초기화
             self._element_selectors = {}
+            self._element_full_selectors = {}
 
             # DOMElement로 변환
             elements = []
@@ -448,8 +483,11 @@ class ExploratoryAgent:
 
                 # 셀렉터 저장
                 selector = el.get("selector", "")
+                full_selector = el.get("full_selector") or selector
                 if selector:
                     self._element_selectors[idx] = selector
+                if full_selector:
+                    self._element_full_selectors[idx] = full_selector
 
                 elements.append(
                     DOMElement(
@@ -461,6 +499,7 @@ class ExploratoryAgent:
                         placeholder=attrs.get("placeholder"),
                         aria_label=attrs.get("aria-label"),
                         href=attrs.get("href"),
+                        bounding_box=el.get("bounding_box"),
                     )
                 )
 
@@ -593,10 +632,21 @@ class ExploratoryAgent:
             if element.tag == "input":
                 if element.type in ["text", "email", "password", "search"]:
                     action_type = "fill"
-                    description = f"입력 필드: {element.placeholder or element.aria_label or element.text}"
+                    # input type과 placeholder를 모두 포함하여 필드 구분 가능하게
+                    field_hint = (
+                        element.placeholder or element.aria_label or element.text or ""
+                    )
+                    if element.type == "password":
+                        description = f"비밀번호 입력: {field_hint}"
+                    elif element.type == "email":
+                        description = f"이메일 입력: {field_hint}"
+                    else:
+                        description = f"텍스트 입력({element.type}): {field_hint}"
                 elif element.type in ["checkbox", "radio"]:
                     action_type = "click"
-                    description = f"체크박스/라디오: {element.text or element.aria_label}"
+                    description = (
+                        f"체크박스/라디오: {element.text or element.aria_label}"
+                    )
                 else:
                     action_type = "click"
                     description = f"Input: {element.type}"
@@ -604,7 +654,10 @@ class ExploratoryAgent:
                 action_type = "click"
                 description = f"링크: {element.text or 'Link'}"
                 # 외부 링크는 우선순위 낮게
-                if element.href and (element.href.startswith("http") and page_state.url not in element.href):
+                if element.href and (
+                    element.href.startswith("http")
+                    and page_state.url not in element.href
+                ):
                     priority *= 0.5
             elif element.tag == "button":
                 action_type = "click"
@@ -618,8 +671,17 @@ class ExploratoryAgent:
 
             # 파괴적 액션 회피
             if self.config.avoid_destructive:
-                destructive_keywords = ["delete", "remove", "삭제", "제거", "clear", "reset"]
-                if any(keyword in description.lower() for keyword in destructive_keywords):
+                destructive_keywords = [
+                    "delete",
+                    "remove",
+                    "삭제",
+                    "제거",
+                    "clear",
+                    "reset",
+                ]
+                if any(
+                    keyword in description.lower() for keyword in destructive_keywords
+                ):
                     priority *= 0.1
 
             actions.append(
@@ -654,10 +716,18 @@ class ExploratoryAgent:
         )
 
         # 최근 액션 히스토리
-        recent_history = "\n".join(self._action_history[-5:]) if self._action_history else "없음 (첫 탐색)"
+        recent_history = (
+            "\n".join(self._action_history[-5:])
+            if self._action_history
+            else "없음 (첫 탐색)"
+        )
 
         # 발견된 이슈 요약
-        issues_summary = f"{len(self._found_issues)}개 이슈 발견" if self._found_issues else "아직 이슈 없음"
+        issues_summary = (
+            f"{len(self._found_issues)}개 이슈 발견"
+            if self._found_issues
+            else "아직 이슈 없음"
+        )
 
         prompt = f"""당신은 웹 애플리케이션 탐색 테스트 에이전트입니다.
 화면의 모든 UI 요소를 자율적으로 탐색하고 테스트하여 버그를 찾는 것이 목표입니다.
@@ -682,17 +752,17 @@ class ExploratoryAgent:
 5. **종료 조건**: 더 이상 테스트할 요소가 없거나, 충분히 탐색했다면 should_continue: false
 
 ## 입력값 생성 규칙 (fill 액션인 경우)
+- **중요**: 화면에 테스트 계정 정보가 보이면 반드시 그 값을 사용하세요!
+- 사용자명/아이디 필드: input_values에 "username" 키로 값 지정
+- 비밀번호 필드: input_values에 "password" 키로 값 지정
 - 이메일 필드: "test.explorer@example.com"
-- 비밀번호 필드: "TestPass123!"
-- 이름 필드: "Test User"
-- 전화번호: "010-1234-5678"
 - 일반 텍스트: "Test input"
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
     "should_continue": true | false,
     "selected_action_index": 액션 인덱스 (0-19, 선택 안 하면 null),
-    "input_values": {{"field_name": "value"}},  // fill 액션인 경우만
+    "input_values": {{"username": "사용자명", "password": "비밀번호"}},  // fill 액션인 경우, 필요한 키만 포함
     "reasoning": "이 액션을 선택한 이유 또는 종료 이유",
     "confidence": 0.0~1.0,
     "expected_outcome": "예상되는 결과"
@@ -784,9 +854,42 @@ JSON 응답:"""
             elif action.action_type == "fill":
                 # 입력값 결정
                 value = self._determine_input_value(action, decision.input_values)
-                success, error = self._execute_action("fill", selector=selector, value=value)
+                success, error = self._execute_action(
+                    "fill", selector=selector, value=value
+                )
+
+                # 셀렉터 실패 시 좌표 기반 입력 fallback
+                if not success:
+                    element_state = self._find_element_by_id(
+                        action.element_id, page_state
+                    )
+                    bounding_box = element_state.bounding_box if element_state else None
+                    if bounding_box:
+                        center_x = bounding_box.get("center_x")
+                        center_y = bounding_box.get("center_y")
+                        if center_x is None or center_y is None:
+                            x = bounding_box.get("x")
+                            y = bounding_box.get("y")
+                            width = bounding_box.get("width")
+                            height = bounding_box.get("height")
+                            if (
+                                x is not None
+                                and y is not None
+                                and width is not None
+                                and height is not None
+                            ):
+                                center_x = x + width / 2
+                                center_y = y + height / 2
+                        if center_x is not None and center_y is not None:
+                            self._log("⚠️ fill 실패, 좌표 기반 입력 fallback 시도")
+                            success, error = self._execute_action(
+                                "fillAt",
+                                value={"x": center_x, "y": center_y, "text": value},
+                            )
             elif action.action_type == "select":
-                success, error = self._execute_action("select", selector=selector, value="1")
+                success, error = self._execute_action(
+                    "select", selector=selector, value="1"
+                )
             elif action.action_type == "hover":
                 success, error = self._execute_action("hover", selector=selector)
             else:
@@ -824,19 +927,19 @@ JSON 응답:"""
         self,
         action: str,
         selector: Optional[str] = None,
-        value: Optional[str] = None,
+        value: Optional[object] = None,
         url: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         """MCP Host를 통해 액션 실행"""
 
-        params = {
+        params: Dict[str, object] = {
             "session_id": self.session_id,
             "action": action,
             "url": url or "",
             "selector": selector or "",
         }
 
-        if value:
+        if value is not None:
             params["value"] = value
 
         try:
@@ -855,12 +958,38 @@ JSON 응답:"""
             if data.get("success"):
                 return True, None
             else:
-                error_msg = data.get("error") or data.get("detail") or f"Unknown error (response: {data})"
+                error_msg = (
+                    data.get("error")
+                    or data.get("detail")
+                    or f"Unknown error (response: {data})"
+                )
                 self._log(f"❌ Action failed: {error_msg}")
                 return False, error_msg
 
         except Exception as e:
             return False, str(e)
+
+    def _build_element_id(
+        self,
+        url_hash: str,
+        element: DOMElement,
+        selector: str,
+    ) -> str:
+        """요소 고유 ID 생성"""
+        if selector:
+            return f"{url_hash}:{selector}"
+
+        parts = [
+            element.tag,
+            element.type or "",
+            element.placeholder or "",
+            element.aria_label or "",
+            element.text[:30] if element.text else "",
+        ]
+        filtered = [part for part in parts if part]
+        if not filtered:
+            return f"{url_hash}:{element.tag}"
+        return f"{url_hash}:" + ":".join(filtered)
 
     def _find_selector_by_element_id(
         self,
@@ -868,9 +997,18 @@ JSON 응답:"""
         page_state: PageState,
     ) -> Optional[str]:
         """element_id로 셀렉터 찾기"""
+        element = self._find_element_by_id(element_id, page_state)
+        return element.selector if element else None
+
+    def _find_element_by_id(
+        self,
+        element_id: str,
+        page_state: PageState,
+    ) -> Optional[ElementState]:
+        """element_id로 ElementState 찾기"""
         for element in page_state.interactive_elements:
             if element.element_id == element_id:
-                return element.selector
+                return element
         return None
 
     def _determine_input_value(
@@ -881,11 +1019,25 @@ JSON 응답:"""
         """입력 필드에 넣을 값 결정"""
         desc_lower = action.description.lower()
 
-        # 명시적으로 제공된 값 사용
+        # 명시적으로 제공된 값 사용 (LLM이 제공한 input_values 우선)
         if input_values:
-            for key, value in input_values.items():
-                if key.lower() in desc_lower:
-                    return value
+            # 비밀번호 필드면 password 키 찾기
+            if "비밀번호" in desc_lower or "password" in desc_lower:
+                for key in ["password", "비밀번호", "pw", "secret"]:
+                    if key in input_values:
+                        self._log(f"📝 비밀번호 입력: {input_values[key]}")
+                        return input_values[key]
+            # 사용자명/텍스트 필드면 username 키 찾기
+            else:
+                for key in ["username", "user", "id", "아이디", "사용자"]:
+                    if key in input_values:
+                        self._log(f"📝 사용자명 입력: {input_values[key]}")
+                        return input_values[key]
+            # 매칭 안 되면 첫 번째 값 사용
+            first_key = list(input_values.keys())[0]
+            first_value = input_values[first_key]
+            self._log(f"📝 입력값 사용 (첫번째): {first_key}={first_value}")
+            return first_value
 
         # 기본값 생성
         if "email" in desc_lower or "이메일" in desc_lower:
@@ -915,7 +1067,8 @@ JSON 응답:"""
             issue_type=IssueType.ERROR,
             severity="high",
             title=f"JavaScript 에러 발생: {action.description}",
-            description=f"액션 실행 후 콘솔 에러가 발생했습니다.\n\n에러 로그:\n" + "\n".join(error_logs[:5]),
+            description=f"액션 실행 후 콘솔 에러가 발생했습니다.\n\n에러 로그:\n"
+            + "\n".join(error_logs[:5]),
             url=url,
             steps_to_reproduce=[
                 f"1. {url}로 이동",
@@ -948,7 +1101,9 @@ JSON 응답:"""
             error_message=error_message,
         )
 
-    def _report_console_errors(self, console_errors: List[str], screenshot: Optional[str]):
+    def _report_console_errors(
+        self, console_errors: List[str], screenshot: Optional[str]
+    ):
         """콘솔 에러 리포트"""
         issue_id = f"CONSOLE_{int(time.time())}"
 
@@ -957,7 +1112,8 @@ JSON 응답:"""
             issue_type=IssueType.ERROR,
             severity="medium",
             title=f"콘솔 에러 감지: {len(console_errors)}개",
-            description=f"페이지 로드 시 콘솔 에러가 발견되었습니다.\n\n" + "\n".join(console_errors[:5]),
+            description=f"페이지 로드 시 콘솔 에러가 발견되었습니다.\n\n"
+            + "\n".join(console_errors[:5]),
             url=self._current_url,
             steps_to_reproduce=[f"1. {self._current_url}로 이동"],
             console_logs=console_errors,
@@ -977,7 +1133,9 @@ JSON 응답:"""
         return {
             "total_interactive_elements": total_elements,
             "tested_elements": tested_elements,
-            "coverage_percentage": (tested_elements / total_elements * 100) if total_elements > 0 else 0,
+            "coverage_percentage": (tested_elements / total_elements * 100)
+            if total_elements > 0
+            else 0,
             "total_pages": len(self._visited_pages),
         }
 

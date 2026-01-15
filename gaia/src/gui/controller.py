@@ -12,6 +12,7 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase1.agent_client import AgentServiceClient
 from gaia.src.phase4.agent import AgentOrchestrator
+from gaia.src.phase4.goal_driven import goals_from_scenarios, sort_goals_by_priority, TestGoal
 from gaia.src.phase4.intelligent_orchestrator import IntelligentOrchestrator
 from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.tracker.checklist import ChecklistTracker
@@ -20,6 +21,7 @@ from gaia.src.utils.plan_repository import PlanRepository
 
 from gaia.src.gui.worker import AutomationWorker
 from gaia.src.gui.analysis_worker import AnalysisWorker
+from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker
 
 
 @dataclass(slots=True)
@@ -57,6 +59,7 @@ class AppController(QObject):
         self._current_bug_json: str | None = None  # ER 측정용 (이전 테스트 불러오기 시 bug.json)
         self._plan: Sequence[TestScenario] = ()
         self._analysis_plan: Sequence[TestScenario] = ()
+        self._analysis_goals: Sequence[TestGoal] = ()
         self._worker_thread: QThread | None = None
         self._worker: AutomationWorker | None = None
         self._analysis_thread: QThread | None = None
@@ -95,6 +98,8 @@ class AppController(QObject):
             return
 
         self._current_pdf_text = result.text
+        self._analysis_plan = ()
+        self._analysis_goals = ()
 
         # 캐싱을 위한 PDF 해시 생성
         import hashlib
@@ -166,6 +171,7 @@ class AppController(QObject):
 
         plan_list = list(scenarios)
         self._analysis_plan = plan_list
+        self._analysis_goals = sort_goals_by_priority(goals_from_scenarios(plan_list))
         self._plan = ()
         self._current_pdf_text = None
         self._current_pdf_hash = metadata.get("pdf_hash") if metadata else None
@@ -179,13 +185,13 @@ class AppController(QObject):
         else:
             self._window.append_log("ℹ️ 플랜에 URL 정보가 없어 직접 입력이 필요합니다.")
 
-        self._window.show_scenarios(plan_list)
+        self._window.show_scenarios(self._analysis_goals)
         summary = self._summarize_scenarios(plan_list)
         self._window.append_log(
             f"📂 '{path.name}' 플랜 불러오기 완료 — 총 {summary['total']}개 "
             f"(MUST {summary['must']}, SHOULD {summary['should']}, MAY {summary['may']})"
         )
-        self._reset_tracker_with_plan(plan_list)
+        self._reset_tracker_with_goals(self._analysis_goals)
 
         # 플랜 불러오기 후 bug.json 선택 여부 묻기
         self._window.ask_for_bug_json()
@@ -214,9 +220,6 @@ class AppController(QObject):
             f"(MUST: {summary['must']}, SHOULD: {summary['should']}, MAY: {summary['may']})"
         )
 
-        # 글래스 카드 형태로 테스트 케이스 표시
-        self._window.show_scenarios(analysis_result.checklist)
-
         # 🚨 FIX: Agent Service에서 이미 RT JSON을 받았으므로 재사용
         # analysis_result에 _rt_scenarios 속성이 있으면 사용, 없으면 변환
         if hasattr(analysis_result, '_rt_scenarios') and analysis_result._rt_scenarios:
@@ -227,7 +230,21 @@ class AppController(QObject):
             self._analysis_plan = self._convert_testcases_to_scenarios(
                 analysis_result.checklist
             )
-        self._reset_tracker_with_plan(self._analysis_plan)
+
+        extra_keywords = [self._current_feature_query] if self._current_feature_query else []
+        if hasattr(analysis_result, "_goals") and analysis_result._goals:
+            self._analysis_goals = analysis_result._goals
+        else:
+            self._analysis_goals = goals_from_scenarios(
+                self._analysis_plan,
+                extra_keywords=extra_keywords,
+            )
+
+        self._analysis_goals = sort_goals_by_priority(list(self._analysis_goals))
+
+        # 글래스 카드 형태로 목표(Goal) 표시
+        self._window.show_scenarios(self._analysis_goals)
+        self._reset_tracker_with_goals(self._analysis_goals)
 
         # 재분석을 피하기 위해 플랜을 디스크에 저장
         # URL이 있으면 해당 URL로, 없으면 PDF 해시로 저장
@@ -528,6 +545,8 @@ class AppController(QObject):
 
         self._analysis_thread = None
         self._analysis_worker = None
+        self._analysis_plan = ()
+        self._analysis_goals = ()
 
     # ------------------------------------------------------------------
     @Slot()
@@ -540,27 +559,23 @@ class AppController(QObject):
             self._window.append_log("⚠️ Automation already in progress.")
             return
 
-        # Agent Builder가 만든 추상 시나리오인 analysis_plan 사용
-        candidate_plan: List[TestScenario] = list(self._analysis_plan) if self._analysis_plan else []
+        candidate_goals = list(self._analysis_goals) if self._analysis_goals else []
 
-        if not candidate_plan:
-            self._window.append_log("⚠️ 생성된 테스트 시나리오가 없습니다. PDF를 먼저 분석해주세요.")
+        if candidate_goals:
+            self._reset_tracker_with_goals(candidate_goals)
+            self._plan = list(self._analysis_plan)
+            self._window.append_log(
+                f"🎯 Goal-Driven 자동화를 시작합니다 ({len(candidate_goals)}개 목표)"
+            )
+            self._window.append_log("   ✅ 우선순위 기반 목표 실행")
+            self._window.append_log("   🔎 실패 시 탐색 모드로 보완")
+            self._window.set_busy(True, message="AI가 목표를 수행하는 중이에요…")
+            self._start_goal_worker(self._current_url, candidate_goals)
             return
 
-        # 1단계: MCP로 DOM 분석 및 스크린샷 캡처
-        self._window.append_log("📸 MCP로 DOM 분석 및 스크린샷 캡처 중...")
-        self._reset_tracker_with_plan(candidate_plan)
-
-        # 2단계: LLM이 실행 가능한 테스트를 선택하고 우선순위 큐 생성
-        # 3단계: 사이트 탐색과 함께 테스트 실행
-        self._plan = candidate_plan
-        self._window.append_log(f"🤖 Master Orchestrator 자동화를 시작합니다 ({len(candidate_plan)}개 시나리오)")
-        self._window.append_log("   🗺️  1️⃣ 사이트 구조 탐색 (네비게이션 링크 발견)")
-        self._window.append_log("   📄 2️⃣ 각 페이지별 DOM + 스크린샷 분석")
-        self._window.append_log("   🚀 3️⃣ 페이지별로 실행 가능한 테스트 자동 실행")
-        self._window.set_busy(True, message="AI가 사이트를 탐색하는 중이에요…")
-
-        self._start_intelligent_worker(self._current_url, candidate_plan)
+        self._window.append_log("ℹ️ 목표가 없어 Exploratory 모드로 실행합니다.")
+        self._window.set_busy(True, message="AI가 자율 탐색을 수행하는 중이에요…")
+        self._start_exploratory_worker(self._current_url)
 
     def _start_intelligent_worker(self, url: str, plan: Sequence[TestScenario]) -> None:
         """사이트 탐색을 포함한 MasterOrchestrator를 백그라운드에서 시작합니다."""
@@ -576,6 +591,44 @@ class AppController(QObject):
         worker.screenshot.connect(self._window.update_live_preview)
         worker.scenario_started.connect(self._window.highlight_current_scenario)
         worker.scenario_finished.connect(lambda _: None)  # Could add completion logic here
+        worker.finished.connect(self._on_intelligent_worker_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._worker_thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _start_goal_worker(self, url: str, goals: Sequence[TestGoal]) -> None:
+        """Goal-Driven 에이전트를 백그라운드에서 시작합니다."""
+        thread = QThread(self)
+        worker = GoalDrivenWorker(url, goals, tracker=self._tracker)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.start)
+        worker.progress.connect(self._handle_worker_progress)
+        worker.screenshot.connect(self._window.update_live_preview)
+        worker.scenario_started.connect(self._window.highlight_current_scenario)
+        worker.scenario_finished.connect(lambda _: None)
+        worker.finished.connect(self._on_intelligent_worker_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._worker_thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _start_exploratory_worker(self, url: str) -> None:
+        """Exploratory 에이전트를 백그라운드에서 시작합니다."""
+        thread = QThread(self)
+        worker = ExploratoryWorker(url)
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.start)
+        worker.progress.connect(self._handle_worker_progress)
+        worker.screenshot.connect(self._window.update_live_preview)
         worker.finished.connect(self._on_intelligent_worker_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -606,7 +659,7 @@ class AppController(QObject):
     def _on_intelligent_worker_finished(self) -> None:
         """IntelligentOrchestrator 완료를 처리합니다."""
         summary = self._tracker.coverage() * 100
-        self._window.append_log(f"✅ LLM-powered automation completed. Coverage: {summary:.1f}%")
+        self._window.append_log(f"✅ 자동화 실행 완료. Coverage: {summary:.1f}%")
 
         # 모든 시나리오 하이라이트 초기화
         self._window.reset_scenario_highlights()
@@ -843,6 +896,13 @@ class AppController(QObject):
         self._tracker.items.clear()
         if plan_list:
             self._tracker.seed_from_scenarios(plan_list)
+        self._update_overall_progress_display()
+
+    def _reset_tracker_with_goals(self, goals: Sequence[TestGoal]) -> None:
+        goal_list = list(goals)
+        self._tracker.items.clear()
+        if goal_list:
+            self._tracker.seed_from_goals(goal_list)
         self._update_overall_progress_display()
 
     def _update_overall_progress_display(self) -> None:

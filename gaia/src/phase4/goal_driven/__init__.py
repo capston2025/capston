@@ -13,6 +13,7 @@ DOM 기반 + LLM 판단으로 목표 달성까지 자동 실행
 
 from .models import TestGoal, ActionDecision, GoalResult, GoalTestPlan
 from .agent import GoalDrivenAgent
+from .goal_builder import goals_from_scenarios, normalize_priority, sort_goals_by_priority
 from .exploratory_models import (
     ExplorationConfig,
     ExplorationResult,
@@ -31,6 +32,9 @@ __all__ = [
     "GoalResult",
     "GoalTestPlan",
     "GoalDrivenAgent",
+    "goals_from_scenarios",
+    "normalize_priority",
+    "sort_goals_by_priority",
     # Exploratory
     "ExplorationConfig",
     "ExplorationResult",
