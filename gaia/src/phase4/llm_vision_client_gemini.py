@@ -4,6 +4,7 @@ Uses Gemini 3 for DOM + screenshot analysis.
 
 To use: set VISION_PROVIDER=gemini in .env
 """
+
 from __future__ import annotations
 
 import json
@@ -35,20 +36,21 @@ class GeminiVisionClient:
             with open(env_file) as f:
                 for line in f:
                     line = line.strip()
-                    if '=' in line and not line.startswith('#'):
+                    if "=" in line and not line.startswith("#"):
                         key, value = line.split("=", 1)
                         env_vars[key.strip()] = value.strip()
 
-        gemini_key = api_key or os.getenv("GEMINI_API_KEY") or env_vars.get("GEMINI_API_KEY")
+        gemini_key = (
+            api_key or os.getenv("GEMINI_API_KEY") or env_vars.get("GEMINI_API_KEY")
+        )
         if not gemini_key:
             raise ValueError("GEMINI_API_KEY is required")
 
         # v1alpha API version required for media_resolution parameter
         self.client = genai.Client(
-            api_key=gemini_key,
-            http_options={'api_version': 'v1alpha'}
+            api_key=gemini_key, http_options={"api_version": "v1alpha"}
         )
-        self.model = "gemini-3-pro-preview"
+        self.model = "gemini-3-flash-preview"
         print(f"🤖 Vision AI: Using Gemini ({self.model})")
 
     def analyze_with_vision(
@@ -83,28 +85,31 @@ class GeminiVisionClient:
             print(f"Gemini vision analysis failed: {e}")
             raise
 
-    def _call_vision_api(self, prompt: str, images: List[str], max_tokens: int = 16384) -> str:
+    def _call_vision_api(
+        self, prompt: str, images: List[str], max_tokens: int = 16384
+    ) -> str:
         """Call Gemini vision API with prompt and images."""
         # Build parts with media_resolution_high for best image quality
         parts = [types.Part(text=prompt)]
 
         for img_base64 in images:
             img_bytes = base64.b64decode(img_base64)
-            parts.append(types.Part(
-                inline_data=types.Blob(
-                    mime_type="image/png",
-                    data=img_bytes,
+            parts.append(
+                types.Part(
+                    inline_data=types.Blob(
+                        mime_type="image/png",
+                        data=img_bytes,
+                    )
                 )
-            ))
+            )
 
         try:
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=[types.Content(parts=parts)],
                 config=types.GenerateContentConfig(
-                    max_output_tokens=max_tokens,
-                    temperature=0.1
-                )
+                    max_output_tokens=max_tokens, temperature=0.1
+                ),
             )
         except Exception as e:
             print(f"⚠️ Gemini API call failed: {e}")
@@ -123,12 +128,12 @@ class GeminiVisionClient:
 
         if not result_text:
             # Try to get text from candidates
-            if hasattr(response, 'candidates') and response.candidates:
+            if hasattr(response, "candidates") and response.candidates:
                 candidate = response.candidates[0]
-                if hasattr(candidate, 'content') and candidate.content:
-                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                if hasattr(candidate, "content") and candidate.content:
+                    if hasattr(candidate.content, "parts") and candidate.content.parts:
                         for part in candidate.content.parts:
-                            if hasattr(part, 'text') and part.text:
+                            if hasattr(part, "text") and part.text:
                                 result_text = part.text
                                 break
 
@@ -173,7 +178,9 @@ Required JSON format (no markdown):
 JSON response:"""
 
         try:
-            response_text = self._call_vision_api(prompt, [before_screenshot, after_screenshot], max_tokens=8192)
+            response_text = self._call_vision_api(
+                prompt, [before_screenshot, after_screenshot], max_tokens=8192
+            )
 
             # Parse JSON
             if response_text.startswith("```json"):
@@ -185,12 +192,20 @@ JSON response:"""
             response_text = response_text.strip()
 
             if not response_text:
-                return {"success": False, "reasoning": "Empty response", "confidence": 0}
+                return {
+                    "success": False,
+                    "reasoning": "Empty response",
+                    "confidence": 0,
+                }
 
             try:
                 return json.loads(response_text)
             except json.JSONDecodeError:
-                return {"success": False, "reasoning": f"Invalid JSON: {response_text[:100]}", "confidence": 0}
+                return {
+                    "success": False,
+                    "reasoning": f"Invalid JSON: {response_text[:100]}",
+                    "confidence": 0,
+                }
 
         except Exception as e:
             print(f"Gemini verification failed: {e}")
@@ -208,7 +223,9 @@ JSON response:"""
         """
         Verify if a test scenario succeeded by comparing before/after screenshots.
         """
-        indicators_text = "\n".join([f"  - {indicator}" for indicator in success_indicators])
+        indicators_text = "\n".join(
+            [f"  - {indicator}" for indicator in success_indicators]
+        )
 
         prompt = f"""Analyze these screenshots to verify if a test scenario succeeded.
 
@@ -239,7 +256,9 @@ Required JSON format (no markdown):
 JSON response:"""
 
         try:
-            response_text = self._call_vision_api(prompt, [before_screenshot, after_screenshot], max_tokens=8192)
+            response_text = self._call_vision_api(
+                prompt, [before_screenshot, after_screenshot], max_tokens=8192
+            )
 
             # Parse JSON
             if response_text.startswith("```json"):
@@ -251,7 +270,12 @@ JSON response:"""
             response_text = response_text.strip()
 
             if not response_text:
-                return {"success": False, "reasoning": "Empty response", "confidence": 0, "matched_indicators": []}
+                return {
+                    "success": False,
+                    "reasoning": "Empty response",
+                    "confidence": 0,
+                    "matched_indicators": [],
+                }
 
             try:
                 result = json.loads(response_text)
@@ -259,11 +283,21 @@ JSON response:"""
                     result["matched_indicators"] = []
                 return result
             except json.JSONDecodeError:
-                return {"success": False, "reasoning": f"Invalid JSON: {response_text[:100]}", "confidence": 0, "matched_indicators": []}
+                return {
+                    "success": False,
+                    "reasoning": f"Invalid JSON: {response_text[:100]}",
+                    "confidence": 0,
+                    "matched_indicators": [],
+                }
 
         except Exception as e:
             print(f"Gemini scenario verification failed: {e}")
-            return {"success": False, "reasoning": f"Error: {e}", "confidence": 0, "matched_indicators": []}
+            return {
+                "success": False,
+                "reasoning": f"Error: {e}",
+                "confidence": 0,
+                "matched_indicators": [],
+            }
 
     def verify_scenario_outcome(
         self,
@@ -305,7 +339,9 @@ Required JSON format:
 JSON response (start with {{):"""
 
         try:
-            response_text = self._call_vision_api(prompt, [final_screenshot], max_tokens=8192)
+            response_text = self._call_vision_api(
+                prompt, [final_screenshot], max_tokens=8192
+            )
 
             # Parse JSON
             if response_text.startswith("```json"):
@@ -317,7 +353,12 @@ JSON response (start with {{):"""
             response_text = response_text.strip()
 
             if not response_text:
-                return {"matches": False, "confidence": 0, "reasoning": "Empty response", "observations": []}
+                return {
+                    "matches": False,
+                    "confidence": 0,
+                    "reasoning": "Empty response",
+                    "observations": [],
+                }
 
             try:
                 result = json.loads(response_text)
@@ -327,7 +368,8 @@ JSON response (start with {{):"""
             except json.JSONDecodeError:
                 # Try to extract JSON from text response
                 import re
-                json_match = re.search(r'\{[\s\S]*\}', response_text)
+
+                json_match = re.search(r"\{[\s\S]*\}", response_text)
                 if json_match:
                     try:
                         result = json.loads(json_match.group())
@@ -336,11 +378,21 @@ JSON response (start with {{):"""
                         return result
                     except json.JSONDecodeError:
                         pass
-                return {"matches": False, "confidence": 0, "reasoning": f"Invalid JSON: {response_text[:100]}", "observations": []}
+                return {
+                    "matches": False,
+                    "confidence": 0,
+                    "reasoning": f"Invalid JSON: {response_text[:100]}",
+                    "observations": [],
+                }
 
         except Exception as e:
             print(f"Gemini outcome verification failed: {e}")
-            return {"matches": False, "confidence": 0, "reasoning": f"Error: {e}", "observations": []}
+            return {
+                "matches": False,
+                "confidence": 0,
+                "reasoning": f"Error: {e}",
+                "observations": [],
+            }
 
     def analyze_action_failure(
         self,
@@ -359,14 +411,16 @@ JSON response (start with {{):"""
         dom_list = []
         for idx, elem in enumerate(dom_elements[:50]):
             attrs = elem.attributes or {}
-            dom_list.append({
-                "index": idx,
-                "tag": elem.tag,
-                "selector": elem.selector,
-                "text": elem.text,
-                "role": attrs.get("role"),
-                "aria_hidden": attrs.get("aria-hidden"),
-            })
+            dom_list.append(
+                {
+                    "index": idx,
+                    "tag": elem.tag,
+                    "selector": elem.selector,
+                    "text": elem.text,
+                    "role": attrs.get("role"),
+                    "aria_hidden": attrs.get("aria-hidden"),
+                }
+            )
 
         dom_json = json.dumps(dom_list, ensure_ascii=False, indent=2)
 
@@ -374,27 +428,35 @@ JSON response (start with {{):"""
         overlay_elements = []
         for elem in dom_elements[:50]:
             attrs = elem.attributes or {}
-            role = attrs.get('role', '')
-            aria_modal = attrs.get('aria-modal', '')
+            role = attrs.get("role", "")
+            aria_modal = attrs.get("aria-modal", "")
             tag = elem.tag
 
-            if (role in ['dialog', 'alertdialog', 'menu', 'listbox'] or
-                aria_modal == 'true' or
-                tag in ['dialog'] or
-                'modal' in (elem.text or '').lower()):
-                overlay_elements.append({
-                    "tag": tag,
-                    "role": role,
-                    "text": elem.text[:50] if elem.text else "",
-                    "selector": elem.selector
-                })
+            if (
+                role in ["dialog", "alertdialog", "menu", "listbox"]
+                or aria_modal == "true"
+                or tag in ["dialog"]
+                or "modal" in (elem.text or "").lower()
+            ):
+                overlay_elements.append(
+                    {
+                        "tag": tag,
+                        "role": role,
+                        "text": elem.text[:50] if elem.text else "",
+                        "selector": elem.selector,
+                    }
+                )
 
         overlay_context = ""
         if overlay_elements:
             overlay_context = f"\n**⚠️ DETECTED OPEN OVERLAYS:** {len(overlay_elements)} overlay element(s) found:\n"
             for ov in overlay_elements[:3]:
-                overlay_context += f"  - {ov['tag']} role={ov['role']} text=\"{ov['text']}\"\n"
-            overlay_context += "This strongly suggests overlay interception is the cause.\n"
+                overlay_context += (
+                    f'  - {ov["tag"]} role={ov["role"]} text="{ov["text"]}"\n'
+                )
+            overlay_context += (
+                "This strongly suggests overlay interception is the cause.\n"
+            )
 
         # Add step description context if available
         description_context = ""
@@ -457,7 +519,9 @@ Required JSON format:
 JSON response (start with {{):"""
 
         try:
-            response_text = self._call_vision_api(prompt, [screenshot_base64], max_tokens=8192)
+            response_text = self._call_vision_api(
+                prompt, [screenshot_base64], max_tokens=8192
+            )
 
             # Parse JSON
             if response_text.startswith("```json"):
@@ -473,7 +537,7 @@ JSON response (start with {{):"""
                     "failure_reason": "unknown",
                     "suggested_fixes": [],
                     "confidence": 0,
-                    "reasoning": "Gemini returned empty response"
+                    "reasoning": "Gemini returned empty response",
                 }
 
             try:
@@ -484,7 +548,8 @@ JSON response (start with {{):"""
             except json.JSONDecodeError:
                 # Try to extract JSON from text response
                 import re
-                json_match = re.search(r'\{[\s\S]*\}', response_text)
+
+                json_match = re.search(r"\{[\s\S]*\}", response_text)
                 if json_match:
                     try:
                         result = json.loads(json_match.group())
@@ -497,7 +562,7 @@ JSON response (start with {{):"""
                     "failure_reason": "unknown",
                     "suggested_fixes": [],
                     "confidence": 0,
-                    "reasoning": f"Gemini returned non-JSON: {response_text[:100]}"
+                    "reasoning": f"Gemini returned non-JSON: {response_text[:100]}",
                 }
 
         except Exception as e:
@@ -506,7 +571,7 @@ JSON response (start with {{):"""
                 "failure_reason": "unknown",
                 "suggested_fixes": [],
                 "confidence": 0,
-                "reasoning": f"Error: {e}"
+                "reasoning": f"Error: {e}",
             }
 
 

@@ -262,8 +262,10 @@ class GoalDrivenAgent:
 ## 목표
 - 이름: {goal.name}
 - 설명: {goal.description}
+- 우선순위: {getattr(goal, "priority", "MAY")}
 - 성공 조건: {', '.join(goal.success_criteria)}
 - 실패 조건: {', '.join(goal.failure_criteria) if goal.failure_criteria else '없음'}
+ - 키워드: {', '.join(getattr(goal, "keywords", []) or []) if getattr(goal, "keywords", None) else '없음'}
 
 ## 사용 가능한 테스트 데이터
 {json.dumps(goal.test_data, ensure_ascii=False, indent=2)}
@@ -275,6 +277,7 @@ class GoalDrivenAgent:
 {elements_text}
 
 ## 중요 지시사항
+0. **키워드 우선 탐색**: 키워드와 관련된 요소를 먼저 찾아서 목표 달성에 활용하세요.
 1. **탭/섹션 UI 확인**: role="tab"인 요소가 있으면 먼저 해당 탭을 클릭해야 합니다!
    - 예: 로그인 탭, 회원가입 탭이 있으면 → 먼저 로그인 탭 클릭 → 그 다음 폼 입력
 

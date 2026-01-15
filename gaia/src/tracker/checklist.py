@@ -25,6 +25,19 @@ class ChecklistTracker:
                 status="pending",
             )
 
+    def seed_from_goals(self, goals: Iterable[object]) -> None:
+        for goal in goals:
+            feature_id = getattr(goal, "id", None) or getattr(goal, "name", None)
+            description = getattr(goal, "name", "") or ""
+            if not feature_id:
+                continue
+            self.items[str(feature_id)] = ChecklistItem(
+                feature_id=str(feature_id),
+                description=str(description),
+                checked=False,
+                status="pending",
+            )
+
     def mark_found(self, feature_id: str, *, evidence: str | None = None) -> bool:
         return self.set_status(feature_id, "success", evidence=evidence)
 

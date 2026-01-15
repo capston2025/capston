@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, Signal
 
 from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.agent_client import AnalysisResult, TestCase
+from gaia.src.phase4.goal_driven.goal_builder import goals_from_scenarios
 from gaia.src.utils.models import TestScenario
 
 
@@ -37,6 +38,11 @@ class AnalysisWorker(QObject):
                 raise RuntimeError("Agent Builder가 테스트 시나리오를 생성하지 못했습니다.")
 
             analysis_result = self._convert_to_analysis_result(scenarios)
+            extra_keywords = [self.feature_query] if self.feature_query else []
+            analysis_result._goals = goals_from_scenarios(
+                list(scenarios),
+                extra_keywords=extra_keywords,
+            )
             self.finished.emit(analysis_result)
 
         except Exception as exc:

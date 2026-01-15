@@ -13,6 +13,7 @@ from datetime import datetime
 
 class ElementState(BaseModel):
     """UI 요소의 상태 스냅샷"""
+
     element_id: str = Field(..., description="요소 고유 ID (selector 기반)")
     tag: str = Field(..., description="HTML 태그")
     text: str = Field(default="", description="텍스트 내용")
@@ -22,8 +23,10 @@ class ElementState(BaseModel):
     role: Optional[str] = None
     type: Optional[str] = None
     aria_label: Optional[str] = None
+    title: Optional[str] = None
     href: Optional[str] = None
     placeholder: Optional[str] = None
+    bounding_box: Optional[dict] = None
 
     # 테스트 상태
     tested: bool = Field(default=False, description="테스트 완료 여부")
@@ -33,6 +36,7 @@ class ElementState(BaseModel):
 
 class PageState(BaseModel):
     """페이지 상태 스냅샷"""
+
     url: str = Field(..., description="현재 URL")
     url_hash: str = Field(..., description="URL의 해시값 (중복 방지)")
     title: str = Field(default="", description="페이지 제목")
@@ -48,6 +52,7 @@ class PageState(BaseModel):
 
 class TestableAction(BaseModel):
     """테스트 가능한 액션"""
+
     element_id: str = Field(..., description="대상 요소 ID")
     action_type: str = Field(..., description="액션 타입 (click, fill, hover 등)")
     description: str = Field(..., description="액션 설명")
@@ -57,6 +62,7 @@ class TestableAction(BaseModel):
 
 class IssueType(str, Enum):
     """발견된 이슈 타입"""
+
     ERROR = "error"  # JavaScript 에러
     BROKEN_LINK = "broken_link"  # 깨진 링크
     VISUAL_GLITCH = "visual_glitch"  # 시각적 버그
@@ -68,6 +74,7 @@ class IssueType(str, Enum):
 
 class FoundIssue(BaseModel):
     """발견된 버그/이슈"""
+
     issue_id: str = Field(..., description="이슈 고유 ID")
     issue_type: IssueType = Field(..., description="이슈 타입")
     severity: str = Field(..., description="심각도 (critical, high, medium, low)")
@@ -92,6 +99,7 @@ class FoundIssue(BaseModel):
 
 class ExplorationConfig(BaseModel):
     """탐색 설정"""
+
     max_actions: int = Field(default=100, description="최대 액션 수")
     max_depth: int = Field(default=5, description="최대 탐색 깊이 (페이지 이동)")
 
@@ -102,8 +110,12 @@ class ExplorationConfig(BaseModel):
     test_navigation: bool = Field(default=True, description="네비게이션 테스트")
 
     # 제외 패턴
-    excluded_urls: List[str] = Field(default_factory=list, description="제외할 URL 패턴")
-    excluded_selectors: List[str] = Field(default_factory=list, description="제외할 셀렉터")
+    excluded_urls: List[str] = Field(
+        default_factory=list, description="제외할 URL 패턴"
+    )
+    excluded_selectors: List[str] = Field(
+        default_factory=list, description="제외할 셀렉터"
+    )
 
     # 타임아웃
     action_timeout: int = Field(default=30, description="액션 타임아웃 (초)")
@@ -112,6 +124,7 @@ class ExplorationConfig(BaseModel):
 
 class ExplorationDecision(BaseModel):
     """LLM의 탐색 결정"""
+
     should_continue: bool = Field(..., description="탐색을 계속할지 여부")
 
     # 선택된 액션
@@ -119,8 +132,7 @@ class ExplorationDecision(BaseModel):
 
     # 입력값 (폼인 경우)
     input_values: Dict[str, str] = Field(
-        default_factory=dict,
-        description="입력 필드에 넣을 값"
+        default_factory=dict, description="입력 필드에 넣을 값"
     )
 
     # 결정 근거
@@ -133,6 +145,7 @@ class ExplorationDecision(BaseModel):
 
 class ExplorationStep(BaseModel):
     """탐색 단계 결과"""
+
     step_number: int
     url: str
 
@@ -160,6 +173,7 @@ class ExplorationStep(BaseModel):
 
 class ExplorationResult(BaseModel):
     """탐색 세션 전체 결과"""
+
     session_id: str = Field(..., description="세션 ID")
     start_url: str = Field(..., description="시작 URL")
 
@@ -170,8 +184,7 @@ class ExplorationResult(BaseModel):
 
     # 커버리지
     coverage: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="테스트 커버리지 통계"
+        default_factory=dict, description="테스트 커버리지 통계"
     )
 
     # 발견된 이슈

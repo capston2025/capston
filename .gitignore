@@ -51,6 +51,11 @@ server/test-results/
 /server/test_planning_doc.py
 .gomod/
 .gocache/
+/artifacts/*.log
+/artifacts/cache/
+/artifacts/exploration_results/
+/artifacts/plans/
+/gaia/artifacts/
 
 # Editor/IDE settings
 .vscode/
