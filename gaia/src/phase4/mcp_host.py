@@ -551,7 +551,12 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 }
 
                 function getUniqueSelector(el) {
-                    if (el.id) return `#${el.id}`;
+                    if (el.id) {
+                        if (window.CSS && typeof CSS.escape === 'function') {
+                            return `#${CSS.escape(el.id)}`;
+                        }
+                        return `${el.tagName.toLowerCase()}[id="${el.id}"]`;
+                    }
 
                     if (el.name) return `${el.tagName.toLowerCase()}[name="${el.name}"]`;
 
@@ -616,7 +621,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             id: el.id || null,
                             name: el.name || null,
                             placeholder: el.placeholder || '',
-                            'aria-label': el.getAttribute('aria-label') || ''
+                            'aria-label': el.getAttribute('aria-label') || '',
+                            title: el.getAttribute('title') || ''
                         },
                         bounding_box: getBoundingBox(el),
                         element_type: 'input'
@@ -627,6 +633,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 // 상호작용 UI에서 자주 사용하는 ARIA 역할
                 document.querySelectorAll(`
                     button,
+                    a:not([href]),
                     [role="button"],
                     [role="tab"],
                     [role="menuitem"],
@@ -685,7 +692,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
 
                 document.querySelectorAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
                     if (!isVisible(el)) return;
-                    if (el.tagName === 'BUTTON' || el.tagName === 'A') return;
+                    if (el.tagName === 'BUTTON') return;
+                    if (el.tagName === 'A' && el.hasAttribute('href')) return;
 
                     const style = window.getComputedStyle(el);
                     if (style.cursor === 'pointer' || el.onclick) {
@@ -696,11 +704,13 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                                 selector: getUniqueSelector(el),
                                 text: text,
                                 attributes: {
-                                    class: el.className
-                                },
-                                bounding_box: getBoundingBox(el),
-                                element_type: 'clickable'
-                            });
+                            class: el.className,
+                            'aria-label': el.getAttribute('aria-label') || '',
+                            title: el.getAttribute('title') || ''
+                        },
+                        bounding_box: getBoundingBox(el),
+                        element_type: 'clickable'
+                    });
                         }
                     }
                 });
@@ -709,10 +719,15 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     if (!isVisible(el)) return;
 
                     const href = el.href;
-                    const text = el.innerText?.trim() || '';
+                    let text = el.innerText?.trim() || '';
 
-                    if (href.includes('#') && href.split('#')[0] === window.location.href.split('#')[0]) return;
-                    if (!text) return;
+                    if (!text) {
+                        const img = el.querySelector('img');
+                        text = (img && img.getAttribute('alt')) ||
+                            el.getAttribute('aria-label') ||
+                            el.getAttribute('title') ||
+                            '[link]';
+                    }
 
                     elements.push({
                         tag: 'a',
@@ -720,7 +735,9 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         text: text,
                         attributes: {
                             href: href,
-                            target: el.target || ''
+                            target: el.target || '',
+                            'aria-label': el.getAttribute('aria-label') || '',
+                            title: el.getAttribute('title') || ''
                         },
                         bounding_box: getBoundingBox(el),
                         element_type: 'link'
@@ -1328,6 +1345,19 @@ async def execute_simple_action(
             if not selector or value is None:
                 raise ValueError("Selector and value required for 'select' action")
             element = page.locator(selector).first
+
+            # 옵션 값 확인 후 유효하지 않으면 첫 번째 옵션으로 대체
+            options = await element.evaluate(
+                """
+                (el) => Array.from(el.options || []).map((opt) => opt.value)
+                """
+            )
+            if not options:
+                raise ValueError("No options found for select element")
+
+            if value not in options:
+                value = options[0]
+
             await element.select_option(value, timeout=30000)
 
         elif action == "uploadFile":
@@ -1519,6 +1549,39 @@ async def execute_simple_action(
                     else:
                         await element.click(timeout=10000)
                 except Exception as click_error:
+                    # Retry with force click for overlay/intercept issues
+                    try:
+                        if not use_js_click:
+                            print("⚠️  click failed, retrying with force=True")
+                            await element.click(timeout=5000, force=True)
+                            await page.wait_for_timeout(300)
+                            screenshot_bytes = await page.screenshot(full_page=False)
+                            screenshot_base64 = base64.b64encode(
+                                screenshot_bytes
+                            ).decode("utf-8")
+                            return {
+                                "success": True,
+                                "message": "Click action completed with force",
+                                "screenshot": screenshot_base64,
+                            }
+                    except Exception:
+                        pass
+
+                    # Final fallback to JS click
+                    try:
+                        await element.evaluate("el => el.click()")
+                        await page.wait_for_timeout(300)
+                        screenshot_bytes = await page.screenshot(full_page=False)
+                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode(
+                            "utf-8"
+                        )
+                        return {
+                            "success": True,
+                            "message": "Click action completed via JS fallback",
+                            "screenshot": screenshot_base64,
+                        }
+                    except Exception:
+                        raise click_error
                     error_msg = str(click_error)
 
                     # "element is not visible" 에러 감지 시 부모 hover 시도

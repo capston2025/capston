@@ -8,9 +8,14 @@ from __future__ import annotations
 import time
 import json
 import hashlib
+import math
+import os
+import re
 import requests
 from typing import Any, Dict, List, Optional, Set, Callable
 from datetime import datetime
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 from .exploratory_models import (
     ExplorationConfig,
@@ -66,12 +71,176 @@ class ExploratoryAgent:
         self._current_url: str = ""
         self._element_selectors: Dict[int, str] = {}  # DOM ID -> selector
         self._element_full_selectors: Dict[int, str] = {}  # DOM ID -> full selector
+        self._action_attempts: Dict[
+            str, int
+        ] = {}  # url_hash:element_id:action_type -> count
+        self._action_frontier: List[Dict[str, str]] = []
+        self._action_frontier_set: Set[str] = set()
+        self._state_action_history: Dict[str, Set[str]] = {}
+        self._current_state_key: Optional[str] = None
+        self._toggle_action_history: Dict[str, int] = {}
+
+        # LLM 응답 캐시
+        self._llm_cache: Dict[str, str] = {}
+        self._llm_cache_path = self._resolve_llm_cache_path()
+        self._load_llm_cache()
+
+        # LLM 시맨틱 캐시
+        self._semantic_cache: List[Dict[str, object]] = []
+        self._semantic_cache_path = self._resolve_semantic_cache_path()
+        self._load_semantic_cache()
 
     def _log(self, message: str):
         """로그 출력"""
         print(f"[ExploratoryAgent] {message}")
         if self._log_callback:
             self._log_callback(message)
+
+    def _resolve_llm_cache_path(self) -> str:
+        repo_root = Path(__file__).resolve().parents[4]
+        return str(repo_root / "artifacts" / "llm_cache.json")
+
+    def _resolve_semantic_cache_path(self) -> str:
+        repo_root = Path(__file__).resolve().parents[4]
+        return str(repo_root / "artifacts" / "cache" / "semantic_llm_cache.json")
+
+    def _load_llm_cache(self) -> None:
+        try:
+            if os.path.exists(self._llm_cache_path):
+                with open(self._llm_cache_path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict):
+                    self._llm_cache = {k: str(v) for k, v in data.items()}
+        except Exception as exc:
+            self._log(f"⚠️ LLM 캐시 로드 실패: {exc}")
+
+    def _save_llm_cache(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._llm_cache_path), exist_ok=True)
+            with open(self._llm_cache_path, "w", encoding="utf-8") as handle:
+                json.dump(self._llm_cache, handle, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._log(f"⚠️ LLM 캐시 저장 실패: {exc}")
+
+    def _load_semantic_cache(self) -> None:
+        try:
+            if os.path.exists(self._semantic_cache_path):
+                with open(self._semantic_cache_path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, list):
+                    self._semantic_cache = data
+        except Exception as exc:
+            self._log(f"⚠️ 시맨틱 캐시 로드 실패: {exc}")
+
+    def _save_semantic_cache(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._semantic_cache_path), exist_ok=True)
+            with open(self._semantic_cache_path, "w", encoding="utf-8") as handle:
+                json.dump(self._semantic_cache, handle, ensure_ascii=False)
+        except Exception as exc:
+            self._log(f"⚠️ 시맨틱 캐시 저장 실패: {exc}")
+
+    def _get_llm_cache_key(
+        self,
+        prompt: str,
+        screenshot: Optional[str],
+        action_signature: str,
+    ) -> str:
+        digest = hashlib.md5()
+        digest.update(prompt.encode("utf-8"))
+        digest.update(action_signature.encode("utf-8"))
+        if screenshot:
+            digest.update(screenshot.encode("utf-8"))
+        return digest.hexdigest()
+
+    def _semantic_cache_text(
+        self,
+        page_state: PageState,
+        testable_actions: List[TestableAction],
+    ) -> str:
+        actions_text = "\n".join(
+            f"{action.action_type}:{action.description}"
+            for action in testable_actions[:30]
+        )
+        element_summary = ",".join(
+            sorted(
+                {f"{el.tag}:{el.text[:20]}" for el in page_state.interactive_elements}
+            )
+        )
+        state_summary = (
+            f"tested={len(self._tested_elements)};"
+            f"history={';'.join(self._action_history[-3:])}"
+        )
+        action_signature = self._action_signature(testable_actions)
+        return (
+            f"{page_state.url}\n{element_summary}\n{state_summary}\n"
+            f"signature={action_signature}\n{actions_text}"
+        )
+
+    def _embed_text(self, text: str) -> List[float]:
+        tokens = re.findall(r"[\w가-힣]+", text.lower())
+        dim = 128
+        vector = [0.0] * dim
+        for token in tokens:
+            token_hash = hashlib.md5(token.encode("utf-8")).hexdigest()
+            index = int(token_hash[:8], 16) % dim
+            vector[index] += 1.0
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm > 0:
+            vector = [value / norm for value in vector]
+        return vector
+
+    def _cosine_similarity(self, left: List[float], right: List[float]) -> float:
+        if not left or not right:
+            return 0.0
+        length = min(len(left), len(right))
+        dot = sum(left[i] * right[i] for i in range(length))
+        left_norm = math.sqrt(sum(left[i] * left[i] for i in range(length)))
+        right_norm = math.sqrt(sum(right[i] * right[i] for i in range(length)))
+        if left_norm == 0 or right_norm == 0:
+            return 0.0
+        return dot / (left_norm * right_norm)
+
+    def _semantic_cache_lookup(
+        self, text: str, action_signature: str, threshold: float = 0.95
+    ) -> Optional[str]:
+        if not self._semantic_cache:
+            return None
+        query_embedding = self._embed_text(text)
+        best_score = 0.0
+        best_response: Optional[str] = None
+        for entry in self._semantic_cache:
+            embedding = entry.get("embedding")
+            response = entry.get("response")
+            signature = entry.get("signature")
+            if signature != action_signature:
+                continue
+            if not isinstance(embedding, list) or not isinstance(response, str):
+                continue
+            score = self._cosine_similarity(query_embedding, embedding)
+            if score > best_score:
+                best_score = score
+                best_response = response
+        if best_response and best_score >= threshold:
+            self._log(f"🧠 시맨틱 캐시 hit (score={best_score:.2f})")
+            return best_response
+        return None
+
+    def _semantic_cache_store(
+        self, text: str, response: str, action_signature: str
+    ) -> None:
+        embedding = self._embed_text(text)
+        self._semantic_cache.append(
+            {
+                "embedding": embedding,
+                "response": response,
+                "text": text[:500],
+                "signature": action_signature,
+            }
+        )
+        if len(self._semantic_cache) > 200:
+            self._semantic_cache = self._semantic_cache[-200:]
+        self._save_semantic_cache()
 
     def _is_login_page_with_no_elements(self, page_state: PageState) -> bool:
         """
@@ -273,6 +442,45 @@ class ExploratoryAgent:
                 f"Step {action_count}: {decision.selected_action.action_type} on {decision.selected_action.description}"
             )
 
+            # 9-1. 액션 시도 횟수 기록
+            attempt_key = (
+                f"{page_state.url_hash}:{decision.selected_action.element_id}"
+                f":{decision.selected_action.action_type}"
+            )
+            self._action_attempts[attempt_key] = (
+                self._action_attempts.get(attempt_key, 0) + 1
+            )
+
+            # 9-2. 토글 액션 히스토리 기록
+            if self._is_toggle_action(decision.selected_action):
+                toggle_key = (
+                    f"{page_state.url_hash}:{decision.selected_action.element_id}:"
+                    f"{self._normalize_action_description(decision.selected_action)}"
+                )
+                self._toggle_action_history[toggle_key] = (
+                    self._toggle_action_history.get(toggle_key, 0) + 1
+                )
+
+            # 9-3. 상태별 액션 기록
+            if self._current_state_key:
+                self._state_action_history.setdefault(
+                    self._current_state_key, set()
+                ).add(
+                    f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
+                )
+
+            self._action_attempts[attempt_key] = (
+                self._action_attempts.get(attempt_key, 0) + 1
+            )
+
+            # 9-2. 상태별 액션 기록
+            if self._current_state_key:
+                self._state_action_history.setdefault(
+                    self._current_state_key, set()
+                ).add(
+                    f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
+                )
+
             # 10. 요소를 테스트 완료로 마킹
             if decision.selected_action:
                 self._tested_elements.add(decision.selected_action.element_id)
@@ -416,6 +624,8 @@ class ExploratoryAgent:
                         role=el.role,
                         type=el.type,
                         aria_label=el.aria_label,
+                        title=el.title,
+                        href=el.href,
                         placeholder=el.placeholder,
                         bounding_box=el.bounding_box,
                         tested=tested,
@@ -578,13 +788,60 @@ class ExploratoryAgent:
 
         # 테스트 가능한 액션 목록 생성
         testable_actions = self._generate_testable_actions(page_state)
+        self._log(f"   - 테스트 가능한 액션: {len(testable_actions)}개")
+        if not testable_actions:
+            preview = [
+                f"{el.tag}:{self._element_label(el)}"
+                for el in page_state.interactive_elements[:10]
+            ]
+            self._log(f"   - 요소 샘플: {preview}")
 
         if not testable_actions:
+            if self.config.test_navigation and self._action_frontier:
+                frontier_action = self._select_frontier_action(page_state, [])
+                if frontier_action:
+                    return ExplorationDecision(
+                        should_continue=True,
+                        selected_action=frontier_action,
+                        reasoning="BFS 큐에 남은 액션으로 계속 탐색",
+                        confidence=0.4,
+                    )
             return ExplorationDecision(
                 should_continue=False,
                 reasoning="더 이상 테스트할 요소가 없습니다",
                 confidence=1.0,
             )
+
+        state_key = self._state_key(page_state, testable_actions)
+        self._current_state_key = state_key
+        visited_actions = self._state_action_history.get(state_key, set())
+        unvisited = [
+            action
+            for action in testable_actions
+            if f"{action.element_id}:{action.action_type}" not in visited_actions
+        ]
+        if unvisited:
+            non_fill = [action for action in unvisited if action.action_type != "fill"]
+            if non_fill:
+                non_fill.sort(key=lambda x: x.priority, reverse=True)
+                return ExplorationDecision(
+                    should_continue=True,
+                    selected_action=non_fill[0],
+                    reasoning="상태 기반 탐색: 미실행 액션 우선",
+                    confidence=0.7,
+                )
+
+        if self.config.test_navigation and not self._has_pending_inputs(page_state):
+            frontier_action = self._select_frontier_action(page_state, testable_actions)
+            if frontier_action:
+                return ExplorationDecision(
+                    should_continue=True,
+                    selected_action=frontier_action,
+                    reasoning="BFS 탐색: 큐에 등록된 액션 우선 선택",
+                    confidence=0.6,
+                )
+            if self._action_frontier:
+                self._log("ℹ️ BFS 큐는 남아있지만 현재 페이지에서 매칭 실패")
 
         # 프롬프트 구성
         prompt = self._build_exploration_prompt(
@@ -594,14 +851,50 @@ class ExploratoryAgent:
         )
 
         try:
-            # Gemini API 호출
-            if screenshot:
-                response_text = self.llm.analyze_with_vision(prompt, screenshot)
+            action_signature = self._action_signature(testable_actions)
+            cache_key = self._get_llm_cache_key(prompt, screenshot, action_signature)
+            response_text = self._llm_cache.get(cache_key)
+
+            if response_text:
+                self._log("🧠 LLM 캐시 hit")
             else:
-                response_text = self._call_gemini_text_only(prompt)
+                semantic_text = self._semantic_cache_text(page_state, testable_actions)
+                response_text = self._semantic_cache_lookup(
+                    semantic_text, action_signature
+                )
+
+            if not response_text:
+                # Gemini API 호출
+                if screenshot:
+                    response_text = self.llm.analyze_with_vision(prompt, screenshot)
+                else:
+                    response_text = self._call_gemini_text_only(prompt)
+
+                self._llm_cache[cache_key] = response_text
+                if len(self._llm_cache) > 200:
+                    self._llm_cache.pop(next(iter(self._llm_cache)))
+                self._save_llm_cache()
+
+                semantic_text = self._semantic_cache_text(page_state, testable_actions)
+                self._semantic_cache_store(
+                    semantic_text, response_text, action_signature
+                )
 
             # JSON 파싱
-            return self._parse_exploration_decision(response_text, testable_actions)
+            decision = self._parse_exploration_decision(response_text, testable_actions)
+
+            if not decision.should_continue and testable_actions:
+                fallback_action = sorted(
+                    testable_actions, key=lambda x: x.priority, reverse=True
+                )[0]
+                return ExplorationDecision(
+                    should_continue=True,
+                    selected_action=fallback_action,
+                    reasoning="남은 액션이 있어 탐색 지속",
+                    confidence=0.5,
+                )
+
+            return decision
 
         except Exception as e:
             self._log(f"LLM 결정 실패: {e}")
@@ -624,18 +917,29 @@ class ExploratoryAgent:
         """페이지 상태에서 테스트 가능한 액션 목록 생성"""
         actions = []
 
+        recent_action_counts: Dict[str, int] = {}
+        for entry in self._action_history[-5:]:
+            if ": " in entry:
+                action_part = entry.split(": ", 1)[1]
+                action_type = action_part.split(" on ", 1)[0]
+                recent_action_counts[action_type] = (
+                    recent_action_counts.get(action_type, 0) + 1
+                )
+
+        pending_inputs = self._has_pending_inputs(page_state)
+        actions_with_status: List[tuple[TestableAction, bool]] = []
+
         for element in page_state.interactive_elements:
             # 이미 테스트한 요소는 우선순위 낮게
             priority = 0.3 if element.tested else 0.8
+
+            element_label = self._element_label(element)
 
             # 액션 타입 결정
             if element.tag == "input":
                 if element.type in ["text", "email", "password", "search"]:
                     action_type = "fill"
-                    # input type과 placeholder를 모두 포함하여 필드 구분 가능하게
-                    field_hint = (
-                        element.placeholder or element.aria_label or element.text or ""
-                    )
+                    field_hint = element_label or element.type or ""
                     if element.type == "password":
                         description = f"비밀번호 입력: {field_hint}"
                     elif element.type == "email":
@@ -644,60 +948,345 @@ class ExploratoryAgent:
                         description = f"텍스트 입력({element.type}): {field_hint}"
                 elif element.type in ["checkbox", "radio"]:
                     action_type = "click"
-                    description = (
-                        f"체크박스/라디오: {element.text or element.aria_label}"
-                    )
+                    description = f"체크박스/라디오: {element_label or element.type}"
                 else:
                     action_type = "click"
-                    description = f"Input: {element.type}"
+                    description = f"Input: {element.type or element_label}"
             elif element.tag == "a":
                 action_type = "click"
-                description = f"링크: {element.text or 'Link'}"
-                # 외부 링크는 우선순위 낮게
-                if element.href and (
-                    element.href.startswith("http")
-                    and page_state.url not in element.href
-                ):
-                    priority *= 0.5
+                link_label = element_label or "[icon link]"
+                description = f"링크: {link_label}"
+                # 외부 링크는 탐색 대상에서 제외
+                if element.href:
+                    resolved = urljoin(page_state.url, element.href)
+                    current_host = urlparse(page_state.url).netloc
+                    target_host = urlparse(resolved).netloc
+                    if current_host and target_host and current_host != target_host:
+                        continue
             elif element.tag == "button":
                 action_type = "click"
-                description = f"버튼: {element.text or element.aria_label or 'Button'}"
+                button_label = element_label or "[icon]"
+                description = f"버튼: {button_label}"
             elif element.tag == "select":
                 action_type = "select"
-                description = f"드롭다운: {element.text or element.aria_label}"
+                description = f"드롭다운: {element_label}"
             else:
                 action_type = "click"
-                description = f"{element.tag}: {element.text or element.role}"
+                description = f"{element.tag}: {element_label or element.role}"
+            # 최근 액션과 동일한 타입이면 우선순위 낮춤
+            recent_count = recent_action_counts.get(action_type, 0)
+            if recent_count >= 2:
+                priority *= 0.6
+            elif recent_count == 1:
+                priority *= 0.8
+
+            # Guard: 필수 입력이 남아있으면 제출/확인 버튼 제외
+            if pending_inputs and action_type == "click":
+                if element.tag == "input" and (element.type or "").lower() in [
+                    "submit",
+                    "button",
+                    "image",
+                ]:
+                    continue
+                if element.tag == "button":
+                    submit_keywords = [
+                        "submit",
+                        "login",
+                        "log in",
+                        "sign in",
+                        "next",
+                        "continue",
+                        "confirm",
+                        "ok",
+                        "로그인",
+                        "다음",
+                        "확인",
+                        "완료",
+                    ]
+                    label_lower = description.lower()
+                    if any(keyword in label_lower for keyword in submit_keywords):
+                        continue
+
+            # Guard: 토글 액션은 페이지당 1회씩만 허용
+            if action_type == "click":
+                temp_action = TestableAction(
+                    element_id=element.element_id,
+                    action_type=action_type,
+                    description=description,
+                    priority=priority,
+                    reasoning="",
+                )
+                if self._is_toggle_action(temp_action):
+                    toggle_key = (
+                        f"{page_state.url_hash}:{element.element_id}:"
+                        f"{self._normalize_action_description(temp_action)}"
+                    )
+                    if self._toggle_action_history.get(toggle_key, 0) >= 1:
+                        continue
+
+            # 동일 요소의 반복 시도는 우선순위 낮추거나 제외
+            attempt_key = f"{page_state.url_hash}:{element.element_id}:{action_type}"
+            attempt_count = self._action_attempts.get(attempt_key, 0)
+            max_attempts = 2
+            if (
+                element.tag == "a"
+                or "back" in description.lower()
+                or "next" in description.lower()
+            ):
+                max_attempts = 4
+            if attempt_count >= max_attempts:
+                continue
+            if attempt_count >= 1:
+                priority *= 0.5
+
+            # 링크는 새 페이지 탐색을 우선
+            if element.tag == "a" and element.href:
+                resolved = urljoin(page_state.url, element.href)
+                if resolved:
+                    current_host = urlparse(page_state.url).netloc
+                    target_host = urlparse(resolved).netloc
+                    if target_host and target_host != current_host:
+                        priority *= 0.5
+                    else:
+                        href_hash = self._hash_url(resolved)
+                        if href_hash not in self._visited_pages:
+                            priority = min(priority * 1.3, 1.0)
 
             # 파괴적 액션 회피
             if self.config.avoid_destructive:
                 destructive_keywords = [
                     "delete",
-                    "remove",
                     "삭제",
                     "제거",
                     "clear",
                     "reset",
+                    "logout",
+                    "log out",
+                    "sign out",
+                    "reset app state",
                 ]
                 if any(
                     keyword in description.lower() for keyword in destructive_keywords
                 ):
+                    if action_type == "click":
+                        continue
                     priority *= 0.1
 
-            actions.append(
-                TestableAction(
-                    element_id=element.element_id,
-                    action_type=action_type,
-                    description=description,
-                    priority=priority,
-                    reasoning=f"{'미테스트' if not element.tested else '재테스트'} 요소",
-                )
+            action = TestableAction(
+                element_id=element.element_id,
+                action_type=action_type,
+                description=description,
+                priority=priority,
+                reasoning=f"{'미테스트' if not element.tested else '재테스트'} 요소",
             )
+
+            if (
+                action.action_type == "click"
+                and not element.tested
+                and not pending_inputs
+                and not self._is_toggle_action(action)
+            ):
+                self._enqueue_frontier_action(page_state, action)
+
+            actions_with_status.append((action, element.tested))
+
+        actions = [action for action, _ in actions_with_status]
+        has_untested = any(not tested for _, tested in actions_with_status)
+        if has_untested:
+            actions = [action for action, tested in actions_with_status if not tested]
 
         # 우선순위로 정렬
         actions.sort(key=lambda x: x.priority, reverse=True)
 
+        max_actions = 30
+        if len(actions) > max_actions:
+            category_buckets: Dict[str, List[TestableAction]] = {}
+            for action in actions:
+                if action.action_type == "fill":
+                    category = "fill"
+                elif action.action_type == "select":
+                    category = "select"
+                elif action.action_type == "click":
+                    if "[icon link]" in action.description:
+                        category = "icon_link"
+                    elif "[icon]" in action.description:
+                        category = "icon_button"
+                    elif action.description.startswith("링크:"):
+                        category = "link"
+                    elif action.description.startswith("버튼:"):
+                        category = "button"
+                    elif action.description.startswith("체크박스"):
+                        category = "toggle"
+                    else:
+                        category = "click"
+                else:
+                    category = action.action_type
+                category_buckets.setdefault(category, []).append(action)
+
+            balanced: List[TestableAction] = []
+            per_category = max(2, max_actions // max(len(category_buckets), 1))
+            for category in [
+                "fill",
+                "select",
+                "icon_link",
+                "icon_button",
+                "link",
+                "button",
+                "toggle",
+                "click",
+            ]:
+                bucket = category_buckets.get(category, [])
+                if not bucket:
+                    continue
+                balanced.extend(bucket[:per_category])
+
+            if len(balanced) < max_actions:
+                remaining = [action for action in actions if action not in balanced]
+                balanced.extend(remaining[: max_actions - len(balanced)])
+
+            return balanced[:max_actions]
+
         return actions
+
+    def _enqueue_frontier_action(
+        self,
+        page_state: PageState,
+        action: TestableAction,
+    ) -> None:
+        key = f"{page_state.url_hash}:{action.element_id}:{action.action_type}"
+        if key in self._action_frontier_set:
+            return
+        self._action_frontier.append(
+            {
+                "url_hash": page_state.url_hash,
+                "element_id": action.element_id,
+                "action_type": action.action_type,
+            }
+        )
+        self._action_frontier_set.add(key)
+
+    def _has_pending_inputs(self, page_state: PageState) -> bool:
+        for element in page_state.interactive_elements:
+            if element.tag != "input":
+                continue
+            input_type = (element.type or "text").lower()
+            if input_type in ["submit", "button", "hidden", "image"]:
+                continue
+            if not element.tested:
+                return True
+        return False
+
+    def _element_label(self, element: ElementState) -> str:
+        parts = [
+            element.text or "",
+            element.aria_label or "",
+            element.title or "",
+            element.placeholder or "",
+            element.role or "",
+        ]
+        label = next((part for part in parts if part), "")
+        return label.strip()
+
+    def _action_signature(self, actions: List[TestableAction]) -> str:
+        entries = [
+            f"{action.action_type}:{self._normalize_action_description(action)}"
+            for action in actions
+        ]
+        digest = hashlib.md5("|".join(entries).encode("utf-8")).hexdigest()[:12]
+        return digest
+
+    def _normalize_action_description(self, action: TestableAction) -> str:
+        description = action.description.lower()
+        if self._is_toggle_action(action):
+            for keyword in [
+                "add to cart",
+                "remove",
+                "open",
+                "close",
+                "show",
+                "hide",
+                "expand",
+                "collapse",
+            ]:
+                if keyword in description:
+                    return keyword
+        return action.description
+
+    def _build_action_for_element(
+        self, element: ElementState, action_type: str
+    ) -> TestableAction:
+        label = self._element_label(element)
+        if element.tag == "input":
+            if element.type in ["text", "email", "password", "search"]:
+                description = f"텍스트 입력({element.type}): {label or element.type}"
+            elif element.type in ["checkbox", "radio"]:
+                description = f"체크박스/라디오: {label or element.type}"
+            else:
+                description = f"Input: {element.type or label}"
+        elif element.tag == "a":
+            description = f"링크: {label or 'Link'}"
+        elif element.tag == "button":
+            description = f"버튼: {label or 'Button'}"
+        elif element.tag == "select":
+            description = f"드롭다운: {label}"
+        else:
+            description = f"{element.tag}: {label or element.role}"
+
+        return TestableAction(
+            element_id=element.element_id,
+            action_type=action_type,
+            description=description,
+            priority=0.5,
+            reasoning="BFS fallback",
+        )
+
+    def _state_key(self, page_state: PageState, actions: List[TestableAction]) -> str:
+        action_signature = self._action_signature(actions)
+        return f"{page_state.url_hash}:{action_signature}"
+
+    def _is_toggle_action(self, action: TestableAction) -> bool:
+        label = action.description.lower()
+        toggle_keywords = [
+            "add to cart",
+            "remove",
+            "open",
+            "close",
+            "show",
+            "hide",
+            "expand",
+            "collapse",
+        ]
+        return any(keyword in label for keyword in toggle_keywords)
+
+    def _select_frontier_action(
+        self,
+        page_state: PageState,
+        testable_actions: List[TestableAction],
+    ) -> Optional[TestableAction]:
+        if not self._action_frontier:
+            return None
+
+        action_map = {
+            f"{page_state.url_hash}:{action.element_id}:{action.action_type}": action
+            for action in testable_actions
+        }
+        element_map = {el.element_id: el for el in page_state.interactive_elements}
+        for entry in list(self._action_frontier):
+            if entry["url_hash"] != page_state.url_hash:
+                continue
+            key = f"{entry['url_hash']}:{entry['element_id']}:{entry['action_type']}"
+            action = action_map.get(key)
+            if action:
+                self._action_frontier.remove(entry)
+                self._action_frontier_set.discard(key)
+                return action
+            element = element_map.get(entry["element_id"])
+            if element:
+                self._action_frontier.remove(entry)
+                self._action_frontier_set.discard(key)
+                return self._build_action_for_element(element, entry["action_type"])
+
+        return None
 
     def _build_exploration_prompt(
         self,
@@ -707,11 +1296,11 @@ class ExploratoryAgent:
     ) -> str:
         """탐색 프롬프트 생성"""
 
-        # 테스트 가능한 액션을 텍스트로 변환 (최대 20개)
+        # 테스트 가능한 액션을 텍스트로 변환 (최대 30개)
         actions_text = "\n".join(
             [
                 f"[{i}] {action.action_type.upper()}: {action.description} (우선순위: {action.priority:.2f})"
-                for i, action in enumerate(testable_actions[:20])
+                for i, action in enumerate(testable_actions[:30])
             ]
         )
 
@@ -747,9 +1336,11 @@ class ExploratoryAgent:
 ## 지시사항
 1. **우선순위 고려**: 미테스트 요소를 우선 선택하세요
 2. **다양성**: 같은 유형만 계속 테스트하지 말고 다양한 UI 요소를 테스트하세요
-3. **깊이 우선**: 링크를 따라가서 새로운 페이지도 탐색하세요
-4. **버그 탐지**: 에러 메시지, 깨진 UI, 예상치 못한 동작을 찾으세요
-5. **종료 조건**: 더 이상 테스트할 요소가 없거나, 충분히 탐색했다면 should_continue: false
+3. **탐색 확대**: 방문하지 않은 링크나 새 페이지로 이어질 요소를 우선 선택하세요
+4. **외부 링크 제외**: 현재 도메인 밖으로 이동하는 링크는 선택하지 마세요
+5. **BFS 탐색**: 새로 발견된 내부 링크는 발견 순서대로 우선 선택하세요
+6. **버그 탐지**: 에러 메시지, 깨진 UI, 예상치 못한 동작을 찾으세요
+7. **종료 조건**: 더 이상 테스트할 요소가 없거나, 충분히 탐색했다면 should_continue: false
 
 ## 입력값 생성 규칙 (fill 액션인 경우)
 - **중요**: 화면에 테스트 계정 정보가 보이면 반드시 그 값을 사용하세요!
@@ -850,7 +1441,20 @@ JSON 응답:"""
 
             # 액션 실행
             if action.action_type == "click":
+                did_open_menu = False
+                if self._should_open_menu_for_action(action, selector):
+                    menu_selector = self._find_open_menu_selector(page_state)
+                    if menu_selector:
+                        self._log("ℹ️ 메뉴 항목 클릭 전 메뉴 열기 시도")
+                        self._execute_action("click", selector=menu_selector)
+                        time.sleep(0.5)
+                        did_open_menu = True
+                self._execute_action("scrollIntoView", selector=selector)
                 success, error = self._execute_action("click", selector=selector)
+                if did_open_menu:
+                    close_selector = self._find_close_menu_selector(page_state)
+                    if close_selector:
+                        self._log("ℹ️ 메뉴 항목 클릭 후 메뉴 닫기 건너뜀")
             elif action.action_type == "fill":
                 # 입력값 결정
                 value = self._determine_input_value(action, decision.input_values)
@@ -922,6 +1526,51 @@ JSON 응답:"""
 
         except Exception as e:
             return False, str(e), []
+
+    def _should_open_menu_for_action(
+        self,
+        action: TestableAction,
+        selector: str,
+    ) -> bool:
+        description = action.description.lower()
+        selector_lower = selector.lower()
+        if "sidebar" in selector_lower or "menu" in selector_lower:
+            return "링크" in description or "메뉴" in description
+        return False
+
+    def _find_open_menu_selector(self, page_state: PageState) -> Optional[str]:
+        for element in page_state.interactive_elements:
+            if element.tag != "button":
+                continue
+            label = (element.text or "").lower()
+            aria_label = (element.aria_label or "").lower()
+            combined = f"{label} {aria_label}".strip()
+            if not combined:
+                continue
+            if "menu" in combined and "close" not in combined and "open" in combined:
+                selector = self._find_selector_by_element_id(
+                    element.element_id, page_state
+                )
+                if selector:
+                    return selector
+        return None
+
+    def _find_close_menu_selector(self, page_state: PageState) -> Optional[str]:
+        for element in page_state.interactive_elements:
+            if element.tag != "button":
+                continue
+            label = (element.text or "").lower()
+            aria_label = (element.aria_label or "").lower()
+            combined = f"{label} {aria_label}".strip()
+            if not combined:
+                continue
+            if "menu" in combined and "close" in combined:
+                selector = self._find_selector_by_element_id(
+                    element.element_id, page_state
+                )
+                if selector:
+                    return selector
+        return None
 
     def _execute_action(
         self,

@@ -23,6 +23,7 @@ class ElementState(BaseModel):
     role: Optional[str] = None
     type: Optional[str] = None
     aria_label: Optional[str] = None
+    title: Optional[str] = None
     href: Optional[str] = None
     placeholder: Optional[str] = None
     bounding_box: Optional[dict] = None

@@ -82,6 +82,7 @@ class DOMElement(BaseModel):
     type: Optional[str] = Field(default=None, description="input type")
     placeholder: Optional[str] = Field(default=None)
     aria_label: Optional[str] = Field(default=None)
+    title: Optional[str] = Field(default=None)
     href: Optional[str] = Field(default=None, description="링크 URL")
     bounding_box: Optional[dict] = Field(default=None, description="요소 위치 정보")
 
