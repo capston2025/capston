@@ -733,6 +733,47 @@ class ExploratoryAgent:
             if new_pages:
                 self._log(f"🆕 새 페이지 발견: {new_url}")
 
+            after_state = self._analyze_current_page()
+            if success and decision.selected_action and after_state:
+                expected_input = None
+                before_select_state = None
+                before_toggle_state = None
+                selector = None
+                if decision.selected_action.action_type == "fill":
+                    expected_input = self._determine_input_value(
+                        decision.selected_action, decision.input_values
+                    )
+                if decision.selected_action.action_type in ["select", "click"]:
+                    selector = self._find_selector_by_element_id(
+                        decision.selected_action.element_id, page_state
+                    )
+                if decision.selected_action.action_type == "select":
+                    before_select_state = self._get_select_state(selector)
+                if decision.selected_action.action_type == "click":
+                    before_toggle_state = self._get_toggle_state(selector)
+                intent_ok, intent_reason = self._verify_action_intent(
+                    action=decision.selected_action,
+                    before_state=page_state,
+                    after_state=after_state,
+                    before_url=page_state.url,
+                    after_url=new_url,
+                    screenshot_before=screenshot_before,
+                    screenshot_after=screenshot_after,
+                    expected_input=expected_input,
+                    before_select_state=before_select_state,
+                    before_toggle_state=before_toggle_state,
+                )
+                if not intent_ok and intent_reason:
+                    issues.append(
+                        self._create_intent_issue(
+                            action=decision.selected_action,
+                            url=page_state.url,
+                            reason=intent_reason,
+                            screenshot_before=screenshot_before,
+                            screenshot_after=screenshot_after,
+                        )
+                    )
+
             # 12-1. 기능 중심 설명 생성
             feature_info = self._generate_feature_description(
                 decision.selected_action if decision else None
@@ -2072,6 +2113,76 @@ JSON 응답:"""
         except Exception as e:
             return False, str(e)
 
+    def _evaluate_selector(self, selector: str, script: str) -> Optional[str]:
+        params: Dict[str, object] = {
+            "session_id": self.session_id,
+            "action": "evaluate",
+            "url": "",
+            "selector": selector,
+            "value": script,
+        }
+        try:
+            response = requests.post(
+                f"{self.mcp_host_url}/execute",
+                json={"action": "execute_action", "params": params},
+                timeout=self.config.action_timeout,
+            )
+            data = response.json()
+            if not data.get("success"):
+                return None
+            result = data.get("result")
+            return str(result) if result is not None else None
+        except Exception:
+            return None
+
+    def _get_select_state(self, selector: Optional[str]) -> Optional[dict]:
+        if not selector:
+            return None
+        result = self._evaluate_selector(
+            selector,
+            """
+            el => JSON.stringify({
+                value: el.value ?? '',
+                text: (el.selectedOptions && el.selectedOptions[0]
+                    ? el.selectedOptions[0].textContent
+                    : '')
+            })
+            """,
+        )
+        if not result:
+            return None
+        try:
+            return json.loads(result)
+        except Exception:
+            return None
+
+    def _get_toggle_state(self, selector: Optional[str]) -> Optional[dict]:
+        if not selector:
+            return None
+        result = self._evaluate_selector(
+            selector,
+            """
+            el => JSON.stringify({
+                checked: typeof el.checked === 'boolean' ? el.checked : null,
+                pressed: (el.getAttribute && el.getAttribute('aria-pressed'))
+                    ? el.getAttribute('aria-pressed') === 'true'
+                    : null,
+                selected: (el.getAttribute && el.getAttribute('aria-selected'))
+                    ? el.getAttribute('aria-selected') === 'true'
+                    : null,
+                expanded: (el.getAttribute && el.getAttribute('aria-expanded'))
+                    ? el.getAttribute('aria-expanded') === 'true'
+                    : null
+            })
+            """,
+        )
+        if not result:
+            return None
+        try:
+            return json.loads(result)
+        except Exception:
+            return None
+
     def _build_element_id(
         self,
         url_hash: str,
@@ -2101,7 +2212,13 @@ JSON 응답:"""
     ) -> Optional[str]:
         """element_id로 셀렉터 찾기"""
         element = self._find_element_by_id(element_id, page_state)
-        return element.selector if element else None
+        if not element:
+            return None
+        selector = element.selector
+        if selector and self._is_selector_safe(selector):
+            return selector
+        fallback = self._fallback_selector_for_element(element, page_state)
+        return fallback or selector
 
     def _find_element_by_id(
         self,
@@ -2112,6 +2229,58 @@ JSON 응답:"""
         for element in page_state.interactive_elements:
             if element.element_id == element_id:
                 return element
+        return None
+
+    def _is_selector_safe(self, selector: str) -> bool:
+        if not selector:
+            return False
+        if selector.startswith("role=") or selector.startswith("text="):
+            return True
+        if "[" in selector or "]" in selector:
+            return False
+        parts = selector.split(".")
+        for part in parts[1:]:
+            segment = part.split(" ")[0].split(">")[0]
+            if ":" in segment:
+                return False
+        return True
+
+    def _fallback_selector_for_element(
+        self,
+        element: ElementState,
+        page_state: PageState,
+    ) -> Optional[str]:
+        label = self._element_label(element)
+        if element.tag == "select":
+            select_index = 0
+            for candidate in page_state.interactive_elements:
+                if candidate.tag == "select":
+                    if candidate.element_id == element.element_id:
+                        return f"select >> nth={select_index}"
+                    select_index += 1
+            return "select"
+
+        if element.tag == "input":
+            if element.placeholder:
+                return f'input[placeholder="{element.placeholder}"]'
+            if element.aria_label:
+                return f'input[aria-label="{element.aria_label}"]'
+            if element.type:
+                input_index = 0
+                for candidate in page_state.interactive_elements:
+                    if candidate.tag == "input" and candidate.type == element.type:
+                        if candidate.element_id == element.element_id:
+                            return f'input[type="{element.type}"] >> nth={input_index}'
+                        input_index += 1
+
+        if element.aria_label:
+            return f'[aria-label="{element.aria_label}"]'
+        if element.role:
+            if label:
+                return f'role={element.role}[name="{label}"]'
+            return f"role={element.role}"
+        if label and len(label) <= 40:
+            return f'text="{label}"'
         return None
 
     def _determine_input_value(
@@ -2209,6 +2378,178 @@ JSON 응답:"""
             ],
             error_message=error_message,
         )
+
+    def _create_intent_issue(
+        self,
+        action: TestableAction,
+        url: str,
+        reason: str,
+        screenshot_before: Optional[str] = None,
+        screenshot_after: Optional[str] = None,
+    ) -> FoundIssue:
+        issue_id = f"INTENT_{int(time.time())}_{len(self._found_issues)}"
+        return FoundIssue(
+            issue_id=issue_id,
+            issue_type=IssueType.UNEXPECTED_BEHAVIOR,
+            severity="low",
+            title=f"의도한 결과 미확인: {action.description}",
+            description=f"액션 실행 후 의도한 변화가 감지되지 않았습니다.\n\n사유: {reason}",
+            url=url,
+            steps_to_reproduce=[
+                f"1. {url}로 이동",
+                f"2. {action.description}를 {action.action_type}",
+            ],
+            screenshot_before=screenshot_before,
+            screenshot_after=screenshot_after,
+        )
+
+    def _verify_action_intent(
+        self,
+        action: TestableAction,
+        before_state: PageState,
+        after_state: PageState,
+        before_url: str,
+        after_url: str,
+        screenshot_before: Optional[str],
+        screenshot_after: Optional[str],
+        expected_input: Optional[str],
+        before_select_state: Optional[dict],
+        before_toggle_state: Optional[dict],
+    ) -> tuple[bool, Optional[str]]:
+        if action.action_type == "navigate":
+            target_url = self._resolve_navigation_target(action.element_id, before_url)
+            if self._normalize_url_for_compare(
+                after_url
+            ) == self._normalize_url_for_compare(target_url):
+                return True, None
+            if after_url != before_url:
+                return True, None
+            return False, f"URL 이동이 확인되지 않음: {target_url}"
+
+        if action.action_type == "fill":
+            selector = self._find_selector_by_element_id(
+                action.element_id, before_state
+            )
+            if not selector:
+                return True, None
+            if not expected_input:
+                return True, None
+            current_value = self._evaluate_selector(
+                selector, "el => (el.value ?? el.textContent ?? '').toString()"
+            )
+            if current_value is None:
+                return True, None
+            if self._normalize_text(expected_input) in self._normalize_text(
+                current_value
+            ):
+                return True, None
+            return False, "입력값 반영이 확인되지 않음"
+
+        if action.action_type == "hover":
+            return True, None
+
+        if action.action_type == "select":
+            selector = self._find_selector_by_element_id(
+                action.element_id, before_state
+            )
+            if not selector:
+                return True, None
+            after_select_state = self._get_select_state(selector)
+            expected_label = None
+            if ":" in action.description:
+                expected_label = action.description.split(":", 1)[1].strip()
+            if expected_label and after_select_state:
+                after_text = self._normalize_text(after_select_state.get("text"))
+                if self._normalize_text(expected_label) in after_text:
+                    return True, None
+            if before_select_state and after_select_state:
+                if before_select_state.get("value") != after_select_state.get("value"):
+                    return True, None
+                if self._normalize_text(
+                    before_select_state.get("text")
+                ) != self._normalize_text(after_select_state.get("text")):
+                    return True, None
+            if after_select_state and (
+                after_select_state.get("value") or after_select_state.get("text")
+            ):
+                return True, None
+            return False, "드롭다운 선택 결과가 확인되지 않음"
+
+        if action.action_type in ["click", "select"]:
+            if after_url != before_url:
+                return True, None
+
+            if (
+                screenshot_before
+                and screenshot_after
+                and screenshot_before != screenshot_after
+            ):
+                return True, None
+
+            before_count = len(before_state.interactive_elements)
+            after_count = len(after_state.interactive_elements)
+            if before_count != after_count:
+                return True, None
+
+            element_before = self._find_element_by_id(action.element_id, before_state)
+            selector = element_before.selector if element_before else None
+            element_after = (
+                self._find_element_by_selector(selector, after_state)
+                if selector
+                else None
+            )
+            if selector and element_after is None:
+                return True, None
+
+            if selector:
+                toggle_state = self._get_toggle_state(selector)
+                if toggle_state:
+                    if before_toggle_state and toggle_state != before_toggle_state:
+                        return True, None
+                    if toggle_state.get("checked") is True:
+                        return True, None
+                    if toggle_state.get("pressed") is True:
+                        return True, None
+                    if toggle_state.get("selected") is True:
+                        return True, None
+                    if toggle_state.get("expanded") is True:
+                        return True, None
+            if element_before and element_after:
+                if self._normalize_text(element_before.text) != self._normalize_text(
+                    element_after.text
+                ):
+                    return True, None
+                if (element_before.aria_label or "").strip() != (
+                    element_after.aria_label or ""
+                ).strip():
+                    return True, None
+
+            return False, "URL/DOM 변화가 감지되지 않음"
+
+        return True, None
+
+    def _find_element_by_selector(
+        self, selector: Optional[str], page_state: PageState
+    ) -> Optional[ElementState]:
+        if not selector:
+            return None
+        for element in page_state.interactive_elements:
+            if element.selector == selector:
+                return element
+        return None
+
+    @staticmethod
+    def _normalize_text(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return " ".join(value.split()).strip().lower()
+
+    @staticmethod
+    def _normalize_url_for_compare(url: str) -> str:
+        if not url:
+            return ""
+        normalized = url.split("#")[0].rstrip("/")
+        return normalized
 
     def _report_console_errors(
         self, console_errors: List[str], screenshot: Optional[str]
