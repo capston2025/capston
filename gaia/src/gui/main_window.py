@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from gaia.src.gui.screencast_client import ScreencastClient
+from gaia.src.gui.exploration_viewer import ExplorationViewer
 
 
 
@@ -716,8 +717,11 @@ class MainWindow(QMainWindow):
         self._workflow_stack = QStackedWidget(control_panel)
         self._setup_page = self._create_setup_stage(control_panel)
         self._review_page = self._create_review_stage(control_panel)
+        self._exploration_page = ExplorationViewer(control_panel)
+        self._exploration_page.back_requested.connect(self.show_setup_stage)
         self._workflow_stack.addWidget(self._setup_page)
         self._workflow_stack.addWidget(self._review_page)
+        self._workflow_stack.addWidget(self._exploration_page)
         control_layout.addWidget(self._workflow_stack, stretch=1)
 
         splitter.addWidget(control_panel)
@@ -813,6 +817,17 @@ class MainWindow(QMainWindow):
 
         button_row.addStretch()
         layout.addLayout(button_row)
+
+        # 탐색 결과 보기 버튼 행
+        results_row = QHBoxLayout()
+        results_row.setSpacing(12)
+
+        self._view_results_button = QPushButton("📊 탐색 결과 보기", page)
+        self._view_results_button.setObjectName("GhostButton")
+        self._view_results_button.clicked.connect(self.show_exploration_results)
+        results_row.addWidget(self._view_results_button)
+        results_row.addStretch()
+        layout.addLayout(results_row)
 
         # 특정 기능 테스트 입력창 (처음엔 숨김)
         self._feature_input_container = QFrame(page)
@@ -979,6 +994,13 @@ class MainWindow(QMainWindow):
         if self._workflow_stack.currentWidget() is not self._review_page:
             self._workflow_stack.setCurrentWidget(self._review_page)
         self._back_to_setup_button.setEnabled(not self._is_busy)
+
+    def show_exploration_results(self) -> None:
+        """탐색 결과 뷰어 페이지 표시"""
+        self._workflow_stage = "exploration"
+        self._exploration_page.refresh_results()
+        if self._workflow_stack.currentWidget() is not self._exploration_page:
+            self._workflow_stack.setCurrentWidget(self._exploration_page)
 
 
     # ------------------------------------------------------------------

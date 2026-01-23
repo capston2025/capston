@@ -11,11 +11,20 @@ import hashlib
 import math
 import os
 import re
+import base64
 import requests
 from typing import Any, Dict, List, Optional, Set, Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+
+# GIF 생성을 위한 선택적 import
+try:
+    from PIL import Image
+    import io
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 from .exploratory_models import (
     ExplorationConfig,
@@ -95,6 +104,205 @@ class ExploratoryAgent:
         print(f"[ExploratoryAgent] {message}")
         if self._log_callback:
             self._log_callback(message)
+
+    def _setup_recording_dir(self, session_id: str) -> Path:
+        """녹화용 디렉토리 설정"""
+        repo_root = Path(__file__).resolve().parents[4]
+        screenshots_dir = repo_root / "artifacts" / "exploration_results" / session_id / "screenshots"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        return screenshots_dir
+
+    def _save_screenshot_to_file(self, screenshot_base64: str, screenshots_dir: Path, step_num: int) -> str:
+        """스크린샷을 파일로 저장"""
+        if not screenshot_base64:
+            return ""
+        try:
+            # base64 데이터에서 헤더 제거
+            if "," in screenshot_base64:
+                screenshot_base64 = screenshot_base64.split(",")[1]
+
+            img_data = base64.b64decode(screenshot_base64)
+            filename = f"step_{step_num:03d}.png"
+            filepath = screenshots_dir / filename
+
+            with open(filepath, "wb") as f:
+                f.write(img_data)
+
+            return str(filepath)
+        except Exception as e:
+            self._log(f"⚠️ 스크린샷 저장 실패: {e}")
+            return ""
+
+    def _generate_gif(self, screenshots_dir: Path, output_path: Path) -> bool:
+        """스크린샷들로 GIF 생성"""
+        if not HAS_PIL:
+            self._log("⚠️ PIL이 설치되지 않아 GIF를 생성할 수 없습니다")
+            return False
+
+        try:
+            png_files = sorted(screenshots_dir.glob("step_*.png"))
+            if len(png_files) < 2:
+                self._log("⚠️ GIF 생성을 위한 스크린샷이 부족합니다")
+                return False
+
+            images = []
+            for png_file in png_files:
+                img = Image.open(png_file)
+                # 크기 조정 (너무 크면 GIF가 무거워짐)
+                max_width = 800
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    new_size = (max_width, int(img.height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                images.append(img)
+
+            # GIF 저장 (각 프레임 1초)
+            images[0].save(
+                output_path,
+                save_all=True,
+                append_images=images[1:],
+                duration=1000,  # 1초 per frame
+                loop=0
+            )
+            self._log(f"🎬 GIF 생성 완료: {output_path}")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ GIF 생성 실패: {e}")
+            return False
+
+    def _generate_feature_description(self, action: Optional[TestableAction], context: str = "") -> Dict[str, str]:
+        """
+        액션에 대한 기능 중심 설명 생성
+
+        Returns:
+            {
+                "feature_description": "로그인 기능 테스트",
+                "test_scenario": "사용자 인증 플로우",
+                "business_impact": "사용자가 시스템에 접근할 수 없음"
+            }
+        """
+        if not action:
+            return {
+                "feature_description": "탐색 종료",
+                "test_scenario": "",
+                "business_impact": ""
+            }
+
+        # 액션 타입과 요소 정보를 기반으로 기능 추론
+        action_type = action.action_type
+        description = action.description.lower()
+
+        # 패턴 매칭으로 기능 추론
+        feature_patterns = {
+            # 로그인/인증 관련
+            ("login", "로그인", "sign in", "username", "password", "email"): {
+                "feature": "로그인/인증 기능 테스트",
+                "scenario": "사용자 인증 플로우",
+                "impact": "사용자가 서비스에 접근할 수 없음"
+            },
+            # 회원가입 관련
+            ("signup", "register", "회원가입", "create account"): {
+                "feature": "회원가입 기능 테스트",
+                "scenario": "신규 사용자 등록 플로우",
+                "impact": "신규 사용자 유치 불가"
+            },
+            # 장바구니 관련
+            ("cart", "add to cart", "장바구니", "basket", "remove"): {
+                "feature": "장바구니 기능 테스트",
+                "scenario": "상품 구매 플로우",
+                "impact": "사용자가 상품을 구매할 수 없음"
+            },
+            # 체크아웃/결제 관련
+            ("checkout", "payment", "결제", "구매", "order", "buy"): {
+                "feature": "체크아웃/결제 기능 테스트",
+                "scenario": "결제 프로세스",
+                "impact": "매출 손실 발생"
+            },
+            # 검색 관련
+            ("search", "검색", "find", "query"): {
+                "feature": "검색 기능 테스트",
+                "scenario": "상품/콘텐츠 검색 플로우",
+                "impact": "사용자가 원하는 정보를 찾을 수 없음"
+            },
+            # 네비게이션 관련
+            ("menu", "nav", "link", "back", "home", "메뉴"): {
+                "feature": "네비게이션 테스트",
+                "scenario": "사이트 탐색 플로우",
+                "impact": "사용자 경험 저하"
+            },
+            # 상품 상세 관련
+            ("product", "detail", "상품", "item"): {
+                "feature": "상품 상세 페이지 테스트",
+                "scenario": "상품 정보 확인 플로우",
+                "impact": "구매 결정에 필요한 정보 부족"
+            },
+            # 정렬/필터 관련
+            ("sort", "filter", "정렬", "필터", "dropdown"): {
+                "feature": "정렬/필터 기능 테스트",
+                "scenario": "상품 탐색 플로우",
+                "impact": "사용자가 원하는 조건으로 검색 불가"
+            },
+        }
+
+        for keywords, info in feature_patterns.items():
+            if any(kw in description for kw in keywords):
+                return {
+                    "feature_description": info["feature"],
+                    "test_scenario": info["scenario"],
+                    "business_impact": info["impact"]
+                }
+
+        # 기본값: 액션 타입 기반
+        default_features = {
+            "click": "UI 상호작용 테스트",
+            "fill": "입력 필드 테스트",
+            "select": "선택 기능 테스트",
+            "hover": "호버 상태 테스트",
+        }
+
+        return {
+            "feature_description": default_features.get(action_type, f"{action_type} 액션 테스트"),
+            "test_scenario": "일반 UI 테스트",
+            "business_impact": "사용자 경험 영향"
+        }
+
+    def _group_steps_into_scenarios(self, steps: List[ExplorationStep]) -> List[Dict[str, Any]]:
+        """
+        연속된 스텝들을 테스트 시나리오로 그룹화
+        """
+        scenarios = []
+        current_scenario = None
+
+        for step in steps:
+            scenario_name = step.test_scenario or "기타 테스트"
+
+            if current_scenario and current_scenario["name"] == scenario_name:
+                # 같은 시나리오에 추가
+                current_scenario["steps"].append(step.step_number)
+                if step.success:
+                    current_scenario["passed"] += 1
+                else:
+                    current_scenario["failed"] += 1
+            else:
+                # 새 시나리오 시작
+                if current_scenario:
+                    current_scenario["result"] = "pass" if current_scenario["failed"] == 0 else "fail"
+                    scenarios.append(current_scenario)
+
+                current_scenario = {
+                    "name": scenario_name,
+                    "feature": step.feature_description,
+                    "steps": [step.step_number],
+                    "passed": 1 if step.success else 0,
+                    "failed": 0 if step.success else 1,
+                }
+
+        # 마지막 시나리오 추가
+        if current_scenario:
+            current_scenario["result"] = "pass" if current_scenario["failed"] == 0 else "fail"
+            scenarios.append(current_scenario)
+
+        return scenarios
 
     def _resolve_llm_cache_path(self) -> str:
         repo_root = Path(__file__).resolve().parents[4]
@@ -311,6 +519,13 @@ class ExploratoryAgent:
         start_time = time.time()
         steps: List[ExplorationStep] = []
 
+        # 녹화 설정
+        screenshots_dir = None
+        screenshot_paths: List[str] = []
+        if self.config.enable_recording:
+            screenshots_dir = self._setup_recording_dir(session_id)
+            self._log(f"📹 녹화 활성화: {screenshots_dir}")
+
         self._log("=" * 60)
         self._log("🔍 완전 자율 탐색 모드 시작")
         self._log(f"   시작 URL: {start_url}")
@@ -428,8 +643,12 @@ class ExploratoryAgent:
                 steps.append(step)
                 break
 
-            # 7. 스크린샷 (액션 실행 전)
+            # 7. 스크린샷 (액션 실행 직전) - GIF용으로 저장
             screenshot_before = screenshot
+            if screenshots_dir and screenshot_before:
+                saved_path = self._save_screenshot_to_file(screenshot_before, screenshots_dir, action_count)
+                if saved_path:
+                    screenshot_paths.append(saved_path)
 
             # 8. 액션 실행
             success, error, issues = self._execute_exploration_action(
@@ -485,7 +704,7 @@ class ExploratoryAgent:
             if decision.selected_action:
                 self._tested_elements.add(decision.selected_action.element_id)
 
-            # 11. 스크린샷 (액션 실행 후)
+            # 11. 스크린샷 (액션 실행 후) - 결과 확인용 (GIF에는 포함 안함)
             time.sleep(1)  # UI 변화 대기
             screenshot_after = self._capture_screenshot()
 
@@ -495,6 +714,11 @@ class ExploratoryAgent:
             if new_pages:
                 self._log(f"🆕 새 페이지 발견: {new_url}")
 
+            # 12-1. 기능 중심 설명 생성
+            feature_info = self._generate_feature_description(
+                decision.selected_action if decision else None
+            )
+
             # 13. Step 결과 저장
             step = ExplorationStep(
                 step_number=action_count,
@@ -502,6 +726,9 @@ class ExploratoryAgent:
                 decision=decision,
                 success=success,
                 error_message=error,
+                feature_description=feature_info["feature_description"],
+                test_scenario=feature_info["test_scenario"],
+                business_impact=feature_info["business_impact"],
                 issues_found=issues,
                 new_pages_found=new_pages,
                 screenshot_before=screenshot_before,
@@ -529,6 +756,16 @@ class ExploratoryAgent:
         duration = time.time() - start_time
         completion_reason = self._determine_completion_reason(action_count, steps)
 
+        # GIF 생성 (녹화가 활성화된 경우)
+        gif_path = None
+        if screenshots_dir and self.config.generate_gif and screenshot_paths:
+            gif_filename = screenshots_dir.parent / f"{session_id}.gif"
+            if self._generate_gif(screenshots_dir, gif_filename):
+                gif_path = str(gif_filename)
+
+        # 테스트 시나리오 그룹화
+        test_scenarios = self._group_steps_into_scenarios(steps)
+
         # 최종 결과 생성
         result = ExplorationResult(
             session_id=session_id,
@@ -540,6 +777,9 @@ class ExploratoryAgent:
             issues_found=self._found_issues,
             steps=steps,
             completion_reason=completion_reason,
+            recording_gif_path=gif_path,
+            screenshots_dir=str(screenshots_dir) if screenshots_dir else None,
+            test_scenarios_summary=test_scenarios,
             completed_at=datetime.now(),
             duration_seconds=duration,
         )
