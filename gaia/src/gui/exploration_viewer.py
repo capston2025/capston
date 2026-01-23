@@ -29,9 +29,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QSizePolicy,
     QGroupBox,
+    QGridLayout,
     QDialog,
     QDialogButtonBox,
     QApplication,
+    QAbstractItemView,
 )
 
 
@@ -336,55 +338,196 @@ class StepDetailDialog(QDialog):
         layout.addLayout(row)
 
 
-class GifPlayer(QLabel):
-    """GIF 플레이어 위젯 - 더블클릭으로 전체화면"""
+class SummaryDialog(QDialog):
+    """요약 정보를 별도 창으로 표시합니다."""
 
-    double_clicked = Signal(str)  # GIF 경로 전달
+    def __init__(self, summary: Dict, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("요약")
+        self.setModal(True)
+        self.resize(520, 380)
+
+        self.setStyleSheet("""
+            QDialog {
+                background: #f8fafc;
+            }
+            QLabel {
+                color: #1f2937;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        title = QLabel("요약", self)
+        title.setStyleSheet("font-size: 16px; font-weight: 700;")
+        layout.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+
+        rows = [
+            ("총 스텝", summary.get("total", 0)),
+            ("성공", summary.get("success", 0)),
+            ("실패", summary.get("fail", 0)),
+            ("이슈", summary.get("issues", 0)),
+            ("커버리지", summary.get("coverage", "0%")),
+            ("소요 시간", summary.get("duration", "0s")),
+        ]
+
+        for row_index, (label, value) in enumerate(rows):
+            label_widget = QLabel(label, self)
+            label_widget.setStyleSheet("font-size: 12px; color: #6b7280;")
+            value_widget = QLabel(str(value), self)
+            value_widget.setStyleSheet(
+                "font-size: 18px; font-weight: 700; color: #4f46e5;"
+            )
+            grid.addWidget(label_widget, row_index, 0)
+            grid.addWidget(value_widget, row_index, 1)
+
+        layout.addLayout(grid)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton("닫기", self)
+        close_btn.setObjectName("GhostButton")
+        close_btn.clicked.connect(self.close)
+        close_row.addWidget(close_btn)
+        layout.addLayout(close_row)
+
+
+class StepReplayWidget(QFrame):
+    """스텝 단위 재생 위젯 (before/after 이미지 토글)"""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._movie = None
-        self._gif_path = None
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(300, 200)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._frames: List[QPixmap] = []
+        self._frame_index = 0
+        self._play_timer = QTimer(self)
+        self._play_timer.timeout.connect(self._advance_frame)
+        self._play_remaining = 0
+
         self.setStyleSheet("""
-            QLabel {
+            QFrame {
                 background: #1a1a2e;
                 border-radius: 12px;
                 border: 1px solid rgba(100, 110, 200, 0.3);
-                color: #6b7280;
             }
         """)
-        self.setText("녹화된 GIF가 없습니다\n\n(더블클릭하여 전체화면)")
 
-    def load_gif(self, gif_path: str):
-        """GIF 파일 로드"""
-        self._gif_path = gif_path
-        if not gif_path or not os.path.exists(gif_path):
-            self.setText("녹화된 GIF가 없습니다")
-            self._gif_path = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        self._preview_label = QLabel("선택한 테스트를 재생할 수 있습니다", self)
+        self._preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_label.setMinimumSize(320, 210)
+        self._preview_label.setStyleSheet("color: #9ca3af;")
+        layout.addWidget(self._preview_label)
+
+        controls = QHBoxLayout()
+        controls.addStretch()
+
+        self._play_button = QPushButton("재생", self)
+        self._play_button.setObjectName("GhostButton")
+        self._play_button.clicked.connect(self.play)
+        controls.addWidget(self._play_button)
+
+        self._status_label = QLabel("", self)
+        self._status_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
+        controls.addWidget(self._status_label)
+        controls.addStretch()
+
+        layout.addLayout(controls)
+
+    def load_step(self, step_data: Dict, screenshots_dir: str | None):
+        self._frames = []
+        self._frame_index = 0
+        self._status_label.setText("")
+
+        before_pixmap = self._load_step_pixmap(step_data, screenshots_dir, "before")
+        after_pixmap = self._load_step_pixmap(step_data, screenshots_dir, "after")
+
+        for pixmap in [before_pixmap, after_pixmap]:
+            if pixmap is not None and not pixmap.isNull():
+                self._frames.append(pixmap)
+
+        if not self._frames:
+            self._preview_label.setText("스크린샷이 없습니다")
+            self._play_button.setEnabled(False)
             return
 
+        self._play_button.setEnabled(len(self._frames) > 1)
+        self._render_frame(self._frames[0])
+        if len(self._frames) > 1:
+            self._status_label.setText("before/after 재생 가능")
+
+    def play(self):
+        if len(self._frames) < 2:
+            return
+        if self._play_timer.isActive():
+            self._play_timer.stop()
+            self._status_label.setText("재생 중지")
+            return
+        self._play_remaining = 8
+        self._status_label.setText("재생 중...")
+        self._play_timer.start(550)
+
+    def _advance_frame(self):
+        if self._play_remaining <= 0:
+            self._play_timer.stop()
+            self._status_label.setText("재생 완료")
+            return
+        self._play_remaining -= 1
+        if not self._frames:
+            self._play_timer.stop()
+            return
+        self._frame_index = (self._frame_index + 1) % len(self._frames)
+        self._render_frame(self._frames[self._frame_index])
+
+    def _render_frame(self, pixmap: QPixmap):
+        scaled = pixmap.scaled(
+            380,
+            240,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._preview_label.setPixmap(scaled)
+
+    def _load_step_pixmap(
+        self,
+        step_data: Dict,
+        screenshots_dir: str | None,
+        which: str,
+    ) -> QPixmap | None:
+        if screenshots_dir:
+            step_index = step_data.get("step_number", 0)
+            if step_index:
+                screenshot_path = os.path.join(
+                    screenshots_dir, f"step_{step_index:03d}.png"
+                )
+                if os.path.exists(screenshot_path):
+                    pixmap = QPixmap(screenshot_path)
+                    if not pixmap.isNull():
+                        return pixmap
+
+        screenshot_key = (
+            "screenshot_before" if which == "before" else "screenshot_after"
+        )
+        screenshot_b64 = step_data.get(screenshot_key)
+        if not screenshot_b64:
+            return None
         try:
-            self._movie = QMovie(gif_path)
-            self._movie.setScaledSize(QSize(400, 300))
-            self.setMovie(self._movie)
-            self._movie.start()
-        except Exception as e:
-            self.setText(f"GIF 로드 실패: {e}")
-            self._gif_path = None
+            import base64
 
-    def stop(self):
-        """GIF 재생 중지"""
-        if self._movie:
-            self._movie.stop()
-
-    def mouseDoubleClickEvent(self, event):
-        """더블클릭 시 전체화면"""
-        if self._gif_path and os.path.exists(self._gif_path):
-            self.double_clicked.emit(self._gif_path)
-        super().mouseDoubleClickEvent(event)
+            img_data = base64.b64decode(screenshot_b64)
+            pixmap = QPixmap()
+            pixmap.loadFromData(img_data)
+            return pixmap if not pixmap.isNull() else None
+        except Exception:
+            return None
 
 
 class ScenarioSummaryCard(QFrame):
@@ -524,10 +667,13 @@ class ExplorationResultCard(QFrame):
 class ExplorationDetailView(QWidget):
     """탐색 결과 상세 뷰 - 기능 중심"""
 
+    replay_requested = Signal(str)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._steps = []
         self._screenshots_dir = None
+        self._summary_data: Dict[str, object] = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -535,55 +681,23 @@ class ExplorationDetailView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        # 상단: GIF + 시나리오 요약
-        top_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._top_container = QFrame(self)
+        top_layout = QVBoxLayout(self._top_container)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(12)
 
-        # 왼쪽: GIF 플레이어
-        gif_container = QFrame(top_splitter)
-        gif_layout = QVBoxLayout(gif_container)
-        gif_layout.setContentsMargins(0, 0, 0, 0)
+        replay_container = QFrame(self._top_container)
+        replay_layout = QVBoxLayout(replay_container)
+        replay_layout.setContentsMargins(0, 0, 0, 0)
 
-        gif_title = QLabel("📹 테스트 녹화", self)
-        gif_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #4b5563;")
-        gif_layout.addWidget(gif_title)
+        replay_title = QLabel("🎞️ 스텝 재생", self)
+        replay_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #4b5563;")
+        replay_layout.addWidget(replay_title)
 
-        self._gif_player = GifPlayer(gif_container)
-        self._gif_player.double_clicked.connect(self._open_gif_viewer)
-        gif_layout.addWidget(self._gif_player)
+        self._step_replay = StepReplayWidget(replay_container)
+        replay_layout.addWidget(self._step_replay)
 
-        top_splitter.addWidget(gif_container)
-
-        # 오른쪽: 시나리오 요약
-        scenario_container = QFrame(top_splitter)
-        scenario_layout = QVBoxLayout(scenario_container)
-        scenario_layout.setContentsMargins(0, 0, 0, 0)
-
-        scenario_title = QLabel("📋 테스트 시나리오 요약", self)
-        scenario_title.setStyleSheet(
-            "font-size: 13px; font-weight: 600; color: #4b5563;"
-        )
-        scenario_layout.addWidget(scenario_title)
-
-        scenario_scroll = QScrollArea(scenario_container)
-        scenario_scroll.setWidgetResizable(True)
-        scenario_scroll.setStyleSheet(
-            "QScrollArea { border: none; background: transparent; }"
-        )
-
-        self._scenario_widget = QWidget(scenario_scroll)
-        self._scenario_layout = QVBoxLayout(self._scenario_widget)
-        self._scenario_layout.setContentsMargins(0, 0, 8, 0)
-        self._scenario_layout.setSpacing(8)
-        self._scenario_layout.addStretch()
-
-        scenario_scroll.setWidget(self._scenario_widget)
-        scenario_layout.addWidget(scenario_scroll, stretch=1)
-
-        top_splitter.addWidget(scenario_container)
-        top_splitter.setStretchFactor(0, 1)
-        top_splitter.setStretchFactor(1, 1)
-
-        layout.addWidget(top_splitter)
+        top_layout.addWidget(replay_container)
 
         # 헤더
         header = QHBoxLayout()
@@ -593,6 +707,16 @@ class ExplorationDetailView(QWidget):
         )
         header.addWidget(self._title_label)
         header.addStretch()
+
+        self._toggle_top_button = QPushButton("상단 숨기기", self)
+        self._toggle_top_button.setObjectName("GhostButton")
+        self._toggle_top_button.clicked.connect(self._toggle_top_section)
+        header.addWidget(self._toggle_top_button)
+
+        self._summary_button = QPushButton("요약", self)
+        self._summary_button.setObjectName("GhostButton")
+        self._summary_button.clicked.connect(self._show_summary)
+        header.addWidget(self._summary_button)
 
         self._export_button = QPushButton("CSV 내보내기", self)
         self._export_button.setObjectName("GhostButton")
@@ -639,20 +763,32 @@ class ExplorationDetailView(QWidget):
             summary_layout.addLayout(item_layout)
             self._summary_labels[key] = value_label
 
-        layout.addWidget(summary_card)
+        self._summary_card = summary_card
+        self._summary_card.hide()
 
         # 테이블 - 기능 중심 컬럼
         self._table = QTableWidget(self)
-        self._table.setColumnCount(6)
+        self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(
-            ["테스트 기능", "시나리오", "수행 액션", "비즈니스 영향", "상세", "결과"]
+            [
+                "테스트 기능",
+                "시나리오",
+                "수행 액션",
+                "비즈니스 영향",
+                "상세",
+                "결과",
+                "재생",
+            ]
         )
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.ResizeToContents
-        )
+        header_view = self._table.horizontalHeader()
+        header_view.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header_view.setStretchLastSection(True)
+        header_view.setSectionsMovable(True)
+        header_view.setMinimumSectionSize(100)
+        self._table.setWordWrap(True)
+        self._table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.verticalHeader().setDefaultSectionSize(64)
         self._table.setAlternatingRowColors(True)
         self._table.setStyleSheet("""
             QTableWidget {
@@ -673,10 +809,19 @@ class ExplorationDetailView(QWidget):
             }
         """)
         self._table.cellDoubleClicked.connect(self._open_step_detail)
-        layout.addWidget(self._table, stretch=1)
+        self._table.currentCellChanged.connect(self._preview_step)
+
+        self._content_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._content_splitter.addWidget(self._top_container)
+        self._content_splitter.addWidget(self._table)
+        self._content_splitter.setStretchFactor(0, 1)
+        self._content_splitter.setStretchFactor(1, 3)
+        self._content_splitter.setSizes([280, 640])
+        layout.addWidget(self._content_splitter, stretch=1)
 
         self._current_data = None
         self._current_file_path = None
+        self._top_collapsed = False
 
     def load_result(self, file_path: str):
         """결과 파일 로드"""
@@ -691,13 +836,6 @@ class ExplorationDetailView(QWidget):
 
     def _display_data(self, data: Dict):
         """데이터 표시"""
-        # GIF 로드
-        gif_path = data.get("recording_gif_path")
-        self._gif_player.load_gif(gif_path)
-
-        # 시나리오 요약 표시
-        self._display_scenarios(data.get("test_scenarios_summary", []))
-
         # 요약 업데이트
         steps = data.get("steps", [])
         self._steps = steps
@@ -709,12 +847,14 @@ class ExplorationDetailView(QWidget):
         coverage = data.get("coverage", {}).get("coverage_percentage", 0)
         duration = data.get("duration_seconds", 0)
 
-        self._summary_labels["total"].setText(str(total))
-        self._summary_labels["success"].setText(str(success))
-        self._summary_labels["fail"].setText(str(fail))
-        self._summary_labels["issues"].setText(str(issues))
-        self._summary_labels["coverage"].setText(f"{coverage:.0f}%")
-        self._summary_labels["duration"].setText(f"{duration:.1f}s")
+        self._summary_data = {
+            "total": total,
+            "success": success,
+            "fail": fail,
+            "issues": issues,
+            "coverage": f"{coverage:.0f}%",
+            "duration": f"{duration:.1f}s",
+        }
 
         # 테이블 업데이트 - 기능 중심
         self._table.setRowCount(total)
@@ -750,15 +890,13 @@ class ExplorationDetailView(QWidget):
             )
 
             # 테이블에 데이터 설정
-            self._table.setItem(
-                row, 0, QTableWidgetItem(feature_desc or action_detail[:25])
-            )
+            self._table.setItem(row, 0, QTableWidgetItem(feature_desc or action_detail))
             self._table.setItem(row, 1, QTableWidgetItem(test_scenario or "-"))
-            self._table.setItem(row, 2, QTableWidgetItem(action_detail[:30]))
+            self._table.setItem(row, 2, QTableWidgetItem(action_detail))
             self._table.setItem(
                 row,
                 3,
-                QTableWidgetItem(business_impact[:25] if business_impact else "-"),
+                QTableWidgetItem(business_impact or "-"),
             )
             self._table.setItem(row, 4, QTableWidgetItem(detail))
 
@@ -772,23 +910,21 @@ class ExplorationDetailView(QWidget):
             result_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 5, result_item)
 
-    def _display_scenarios(self, scenarios: List[Dict]):
-        """시나리오 요약 표시"""
-        # 기존 카드 제거
-        while self._scenario_layout.count() > 1:
-            item = self._scenario_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            play_button = QPushButton("재생", self)
+            play_button.setObjectName("GhostButton")
+            play_button.clicked.connect(lambda _, idx=row: self._emit_replay(idx))
+            self._table.setCellWidget(row, 6, play_button)
 
-        if not scenarios:
-            no_data = QLabel("시나리오 정보 없음", self._scenario_widget)
-            no_data.setStyleSheet("color: #6b7280; font-size: 12px;")
-            self._scenario_layout.insertWidget(0, no_data)
-            return
+            for col in range(6):
+                item = self._table.item(row, col)
+                if item:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter)
+                    item.setToolTip(item.text())
+            self._table.setRowHeight(row, 72)
 
-        for scenario in scenarios:
-            card = ScenarioSummaryCard(scenario, self._scenario_widget)
-            self._scenario_layout.insertWidget(self._scenario_layout.count() - 1, card)
+        if total > 0:
+            self._table.setCurrentCell(0, 0)
+            self._preview_step(0, 0, -1, -1)
 
     def _open_step_detail(self, row: int, column: int):
         """테이블 더블클릭으로 스텝 상세 보기"""
@@ -803,10 +939,105 @@ class ExplorationDetailView(QWidget):
         )
         dialog.exec()
 
-    def _open_gif_viewer(self, gif_path: str):
-        """GIF 더블클릭으로 전체화면 보기"""
-        dialog = GifViewerDialog(gif_path, parent=self)
+    def _preview_step(self, row: int, column: int, _prev_row: int, _prev_col: int):
+        if not self._steps or row < 0 or row >= len(self._steps):
+            return
+        self._step_replay.load_step(self._steps[row], self._screenshots_dir)
+
+    def _emit_replay(self, row: int):
+        if not self._steps or row < 0 or row >= len(self._steps):
+            return
+        html = self._build_replay_html(self._steps[row])
+        self.replay_requested.emit(html)
+
+    def _toggle_top_section(self):
+        self._top_collapsed = not self._top_collapsed
+        if self._top_collapsed:
+            self._top_container.hide()
+            self._toggle_top_button.setText("상단 펼치기")
+            self._content_splitter.setSizes([0, 1])
+        else:
+            self._top_container.show()
+            self._toggle_top_button.setText("상단 숨기기")
+            self._content_splitter.setSizes([280, 640])
+
+    def _show_summary(self):
+        dialog = SummaryDialog(self._summary_data, parent=self)
         dialog.exec()
+
+    def _build_replay_html(self, step_data: Dict) -> str:
+        frames = self._collect_step_frames(step_data)
+        if not frames:
+            return """
+            <html><body style="margin:0; background:#0f172a; color:#cbd5f5; display:flex; align-items:center; justify-content:center; height:100vh;">
+            <div>재생할 이미지가 없습니다</div>
+            </body></html>
+            """
+
+        frame_tags = "".join(
+            [
+                f'<img class="frame" src="{frame}" style="display:none; width:100%; height:auto;"/>'
+                for frame in frames
+            ]
+        )
+
+        return f"""
+        <html>
+        <head>
+            <style>
+                body {{ margin:0; background:#0f172a; color:#e2e8f0; font-family: Arial, sans-serif; }}
+                .wrap {{ display:flex; align-items:center; justify-content:center; height:100vh; flex-direction:column; gap:12px; }}
+                .card {{ width:90%; max-width:860px; background:#111827; border-radius:12px; padding:16px; box-shadow:0 20px 40px rgba(0,0,0,0.35); }}
+                .frame {{ border-radius:8px; }}
+                .label {{ font-size:12px; color:#94a3b8; }}
+            </style>
+        </head>
+        <body>
+            <div class="wrap">
+                <div class="card">
+                    {frame_tags}
+                </div>
+                <div class="label">스텝 재생</div>
+            </div>
+            <script>
+                const frames = document.querySelectorAll('.frame');
+                let index = 0;
+                function show(idx) {{
+                    frames.forEach((frame, i) => frame.style.display = i === idx ? 'block' : 'none');
+                }}
+                if (frames.length) {{
+                    show(0);
+                    setInterval(() => {{
+                        index = (index + 1) % frames.length;
+                        show(index);
+                    }}, 650);
+                }}
+            </script>
+        </body>
+        </html>
+        """
+
+    def _collect_step_frames(self, step_data: Dict) -> List[str]:
+        import base64
+
+        frames: List[str] = []
+        if self._screenshots_dir:
+            step_index = step_data.get("step_number", 0)
+            if step_index:
+                screenshot_path = os.path.join(
+                    self._screenshots_dir, f"step_{step_index:03d}.png"
+                )
+                if os.path.exists(screenshot_path):
+                    with open(screenshot_path, "rb") as file:
+                        encoded = base64.b64encode(file.read()).decode("utf-8")
+                        frames.append(f"data:image/png;base64,{encoded}")
+
+        for key in ["screenshot_before", "screenshot_after"]:
+            screenshot_b64 = step_data.get(key)
+            if screenshot_b64:
+                frames.append(f"data:image/png;base64,{screenshot_b64}")
+
+        return frames
 
     def _export_csv(self):
         """CSV로 내보내기"""
@@ -839,6 +1070,7 @@ class ExplorationViewer(QWidget):
     """탐색 결과 뷰어 메인 위젯"""
 
     back_requested = Signal()
+    replay_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -905,6 +1137,7 @@ class ExplorationViewer(QWidget):
 
         # 오른쪽: 상세 뷰
         self._detail_view = ExplorationDetailView(splitter)
+        self._detail_view.replay_requested.connect(self.replay_requested.emit)
         splitter.addWidget(self._detail_view)
 
         splitter.setStretchFactor(0, 1)
@@ -920,8 +1153,9 @@ class ExplorationViewer(QWidget):
         # 기존 카드 제거
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
         # 결과 파일 로드
         if not self._results_dir.exists():

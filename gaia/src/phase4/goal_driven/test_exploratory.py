@@ -12,10 +12,18 @@ Exploratory Agent 테스트 스크립트
 import sys
 import os
 import json
+from urllib.parse import urljoin, urlparse
 from datetime import datetime
 
 # 프로젝트 루트 추가
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))))
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+    ),
+)
 
 from gaia.src.phase4.goal_driven.exploratory_agent import ExploratoryAgent
 from gaia.src.phase4.goal_driven.exploratory_models import ExplorationConfig
@@ -76,9 +84,11 @@ def save_result(result):
 
     # artifacts 디렉토리 확인
     artifacts_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))),
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        ),
         "artifacts",
-        "exploration_results"
+        "exploration_results",
     )
     os.makedirs(artifacts_dir, exist_ok=True)
 
@@ -88,10 +98,10 @@ def save_result(result):
     filepath = os.path.join(artifacts_dir, filename)
 
     # JSON 직렬화 가능한 형태로 변환
-    result_dict = result.model_dump(mode='json')
+    result_dict = result.model_dump(mode="json")
 
     # 파일 저장
-    with open(filepath, 'w', encoding='utf-8') as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(result_dict, f, indent=2, ensure_ascii=False)
 
     print(f"\n💾 결과 저장: {filepath}")
@@ -209,6 +219,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.mode == "basic":
+        seed_urls = []
+        allow_destructive_keywords = []
+        parsed_url = urlparse(args.url)
+        if "saucedemo.com" in parsed_url.netloc:
+            base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            seed_urls = [
+                urljoin(base, "/inventory.html"),
+                urljoin(base, "/cart.html"),
+                urljoin(base, "/checkout-step-one.html"),
+                urljoin(base, "/checkout-step-two.html"),
+                urljoin(base, "/checkout-complete.html"),
+            ]
+            allow_destructive_keywords = ["reset app state"]
+
         # 커스텀 설정 적용
         config = ExplorationConfig(
             max_actions=args.max_actions,
@@ -217,6 +241,8 @@ if __name__ == "__main__":
             avoid_destructive=True,
             test_forms=True,
             test_navigation=True,
+            seed_urls=seed_urls,
+            allow_destructive_keywords=allow_destructive_keywords,
         )
 
         agent = ExploratoryAgent(
