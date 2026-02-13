@@ -31,6 +31,19 @@ from .exploratory_models import (
 from .models import DOMElement
 
 
+SUPPORTED_ACTION_TYPES = {"click", "fill", "select", "hover"}
+KNOWN_BRANCH_OUTCOMES = {
+    "console_error",
+    "console_clean",
+    "decision_stop",
+    "decision_no_action",
+    "action_success",
+    "action_failure",
+    "new_page",
+    "same_page",
+}
+
+
 class ExploratoryAgent:
     """
     완전 자율 탐색 에이전트
@@ -386,11 +399,11 @@ class ExploratoryAgent:
             # 3. 콘솔 에러 확인
             console_errors = self._check_console_errors()
             if console_errors:
-                self._branch_outcomes.add("console_error")
+                self._mark_branch("console_error")
                 self._log(f"⚠️  콘솔 에러 발견: {len(console_errors)}개")
                 self._report_console_errors(console_errors, screenshot)
             else:
-                self._branch_outcomes.add("console_clean")
+                self._mark_branch("console_clean")
 
             # 4. LLM에게 다음 액션 결정 요청
             decision = self._decide_next_exploration_action(
@@ -408,7 +421,7 @@ class ExploratoryAgent:
 
             # 5. 탐색 종료 판단
             if not decision.should_continue:
-                self._branch_outcomes.add("decision_stop")
+                self._mark_branch("decision_stop")
                 self._log(f"✅ 탐색 완료: {decision.reasoning}")
 
                 step = ExplorationStep(
@@ -423,7 +436,7 @@ class ExploratoryAgent:
 
             # 6. 액션이 없으면 탐색 완료
             if not decision.selected_action:
-                self._branch_outcomes.add("decision_no_action")
+                self._mark_branch("decision_no_action")
                 self._log("✅ 더 이상 테스트할 요소가 없습니다")
 
                 step = ExplorationStep(
@@ -494,13 +507,13 @@ class ExploratoryAgent:
             new_url = self._get_current_url()
             new_pages = 1 if new_url != page_state.url else 0
             if new_pages:
-                self._branch_outcomes.add("new_page")
+                self._mark_branch("new_page")
                 self._log(f"🆕 새 페이지 발견: {new_url}")
                 self._state_transitions.add(
                     f"{page_state.url_hash}->{self._hash_url(new_url)}"
                 )
             else:
-                self._branch_outcomes.add("same_page")
+                self._mark_branch("same_page")
 
             # 13. Step 결과 저장
             step = ExplorationStep(
@@ -525,12 +538,15 @@ class ExploratoryAgent:
                     self._log(f"   - [{issue.severity}] {issue.title}")
 
             # 15. 실패한 경우 계속 진행할지 판단
-            if not success and error:
-                self._branch_outcomes.add("action_failure")
-                self._log(f"⚠️  액션 실패: {error}")
-                # 실패해도 계속 진행 (다른 요소 테스트)
+            if success:
+                self._mark_branch("action_success")
             else:
-                self._branch_outcomes.add("action_success")
+                self._mark_branch("action_failure")
+                if error:
+                    self._log(f"⚠️  액션 실패: {error}")
+                else:
+                    self._log("⚠️  액션 실패: 알 수 없는 오류 (success=False, error=None)")
+                # 실패해도 계속 진행 (다른 요소 테스트)
 
             # 다음 스텝 전 대기
             time.sleep(0.5)
@@ -1781,6 +1797,10 @@ JSON 응답:"""
 
         self._found_issues.append(issue)
 
+    def _mark_branch(self, branch: str) -> None:
+        """브랜치 결과를 기록 (알려진 브랜치만 커버리지 계산 대상)."""
+        self._branch_outcomes.add(branch)
+
     def _calculate_coverage(self) -> Dict[str, Any]:
         """테스트 커버리지 계산"""
         total_elements = 0
@@ -1789,26 +1809,35 @@ JSON 응답:"""
         for page in self._visited_pages.values():
             total_elements += len(page.interactive_elements)
 
-        action_types_total = 4  # click/fill/select/hover
+        return self._compute_coverage_metrics(
+            total_elements=total_elements,
+            tested_elements=tested_elements,
+            total_pages=len(self._visited_pages),
+            action_type_counts=self._action_type_counts,
+            state_transitions=self._state_transitions,
+            branch_outcomes=self._branch_outcomes,
+        )
+
+    @staticmethod
+    def _compute_coverage_metrics(
+        *,
+        total_elements: int,
+        tested_elements: int,
+        total_pages: int,
+        action_type_counts: Dict[str, int],
+        state_transitions: Set[str],
+        branch_outcomes: Set[str],
+    ) -> Dict[str, Any]:
+        """커버리지 지표 계산 로직 (단위 테스트 가능한 순수 함수)."""
         action_type_coverage = (
-            len(self._action_type_counts) / action_types_total * 100
-            if action_types_total > 0
+            len(action_type_counts) / len(SUPPORTED_ACTION_TYPES) * 100
+            if SUPPORTED_ACTION_TYPES
             else 0
         )
 
-        known_branches = {
-            "console_error",
-            "console_clean",
-            "decision_stop",
-            "decision_no_action",
-            "action_success",
-            "action_failure",
-            "new_page",
-            "same_page",
-        }
         branch_coverage = (
-            len(self._branch_outcomes & known_branches) / len(known_branches) * 100
-            if known_branches
+            len(branch_outcomes & KNOWN_BRANCH_OUTCOMES) / len(KNOWN_BRANCH_OUTCOMES) * 100
+            if KNOWN_BRANCH_OUTCOMES
             else 0
         )
 
@@ -1818,12 +1847,12 @@ JSON 응답:"""
             "coverage_percentage": (tested_elements / total_elements * 100)
             if total_elements > 0
             else 0,
-            "total_pages": len(self._visited_pages),
-            "state_transitions": len(self._state_transitions),
-            "action_type_counts": dict(self._action_type_counts),
+            "total_pages": total_pages,
+            "state_transitions": len(state_transitions),
+            "action_type_counts": dict(action_type_counts),
             "action_type_coverage": action_type_coverage,
             "branch_coverage": branch_coverage,
-            "branch_outcomes": sorted(self._branch_outcomes),
+            "branch_outcomes": sorted(branch_outcomes),
         }
 
     def _determine_completion_reason(
