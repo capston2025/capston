@@ -79,6 +79,9 @@ class ExploratoryAgent:
         self._state_action_history: Dict[str, Set[str]] = {}
         self._current_state_key: Optional[str] = None
         self._toggle_action_history: Dict[str, int] = {}
+        self._action_type_counts: Dict[str, int] = {}
+        self._state_transitions: Set[str] = set()
+        self._branch_outcomes: Set[str] = set()
 
         # LLM 응답 캐시
         self._llm_cache: Dict[str, str] = {}
@@ -383,8 +386,11 @@ class ExploratoryAgent:
             # 3. 콘솔 에러 확인
             console_errors = self._check_console_errors()
             if console_errors:
+                self._branch_outcomes.add("console_error")
                 self._log(f"⚠️  콘솔 에러 발견: {len(console_errors)}개")
                 self._report_console_errors(console_errors, screenshot)
+            else:
+                self._branch_outcomes.add("console_clean")
 
             # 4. LLM에게 다음 액션 결정 요청
             decision = self._decide_next_exploration_action(
@@ -402,6 +408,7 @@ class ExploratoryAgent:
 
             # 5. 탐색 종료 판단
             if not decision.should_continue:
+                self._branch_outcomes.add("decision_stop")
                 self._log(f"✅ 탐색 완료: {decision.reasoning}")
 
                 step = ExplorationStep(
@@ -416,6 +423,7 @@ class ExploratoryAgent:
 
             # 6. 액션이 없으면 탐색 완료
             if not decision.selected_action:
+                self._branch_outcomes.add("decision_no_action")
                 self._log("✅ 더 이상 테스트할 요소가 없습니다")
 
                 step = ExplorationStep(
@@ -440,6 +448,10 @@ class ExploratoryAgent:
             # 9. 액션 결과 기록
             self._action_history.append(
                 f"Step {action_count}: {decision.selected_action.action_type} on {decision.selected_action.description}"
+            )
+            action_type = decision.selected_action.action_type
+            self._action_type_counts[action_type] = (
+                self._action_type_counts.get(action_type, 0) + 1
             )
 
             # 9-1. 액션 시도 횟수 기록
@@ -469,17 +481,6 @@ class ExploratoryAgent:
                     f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
                 )
 
-            self._action_attempts[attempt_key] = (
-                self._action_attempts.get(attempt_key, 0) + 1
-            )
-
-            # 9-2. 상태별 액션 기록
-            if self._current_state_key:
-                self._state_action_history.setdefault(
-                    self._current_state_key, set()
-                ).add(
-                    f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
-                )
 
             # 10. 요소를 테스트 완료로 마킹
             if decision.selected_action:
@@ -493,7 +494,13 @@ class ExploratoryAgent:
             new_url = self._get_current_url()
             new_pages = 1 if new_url != page_state.url else 0
             if new_pages:
+                self._branch_outcomes.add("new_page")
                 self._log(f"🆕 새 페이지 발견: {new_url}")
+                self._state_transitions.add(
+                    f"{page_state.url_hash}->{self._hash_url(new_url)}"
+                )
+            else:
+                self._branch_outcomes.add("same_page")
 
             # 13. Step 결과 저장
             step = ExplorationStep(
@@ -519,8 +526,11 @@ class ExploratoryAgent:
 
             # 15. 실패한 경우 계속 진행할지 판단
             if not success and error:
+                self._branch_outcomes.add("action_failure")
                 self._log(f"⚠️  액션 실패: {error}")
                 # 실패해도 계속 진행 (다른 요소 테스트)
+            else:
+                self._branch_outcomes.add("action_success")
 
             # 다음 스텝 전 대기
             time.sleep(0.5)
@@ -1779,6 +1789,29 @@ JSON 응답:"""
         for page in self._visited_pages.values():
             total_elements += len(page.interactive_elements)
 
+        action_types_total = 4  # click/fill/select/hover
+        action_type_coverage = (
+            len(self._action_type_counts) / action_types_total * 100
+            if action_types_total > 0
+            else 0
+        )
+
+        known_branches = {
+            "console_error",
+            "console_clean",
+            "decision_stop",
+            "decision_no_action",
+            "action_success",
+            "action_failure",
+            "new_page",
+            "same_page",
+        }
+        branch_coverage = (
+            len(self._branch_outcomes & known_branches) / len(known_branches) * 100
+            if known_branches
+            else 0
+        )
+
         return {
             "total_interactive_elements": total_elements,
             "tested_elements": tested_elements,
@@ -1786,6 +1819,11 @@ JSON 응답:"""
             if total_elements > 0
             else 0,
             "total_pages": len(self._visited_pages),
+            "state_transitions": len(self._state_transitions),
+            "action_type_counts": dict(self._action_type_counts),
+            "action_type_coverage": action_type_coverage,
+            "branch_coverage": branch_coverage,
+            "branch_outcomes": sorted(self._branch_outcomes),
         }
 
     def _determine_completion_reason(

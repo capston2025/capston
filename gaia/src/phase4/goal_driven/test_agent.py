@@ -46,7 +46,7 @@ def test_login_goal():
 
     # 2. Agent 생성
     agent = GoalDrivenAgent(
-        mcp_host_url="http://localhost:8000",
+        mcp_host_url="http://localhost:8001",
         session_id="test_login",
     )
 
@@ -101,7 +101,7 @@ def test_simple_navigation():
     )
 
     agent = GoalDrivenAgent(
-        mcp_host_url="http://localhost:8000",
+        mcp_host_url="http://localhost:8001",
         session_id="test_nav",
     )
 
