@@ -1,0 +1,27 @@
+name: Sync Homebrew Formula
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync-homebrew-formula:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HOME: /tmp/homebrew-workflow
+    steps:
+      - name: Checkout capston main
+        uses: actions/checkout@v4
+
+      - name: Update homebrew-gaia formula from main branch snapshot
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOME_PROJECT_REPO: ${{ github.repository }}
+        run: |
+          bash ./scripts/sync_homebrew_formula.sh

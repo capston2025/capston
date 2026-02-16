@@ -104,6 +104,13 @@ gaia --help
 ```
 `capston2025`는 배포한 GitHub owner/조직으로 맞춰주세요.
 
+#### Homebrew 자동 갱신 (main push 반영)
+- `capston` main 브랜치에 push되면, GitHub Actions (`.github/workflows/sync-homebrew-formula.yml`)가 자동으로 `homebrew-gaia`의 `gaia.rb`를 최신 `main` tarball sha256로 업데이트하고 `main` 브랜치에 커밋합니다.
+- 최초 1회만 다음 시크릿을 등록하세요.
+  - `HOMEBREW_TAP_TOKEN`: `capston2025/homebrew-gaia` 레포에 쓰기 권한이 있는 Personal Access Token
+- 수동 실행도 가능합니다: GitHub Actions 페이지에서 `Sync Homebrew Formula` → `Run workflow`
+- 사용자 입장에서는 `brew update` 후 `brew reinstall gaia` 또는 `brew upgrade gaia`가 필요합니다.
+
 ### 2. 소스 실행 환경 (개발/직접 실행)
 ```bash
 python -m venv .venv
