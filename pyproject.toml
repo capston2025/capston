@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaia"
+version = "0.1.0"
+description = "Goal-oriented Autonomous Intelligence for Adaptive GUI Testing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PySide6>=6.6.0",
+  "PySide6-Addons>=6.6.0",
+  "PySide6-Essentials>=6.6.0",
+  "openai>=1.0.0",
+  "requests>=2.31.0",
+  "pydantic>=2.5.0",
+  "numpy>=1.24.0",
+  "pypdf>=3.17.0",
+  "python-dotenv>=1.0.0",
+  "playwright>=1.40.0",
+  "uvicorn[standard]>=0.29.0",
+  "fastapi>=0.110.0",
+]
+
+[project.scripts]
+gaia = "gaia.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gaia*"]
