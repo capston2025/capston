@@ -1,4 +1,5 @@
 import asyncio
+import os
 import base64
 import uuid
 import json as json_module
@@ -196,6 +197,52 @@ class BrowserSession:
 
 # 활성 세션 저장소
 active_sessions: Dict[str, BrowserSession] = {}
+
+
+def _apply_selector_strategy(elements: List[Dict[str, Any]], strategy: str) -> None:
+    select_index = 0
+    tag_indices: Dict[str, int] = {}
+
+    for element in elements:
+        tag = element.get("tag") or ""
+        text = (element.get("text") or "").strip()
+        attrs = element.get("attributes") or {}
+
+        if tag == "select":
+            element["selector"] = f"select >> nth={select_index}"
+            select_index += 1
+            continue
+
+        if strategy == "role":
+            role = attrs.get("role")
+            aria_label = attrs.get("aria-label") or ""
+            placeholder = attrs.get("placeholder") or ""
+            safe_text = text.replace('"', "'") if text else ""
+            safe_label = aria_label.replace('"', "'") if aria_label else ""
+            safe_placeholder = placeholder.replace('"', "'") if placeholder else ""
+            if role and safe_text:
+                element["selector"] = f'role={role}[name="{safe_text}"]'
+                continue
+            if safe_label:
+                element["selector"] = f'[aria-label="{safe_label}"]'
+                continue
+            if safe_placeholder and tag in {"input", "textarea"}:
+                element["selector"] = f'{tag}[placeholder="{safe_placeholder}"]'
+                continue
+
+        if strategy == "nth":
+            index = tag_indices.get(tag, 0)
+            element["selector"] = f"{tag} >> nth={index}"
+            tag_indices[tag] = index + 1
+            continue
+
+        if strategy == "text" and ":has-text" in (element.get("selector") or ""):
+            safe_text = (
+                text.replace("\n", " ").replace("\r", " ").replace("\t", " ").strip()
+            )
+            safe_text = safe_text.replace('"', "'") if safe_text else ""
+            if safe_text:
+                element["selector"] = f"text={safe_text}"
 
 
 # --- URL 정규화 도우미 ---
@@ -751,6 +798,9 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 # None 체크
                 if frame_elements is None:
                     frame_elements = []
+
+                selector_strategy = os.environ.get("MCP_SELECTOR_STRATEGY", "text")
+                _apply_selector_strategy(frame_elements, selector_strategy)
 
                 # 프레임 정보 추가
                 frame_name = frame.name or f"frame_{frame_index}"

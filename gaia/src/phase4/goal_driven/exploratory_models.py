@@ -108,6 +108,33 @@ class ExplorationConfig(BaseModel):
     avoid_destructive: bool = Field(default=True, description="삭제/파괴적 액션 회피")
     test_forms: bool = Field(default=True, description="폼 테스트")
     test_navigation: bool = Field(default=True, description="네비게이션 테스트")
+    seed_urls: List[str] = Field(default_factory=list, description="초기 탐색 URL 시드")
+    high_priority_keywords: List[str] = Field(
+        default_factory=lambda: [
+            "checkout",
+            "cart",
+            "add to cart",
+            "continue",
+            "finish",
+            "back",
+            "menu",
+            "reset",
+            "login",
+            "sign in",
+        ],
+        description="우선 탐색 키워드",
+    )
+    allow_destructive_keywords: List[str] = Field(
+        default_factory=list,
+        description="파괴적 액션 허용 키워드",
+    )
+
+    # 녹화 설정
+    enable_recording: bool = Field(default=True, description="스크린샷/GIF 녹화 활성화")
+    screenshot_interval_ms: int = Field(
+        default=500, description="스크린샷 간격 (밀리초)"
+    )
+    generate_gif: bool = Field(default=True, description="GIF 자동 생성")
 
     # 제외 패턴
     excluded_urls: List[str] = Field(
@@ -155,6 +182,15 @@ class ExplorationStep(BaseModel):
     success: bool
     error_message: Optional[str] = None
 
+    # 기능 중심 설명 (베타테스터 관점)
+    feature_description: str = Field(
+        default="", description="테스트한 기능 설명 (예: 로그인 기능 테스트)"
+    )
+    test_scenario: str = Field(
+        default="", description="테스트 시나리오 그룹 (예: 사용자 인증 플로우)"
+    )
+    business_impact: str = Field(default="", description="비즈니스 관점에서의 영향")
+
     # 발견된 이슈
     issues_found: List[FoundIssue] = Field(default_factory=list)
 
@@ -195,6 +231,20 @@ class ExplorationResult(BaseModel):
 
     # 종료 이유
     completion_reason: str = Field(..., description="탐색 종료 이유")
+
+    # 녹화 파일
+    recording_gif_path: Optional[str] = Field(
+        default=None, description="GIF 녹화 파일 경로"
+    )
+    screenshots_dir: Optional[str] = Field(
+        default=None, description="스크린샷 디렉토리 경로"
+    )
+
+    # 테스트 시나리오 요약 (기능 중심)
+    test_scenarios_summary: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="테스트된 기능 시나리오 요약 (예: [{name: '로그인 테스트', steps: [1,2,3], result: 'pass'}])",
+    )
 
     # 메타데이터
     started_at: datetime = Field(default_factory=datetime.now)

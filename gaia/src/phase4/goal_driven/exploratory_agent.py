@@ -11,11 +11,21 @@ import hashlib
 import math
 import os
 import re
+import base64
 import requests
 from typing import Any, Dict, List, Optional, Set, Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+
+# GIF 생성을 위한 선택적 import
+try:
+    from PIL import Image
+    import io
+
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 from .exploratory_models import (
     ExplorationConfig,
@@ -79,6 +89,7 @@ class ExploratoryAgent:
         self._state_action_history: Dict[str, Set[str]] = {}
         self._current_state_key: Optional[str] = None
         self._toggle_action_history: Dict[str, int] = {}
+        self._seed_urls: List[str] = []
 
         # LLM 응답 캐시
         self._llm_cache: Dict[str, str] = {}
@@ -95,6 +106,219 @@ class ExploratoryAgent:
         print(f"[ExploratoryAgent] {message}")
         if self._log_callback:
             self._log_callback(message)
+
+    def _setup_recording_dir(self, session_id: str) -> Path:
+        """녹화용 디렉토리 설정"""
+        repo_root = Path(__file__).resolve().parents[4]
+        screenshots_dir = (
+            repo_root / "artifacts" / "exploration_results" / session_id / "screenshots"
+        )
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+        return screenshots_dir
+
+    def _save_screenshot_to_file(
+        self, screenshot_base64: str, screenshots_dir: Path, step_num: int
+    ) -> str:
+        """스크린샷을 파일로 저장"""
+        if not screenshot_base64:
+            return ""
+        try:
+            # base64 데이터에서 헤더 제거
+            if "," in screenshot_base64:
+                screenshot_base64 = screenshot_base64.split(",")[1]
+
+            img_data = base64.b64decode(screenshot_base64)
+            filename = f"step_{step_num:03d}.png"
+            filepath = screenshots_dir / filename
+
+            with open(filepath, "wb") as f:
+                f.write(img_data)
+
+            return str(filepath)
+        except Exception as e:
+            self._log(f"⚠️ 스크린샷 저장 실패: {e}")
+            return ""
+
+    def _generate_gif(self, screenshots_dir: Path, output_path: Path) -> bool:
+        """스크린샷들로 GIF 생성"""
+        if not HAS_PIL:
+            self._log("⚠️ PIL이 설치되지 않아 GIF를 생성할 수 없습니다")
+            return False
+
+        try:
+            png_files = sorted(screenshots_dir.glob("step_*.png"))
+            if len(png_files) < 2:
+                self._log("⚠️ GIF 생성을 위한 스크린샷이 부족합니다")
+                return False
+
+            images = []
+            for png_file in png_files:
+                img = Image.open(png_file)
+                # 크기 조정 (너무 크면 GIF가 무거워짐)
+                max_width = 800
+                if img.width > max_width:
+                    ratio = max_width / img.width
+                    new_size = (max_width, int(img.height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                images.append(img)
+
+            # GIF 저장 (각 프레임 1초)
+            images[0].save(
+                output_path,
+                save_all=True,
+                append_images=images[1:],
+                duration=1000,  # 1초 per frame
+                loop=0,
+            )
+            self._log(f"🎬 GIF 생성 완료: {output_path}")
+            return True
+        except Exception as e:
+            self._log(f"⚠️ GIF 생성 실패: {e}")
+            return False
+
+    def _generate_feature_description(
+        self, action: Optional[TestableAction], context: str = ""
+    ) -> Dict[str, str]:
+        """
+        액션에 대한 기능 중심 설명 생성
+
+        Returns:
+            {
+                "feature_description": "로그인 기능 테스트",
+                "test_scenario": "사용자 인증 플로우",
+                "business_impact": "사용자가 시스템에 접근할 수 없음"
+            }
+        """
+        if not action:
+            return {
+                "feature_description": "탐색 종료",
+                "test_scenario": "",
+                "business_impact": "",
+            }
+
+        # 액션 타입과 요소 정보를 기반으로 기능 추론
+        action_type = action.action_type
+        description = action.description.lower()
+
+        # 패턴 매칭으로 기능 추론
+        feature_patterns = {
+            # 로그인/인증 관련
+            ("login", "로그인", "sign in", "username", "password", "email"): {
+                "feature": "로그인/인증 기능 테스트",
+                "scenario": "사용자 인증 플로우",
+                "impact": "사용자가 서비스에 접근할 수 없음",
+            },
+            # 회원가입 관련
+            ("signup", "register", "회원가입", "create account"): {
+                "feature": "회원가입 기능 테스트",
+                "scenario": "신규 사용자 등록 플로우",
+                "impact": "신규 사용자 유치 불가",
+            },
+            # 장바구니 관련
+            ("cart", "add to cart", "장바구니", "basket", "remove"): {
+                "feature": "장바구니 기능 테스트",
+                "scenario": "상품 구매 플로우",
+                "impact": "사용자가 상품을 구매할 수 없음",
+            },
+            # 체크아웃/결제 관련
+            ("checkout", "payment", "결제", "구매", "order", "buy"): {
+                "feature": "체크아웃/결제 기능 테스트",
+                "scenario": "결제 프로세스",
+                "impact": "매출 손실 발생",
+            },
+            # 검색 관련
+            ("search", "검색", "find", "query"): {
+                "feature": "검색 기능 테스트",
+                "scenario": "상품/콘텐츠 검색 플로우",
+                "impact": "사용자가 원하는 정보를 찾을 수 없음",
+            },
+            # 네비게이션 관련
+            ("menu", "nav", "link", "back", "home", "메뉴"): {
+                "feature": "네비게이션 테스트",
+                "scenario": "사이트 탐색 플로우",
+                "impact": "사용자 경험 저하",
+            },
+            # 상품 상세 관련
+            ("product", "detail", "상품", "item"): {
+                "feature": "상품 상세 페이지 테스트",
+                "scenario": "상품 정보 확인 플로우",
+                "impact": "구매 결정에 필요한 정보 부족",
+            },
+            # 정렬/필터 관련
+            ("sort", "filter", "정렬", "필터", "dropdown"): {
+                "feature": "정렬/필터 기능 테스트",
+                "scenario": "상품 탐색 플로우",
+                "impact": "사용자가 원하는 조건으로 검색 불가",
+            },
+        }
+
+        for keywords, info in feature_patterns.items():
+            if any(kw in description for kw in keywords):
+                return {
+                    "feature_description": info["feature"],
+                    "test_scenario": info["scenario"],
+                    "business_impact": info["impact"],
+                }
+
+        # 기본값: 액션 타입 기반
+        default_features = {
+            "click": "UI 상호작용 테스트",
+            "fill": "입력 필드 테스트",
+            "select": "선택 기능 테스트",
+            "hover": "호버 상태 테스트",
+        }
+
+        return {
+            "feature_description": default_features.get(
+                action_type, f"{action_type} 액션 테스트"
+            ),
+            "test_scenario": "일반 UI 테스트",
+            "business_impact": "사용자 경험 영향",
+        }
+
+    def _group_steps_into_scenarios(
+        self, steps: List[ExplorationStep]
+    ) -> List[Dict[str, Any]]:
+        """
+        연속된 스텝들을 테스트 시나리오로 그룹화
+        """
+        scenarios = []
+        current_scenario = None
+
+        for step in steps:
+            scenario_name = step.test_scenario or "기타 테스트"
+
+            if current_scenario and current_scenario["name"] == scenario_name:
+                # 같은 시나리오에 추가
+                current_scenario["steps"].append(step.step_number)
+                if step.success:
+                    current_scenario["passed"] += 1
+                else:
+                    current_scenario["failed"] += 1
+            else:
+                # 새 시나리오 시작
+                if current_scenario:
+                    current_scenario["result"] = (
+                        "pass" if current_scenario["failed"] == 0 else "fail"
+                    )
+                    scenarios.append(current_scenario)
+
+                current_scenario = {
+                    "name": scenario_name,
+                    "feature": step.feature_description,
+                    "steps": [step.step_number],
+                    "passed": 1 if step.success else 0,
+                    "failed": 0 if step.success else 1,
+                }
+
+        # 마지막 시나리오 추가
+        if current_scenario:
+            current_scenario["result"] = (
+                "pass" if current_scenario["failed"] == 0 else "fail"
+            )
+            scenarios.append(current_scenario)
+
+        return scenarios
 
     def _resolve_llm_cache_path(self) -> str:
         repo_root = Path(__file__).resolve().parents[4]
@@ -160,7 +384,7 @@ class ExploratoryAgent:
     ) -> str:
         actions_text = "\n".join(
             f"{action.action_type}:{action.description}"
-            for action in testable_actions[:30]
+            for action in testable_actions[:60]
         )
         element_summary = ",".join(
             sorted(
@@ -311,6 +535,13 @@ class ExploratoryAgent:
         start_time = time.time()
         steps: List[ExplorationStep] = []
 
+        # 녹화 설정
+        screenshots_dir = None
+        screenshot_paths: List[str] = []
+        if self.config.enable_recording:
+            screenshots_dir = self._setup_recording_dir(session_id)
+            self._log(f"📹 녹화 활성화: {screenshots_dir}")
+
         self._log("=" * 60)
         self._log("🔍 완전 자율 탐색 모드 시작")
         self._log(f"   시작 URL: {start_url}")
@@ -322,6 +553,7 @@ class ExploratoryAgent:
         self._execute_action("goto", url=start_url)
         time.sleep(2)  # 페이지 로드 대기
         self._current_url = start_url
+        self._seed_urls = self._normalize_seed_urls(start_url)
 
         action_count = 0
 
@@ -428,8 +660,14 @@ class ExploratoryAgent:
                 steps.append(step)
                 break
 
-            # 7. 스크린샷 (액션 실행 전)
+            # 7. 스크린샷 (액션 실행 직전) - GIF용으로 저장
             screenshot_before = screenshot
+            if screenshots_dir and screenshot_before:
+                saved_path = self._save_screenshot_to_file(
+                    screenshot_before, screenshots_dir, action_count
+                )
+                if saved_path:
+                    screenshot_paths.append(saved_path)
 
             # 8. 액션 실행
             success, error, issues = self._execute_exploration_action(
@@ -485,7 +723,7 @@ class ExploratoryAgent:
             if decision.selected_action:
                 self._tested_elements.add(decision.selected_action.element_id)
 
-            # 11. 스크린샷 (액션 실행 후)
+            # 11. 스크린샷 (액션 실행 후) - 결과 확인용 (GIF에는 포함 안함)
             time.sleep(1)  # UI 변화 대기
             screenshot_after = self._capture_screenshot()
 
@@ -495,6 +733,52 @@ class ExploratoryAgent:
             if new_pages:
                 self._log(f"🆕 새 페이지 발견: {new_url}")
 
+            after_state = self._analyze_current_page()
+            if success and decision.selected_action and after_state:
+                expected_input = None
+                before_select_state = None
+                before_toggle_state = None
+                selector = None
+                if decision.selected_action.action_type == "fill":
+                    expected_input = self._determine_input_value(
+                        decision.selected_action, decision.input_values
+                    )
+                if decision.selected_action.action_type in ["select", "click"]:
+                    selector = self._find_selector_by_element_id(
+                        decision.selected_action.element_id, page_state
+                    )
+                if decision.selected_action.action_type == "select":
+                    before_select_state = self._get_select_state(selector)
+                if decision.selected_action.action_type == "click":
+                    before_toggle_state = self._get_toggle_state(selector)
+                intent_ok, intent_reason = self._verify_action_intent(
+                    action=decision.selected_action,
+                    before_state=page_state,
+                    after_state=after_state,
+                    before_url=page_state.url,
+                    after_url=new_url,
+                    screenshot_before=screenshot_before,
+                    screenshot_after=screenshot_after,
+                    expected_input=expected_input,
+                    before_select_state=before_select_state,
+                    before_toggle_state=before_toggle_state,
+                )
+                if not intent_ok and intent_reason:
+                    issues.append(
+                        self._create_intent_issue(
+                            action=decision.selected_action,
+                            url=page_state.url,
+                            reason=intent_reason,
+                            screenshot_before=screenshot_before,
+                            screenshot_after=screenshot_after,
+                        )
+                    )
+
+            # 12-1. 기능 중심 설명 생성
+            feature_info = self._generate_feature_description(
+                decision.selected_action if decision else None
+            )
+
             # 13. Step 결과 저장
             step = ExplorationStep(
                 step_number=action_count,
@@ -502,6 +786,9 @@ class ExploratoryAgent:
                 decision=decision,
                 success=success,
                 error_message=error,
+                feature_description=feature_info["feature_description"],
+                test_scenario=feature_info["test_scenario"],
+                business_impact=feature_info["business_impact"],
                 issues_found=issues,
                 new_pages_found=new_pages,
                 screenshot_before=screenshot_before,
@@ -529,6 +816,16 @@ class ExploratoryAgent:
         duration = time.time() - start_time
         completion_reason = self._determine_completion_reason(action_count, steps)
 
+        # GIF 생성 (녹화가 활성화된 경우)
+        gif_path = None
+        if screenshots_dir and self.config.generate_gif and screenshot_paths:
+            gif_filename = screenshots_dir.parent / f"{session_id}.gif"
+            if self._generate_gif(screenshots_dir, gif_filename):
+                gif_path = str(gif_filename)
+
+        # 테스트 시나리오 그룹화
+        test_scenarios = self._group_steps_into_scenarios(steps)
+
         # 최종 결과 생성
         result = ExplorationResult(
             session_id=session_id,
@@ -540,6 +837,9 @@ class ExploratoryAgent:
             issues_found=self._found_issues,
             steps=steps,
             completion_reason=completion_reason,
+            recording_gif_path=gif_path,
+            screenshots_dir=str(screenshots_dir) if screenshots_dir else None,
+            test_scenarios_summary=test_scenarios,
             completed_at=datetime.now(),
             duration_seconds=duration,
         )
@@ -632,14 +932,19 @@ class ExploratoryAgent:
                     )
                 )
 
-            # AutoCrawler 최적화: 최대 30개로 제한 (우선순위: 미테스트 > 테스트됨)
-            if len(interactive_elements) > 30:
-                untested = [e for e in interactive_elements if not e.tested]
-                tested = [e for e in interactive_elements if e.tested]
+            # AutoCrawler 최적화: 최대 60개로 제한 (우선순위: 중요 요소 우선)
+            if len(interactive_elements) > 60:
+                high_priority = [
+                    e for e in interactive_elements if self._is_high_priority_element(e)
+                ]
+                remaining = [e for e in interactive_elements if e not in high_priority]
                 interactive_elements = (
-                    untested[:25] + tested[:5]
-                )  # 미테스트 25개 + 테스트됨 5개
-                self._log(f"⚡ 요소 샘플링: {len(untested) + len(tested)}개 → 30개")
+                    high_priority + remaining[: max(0, 60 - len(high_priority))]
+                )
+                self._log(
+                    "⚡ 요소 샘플링: "
+                    f"{len(high_priority) + len(remaining)}개 → {len(interactive_elements)}개"
+                )
 
             # PageState 생성
             page_state = PageState(
@@ -821,6 +1126,18 @@ class ExploratoryAgent:
             if f"{action.element_id}:{action.action_type}" not in visited_actions
         ]
         if unvisited:
+            if self._has_pending_inputs(page_state):
+                fill_actions = [
+                    action for action in unvisited if action.action_type == "fill"
+                ]
+                if fill_actions:
+                    fill_actions.sort(key=lambda x: x.priority, reverse=True)
+                    return ExplorationDecision(
+                        should_continue=True,
+                        selected_action=fill_actions[0],
+                        reasoning="미입력 필드 우선 입력",
+                        confidence=0.75,
+                    )
             non_fill = [action for action in unvisited if action.action_type != "fill"]
             if non_fill:
                 non_fill.sort(key=lambda x: x.priority, reverse=True)
@@ -927,6 +1244,7 @@ class ExploratoryAgent:
                 )
 
         pending_inputs = self._has_pending_inputs(page_state)
+        has_tested_inputs = self._has_tested_inputs(page_state)
         actions_with_status: List[tuple[TestableAction, bool]] = []
 
         for element in page_state.interactive_elements:
@@ -946,6 +1264,12 @@ class ExploratoryAgent:
                         description = f"이메일 입력: {field_hint}"
                     else:
                         description = f"텍스트 입력({element.type}): {field_hint}"
+                elif element.type in ["submit", "button", "image"]:
+                    action_type = "click"
+                    if self._has_login_form(page_state):
+                        description = "버튼: Login"
+                    else:
+                        description = f"Input: {element.type or element_label}"
                 elif element.type in ["checkbox", "radio"]:
                     action_type = "click"
                     description = f"체크박스/라디오: {element_label or element.type}"
@@ -982,12 +1306,22 @@ class ExploratoryAgent:
 
             # Guard: 필수 입력이 남아있으면 제출/확인 버튼 제외
             if pending_inputs and action_type == "click":
+                if self._has_login_form(page_state):
+                    if element.tag == "input" and (element.type or "").lower() in [
+                        "submit",
+                        "button",
+                        "image",
+                    ]:
+                        continue
+                    if element.tag == "button" and "login" in description.lower():
+                        continue
                 if element.tag == "input" and (element.type or "").lower() in [
                     "submit",
                     "button",
                     "image",
                 ]:
-                    continue
+                    if not has_tested_inputs:
+                        continue
                 if element.tag == "button":
                     submit_keywords = [
                         "submit",
@@ -1005,7 +1339,9 @@ class ExploratoryAgent:
                     ]
                     label_lower = description.lower()
                     if any(keyword in label_lower for keyword in submit_keywords):
-                        continue
+                        if not has_tested_inputs:
+                            continue
+                        priority *= 0.7
 
             # Guard: 토글 액션은 페이지당 1회씩만 허용
             if action_type == "click":
@@ -1068,7 +1404,12 @@ class ExploratoryAgent:
                 if any(
                     keyword in description.lower() for keyword in destructive_keywords
                 ):
-                    if action_type == "click":
+                    if any(
+                        keyword in description.lower()
+                        for keyword in self.config.allow_destructive_keywords
+                    ):
+                        priority *= 0.6
+                    elif action_type == "click":
                         continue
                     priority *= 0.1
 
@@ -1079,6 +1420,8 @@ class ExploratoryAgent:
                 priority=priority,
                 reasoning=f"{'미테스트' if not element.tested else '재테스트'} 요소",
             )
+
+            action = self._boost_action_priority(action)
 
             if (
                 action.action_type == "click"
@@ -1094,11 +1437,12 @@ class ExploratoryAgent:
         has_untested = any(not tested for _, tested in actions_with_status)
         if has_untested:
             actions = [action for action, tested in actions_with_status if not tested]
+        actions.extend(self._build_navigation_actions(page_state))
 
         # 우선순위로 정렬
         actions.sort(key=lambda x: x.priority, reverse=True)
 
-        max_actions = 30
+        max_actions = 60
         if len(actions) > max_actions:
             category_buckets: Dict[str, List[TestableAction]] = {}
             for action in actions:
@@ -1106,6 +1450,8 @@ class ExploratoryAgent:
                     category = "fill"
                 elif action.action_type == "select":
                     category = "select"
+                elif action.action_type == "navigate":
+                    category = "navigate"
                 elif action.action_type == "click":
                     if "[icon link]" in action.description:
                         category = "icon_link"
@@ -1128,6 +1474,7 @@ class ExploratoryAgent:
             for category in [
                 "fill",
                 "select",
+                "navigate",
                 "icon_link",
                 "icon_button",
                 "link",
@@ -1175,6 +1522,136 @@ class ExploratoryAgent:
             if not element.tested:
                 return True
         return False
+
+    def _has_tested_inputs(self, page_state: PageState) -> bool:
+        for element in page_state.interactive_elements:
+            if element.tag != "input":
+                continue
+            input_type = (element.type or "text").lower()
+            if input_type in ["submit", "button", "hidden", "image"]:
+                continue
+            if element.tested:
+                return True
+        return False
+
+    def _has_login_form(self, page_state: PageState) -> bool:
+        has_password = False
+        has_user_input = False
+        for element in page_state.interactive_elements:
+            if element.tag != "input":
+                continue
+            input_type = (element.type or "text").lower()
+            if input_type == "password":
+                has_password = True
+            if input_type in ["text", "email"]:
+                has_user_input = True
+        return has_password and has_user_input
+
+    def _is_high_priority_element(self, element: ElementState) -> bool:
+        label = self._element_label(element).lower()
+        selector = (element.selector or "").lower()
+        haystack = f"{label} {selector}".strip()
+        if not haystack:
+            return False
+        return any(
+            keyword in haystack for keyword in self.config.high_priority_keywords
+        )
+
+    def _boost_action_priority(self, action: TestableAction) -> TestableAction:
+        description = action.description.lower()
+        if any(
+            keyword in description for keyword in self.config.high_priority_keywords
+        ):
+            action.priority = min(1.0, action.priority + 0.35)
+        return action
+
+    def _normalize_seed_urls(self, start_url: str) -> List[str]:
+        seeds: List[str] = []
+        for url in self.config.seed_urls:
+            if not url:
+                continue
+            if url.startswith("http://") or url.startswith("https://"):
+                seeds.append(url)
+            else:
+                seeds.append(urljoin(start_url, url))
+        return list(dict.fromkeys(seeds))
+
+    def _build_navigation_actions(self, page_state: PageState) -> List[TestableAction]:
+        actions: List[TestableAction] = []
+        seen: Set[str] = set()
+        pending_inputs = self._has_pending_inputs(page_state)
+        base_priority = 0.95 if not pending_inputs else 0.4
+        for url in self._seed_urls:
+            resolved = urljoin(page_state.url, url)
+            if self._hash_url(resolved) in self._visited_pages:
+                continue
+            element_id = f"navigate:{resolved}"
+            attempt_key = f"{page_state.url_hash}:{element_id}:navigate"
+            if self._action_attempts.get(attempt_key, 0) >= 3:
+                continue
+            if element_id in seen:
+                continue
+            seen.add(element_id)
+            actions.append(
+                TestableAction(
+                    element_id=element_id,
+                    action_type="navigate",
+                    description=f"URL 이동: {resolved}",
+                    priority=base_priority,
+                    reasoning="탐색 시드",
+                )
+            )
+
+        actions.extend(self._build_saucedemo_item_actions(page_state, seen))
+        return actions
+
+    def _build_saucedemo_item_actions(
+        self,
+        page_state: PageState,
+        seen: Set[str],
+    ) -> List[TestableAction]:
+        if "saucedemo.com" not in page_state.url:
+            return []
+        if "inventory.html" not in page_state.url:
+            return []
+        parsed = urlparse(page_state.url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        actions: List[TestableAction] = []
+        pending_inputs = self._has_pending_inputs(page_state)
+        base_priority = 0.9 if not pending_inputs else 0.35
+        pattern = re.compile(r"item_(\d+)_")
+        for element in page_state.interactive_elements:
+            selector = element.selector or ""
+            match = pattern.search(selector)
+            if not match:
+                continue
+            item_id = match.group(1)
+            target_url = f"{base_url}/inventory-item.html?id={item_id}"
+            element_id = f"navigate:{target_url}"
+            attempt_key = f"{page_state.url_hash}:{element_id}:navigate"
+            if self._action_attempts.get(attempt_key, 0) >= 3:
+                continue
+            if element_id in seen:
+                continue
+            seen.add(element_id)
+            actions.append(
+                TestableAction(
+                    element_id=element_id,
+                    action_type="navigate",
+                    description=f"상품 상세 이동: id={item_id}",
+                    priority=base_priority,
+                    reasoning="상품 상세 직접 이동",
+                )
+            )
+        return actions
+
+    def _resolve_navigation_target(self, element_id: str, current_url: str) -> str:
+        target = element_id
+        if element_id.startswith("navigate:"):
+            target = element_id.split(":", 1)[1]
+        if not target:
+            return current_url
+        return urljoin(current_url, target)
 
     def _element_label(self, element: ElementState) -> str:
         parts = [
@@ -1300,7 +1777,7 @@ class ExploratoryAgent:
         actions_text = "\n".join(
             [
                 f"[{i}] {action.action_type.upper()}: {action.description} (우선순위: {action.priority:.2f})"
-                for i, action in enumerate(testable_actions[:30])
+                for i, action in enumerate(testable_actions[:60])
             ]
         )
 
@@ -1352,7 +1829,7 @@ class ExploratoryAgent:
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
     "should_continue": true | false,
-    "selected_action_index": 액션 인덱스 (0-19, 선택 안 하면 null),
+    "selected_action_index": 액션 인덱스 (0-59, 선택 안 하면 null),
     "input_values": {{"username": "사용자명", "password": "비밀번호"}},  // fill 액션인 경우, 필요한 키만 포함
     "reasoning": "이 액션을 선택한 이유 또는 종료 이유",
     "confidence": 0.0~1.0,
@@ -1427,6 +1904,22 @@ JSON 응답:"""
 
         action = decision.selected_action
         issues = []
+
+        if action.action_type == "navigate":
+            target_url = self._resolve_navigation_target(
+                action.element_id, page_state.url
+            )
+            self._log(f"🎯 이동: {target_url}")
+            success, error = self._execute_action("goto", url=target_url)
+            if not success and error:
+                issues.append(
+                    self._create_action_failure_issue(
+                        action=action,
+                        error_message=error,
+                        url=page_state.url,
+                    )
+                )
+            return success, error, issues
 
         # 셀렉터 찾기
         selector = self._find_selector_by_element_id(action.element_id, page_state)
@@ -1590,6 +2083,8 @@ JSON 응답:"""
 
         if value is not None:
             params["value"] = value
+        if action == "goto" and url:
+            params["value"] = url
 
         try:
             response = requests.post(
@@ -1617,6 +2112,76 @@ JSON 응답:"""
 
         except Exception as e:
             return False, str(e)
+
+    def _evaluate_selector(self, selector: str, script: str) -> Optional[str]:
+        params: Dict[str, object] = {
+            "session_id": self.session_id,
+            "action": "evaluate",
+            "url": "",
+            "selector": selector,
+            "value": script,
+        }
+        try:
+            response = requests.post(
+                f"{self.mcp_host_url}/execute",
+                json={"action": "execute_action", "params": params},
+                timeout=self.config.action_timeout,
+            )
+            data = response.json()
+            if not data.get("success"):
+                return None
+            result = data.get("result")
+            return str(result) if result is not None else None
+        except Exception:
+            return None
+
+    def _get_select_state(self, selector: Optional[str]) -> Optional[dict]:
+        if not selector:
+            return None
+        result = self._evaluate_selector(
+            selector,
+            """
+            el => JSON.stringify({
+                value: el.value ?? '',
+                text: (el.selectedOptions && el.selectedOptions[0]
+                    ? el.selectedOptions[0].textContent
+                    : '')
+            })
+            """,
+        )
+        if not result:
+            return None
+        try:
+            return json.loads(result)
+        except Exception:
+            return None
+
+    def _get_toggle_state(self, selector: Optional[str]) -> Optional[dict]:
+        if not selector:
+            return None
+        result = self._evaluate_selector(
+            selector,
+            """
+            el => JSON.stringify({
+                checked: typeof el.checked === 'boolean' ? el.checked : null,
+                pressed: (el.getAttribute && el.getAttribute('aria-pressed'))
+                    ? el.getAttribute('aria-pressed') === 'true'
+                    : null,
+                selected: (el.getAttribute && el.getAttribute('aria-selected'))
+                    ? el.getAttribute('aria-selected') === 'true'
+                    : null,
+                expanded: (el.getAttribute && el.getAttribute('aria-expanded'))
+                    ? el.getAttribute('aria-expanded') === 'true'
+                    : null
+            })
+            """,
+        )
+        if not result:
+            return None
+        try:
+            return json.loads(result)
+        except Exception:
+            return None
 
     def _build_element_id(
         self,
@@ -1647,7 +2212,13 @@ JSON 응답:"""
     ) -> Optional[str]:
         """element_id로 셀렉터 찾기"""
         element = self._find_element_by_id(element_id, page_state)
-        return element.selector if element else None
+        if not element:
+            return None
+        selector = element.selector
+        if selector and self._is_selector_safe(selector):
+            return selector
+        fallback = self._fallback_selector_for_element(element, page_state)
+        return fallback or selector
 
     def _find_element_by_id(
         self,
@@ -1660,6 +2231,58 @@ JSON 응답:"""
                 return element
         return None
 
+    def _is_selector_safe(self, selector: str) -> bool:
+        if not selector:
+            return False
+        if selector.startswith("role=") or selector.startswith("text="):
+            return True
+        if "[" in selector or "]" in selector:
+            return False
+        parts = selector.split(".")
+        for part in parts[1:]:
+            segment = part.split(" ")[0].split(">")[0]
+            if ":" in segment:
+                return False
+        return True
+
+    def _fallback_selector_for_element(
+        self,
+        element: ElementState,
+        page_state: PageState,
+    ) -> Optional[str]:
+        label = self._element_label(element)
+        if element.tag == "select":
+            select_index = 0
+            for candidate in page_state.interactive_elements:
+                if candidate.tag == "select":
+                    if candidate.element_id == element.element_id:
+                        return f"select >> nth={select_index}"
+                    select_index += 1
+            return "select"
+
+        if element.tag == "input":
+            if element.placeholder:
+                return f'input[placeholder="{element.placeholder}"]'
+            if element.aria_label:
+                return f'input[aria-label="{element.aria_label}"]'
+            if element.type:
+                input_index = 0
+                for candidate in page_state.interactive_elements:
+                    if candidate.tag == "input" and candidate.type == element.type:
+                        if candidate.element_id == element.element_id:
+                            return f'input[type="{element.type}"] >> nth={input_index}'
+                        input_index += 1
+
+        if element.aria_label:
+            return f'[aria-label="{element.aria_label}"]'
+        if element.role:
+            if label:
+                return f'role={element.role}[name="{label}"]'
+            return f"role={element.role}"
+        if label and len(label) <= 40:
+            return f'text="{label}"'
+        return None
+
     def _determine_input_value(
         self,
         action: TestableAction,
@@ -1667,6 +2290,12 @@ JSON 응답:"""
     ) -> str:
         """입력 필드에 넣을 값 결정"""
         desc_lower = action.description.lower()
+
+        if "saucedemo.com" in (self._current_url or ""):
+            if "password" in desc_lower or "비밀번호" in desc_lower:
+                return "secret_sauce"
+            if "username" in desc_lower or "사용자" in desc_lower:
+                return "standard_user"
 
         # 명시적으로 제공된 값 사용 (LLM이 제공한 input_values 우선)
         if input_values:
@@ -1750,6 +2379,178 @@ JSON 응답:"""
             error_message=error_message,
         )
 
+    def _create_intent_issue(
+        self,
+        action: TestableAction,
+        url: str,
+        reason: str,
+        screenshot_before: Optional[str] = None,
+        screenshot_after: Optional[str] = None,
+    ) -> FoundIssue:
+        issue_id = f"INTENT_{int(time.time())}_{len(self._found_issues)}"
+        return FoundIssue(
+            issue_id=issue_id,
+            issue_type=IssueType.UNEXPECTED_BEHAVIOR,
+            severity="low",
+            title=f"의도한 결과 미확인: {action.description}",
+            description=f"액션 실행 후 의도한 변화가 감지되지 않았습니다.\n\n사유: {reason}",
+            url=url,
+            steps_to_reproduce=[
+                f"1. {url}로 이동",
+                f"2. {action.description}를 {action.action_type}",
+            ],
+            screenshot_before=screenshot_before,
+            screenshot_after=screenshot_after,
+        )
+
+    def _verify_action_intent(
+        self,
+        action: TestableAction,
+        before_state: PageState,
+        after_state: PageState,
+        before_url: str,
+        after_url: str,
+        screenshot_before: Optional[str],
+        screenshot_after: Optional[str],
+        expected_input: Optional[str],
+        before_select_state: Optional[dict],
+        before_toggle_state: Optional[dict],
+    ) -> tuple[bool, Optional[str]]:
+        if action.action_type == "navigate":
+            target_url = self._resolve_navigation_target(action.element_id, before_url)
+            if self._normalize_url_for_compare(
+                after_url
+            ) == self._normalize_url_for_compare(target_url):
+                return True, None
+            if after_url != before_url:
+                return True, None
+            return False, f"URL 이동이 확인되지 않음: {target_url}"
+
+        if action.action_type == "fill":
+            selector = self._find_selector_by_element_id(
+                action.element_id, before_state
+            )
+            if not selector:
+                return True, None
+            if not expected_input:
+                return True, None
+            current_value = self._evaluate_selector(
+                selector, "el => (el.value ?? el.textContent ?? '').toString()"
+            )
+            if current_value is None:
+                return True, None
+            if self._normalize_text(expected_input) in self._normalize_text(
+                current_value
+            ):
+                return True, None
+            return False, "입력값 반영이 확인되지 않음"
+
+        if action.action_type == "hover":
+            return True, None
+
+        if action.action_type == "select":
+            selector = self._find_selector_by_element_id(
+                action.element_id, before_state
+            )
+            if not selector:
+                return True, None
+            after_select_state = self._get_select_state(selector)
+            expected_label = None
+            if ":" in action.description:
+                expected_label = action.description.split(":", 1)[1].strip()
+            if expected_label and after_select_state:
+                after_text = self._normalize_text(after_select_state.get("text"))
+                if self._normalize_text(expected_label) in after_text:
+                    return True, None
+            if before_select_state and after_select_state:
+                if before_select_state.get("value") != after_select_state.get("value"):
+                    return True, None
+                if self._normalize_text(
+                    before_select_state.get("text")
+                ) != self._normalize_text(after_select_state.get("text")):
+                    return True, None
+            if after_select_state and (
+                after_select_state.get("value") or after_select_state.get("text")
+            ):
+                return True, None
+            return False, "드롭다운 선택 결과가 확인되지 않음"
+
+        if action.action_type in ["click", "select"]:
+            if after_url != before_url:
+                return True, None
+
+            if (
+                screenshot_before
+                and screenshot_after
+                and screenshot_before != screenshot_after
+            ):
+                return True, None
+
+            before_count = len(before_state.interactive_elements)
+            after_count = len(after_state.interactive_elements)
+            if before_count != after_count:
+                return True, None
+
+            element_before = self._find_element_by_id(action.element_id, before_state)
+            selector = element_before.selector if element_before else None
+            element_after = (
+                self._find_element_by_selector(selector, after_state)
+                if selector
+                else None
+            )
+            if selector and element_after is None:
+                return True, None
+
+            if selector:
+                toggle_state = self._get_toggle_state(selector)
+                if toggle_state:
+                    if before_toggle_state and toggle_state != before_toggle_state:
+                        return True, None
+                    if toggle_state.get("checked") is True:
+                        return True, None
+                    if toggle_state.get("pressed") is True:
+                        return True, None
+                    if toggle_state.get("selected") is True:
+                        return True, None
+                    if toggle_state.get("expanded") is True:
+                        return True, None
+            if element_before and element_after:
+                if self._normalize_text(element_before.text) != self._normalize_text(
+                    element_after.text
+                ):
+                    return True, None
+                if (element_before.aria_label or "").strip() != (
+                    element_after.aria_label or ""
+                ).strip():
+                    return True, None
+
+            return False, "URL/DOM 변화가 감지되지 않음"
+
+        return True, None
+
+    def _find_element_by_selector(
+        self, selector: Optional[str], page_state: PageState
+    ) -> Optional[ElementState]:
+        if not selector:
+            return None
+        for element in page_state.interactive_elements:
+            if element.selector == selector:
+                return element
+        return None
+
+    @staticmethod
+    def _normalize_text(value: Optional[str]) -> str:
+        if not value:
+            return ""
+        return " ".join(value.split()).strip().lower()
+
+    @staticmethod
+    def _normalize_url_for_compare(url: str) -> str:
+        if not url:
+            return ""
+        normalized = url.split("#")[0].rstrip("/")
+        return normalized
+
     def _report_console_errors(
         self, console_errors: List[str], screenshot: Optional[str]
     ):
@@ -1829,8 +2630,11 @@ JSON 응답:"""
 
     def _hash_url(self, url: str) -> str:
         """URL 해시 생성 (중복 방지)"""
-        # 쿼리 파라미터 제거하고 해시 생성
-        base_url = url.split("?")[0].split("#")[0]
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        query = parsed.query or ""
+        if any(key in query for key in ["id=", "item=", "product="]):
+            base_url = f"{base_url}?{query}"
         return hashlib.md5(base_url.encode()).hexdigest()[:12]
 
     def _call_gemini_text_only(self, prompt: str) -> str:
