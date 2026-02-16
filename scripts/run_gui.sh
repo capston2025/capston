@@ -16,4 +16,4 @@ if [[ -d ".venv" ]]; then
   source ".venv/bin/activate"
 fi
 
-exec python -m gaia.main
+exec gaia start gui

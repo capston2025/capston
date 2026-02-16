@@ -96,7 +96,15 @@ Scenario  └──────────────┘  │   └───�
 
 ## 실행 방법
 
-### 1. 환경 준비
+### 1. Homebrew 설치 (권장)
+```bash
+brew tap capston2025/homebrew-gaia
+brew install gaia
+gaia --help
+```
+`capston2025`는 배포한 GitHub owner/조직으로 맞춰주세요.
+
+### 2. 소스 실행 환경 (개발/직접 실행)
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -104,7 +112,7 @@ pip install -r gaia/requirements.txt
 playwright install chromium
 ```
 
-### 2. 필수 환경 변수
+### 3. 필수 환경 변수
 - `OPENAI_API_KEY`: 필수.
 - `GAIA_LLM_MODEL`, `GAIA_LLM_REASONING_EFFORT`, `GAIA_LLM_VERBOSITY`: Planner 튜닝.
 - `GAIA_WORKFLOW_ID`, `GAIA_WORKFLOW_VERSION`: Agent Builder 워크플로 선택.
@@ -118,23 +126,34 @@ GAIA_LLM_MODEL=gpt-4o
 MCP_HOST_URL=http://localhost:8001
 ```
 
-### 3. 실행 플로우
-터미널 1: Playwright MCP Host
+### 4. 실행 플로우
+1) 터미널 환경에서 MCP Host 실행
 ```bash
 ./scripts/run_mcp_host.sh
 ```
 
-터미널 2: PySide6 GUI
+※ `gaia start`는 자동으로 MCP Host를 띄우지 않습니다. 배포/운영 시 `gaia` 실행 전/후로 MCP Host를 별도 관리하세요.
+
+2) 실행 모드
 ```bash
-./scripts/run_gui.sh
+# 터미널/GUI 선택 UI
+gaia start
+
+# 바로 GUI 실행
+gaia start gui
+
+# 터미널 모드 실행
+gaia start terminal --plan artifacts/plans/sample_plan.json --url https://example.com
+gaia start terminal --plan artifacts/plans/sample_plan.json --url https://example.com --format json
+
+# 터미널 결과를 GUI에서 이어서 실행
+gaia start gui --resume <run-id>
 ```
 
-CLI로 전체 파이프라인 실행:
-```bash
-python run_auto_test.py --url https://example.com --spec artifacts/spec.pdf
-```
+과거 플로우인 `python run_auto_test.py`는 스크립트가 제거되어 더 이상 사용되지 않습니다.
+또한 과거에는 `./scripts/run_gui.sh`가 `python -m gaia.main`로 실행됐으나 이제 `gaia start gui`를 사용합니다.
 
-과거 플랜 재사용 시 GUI의 “이전 테스트 불러오기”로 `artifacts/plans/*.json`을 선택하면 PDF 분석 없이 즉시 실행한다.
+GUI에서 기존 플랜 재사용 시 “이전 테스트 불러오기”로 `artifacts/plans/*.json` 선택 시 즉시 실행할 수 있습니다.
 
 ## 워크스페이스 구조
 ```
@@ -157,7 +176,7 @@ gaia/
 │   └── plans/                 # Planner 출력 저장본
 ├── scripts/                   # run_mcp_host.sh, run_gui.sh 등
 ├── tests/                     # Pytest (planner, scheduler, orchestration)
-├── run_auto_test.py           # 풀 파이프라인 실행 스크립트
+├── homebrew/                  # Homebrew formula
 └── README.md
 ```
 

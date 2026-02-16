@@ -4,7 +4,9 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence
+from typing import Any, List, Mapping, Sequence
+
+from gaia.common import RunContext
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
@@ -75,6 +77,32 @@ class AppController(QObject):
         self._window.startRequested.connect(self._on_start_requested)
         self._window.cancelRequested.connect(self._on_cancel_requested)
         self._window.urlSubmitted.connect(self._on_url_submitted)
+
+    def apply_run_context(
+        self,
+        context: RunContext | Mapping[str, Any] | None = None,
+        *,
+        url: str | None = None,
+        plan_path: str | Path | None = None,
+    ) -> None:
+        """Load pre-populated state from CLI run context."""
+        resolved_url = url or (
+            context.url if isinstance(context, RunContext) else (
+                context.get("url") if isinstance(context, Mapping) else None
+            )
+        )
+        resolved_plan_path = plan_path or (
+            context.plan_path if isinstance(context, RunContext) else (
+                context.get("plan_path") if isinstance(context, Mapping) else None
+            )
+        )
+
+        if resolved_url:
+            self._current_url = str(resolved_url)
+            self._window.set_url_field(self._current_url)
+
+        if resolved_plan_path:
+            self._on_plan_file_selected(str(resolved_plan_path))
 
     # ------------------------------------------------------------------
     @Slot(str)
