@@ -2,6 +2,8 @@ import asyncio
 import os
 import base64
 import uuid
+import time
+import hashlib
 import json as json_module
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -14,7 +16,7 @@ from playwright.async_api import (
     Page,
     CDPSession,
 )
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 app = FastAPI(
     title="MCP Host", description="Model Context Protocol Host for Browser Automation"
@@ -39,6 +41,10 @@ class BrowserSession:
         self.stored_css_values: Dict[
             str, str
         ] = {}  # CSS 값 저장소 (storeCSSValue/expectCSSChanged용)
+        self.snapshot_epoch: int = 0
+        self.current_snapshot_id: str = ""
+        self.current_dom_hash: str = ""
+        self.snapshots: Dict[str, Dict[str, Any]] = {}
 
     async def get_or_create_page(self) -> Page:
         """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다"""
@@ -197,6 +203,363 @@ class BrowserSession:
 
 # 활성 세션 저장소
 active_sessions: Dict[str, BrowserSession] = {}
+
+
+def _build_snapshot_dom_hash(url: str, elements: List[Dict[str, Any]]) -> str:
+    compact: List[Dict[str, Any]] = []
+    for el in elements:
+        attrs = el.get("attributes") or {}
+        compact.append(
+            {
+                "tag": el.get("tag", ""),
+                "text": (el.get("text") or "")[:80],
+                "selector": el.get("selector", ""),
+                "full_selector": el.get("full_selector", ""),
+                "frame_index": el.get("frame_index", 0),
+                "role": attrs.get("role", ""),
+                "type": attrs.get("type", ""),
+                "aria_label": attrs.get("aria-label", ""),
+            }
+        )
+    raw = json_module.dumps(
+        {
+            "url": (url or "").strip(),
+            "elements": compact,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _normalize_snapshot_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _get_tab_index(page: Page) -> int:
+    try:
+        return page.context.pages.index(page)
+    except Exception:
+        return 0
+
+
+def _split_full_selector(full_selector: str) -> Tuple[str, str]:
+    if " >>> " not in full_selector:
+        return "", full_selector
+    prefix, inner = full_selector.split(" >>> ", 1)
+    return prefix.strip(), inner.strip()
+
+
+async def _compute_runtime_dom_hash(page: Page) -> str:
+    try:
+        signature = await page.evaluate(
+            """
+            () => {
+                const nodes = Array.from(document.querySelectorAll('input, textarea, select, button, a, [role="button"], [role="tab"], [role="dialog"], [aria-label], [type="submit"]'))
+                    .slice(0, 220);
+                const parts = nodes.map((el) => {
+                    const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 64);
+                    const tag = el.tagName ? el.tagName.toLowerCase() : '';
+                    const role = el.getAttribute('role') || '';
+                    const type = el.getAttribute('type') || '';
+                    const id = el.id || '';
+                    return `${tag}|${role}|${type}|${id}|${text}`;
+                });
+                return parts.join('||');
+            }
+            """
+        )
+    except Exception:
+        signature = str(page.url or "")
+    return hashlib.sha256(str(signature).encode("utf-8")).hexdigest()
+
+
+async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
+    try:
+        raw = await page.evaluate(
+            """
+            () => {
+                const bodyText = ((document.body && document.body.innerText) || '')
+                  .replace(/\\s+/g, ' ')
+                  .trim();
+                const clipped = bodyText.slice(0, 4000);
+                const numberTokens = (clipped.match(/\\d+/g) || []).slice(0, 40);
+
+                const liveNodes = Array.from(document.querySelectorAll(
+                  '[role="status"],[aria-live],.toast,.alert,.snackbar,[class*="toast"],[class*="alert"],[class*="snackbar"],[class*="notification"]'
+                )).slice(0, 20);
+                const liveTexts = liveNodes
+                  .map((el) => ((el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()))
+                  .filter(Boolean)
+                  .map((t) => t.slice(0, 140));
+
+                const counterNodes = Array.from(document.querySelectorAll(
+                  '[aria-live], [role="status"], [class*="badge"], [class*="count"], [data-count], [data-badge]'
+                )).slice(0, 60);
+                const counters = counterNodes
+                  .map((el) => (
+                    (el.textContent || '').trim() ||
+                    (el.getAttribute('data-count') || '').trim() ||
+                    (el.getAttribute('data-badge') || '').trim()
+                  ))
+                  .filter(Boolean)
+                  .map((t) => t.slice(0, 60));
+
+                const listCount = document.querySelectorAll(
+                  'li, tr, [role="row"], [role="listitem"], [class*="item"], [class*="row"], [class*="card"]'
+                ).length;
+                const interactiveCount = document.querySelectorAll(
+                  'button, a, input, textarea, select, [role="button"], [role="tab"], [role="menuitem"], [role="link"]'
+                ).length;
+
+                const loginVisible = /(로그인|log in|sign in)/i.test(clipped);
+                const logoutVisible = /(로그아웃|log out|sign out)/i.test(clipped);
+                const scrollY = Number(window.scrollY || 0);
+                const docHeight = Number((document.documentElement && document.documentElement.scrollHeight) || 0);
+
+                return {
+                  text_digest: clipped.slice(0, 2000),
+                  number_tokens: numberTokens,
+                  live_texts: liveTexts,
+                  counters: counters,
+                  list_count: Number(listCount || 0),
+                  interactive_count: Number(interactiveCount || 0),
+                  login_visible: Boolean(loginVisible),
+                  logout_visible: Boolean(logoutVisible),
+                  scroll_y: scrollY,
+                  doc_height: docHeight
+                };
+            }
+            """
+        )
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return {
+        "text_digest": "",
+        "number_tokens": [],
+        "live_texts": [],
+        "counters": [],
+        "list_count": 0,
+        "interactive_count": 0,
+        "login_visible": False,
+        "logout_visible": False,
+        "scroll_y": 0,
+        "doc_height": 0,
+    }
+
+
+def _sorted_text_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    normalized = [str(v).strip() for v in value if str(v).strip()]
+    normalized.sort()
+    return normalized[:100]
+
+
+async def _read_focus_signature(page: Page) -> str:
+    try:
+        return await page.evaluate(
+            """
+            () => {
+                const el = document.activeElement;
+                if (!el) return '';
+                const tag = el.tagName ? el.tagName.toLowerCase() : '';
+                const id = el.id || '';
+                const name = el.getAttribute('name') || '';
+                const aria = el.getAttribute('aria-label') || '';
+                return `${tag}|${id}|${name}|${aria}`;
+            }
+            """
+        )
+    except Exception:
+        return ""
+
+
+async def _safe_read_target_state(locator) -> Dict[str, Any]:
+    state: Dict[str, Any] = {"visible": None, "value": None, "focused": None}
+    try:
+        state["visible"] = await locator.is_visible()
+    except Exception:
+        pass
+    try:
+        state["value"] = await locator.input_value(timeout=1000)
+    except Exception:
+        try:
+            state["value"] = await locator.evaluate("el => (el.value !== undefined ? String(el.value) : null)")
+        except Exception:
+            pass
+    try:
+        state["focused"] = await locator.evaluate("el => document.activeElement === el")
+    except Exception:
+        pass
+    return state
+
+
+def _build_ref_candidates(ref_meta: Dict[str, Any]) -> List[Tuple[str, str]]:
+    candidates: List[Tuple[str, str]] = []
+    full_selector = (ref_meta.get("full_selector") or "").strip()
+    selector = (ref_meta.get("selector") or "").strip()
+    text = (ref_meta.get("text") or "").strip()
+    tag = (ref_meta.get("tag") or "").strip()
+
+    if full_selector:
+        candidates.append(("full_selector", full_selector))
+    if selector:
+        candidates.append(("selector", selector))
+    if tag and text and len(text) <= 80:
+        escaped_text = text.replace('"', "'")
+        candidates.append(("text_selector", f'{tag}:has-text("{escaped_text}")'))
+        candidates.append(("text_locator", f'text={escaped_text}'))
+
+    dedup: List[Tuple[str, str]] = []
+    seen = set()
+    for mode, selector_value in candidates:
+        key = (mode, selector_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append((mode, selector_value))
+    return dedup
+
+
+def _resolve_ref_meta_from_snapshot(
+    snapshot: Dict[str, Any],
+    ref_id: str,
+) -> Optional[Dict[str, Any]]:
+    elements_by_ref = snapshot.get("elements_by_ref", {})
+    if not isinstance(elements_by_ref, dict):
+        return None
+    ref_meta = elements_by_ref.get(ref_id)
+    if isinstance(ref_meta, dict):
+        return ref_meta
+    return None
+
+
+def _resolve_stale_ref(
+    old_meta: Optional[Dict[str, Any]],
+    fresh_snapshot: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    fresh_map = fresh_snapshot.get("elements_by_ref", {})
+    if not isinstance(fresh_map, dict) or not fresh_map:
+        return None
+    if old_meta is None:
+        return None
+
+    old_full = _normalize_snapshot_text(old_meta.get("full_selector"))
+    old_selector = _normalize_snapshot_text(old_meta.get("selector"))
+    old_text = _normalize_snapshot_text(old_meta.get("text"))
+    old_tag = _normalize_snapshot_text(old_meta.get("tag"))
+    old_role = _normalize_snapshot_text((old_meta.get("attributes") or {}).get("role"))
+
+    best_score = -1
+    best_meta: Optional[Dict[str, Any]] = None
+    for meta in fresh_map.values():
+        if not isinstance(meta, dict):
+            continue
+        score = 0
+        meta_full = _normalize_snapshot_text(meta.get("full_selector"))
+        meta_selector = _normalize_snapshot_text(meta.get("selector"))
+        meta_text = _normalize_snapshot_text(meta.get("text"))
+        meta_tag = _normalize_snapshot_text(meta.get("tag"))
+        meta_role = _normalize_snapshot_text((meta.get("attributes") or {}).get("role"))
+
+        if old_full and old_full == meta_full:
+            score += 8
+        if old_selector and old_selector == meta_selector:
+            score += 6
+        if old_tag and old_tag == meta_tag:
+            score += 2
+        if old_text and old_text == meta_text:
+            score += 3
+        if old_role and old_role == meta_role:
+            score += 2
+        if old_text and meta_text and old_text in meta_text:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_meta = meta
+
+    if best_score < 3:
+        return None
+    return best_meta
+
+
+def _state_change_flags(
+    action: str,
+    value: Any,
+    before_url: str,
+    after_url: str,
+    before_dom_hash: str,
+    after_dom_hash: str,
+    before_evidence: Dict[str, Any],
+    after_evidence: Dict[str, Any],
+    before_target: Dict[str, Any],
+    after_target: Dict[str, Any],
+    before_focus: str,
+    after_focus: str,
+) -> Dict[str, bool]:
+    before_value = before_target.get("value")
+    after_value = after_target.get("value")
+    expected_value = str(value) if value is not None else None
+
+    flags: Dict[str, bool] = {
+        "url_changed": before_url != after_url,
+        "dom_changed": before_dom_hash != after_dom_hash,
+        "target_visibility_changed": before_target.get("visible") != after_target.get("visible"),
+        "target_value_changed": before_value != after_value,
+        "target_value_matches": expected_value is not None and after_value is not None and str(after_value) == expected_value,
+        "target_focus_changed": before_target.get("focused") != after_target.get("focused"),
+        "focus_changed": before_focus != after_focus,
+        "counter_changed": _sorted_text_list(before_evidence.get("counters")) != _sorted_text_list(after_evidence.get("counters")),
+        "number_tokens_changed": _sorted_text_list(before_evidence.get("number_tokens")) != _sorted_text_list(after_evidence.get("number_tokens")),
+        "status_text_changed": _sorted_text_list(before_evidence.get("live_texts")) != _sorted_text_list(after_evidence.get("live_texts")),
+        "list_count_changed": int(before_evidence.get("list_count", 0) or 0) != int(after_evidence.get("list_count", 0) or 0),
+        "interactive_count_changed": int(before_evidence.get("interactive_count", 0) or 0) != int(after_evidence.get("interactive_count", 0) or 0),
+        "auth_state_changed": (
+            bool(before_evidence.get("login_visible")) != bool(after_evidence.get("login_visible"))
+            or bool(before_evidence.get("logout_visible")) != bool(after_evidence.get("logout_visible"))
+        ),
+        "text_digest_changed": str(before_evidence.get("text_digest", "")) != str(after_evidence.get("text_digest", "")),
+    }
+    flags["evidence_changed"] = bool(
+        flags["counter_changed"]
+        or flags["number_tokens_changed"]
+        or flags["status_text_changed"]
+        or flags["list_count_changed"]
+        or flags["interactive_count_changed"]
+        or flags["auth_state_changed"]
+        or flags["text_digest_changed"]
+    )
+
+    if action == "fill":
+        flags["effective"] = bool(
+            flags["target_value_changed"] or flags["target_value_matches"] or flags["evidence_changed"]
+        )
+    elif action == "click":
+        flags["effective"] = bool(
+            flags["url_changed"]
+            or flags["dom_changed"]
+            or flags["target_visibility_changed"]
+            or flags["evidence_changed"]
+        )
+    elif action == "press":
+        flags["effective"] = bool(
+            flags["url_changed"]
+            or flags["dom_changed"]
+            or flags["focus_changed"]
+            or flags["target_focus_changed"]
+            or flags["evidence_changed"]
+        )
+    elif action == "hover":
+        flags["effective"] = bool(
+            flags["target_visibility_changed"] or flags["focus_changed"] or flags["dom_changed"] or flags["evidence_changed"]
+        )
+    else:
+        flags["effective"] = True
+
+    return flags
 
 
 def _apply_selector_strategy(elements: List[Dict[str, Any]], strategy: str) -> None:
@@ -857,8 +1220,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str, Any]:
-    """지속 세션을 사용해 페이지 요소를 분석합니다."""
+async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[str, Any]:
+    """페이지 스냅샷 생성 (snapshot_id/dom_hash/ref 포함)."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
@@ -898,13 +1261,63 @@ async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str
 
     # 요소를 수집하고 현재 URL을 응답에 추가합니다
     result = await analyze_page_elements(page)
-    result["url"] = page.url  # 현재 브라우저 URL을 응답에 추가합니다
+    elements = result.get("elements", []) if isinstance(result, dict) else []
+    tab_index = _get_tab_index(page)
+    session.snapshot_epoch += 1
+    epoch = session.snapshot_epoch
+    dom_hash = _build_snapshot_dom_hash(page.url, elements)
+    snapshot_id = f"{session.session_id}:{epoch}:{dom_hash[:12]}"
+    captured_at = int(time.time() * 1000)
 
-    # 오케스트레이터와의 하위 호환을 위해 dom_elements 키도 제공합니다
-    if "elements" in result:
-        result["dom_elements"] = result["elements"]
+    for idx, elem in enumerate(elements):
+        frame_index = int(elem.get("frame_index", 0) or 0)
+        ref_id = f"t{tab_index}-f{frame_index}-e{idx}"
+        elem["ref_id"] = ref_id
+        elem["scope"] = {
+            "tab_index": tab_index,
+            "frame_index": frame_index,
+            "is_main_frame": bool(elem.get("is_main_frame", True)),
+        }
 
+    elements_by_ref: Dict[str, Dict[str, Any]] = {
+        elem["ref_id"]: elem for elem in elements if isinstance(elem, dict) and elem.get("ref_id")
+    }
+    snapshot_record = {
+        "snapshot_id": snapshot_id,
+        "session_id": session_id,
+        "url": page.url,
+        "tab_index": tab_index,
+        "dom_hash": dom_hash,
+        "epoch": epoch,
+        "captured_at": captured_at,
+        "elements_by_ref": elements_by_ref,
+    }
+    session.snapshots[snapshot_id] = snapshot_record
+    session.current_snapshot_id = snapshot_id
+    session.current_dom_hash = dom_hash
+
+    # 오래된 스냅샷 정리
+    if len(session.snapshots) > 20:
+        oldest = sorted(
+            session.snapshots.items(),
+            key=lambda item: int((item[1] or {}).get("epoch", 0)),
+        )
+        for old_snapshot_id, _ in oldest[: len(session.snapshots) - 20]:
+            session.snapshots.pop(old_snapshot_id, None)
+
+    result["url"] = page.url
+    result["snapshot_id"] = snapshot_id
+    result["dom_hash"] = dom_hash
+    result["epoch"] = epoch
+    result["tab_index"] = tab_index
+    result["captured_at"] = captured_at
+    result["dom_elements"] = elements
     return result
+
+
+async def analyze_page(url: str = None, session_id: str = "default") -> Dict[str, Any]:
+    """지속 세션을 사용해 페이지 요소를 분석합니다."""
+    return await snapshot_page(url=url, session_id=session_id)
 
 
 async def capture_screenshot(
@@ -1810,6 +2223,398 @@ async def execute_simple_action(
     # 브라우저를 닫지 말고 세션을 유지합니다!
 
 
+def _select_frame_for_ref(page: Page, ref_meta: Dict[str, Any]):
+    scope = ref_meta.get("scope", {}) if isinstance(ref_meta.get("scope"), dict) else {}
+    frame_index = int(scope.get("frame_index", ref_meta.get("frame_index", 0)) or 0)
+    try:
+        frames = page.frames
+        if 0 <= frame_index < len(frames):
+            return frames[frame_index], frame_index
+    except Exception:
+        pass
+    return page.main_frame, 0
+
+
+async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], selector_hint: str):
+    frame, frame_index = _select_frame_for_ref(page, ref_meta)
+    selector_to_use = selector_hint.strip()
+    if not selector_to_use:
+        return None, frame_index, "", "empty_selector"
+
+    if " >>> " in selector_to_use:
+        _, selector_to_use = _split_full_selector(selector_to_use)
+        selector_to_use = selector_to_use.strip()
+
+    try:
+        locator = frame.locator(selector_to_use).first
+        await locator.count()
+        return locator, frame_index, selector_to_use, ""
+    except Exception as exc:
+        return None, frame_index, selector_to_use, str(exc)
+
+
+async def _execute_action_on_locator(action: str, locator, value: Any):
+    if action == "click":
+        await locator.evaluate("el => el.scrollIntoView({ behavior: 'smooth', block: 'center' })")
+        await locator.click(timeout=10000)
+        return
+    if action == "fill":
+        if value is None:
+            raise ValueError("fill requires value")
+        await locator.fill(str(value), timeout=10000)
+        return
+    if action == "press":
+        key = str(value or "Enter")
+        await locator.press(key, timeout=10000)
+        return
+    if action == "hover":
+        await locator.hover(timeout=10000)
+        return
+    raise ValueError(f"Unsupported ref action: {action}")
+
+
+async def execute_ref_action_with_snapshot(
+    *,
+    session_id: str,
+    snapshot_id: str,
+    ref_id: str,
+    action: str,
+    value: Any = None,
+    url: str = "",
+    selector_hint: str = "",
+    verify: bool = True,
+) -> Dict[str, Any]:
+    if not playwright_instance:
+        raise HTTPException(status_code=503, detail="Playwright is not initialized.")
+
+    if session_id not in active_sessions:
+        active_sessions[session_id] = BrowserSession(session_id)
+    session = active_sessions[session_id]
+    page = await session.get_or_create_page()
+
+    if url:
+        current_normalized = normalize_url(page.url)
+        requested_normalized = normalize_url(url)
+        if current_normalized != requested_normalized:
+            await page.goto(url, timeout=60000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(1000)
+
+    attempt_logs: List[Dict[str, Any]] = []
+    retry_path: List[str] = []
+    stale_recovered = False
+    reason_code = "unknown_error"
+
+    requested_snapshot = session.snapshots.get(snapshot_id)
+    requested_meta = (
+        _resolve_ref_meta_from_snapshot(requested_snapshot, ref_id)
+        if requested_snapshot
+        else None
+    )
+    if not requested_snapshot:
+        reason_code = "snapshot_not_found"
+    elif session.current_snapshot_id and session.current_snapshot_id != snapshot_id:
+        reason_code = "stale_snapshot"
+
+    if reason_code in {"snapshot_not_found", "stale_snapshot"} or requested_meta is None:
+        fresh = await snapshot_page(session_id=session_id)
+        fresh_snapshot = session.snapshots.get(fresh.get("snapshot_id", ""))
+        recovered_meta = _resolve_stale_ref(requested_meta, fresh_snapshot or {})
+        if recovered_meta is not None:
+            stale_recovered = True
+            snapshot_id = fresh.get("snapshot_id", snapshot_id)
+            ref_id = recovered_meta.get("ref_id", ref_id)
+            requested_snapshot = fresh_snapshot
+            requested_meta = recovered_meta
+            reason_code = "stale_ref_recovered"
+            print(f"[execute_ref_action] stale recovered: old_ref={ref_id} snapshot={snapshot_id}")
+        elif requested_meta is None and fresh_snapshot:
+            direct_meta = _resolve_ref_meta_from_snapshot(fresh_snapshot, ref_id)
+            if direct_meta is not None:
+                stale_recovered = True
+                snapshot_id = fresh.get("snapshot_id", snapshot_id)
+                requested_snapshot = fresh_snapshot
+                requested_meta = direct_meta
+                reason_code = "stale_ref_recovered"
+            else:
+                return {
+                    "success": False,
+                    "effective": False,
+                    "reason_code": "not_found",
+                    "reason": "ref_id를 최신 snapshot에서 찾지 못했습니다.",
+                    "stale_recovered": stale_recovered,
+                    "retry_path": retry_path,
+                    "attempt_logs": attempt_logs,
+                }
+        else:
+            return {
+                "success": False,
+                "effective": False,
+                "reason_code": "not_found",
+                "reason": "ref_id를 snapshot에서 찾지 못했습니다.",
+                "stale_recovered": stale_recovered,
+                "retry_path": retry_path,
+                "attempt_logs": attempt_logs,
+            }
+
+    if not isinstance(requested_meta, dict):
+        return {
+            "success": False,
+            "effective": False,
+            "reason_code": "not_found",
+            "reason": "유효한 ref metadata가 없습니다.",
+            "stale_recovered": stale_recovered,
+            "retry_path": retry_path,
+            "attempt_logs": attempt_logs,
+        }
+
+    scope = requested_meta.get("scope", {}) if isinstance(requested_meta.get("scope"), dict) else {}
+    current_tab_index = _get_tab_index(page)
+    ref_tab_index = scope.get("tab_index")
+    if ref_tab_index is not None:
+        try:
+            if int(ref_tab_index) != current_tab_index:
+                return {
+                    "success": False,
+                    "effective": False,
+                    "reason_code": "tab_scope_mismatch",
+                    "reason": f"ref tab scope mismatch: ref={ref_tab_index}, current={current_tab_index}",
+                    "stale_recovered": stale_recovered,
+                    "retry_path": retry_path,
+                    "attempt_logs": attempt_logs,
+                }
+        except Exception:
+            pass
+
+    ref_frame_index = int(scope.get("frame_index", requested_meta.get("frame_index", 0)) or 0)
+    if ref_frame_index < 0 or ref_frame_index >= len(page.frames):
+        return {
+            "success": False,
+            "effective": False,
+            "reason_code": "frame_scope_mismatch",
+            "reason": f"ref frame scope mismatch: ref={ref_frame_index}, frame_count={len(page.frames)}",
+            "stale_recovered": stale_recovered,
+            "retry_path": retry_path,
+            "attempt_logs": attempt_logs,
+        }
+
+    candidates = _build_ref_candidates(requested_meta)
+    hint = selector_hint.strip()
+    if hint:
+        candidates.insert(0, ("hint", hint))
+    deduped: List[Tuple[str, str]] = []
+    seen_selectors = set()
+    for mode, cand in candidates:
+        key = cand.strip()
+        if not key or key in seen_selectors:
+            continue
+        seen_selectors.add(key)
+        deduped.append((mode, cand))
+    candidates = deduped[:3]
+    transport_success = True
+    locator_found = False
+    interaction_success = False
+    state_change = {
+        "url_changed": False,
+        "dom_changed": False,
+        "target_visibility_changed": False,
+        "target_value_changed": False,
+        "target_value_matches": False,
+        "target_focus_changed": False,
+        "focus_changed": False,
+        "counter_changed": False,
+        "number_tokens_changed": False,
+        "status_text_changed": False,
+        "list_count_changed": False,
+        "interactive_count_changed": False,
+        "auth_state_changed": False,
+        "text_digest_changed": False,
+        "evidence_changed": False,
+        "probe_wait_ms": 0,
+        "probe_scroll": "none",
+    }
+
+    for attempt_idx, (mode, candidate_selector) in enumerate(candidates, start=1):
+        retry_path.append(f"{attempt_idx}:{mode}")
+        locator, frame_index, resolved_selector, locator_error = await _resolve_locator_from_ref(
+            page, requested_meta, candidate_selector
+        )
+        if locator is None:
+            reason_code = "not_found"
+            attempt_logs.append(
+                {
+                    "attempt": attempt_idx,
+                    "mode": mode,
+                    "selector": resolved_selector,
+                    "reason_code": reason_code,
+                    "error": locator_error,
+                }
+            )
+            print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
+            continue
+
+        locator_found = True
+        before_url = page.url
+        before_dom_hash = await _compute_runtime_dom_hash(page)
+        before_evidence = await _collect_page_evidence(page)
+        before_focus = await _read_focus_signature(page)
+        before_target = await _safe_read_target_state(locator)
+
+        try:
+            await _execute_action_on_locator(action, locator, value)
+            interaction_success = True
+        except Exception as action_exc:
+            reason_code = "not_actionable"
+            attempt_logs.append(
+                {
+                    "attempt": attempt_idx,
+                    "mode": mode,
+                    "selector": resolved_selector,
+                    "frame_index": frame_index,
+                    "reason_code": reason_code,
+                    "error": str(action_exc),
+                }
+            )
+            print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
+            continue
+
+        effective = False
+        for probe_wait_ms in (350, 700, 1500):
+            await page.wait_for_timeout(probe_wait_ms)
+            after_url = page.url
+            after_dom_hash = await _compute_runtime_dom_hash(page)
+            after_evidence = await _collect_page_evidence(page)
+            after_focus = await _read_focus_signature(page)
+            after_target = await _safe_read_target_state(locator)
+            state_change = _state_change_flags(
+                action=action,
+                value=value,
+                before_url=before_url,
+                after_url=after_url,
+                before_dom_hash=before_dom_hash,
+                after_dom_hash=after_dom_hash,
+                before_evidence=before_evidence,
+                after_evidence=after_evidence,
+                before_target=before_target,
+                after_target=after_target,
+                before_focus=before_focus,
+                after_focus=after_focus,
+            )
+            state_change["probe_wait_ms"] = probe_wait_ms
+            state_change["probe_scroll"] = "none"
+            effective = bool(state_change.get("effective", True)) if verify else True
+            if effective:
+                break
+
+        if verify and not effective and action in {"click", "press"}:
+            scroll_probes: List[Tuple[str, str]] = [
+                ("top", "window.scrollTo(0, 0)"),
+                (
+                    "mid",
+                    "window.scrollTo(0, Math.max(0, Math.floor(((document.documentElement && document.documentElement.scrollHeight) || 0) * 0.5)))",
+                ),
+                (
+                    "bottom",
+                    "window.scrollTo(0, Math.max(0, ((document.documentElement && document.documentElement.scrollHeight) || 0)))",
+                ),
+            ]
+            for probe_name, probe_script in scroll_probes:
+                try:
+                    await page.evaluate(probe_script)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(250)
+                after_url = page.url
+                after_dom_hash = await _compute_runtime_dom_hash(page)
+                after_evidence = await _collect_page_evidence(page)
+                after_focus = await _read_focus_signature(page)
+                after_target = await _safe_read_target_state(locator)
+                state_change = _state_change_flags(
+                    action=action,
+                    value=value,
+                    before_url=before_url,
+                    after_url=after_url,
+                    before_dom_hash=before_dom_hash,
+                    after_dom_hash=after_dom_hash,
+                    before_evidence=before_evidence,
+                    after_evidence=after_evidence,
+                    before_target=before_target,
+                    after_target=after_target,
+                    before_focus=before_focus,
+                    after_focus=after_focus,
+                )
+                state_change["probe_wait_ms"] = 1500
+                state_change["probe_scroll"] = probe_name
+                effective = bool(state_change.get("effective", True))
+                if effective:
+                    break
+
+        reason_code = "ok" if effective else "no_state_change"
+        attempt_logs.append(
+            {
+                "attempt": attempt_idx,
+                "mode": mode,
+                "selector": resolved_selector,
+                "frame_index": frame_index,
+                "reason_code": reason_code,
+                "state_change": state_change,
+            }
+        )
+        print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
+        if effective:
+            session.current_url = page.url
+            screenshot_bytes = await page.screenshot(full_page=False)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            return {
+                "success": True,
+                "effective": True,
+                "reason_code": "ok",
+                "reason": "ref action executed and state changed",
+                "snapshot_id_used": snapshot_id,
+                "ref_id_used": ref_id,
+                "stale_recovered": stale_recovered,
+                "transport_success": transport_success,
+                "locator_found": locator_found,
+                "interaction_success": interaction_success,
+                "state_change": state_change,
+                "retry_path": retry_path,
+                "attempt_count": len(attempt_logs),
+                "attempt_logs": attempt_logs,
+                "screenshot": screenshot_base64,
+                "current_url": session.current_url,
+            }
+
+    screenshot = None
+    try:
+        screenshot_bytes = await page.screenshot(full_page=False)
+        screenshot = base64.b64encode(screenshot_bytes).decode("utf-8")
+    except Exception:
+        screenshot = None
+
+    session.current_url = page.url
+    return {
+        "success": False,
+        "effective": False,
+        "reason_code": reason_code if reason_code != "unknown_error" else "failed",
+        "reason": "ref action failed or no state change",
+        "snapshot_id_used": snapshot_id,
+        "ref_id_used": ref_id,
+        "stale_recovered": stale_recovered,
+        "transport_success": transport_success,
+        "locator_found": locator_found,
+        "interaction_success": interaction_success,
+        "state_change": state_change,
+        "retry_path": retry_path,
+        "attempt_count": len(attempt_logs),
+        "attempt_logs": attempt_logs,
+        "screenshot": screenshot,
+        "current_url": session.current_url,
+    }
+
+
 async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
     """
     Executes a full test scenario using Playwright.
@@ -2106,6 +2911,10 @@ async def execute_action(request: McpRequest):
         )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
         return await analyze_page(url, session_id)
 
+    elif action == "snapshot_page":
+        url = params.get("url")
+        return await snapshot_page(url, session_id)
+
     elif action == "capture_screenshot":
         url = params.get(
             "url"
@@ -2161,6 +2970,38 @@ async def execute_action(request: McpRequest):
             value,
             session_id,
             before_screenshot=before_screenshot,
+        )
+
+    elif action == "execute_ref_action":
+        snapshot_id = params.get("snapshot_id", "")
+        ref_id = params.get("ref_id", "")
+        action_type = params.get("action", "")
+        value = params.get("value")
+        url = params.get("url", "")
+        selector_hint = str(params.get("selector_hint", "") or "")
+        verify = bool(params.get("verify", True))
+
+        if not snapshot_id:
+            raise HTTPException(
+                status_code=400, detail="snapshot_id is required for 'execute_ref_action'."
+            )
+        if not ref_id:
+            raise HTTPException(
+                status_code=400, detail="ref_id is required for 'execute_ref_action'."
+            )
+        if not action_type:
+            raise HTTPException(
+                status_code=400, detail="action is required for 'execute_ref_action'."
+            )
+        return await execute_ref_action_with_snapshot(
+            session_id=session_id,
+            snapshot_id=snapshot_id,
+            ref_id=ref_id,
+            action=action_type,
+            value=value,
+            url=url,
+            selector_hint=selector_hint,
+            verify=verify,
         )
 
     elif action == "execute_scenario":

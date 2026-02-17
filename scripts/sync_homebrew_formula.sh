@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_REPO="${HOME_PROJECT_REPO:-capston2025/capston}"
 TAP_REPO="${HOME_TAP_REPO:-capston2025/homebrew-gaia}"
 TAP_PATH="${HOME_TAP_PATH:-/tmp/homebrew-gaia}"
-FORMULA_PATH="Formula/gaia.rb"
+FORMULA_CANDIDATES=("Formula/gaia.rb" "gaia.rb")
 TARBALL_URL="https://github.com/${PROJECT_REPO}/archive/refs/heads/main.tar.gz"
 
 if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
@@ -39,6 +39,19 @@ PY
 rm -rf "$TAP_PATH"
 git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_PATH"
 
+FORMULA_PATHS=()
+for candidate in "${FORMULA_CANDIDATES[@]}"; do
+  if [ -f "$TAP_PATH/$candidate" ]; then
+    FORMULA_PATHS+=("$candidate")
+  fi
+done
+
+if [ ${#FORMULA_PATHS[@]} -eq 0 ]; then
+  echo "Cannot find formula file in tap. Checked: ${FORMULA_CANDIDATES[*]}"
+  echo "Expected path: $TAP_PATH/Formula/gaia.rb or $TAP_PATH/gaia.rb"
+  exit 1
+fi
+
 cat > /tmp/update_formula.py <<'PY'
 import pathlib
 import re
@@ -63,19 +76,21 @@ replace(r'^\\s*sha256\\s+"[0-9a-f]{{64}}"$', f'  sha256 "{sha}"', text)
 path.write_text(text, encoding="utf-8")
 PY
 
-python3 /tmp/update_formula.py \
-  "$TAP_PATH/$FORMULA_PATH" \
-  "$PROJECT_VERSION" \
-  "$SHA_SUM"
+for formula_path in "${FORMULA_PATHS[@]}"; do
+  python3 /tmp/update_formula.py \
+    "$TAP_PATH/$formula_path" \
+    "$PROJECT_VERSION" \
+    "$SHA_SUM"
+done
 
 cd "$TAP_PATH"
-if git diff --quiet "$FORMULA_PATH"; then
+if git diff --quiet -- "${FORMULA_PATHS[@]}"; then
   echo "No formula change. Already up to date."
   exit 0
 fi
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-git add "$FORMULA_PATH"
+git add "${FORMULA_PATHS[@]}"
 git commit -m "chore: bump formula sha for main branch"
 git push origin HEAD:main

@@ -53,6 +53,7 @@ class ExploratoryAgent:
         self,
         mcp_host_url: str = "http://localhost:8000",
         gemini_api_key: Optional[str] = None,
+        llm_api_key: Optional[str] = None,
         session_id: str = "exploratory",
         config: Optional[ExplorationConfig] = None,
         log_callback: Optional[Callable[[str], None]] = None,
@@ -66,10 +67,23 @@ class ExploratoryAgent:
         self._screenshot_callback = screenshot_callback
         self._user_intervention_callback = user_intervention_callback
 
-        # Gemini 클라이언트 초기화
-        from gaia.src.phase4.llm_vision_client_gemini import GeminiVisionClient
+        # Vision LLM 클라이언트 초기화 (CLI에서 선택한 provider/model 우선)
+        provider = (
+            os.getenv("GAIA_LLM_PROVIDER")
+            or os.getenv("VISION_PROVIDER")
+            or "openai"
+        ).strip().lower()
+        if llm_api_key:
+            if provider == "gemini":
+                os.environ.setdefault("GEMINI_API_KEY", llm_api_key)
+            else:
+                os.environ.setdefault("OPENAI_API_KEY", llm_api_key)
+        elif gemini_api_key and provider == "gemini":
+            os.environ.setdefault("GEMINI_API_KEY", gemini_api_key)
 
-        self.llm = GeminiVisionClient(api_key=gemini_api_key)
+        from gaia.src.phase4.llm_vision_client import get_vision_client
+
+        self.llm = get_vision_client()
 
         # 탐색 상태 추적
         self._visited_pages: Dict[str, PageState] = {}  # url_hash -> PageState
@@ -81,6 +95,11 @@ class ExploratoryAgent:
         self._current_url: str = ""
         self._element_selectors: Dict[int, str] = {}  # DOM ID -> selector
         self._element_full_selectors: Dict[int, str] = {}  # DOM ID -> full selector
+        self._element_ref_ids: Dict[int, str] = {}  # DOM ID -> ref id
+        self._selector_to_ref_id: Dict[str, str] = {}  # selector/full_selector -> ref id
+        self._active_snapshot_id: str = ""
+        self._active_dom_hash: str = ""
+        self._active_snapshot_epoch: int = 0
         self._action_attempts: Dict[
             str, int
         ] = {}  # url_hash:element_id:action_type -> count
@@ -106,6 +125,29 @@ class ExploratoryAgent:
         print(f"[ExploratoryAgent] {message}")
         if self._log_callback:
             self._log_callback(message)
+
+    @staticmethod
+    def _fatal_llm_reason(raw_reason: str) -> Optional[str]:
+        text = (raw_reason or "").lower()
+        if not text:
+            return None
+        if "insufficient_quota" in text:
+            return (
+                "LLM 호출 중단: OpenAI API quota/billing 부족 "
+                "(429 insufficient_quota)."
+            )
+        if "invalid_api_key" in text or "incorrect api key" in text:
+            return "LLM 호출 중단: API 키가 유효하지 않습니다."
+        if "authentication" in text or "unauthorized" in text or "401" in text:
+            return "LLM 호출 중단: 인증 오류(401/Unauthorized)."
+        if "forbidden" in text or "403" in text:
+            return "LLM 호출 중단: 권한 오류(403 Forbidden)."
+        if "codex exec failed" in text or "unexpected argument" in text:
+            return (
+                "LLM 호출 중단: Codex CLI 실행 인자/버전 오류입니다. "
+                "`codex exec --help`로 옵션 호환성을 확인하세요."
+            )
+        return None
 
     def _setup_recording_dir(self, session_id: str) -> Path:
         """녹화용 디렉토리 설정"""
@@ -974,7 +1016,7 @@ class ExploratoryAgent:
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
                 json={
-                    "action": "analyze_page",
+                    "action": "snapshot_page",
                     "params": {"session_id": self.session_id},
                 },
                 timeout=30,
@@ -990,6 +1032,11 @@ class ExploratoryAgent:
             # 셀렉터 맵 초기화
             self._element_selectors = {}
             self._element_full_selectors = {}
+            self._element_ref_ids = {}
+            self._selector_to_ref_id = {}
+            self._active_snapshot_id = str(data.get("snapshot_id") or "")
+            self._active_dom_hash = str(data.get("dom_hash") or "")
+            self._active_snapshot_epoch = int(data.get("epoch") or 0)
 
             # DOMElement로 변환
             elements = []
@@ -999,10 +1046,17 @@ class ExploratoryAgent:
                 # 셀렉터 저장
                 selector = el.get("selector", "")
                 full_selector = el.get("full_selector") or selector
+                ref_id = el.get("ref_id") or ""
                 if selector:
                     self._element_selectors[idx] = selector
                 if full_selector:
                     self._element_full_selectors[idx] = full_selector
+                if isinstance(ref_id, str) and ref_id:
+                    self._element_ref_ids[idx] = ref_id
+                    if selector:
+                        self._selector_to_ref_id[selector] = ref_id
+                    if full_selector:
+                        self._selector_to_ref_id[full_selector] = ref_id
 
                 elements.append(
                     DOMElement(
@@ -1181,11 +1235,11 @@ class ExploratoryAgent:
                 )
 
             if not response_text:
-                # Gemini API 호출
+                # 선택된 provider API 호출
                 if screenshot:
                     response_text = self.llm.analyze_with_vision(prompt, screenshot)
                 else:
-                    response_text = self._call_gemini_text_only(prompt)
+                    response_text = self._call_llm_text_only(prompt)
 
                 self._llm_cache[cache_key] = response_text
                 if len(self._llm_cache) > 200:
@@ -1215,6 +1269,13 @@ class ExploratoryAgent:
 
         except Exception as e:
             self._log(f"LLM 결정 실패: {e}")
+            fatal_reason = self._fatal_llm_reason(str(e))
+            if fatal_reason:
+                return ExplorationDecision(
+                    should_continue=False,
+                    reasoning=fatal_reason,
+                    confidence=1.0,
+                )
             # 기본 결정: 첫 번째 미테스트 요소 선택
             if testable_actions:
                 return ExplorationDecision(
@@ -2069,10 +2130,50 @@ JSON 응답:"""
         self,
         action: str,
         selector: Optional[str] = None,
+        ref_id: Optional[str] = None,
         value: Optional[object] = None,
         url: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         """MCP Host를 통해 액션 실행"""
+
+        resolved_ref_id = ref_id
+        if (
+            not resolved_ref_id
+            and selector
+            and action in {"click", "fill", "press", "hover"}
+            and self._active_snapshot_id
+        ):
+            resolved_ref_id = self._selector_to_ref_id.get(selector)
+
+        if resolved_ref_id and action in {"click", "fill", "press", "hover"} and self._active_snapshot_id:
+            ref_params: Dict[str, object] = {
+                "session_id": self.session_id,
+                "snapshot_id": self._active_snapshot_id,
+                "ref_id": resolved_ref_id,
+                "action": action,
+                "url": url or "",
+                "verify": True,
+                "selector_hint": selector or "",
+            }
+            if value is not None:
+                ref_params["value"] = value
+            try:
+                response = requests.post(
+                    f"{self.mcp_host_url}/execute",
+                    json={"action": "execute_ref_action", "params": ref_params},
+                    timeout=self.config.action_timeout,
+                )
+                data = response.json()
+                success = bool(data.get("success"))
+                effective = bool(data.get("effective", True))
+                if success and effective:
+                    return True, None
+                reason_code = data.get("reason_code") or "unknown_error"
+                reason = data.get("reason") or data.get("message") or data.get("detail") or "Unknown error"
+                self._log(f"❌ Ref action failed: [{reason_code}] {reason}")
+                return False, f"[{reason_code}] {reason}"
+            except Exception as exc:
+                return False, str(exc)
 
         params: Dict[str, object] = {
             "session_id": self.session_id,
@@ -2637,17 +2738,50 @@ JSON 응답:"""
             base_url = f"{base_url}?{query}"
         return hashlib.md5(base_url.encode()).hexdigest()[:12]
 
-    def _call_gemini_text_only(self, prompt: str) -> str:
-        """스크린샷 없이 텍스트만으로 Gemini 호출"""
-        from google.genai import types
+    def _call_llm_text_only(self, prompt: str) -> str:
+        """스크린샷 없이 텍스트만으로 LLM 호출 (provider 자동 선택)"""
+        if hasattr(self.llm, "analyze_text"):
+            return str(self.llm.analyze_text(prompt, max_completion_tokens=4096, temperature=0.2))
 
-        response = self.llm.client.models.generate_content(
+        # Gemini-style client
+        if hasattr(self.llm, "client") and hasattr(getattr(self.llm, "client"), "models"):
+            try:
+                from google.genai import types
+
+                response = self.llm.client.models.generate_content(
+                    model=self.llm.model,
+                    contents=[types.Content(parts=[types.Part(text=prompt)])],
+                    config=types.GenerateContentConfig(
+                        max_output_tokens=4096,
+                        temperature=0.2,
+                    ),
+                )
+                text = getattr(response, "text", None)
+                if isinstance(text, str):
+                    return text
+            except Exception:
+                pass
+
+        # OpenAI-style client
+        response = self.llm.client.chat.completions.create(
             model=self.llm.model,
-            contents=[types.Content(parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                max_output_tokens=4096,
-                temperature=0.2,
-            ),
+            max_completion_tokens=4096,
+            temperature=0.2,
+            messages=[{"role": "user", "content": prompt}],
         )
-
-        return response.text if response.text else ""
+        content = response.choices[0].message.content if response.choices else ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                    continue
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    chunks.append(text)
+            return "\n".join(chunks).strip()
+        return str(content or "")

@@ -4,8 +4,12 @@ Uses GPT-4V for DOM + screenshot analysis.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -40,9 +44,162 @@ class LLMVisionClient:
                                 break
 
         self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
-        # Use GPT-5-mini for vision tasks (cost optimization)
-        # Master orchestrator still uses GPT-5 for critical DOM analysis
-        self.model = "gpt-5-mini"
+        configured_model = (
+            os.getenv("GAIA_LLM_MODEL")
+            or os.getenv("VISION_MODEL")
+            or "gpt-5.2"
+        ).strip()
+        if configured_model.lower().startswith("gemini-"):
+            configured_model = "gpt-5.2"
+        self.model = configured_model
+        self._auth_source = self._load_auth_source()
+        model_prefers_codex = "codex" in self.model.lower()
+        self._prefer_codex_cli = (
+            (self._auth_source.startswith("oauth_codex_cli") or model_prefers_codex)
+            and shutil.which("codex") is not None
+        )
+        if self._prefer_codex_cli:
+            print("🔐 OpenAI OAuth(Codex) 감지: Codex CLI 경로를 우선 사용합니다.")
+        print(f"🤖 Vision AI: Using OpenAI ({self.model})")
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        value = (text or "").strip()
+        if value.startswith("```json"):
+            value = value[7:]
+        if value.startswith("```"):
+            value = value[3:]
+        if value.endswith("```"):
+            value = value[:-3]
+        return value.strip()
+
+    @staticmethod
+    def _load_auth_source() -> str:
+        env_source = os.getenv("GAIA_OPENAI_AUTH_SOURCE")
+        if isinstance(env_source, str) and env_source.strip():
+            return env_source.strip()
+        profile_path = Path.home() / ".gaia" / "auth" / "profiles.json"
+        try:
+            raw = json.loads(profile_path.read_text(encoding="utf-8"))
+            profile = raw.get("openai", {}) if isinstance(raw, dict) else {}
+            source = profile.get("source", "")
+            return source if isinstance(source, str) else ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _is_quota_error(error_text: str) -> bool:
+        lowered = (error_text or "").lower()
+        return "insufficient_quota" in lowered or "quota" in lowered
+
+    @staticmethod
+    def _decode_image_to_file(image_b64: str, path: Path) -> None:
+        raw = image_b64.split(",", 1)[1] if "," in image_b64 else image_b64
+        path.write_bytes(base64.b64decode(raw))
+
+    def _run_codex_exec(self, prompt: str, images: List[str] | None = None) -> str:
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            raise RuntimeError("codex CLI를 찾을 수 없습니다.")
+
+        images = images or []
+        with tempfile.TemporaryDirectory(prefix="gaia-codex-") as tmpdir:
+            tmp_path = Path(tmpdir)
+            output_file = tmp_path / "last_message.txt"
+            cmd = [
+                codex_bin,
+                "exec",
+                "--skip-git-repo-check",
+                "--sandbox",
+                "read-only",
+                "--output-last-message",
+                str(output_file),
+            ]
+
+            # Model 지정이 실패하면 기본 모델로 재시도할 수 있도록 2회 시도.
+            candidates = [self.model, ""]
+            last_error = ""
+
+            for candidate_model in candidates:
+                run_cmd = list(cmd)
+                if candidate_model:
+                    run_cmd.extend(["-m", candidate_model])
+
+                for idx, image_b64 in enumerate(images):
+                    image_path = tmp_path / f"input_{idx}.png"
+                    self._decode_image_to_file(image_b64, image_path)
+                    run_cmd.extend(["-i", str(image_path)])
+
+                run_cmd.append("-")
+                completed = subprocess.run(
+                    run_cmd,
+                    input=prompt,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if completed.returncode == 0:
+                    if output_file.exists():
+                        return output_file.read_text(encoding="utf-8").strip()
+                    return (completed.stdout or "").strip()
+
+                last_error = (completed.stderr or completed.stdout or "").strip()
+                # 모델 지정 실패 계열이면 기본 모델로 재시도
+                lower_error = last_error.lower()
+                if candidate_model and (
+                    "unknown model" in lower_error
+                    or "invalid model" in lower_error
+                    or "unsupported model" in lower_error
+                ):
+                    continue
+                break
+
+        raise RuntimeError(f"codex exec failed: {last_error or 'unknown error'}")
+
+    @staticmethod
+    def _response_text(response: Any) -> str:
+        try:
+            content = response.choices[0].message.content
+        except Exception:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                    continue
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    chunks.append(text)
+            return "\n".join(chunks).strip()
+        return str(content or "")
+
+    def analyze_text(
+        self,
+        prompt: str,
+        *,
+        max_completion_tokens: int = 4096,
+        temperature: float = 0.1,
+    ) -> str:
+        if self._prefer_codex_cli:
+            return self._strip_code_fences(self._run_codex_exec(prompt, []))
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                max_completion_tokens=max_completion_tokens,
+                temperature=temperature,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return self._strip_code_fences(self._response_text(response))
+        except Exception as exc:
+            if self._is_quota_error(str(exc)) and shutil.which("codex"):
+                return self._strip_code_fences(self._run_codex_exec(prompt, []))
+            raise
 
     def select_element_for_step(
         self,
@@ -247,40 +404,10 @@ Required JSON format (no markdown):
 JSON response:"""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                max_completion_tokens=2048,  # Increased from 1024 for GPT-5
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{screenshot_base64}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ]
-            )
-
-            # Extract text from response
-            response_text = response.choices[0].message.content or ""
+            response_text = self.analyze_with_vision(prompt, screenshot_base64)
 
             # Parse JSON from response
-            # Strip markdown code blocks if present
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            response_text = response_text.strip()
+            response_text = self._strip_code_fences(response_text)
 
             # Handle empty response
             if not response_text:
@@ -329,6 +456,9 @@ JSON response:"""
         Returns:
             LLM response as string
         """
+        if self._prefer_codex_cli:
+            return self._strip_code_fences(self._run_codex_exec(prompt, [screenshot_base64]))
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -352,20 +482,19 @@ JSON response:"""
                 ]
             )
 
-            # Extract text from response
-            response_text = response.choices[0].message.content or ""
-
-            # Strip markdown code blocks if present
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-
-            return response_text.strip()
+            return self._strip_code_fences(self._response_text(response))
 
         except Exception as e:
+            if self._is_quota_error(str(e)) and shutil.which("codex"):
+                try:
+                    print("ℹ️ OpenAI API quota 제한 감지: Codex CLI 경로로 재시도합니다.")
+                    return self._strip_code_fences(
+                        self._run_codex_exec(prompt, [screenshot_base64])
+                    )
+                except Exception as codex_exc:
+                    print(f"LLM vision analysis failed: {e}")
+                    print(f"Codex fallback failed: {codex_exc}")
+                    raise
             print(f"LLM vision analysis failed: {e}")
             raise
 
@@ -1302,18 +1431,27 @@ JSON response:"""
 
 def get_vision_client():
     """
-    Factory function to get the appropriate vision client based on VISION_PROVIDER env var.
+    Factory function to get the appropriate vision client.
 
-    Set VISION_PROVIDER=gemini in .env to use Gemini, otherwise uses OpenAI.
+    Priority:
+      1) GAIA_LLM_PROVIDER (set by gaia CLI launcher)
+      2) VISION_PROVIDER (manual override)
+      3) .env fallback
     """
-    # Load .env file
     env_file = Path(__file__).parent.parent.parent.parent / ".env"
-    provider = os.getenv("VISION_PROVIDER", "openai")
+    provider = (
+        os.getenv("GAIA_LLM_PROVIDER")
+        or os.getenv("VISION_PROVIDER")
+        or ""
+    ).strip()
 
-    if env_file.exists():
+    if not provider and env_file.exists():
         with open(env_file) as f:
             for line in f:
                 line = line.strip()
+                if line.startswith("GAIA_LLM_PROVIDER="):
+                    provider = line.split("=", 1)[1].strip()
+                    break
                 if line.startswith("VISION_PROVIDER="):
                     provider = line.split("=", 1)[1].strip()
                     break

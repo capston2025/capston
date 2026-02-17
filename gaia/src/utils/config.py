@@ -11,7 +11,7 @@ class LLMConfig:
     """Settings for the GPT-powered planners."""
 
     api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-    model: str = os.getenv("GAIA_LLM_MODEL", "gpt-4o")
+    model: str = os.getenv("GAIA_LLM_MODEL", "gpt-5")
     reasoning_effort: Optional[str] = os.getenv("GAIA_LLM_REASONING_EFFORT")
     verbosity: Optional[str] = os.getenv("GAIA_LLM_VERBOSITY")
     max_completion_tokens: Optional[int] = None
