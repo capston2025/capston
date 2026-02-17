@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,14 +19,16 @@ from gaia.common import (
 from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
+from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
 from gaia.src.tracker.checklist import ChecklistTracker
+from gaia.src.utils.config import CONFIG
 from gaia.src.utils.models import TestScenario
 from gaia.src.utils.plan_repository import PlanRepository
 
 
 def _create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="gaia start terminal",
+        prog="gaia terminal",
         description="Run GAIA from terminal mode.",
     )
     parser.add_argument("--plan", type=Path, help="Path to saved plan JSON.")
@@ -48,6 +51,59 @@ def _create_parser() -> argparse.ArgumentParser:
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = _create_parser()
     return parser.parse_args(list(argv or []))
+
+
+def _prompt_for_non_empty(prompt: str, required: str) -> str:
+    while True:
+        value = input(prompt).strip().strip('"').strip("'")
+        if value:
+            return value
+        print(f"{required} is required.")
+
+
+def _prompt_existing_file(prompt: str) -> Path:
+    while True:
+        value = _prompt_for_non_empty(prompt, f"{prompt} path")
+        path = _resolve_path(Path(value))
+        if path.exists():
+            return path
+        print(f"File not found: {path}")
+
+
+def _prompt_source_args(args: argparse.Namespace) -> argparse.Namespace:
+    if args.plan or args.spec or args.resume:
+        return args
+
+    print("터미널 실행을 시작하려면 실행 소스가 필요합니다.")
+    print("1) 계획 파일(plan.json)")
+    print("2) 사양 파일(spec pdf)")
+    print("3) 이전 실행 컨텍스트(run-id 또는 파일 경로)")
+
+    while True:
+        mode = input("선택 [1/2/3]: ").strip()
+        if mode == "1":
+            args.plan = _prompt_existing_file("Plan JSON 경로를 입력하세요: ")
+            break
+        if mode == "2":
+            args.spec = _prompt_existing_file("Spec PDF 경로를 입력하세요: ")
+            break
+        if mode == "3":
+            args.resume = _prompt_for_non_empty(
+                "run-id 또는 run-context 경로를 입력하세요: ",
+                "Resume target",
+            )
+            break
+        print("1, 2, 3 중 하나를 입력해주세요.")
+
+    return args
+
+
+def _prompt_url_if_missing(args: argparse.Namespace, detected_url: str | None = None) -> None:
+    if args.url:
+        return
+    if detected_url and detected_url.strip():
+        return
+    args.url = _prompt_for_non_empty("실행할 URL을 입력하세요: ", "URL")
 
 
 def _resolve_path(path: Path | None) -> Path | None:
@@ -212,6 +268,7 @@ def _build_summary(
 
 def run_terminal(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    args = _prompt_source_args(args)
     resume_context = None
 
     if args.resume:
@@ -238,6 +295,7 @@ def run_terminal(argv: Sequence[str] | None = None) -> int:
             spec_path=source_spec_path,
         )
 
+        _prompt_url_if_missing(args, discovered_url or resume_url)
         target_url = _resolve_url(args.url, discovered_url or resume_url)
         start_time = datetime.now(timezone.utc).isoformat()
 
@@ -294,7 +352,7 @@ def run_terminal(argv: Sequence[str] | None = None) -> int:
         context_path = write_run_context(context)
 
         summary["run_context_path"] = str(context_path)
-        summary["resume_cli"] = f"gaia start gui --resume {context.run_id}"
+        summary["resume_cli"] = f"gaia plan --resume {context.run_id}"
 
         if args.format == "json":
             payload = {
@@ -326,7 +384,7 @@ def run_terminal(argv: Sequence[str] | None = None) -> int:
             print(f"실패: {summary['status_counts']['failed']}")
             print(f"커버리지: {summary['summary']['coverage_percent']:.2f}%")
             print(f"컨텍스트: {context_path}")
-            print("GUI 이어서 보기: gaia start gui --resume", context.run_id)
+            print("GUI 이어서 보기: gaia plan --resume", context.run_id)
 
         if args.output and args.format == "json":
             print(f"json 저장됨: {args.output}")
@@ -338,4 +396,155 @@ def run_terminal(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-__all__ = ["run_terminal", "build_run_context", "_build_summary"]
+def _build_test_goal(url: str, query: str) -> TestGoal:
+    ts = int(time.time())
+    words = [w for w in query.replace("/", " ").split() if w.strip()]
+    keywords = words[:5]
+    return TestGoal(
+        id=f"CHAT_{ts}",
+        name=(query[:40] or "chat test").strip(),
+        description=query,
+        priority="MUST",
+        keywords=keywords,
+        success_criteria=[query],
+        max_steps=20,
+        start_url=url,
+    )
+
+
+def _print_llm_failure_help(reason: str) -> None:
+    text = (reason or "").lower()
+    if "insufficient_quota" not in text:
+        return
+    print("\n실행 안내")
+    print("- 원인: OpenAI API quota/billing 부족 (429 insufficient_quota)")
+    print("- 현재 경로는 OpenAI Platform API 호출이라 API 크레딧이 필요합니다.")
+    print("- 해결 방법:")
+    print("  1) OpenAI API 결제/크레딧 설정 후 다시 실행")
+    print("  2) provider를 gemini로 전환해서 실행")
+    print("  3) OpenAI는 manual(API key)로 재인증")
+
+
+def _run_single_chat_goal(url: str, query: str) -> int:
+    goal = _build_test_goal(url=url, query=query)
+    agent = GoalDrivenAgent(
+        mcp_host_url=CONFIG.mcp.host_url,
+        session_id=f"chat_{int(time.time())}",
+    )
+    print(f"목표 실행: {goal.description}")
+    result = agent.execute_goal(goal)
+    print("\n실행 결과")
+    print(f"goal: {result.goal_name}")
+    print(f"status: {'success' if result.success else 'failed'}")
+    print(f"steps: {result.total_steps}")
+    print(f"reason: {result.final_reason}")
+    print(f"duration: {result.duration_seconds:.2f}s")
+    if not result.success:
+        _print_llm_failure_help(result.final_reason)
+    return 0 if result.success else 1
+
+
+def run_chat_terminal(
+    *,
+    url: str,
+    initial_query: str | None = None,
+    repl: bool = True,
+) -> int:
+    if not url:
+        print("URL is required for terminal chat mode.", file=sys.stderr)
+        return 2
+
+    if not repl:
+        if not initial_query:
+            print("A query is required when repl=False.", file=sys.stderr)
+            return 2
+        try:
+            return _run_single_chat_goal(url, initial_query)
+        except Exception as exc:
+            print(f"Terminal chat failed: {exc}", file=sys.stderr)
+            return 1
+
+    print("GAIA Terminal Chat")
+    print(f"- url: {url}")
+    print("명령: /help, /url <new-url>, /exit")
+    print("자연어로 테스트 목표를 입력하면 1회 실행합니다.")
+
+    current_url = url
+    while True:
+        try:
+            line = input("chat> ").strip()
+        except KeyboardInterrupt:
+            print("\n중단되었습니다.")
+            return 130
+        except EOFError:
+            print()
+            return 0
+
+        if not line:
+            continue
+        if line == "/exit":
+            return 0
+        if line == "/help":
+            print("/help")
+            print("/url <new-url>")
+            print("/exit")
+            print("<자연어 목표>")
+            continue
+        if line.startswith("/url "):
+            new_url = line[5:].strip()
+            if not new_url:
+                print("URL을 입력해주세요.")
+                continue
+            current_url = new_url
+            print(f"url 변경됨: {current_url}")
+            continue
+        if line.startswith("/"):
+            print("알 수 없는 명령입니다. /help를 확인하세요.")
+            continue
+
+        try:
+            code = _run_single_chat_goal(current_url, line)
+            if code != 0:
+                print(f"실행 종료 코드: {code}")
+        except Exception as exc:
+            print(f"Terminal chat failed: {exc}", file=sys.stderr)
+
+
+def run_ai_terminal(*, url: str, max_actions: int = 50) -> int:
+    if not url:
+        print("URL is required for terminal ai mode.", file=sys.stderr)
+        return 2
+
+    actions = max(1, int(max_actions))
+    try:
+        agent = ExploratoryAgent(
+            mcp_host_url=CONFIG.mcp.host_url,
+            session_id=f"ai_{int(time.time())}",
+            config=ExplorationConfig(max_actions=actions),
+        )
+        print(f"AI 탐색 시작: {url} (max_actions={actions})")
+        result = agent.explore(url)
+        print("\n탐색 결과")
+        print(f"actions: {result.total_actions}")
+        print(f"pages: {result.total_pages_visited}")
+        print(f"issues: {len(result.issues_found)}")
+        print(f"reason: {result.completion_reason}")
+        _print_llm_failure_help(result.completion_reason)
+        if "insufficient_quota" in (result.completion_reason or "").lower():
+            return 1
+        return 0
+    except KeyboardInterrupt:
+        print("\n중단되었습니다.")
+        return 130
+    except Exception as exc:
+        print(f"Terminal AI failed: {exc}", file=sys.stderr)
+        return 1
+
+
+__all__ = [
+    "run_terminal",
+    "run_chat_terminal",
+    "run_ai_terminal",
+    "build_run_context",
+    "_build_summary",
+]

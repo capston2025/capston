@@ -62,6 +62,7 @@ class AppController(QObject):
         self._plan: Sequence[TestScenario] = ()
         self._analysis_plan: Sequence[TestScenario] = ()
         self._analysis_goals: Sequence[TestGoal] = ()
+        self._startup_mode: str | None = None
         self._worker_thread: QThread | None = None
         self._worker: AutomationWorker | None = None
         self._analysis_thread: QThread | None = None
@@ -84,6 +85,9 @@ class AppController(QObject):
         *,
         url: str | None = None,
         plan_path: str | Path | None = None,
+        spec_path: str | Path | None = None,
+        mode: str | None = None,
+        feature_query: str | None = None,
     ) -> None:
         """Load pre-populated state from CLI run context."""
         resolved_url = url or (
@@ -96,6 +100,11 @@ class AppController(QObject):
                 context.get("plan_path") if isinstance(context, Mapping) else None
             )
         )
+        resolved_spec_path = spec_path or (
+            context.spec_path if isinstance(context, RunContext) else (
+                context.get("spec_path") if isinstance(context, Mapping) else None
+            )
+        )
 
         if resolved_url:
             self._current_url = str(resolved_url)
@@ -103,6 +112,19 @@ class AppController(QObject):
 
         if resolved_plan_path:
             self._on_plan_file_selected(str(resolved_plan_path))
+        elif resolved_spec_path and str(resolved_spec_path).lower().endswith(".pdf"):
+            self._on_file_dropped(str(resolved_spec_path))
+
+        self.set_start_mode(mode)
+        if feature_query:
+            self._current_feature_query = feature_query
+            self._window.set_feature_query(feature_query)
+
+    def set_start_mode(self, mode: str | None) -> None:
+        if mode in {"plan", "ai", "chat"}:
+            self._startup_mode = mode
+        else:
+            self._startup_mode = None
 
     # ------------------------------------------------------------------
     @Slot(str)
@@ -587,7 +609,23 @@ class AppController(QObject):
             self._window.append_log("⚠️ Automation already in progress.")
             return
 
+        startup_mode = self._startup_mode
+        if startup_mode:
+            self._startup_mode = None
+
         candidate_goals = list(self._analysis_goals) if self._analysis_goals else []
+
+        if startup_mode == "ai":
+            self._window.append_log("🧭 AI 모드로 즉시 탐색 실행합니다.")
+            self._window.set_busy(True, message="AI가 웹 사이트를 탐색하는 중이에요…")
+            self._start_exploratory_worker(self._current_url)
+            return
+
+        if startup_mode == "chat" and not candidate_goals and self._analysis_plan:
+            self._window.append_log("⚠️ 채팅 모드에서 목표를 찾지 못해 탐색 모드로 전환합니다.")
+            self._window.set_busy(True, message="특정 기능을 우선순위로 탐색하는 중이에요…")
+            self._start_exploratory_worker(self._current_url)
+            return
 
         if candidate_goals:
             self._reset_tracker_with_goals(candidate_goals)

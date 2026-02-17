@@ -16,4 +16,4 @@ if [[ -d ".venv" ]]; then
   source ".venv/bin/activate"
 fi
 
-exec gaia start gui
+exec gaia plan --gui

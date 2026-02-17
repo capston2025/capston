@@ -50,7 +50,14 @@ class GeminiVisionClient:
         self.client = genai.Client(
             api_key=gemini_key, http_options={"api_version": "v1alpha"}
         )
-        self.model = "gemini-3-flash-preview"
+        configured_model = (
+            os.getenv("GAIA_LLM_MODEL")
+            or os.getenv("VISION_MODEL")
+            or "gemini-2.5-flash"
+        ).strip()
+        if configured_model.lower().startswith("gpt-"):
+            configured_model = "gemini-2.5-flash"
+        self.model = configured_model
         print(f"🤖 Vision AI: Using Gemini ({self.model})")
 
     def analyze_with_vision(
@@ -84,6 +91,25 @@ class GeminiVisionClient:
         except Exception as e:
             print(f"Gemini vision analysis failed: {e}")
             raise
+
+    def analyze_text(
+        self,
+        prompt: str,
+        *,
+        max_completion_tokens: int = 4096,
+        temperature: float = 0.1,
+    ) -> str:
+        """텍스트 전용 분석."""
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=[types.Content(parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                max_output_tokens=max_completion_tokens,
+                temperature=temperature,
+            ),
+        )
+        text = getattr(response, "text", "")
+        return text.strip() if isinstance(text, str) else ""
 
     def _call_vision_api(
         self, prompt: str, images: List[str], max_tokens: int = 16384

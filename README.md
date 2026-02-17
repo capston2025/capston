@@ -41,7 +41,7 @@ Scenario  └──────────────┘  │   └───�
 
 ### End-to-End Flow
 1. **Phase 1 – Spec Analysis**
-   - `pdf_loader.PDFLoader`가 PDF 텍스트를 정제하고, `agent_client.AgentServiceClient`가 OpenAI Agent Builder 워크플로(`gpt-4o` 기본)를 호출해 `TestScenario` + 체크리스트를 JSON으로 받는다.
+   - `pdf_loader.PDFLoader`가 PDF 텍스트를 정제하고, `agent_client.AgentServiceClient`가 OpenAI 모델(기본 `gpt-5`)으로 워크플로를 실행해 `TestScenario` + 체크리스트를 JSON으로 받는다.
 2. **Adaptive Scheduler**
    - `scheduler/adaptive_scheduler.py`가 MUST/SHOULD/MAY, DOM 신규 요소 여부, URL 다양성, 최근 실패 기록 등으로 점수를 계산 후 우선순위 큐에 담아 스트리밍한다.
 3. **Phase 4 – Autonomous Execution**
@@ -106,8 +106,11 @@ gaia --help
 
 #### Homebrew 자동 갱신 (main push 반영)
 - `capston` main 브랜치에 push되면, GitHub Actions (`.github/workflows/sync-homebrew-formula.yml`)가 자동으로 `homebrew-gaia`의 `gaia.rb`를 최신 `main` tarball sha256로 업데이트하고 `main` 브랜치에 커밋합니다.
-- 최초 1회만 다음 시크릿을 등록하세요.
-  - `HOMEBREW_TAP_TOKEN`: `capston2025/homebrew-gaia` 레포에 쓰기 권한이 있는 Personal Access Token
+- 최초 1회만 다음 값을 등록하세요.
+  - GitHub Secret: `HOMEBREW_TAP_TOKEN` (Repository secret 권장)
+    - 값: `capston2025/homebrew-gaia`에 `contents:write` 권한이 있는 PAT
+    - 등록 위치: `capston` 레포지토리 Settings → Secrets and variables → Actions → `New repository secret`
+    - 환경(Environments) 화면에 값이 비어있다면, 그건 환경 변수 탭일 수 있으니 Repository Secret으로 등록하세요.
 - 수동 실행도 가능합니다: GitHub Actions 페이지에서 `Sync Homebrew Formula` → `Run workflow`
 - 사용자 입장에서는 `brew update` 후 `brew reinstall gaia` 또는 `brew upgrade gaia`가 필요합니다.
 
@@ -119,17 +122,32 @@ pip install -r gaia/requirements.txt
 playwright install chromium
 ```
 
-### 3. 필수 환경 변수
-- `OPENAI_API_KEY`: 필수.
+### 3. 필수/선택 환경 변수
+- `OPENAI_API_KEY`: OpenAI API 키 직접 사용 시에만 필요 (`gaia auth login --provider openai --method manual`).
 - `GAIA_LLM_MODEL`, `GAIA_LLM_REASONING_EFFORT`, `GAIA_LLM_VERBOSITY`: Planner 튜닝.
 - `GAIA_WORKFLOW_ID`, `GAIA_WORKFLOW_VERSION`: Agent Builder 워크플로 선택.
 - `MCP_HOST_URL` (기본 `http://localhost:8001`), `MCP_TIMEOUT`.
 
+### 인증 관리
+```bash
+gaia auth login --provider openai     # OpenAI 로그인(권장: oauth)
+gaia auth login --provider openai --method oauth
+gaia auth login --provider openai --method manual  # API 키 직접 입력
+gaia auth login --provider gemini     # Gemini 토큰 저장(옵션)
+gaia auth status                    # 저장 상태 확인
+gaia auth logout --provider openai   # 저장 토큰 삭제
+```
+
+`gaia` 실행 시 인증 전략을 `reuse|fresh`로 선택합니다(기본 `reuse`).
+- `reuse`: 저장 토큰 사용, 없으면 자동 fresh 로그인
+- `fresh`: 새 로그인 강제(OpenAI는 OAuth)
+
 `.env` 예시:
 ```env
+# OpenAI oauth를 쓰지 않고 API 키 직접 쓰는 경우만 필요
 OPENAI_API_KEY=sk-xxx
 GAIA_WORKFLOW_ID=wf_68ea589f...
-GAIA_LLM_MODEL=gpt-4o
+GAIA_LLM_MODEL=gpt-5
 MCP_HOST_URL=http://localhost:8001
 ```
 
@@ -139,26 +157,29 @@ MCP_HOST_URL=http://localhost:8001
 ./scripts/run_mcp_host.sh
 ```
 
-※ `gaia start`는 자동으로 MCP Host를 띄우지 않습니다. 배포/운영 시 `gaia` 실행 전/후로 MCP Host를 별도 관리하세요.
+※ `gaia`(및 `gaia start` alias)는 자동으로 MCP Host를 띄우지 않습니다. 배포/운영 시 `gaia` 실행 전/후로 MCP Host를 별도 관리하세요.
 
 2) 실행 모드
 ```bash
-# 터미널/GUI 선택 UI
+# 권장: gaia 단일 진입 (필수 설정 -> runtime 선택 -> chat hub)
+gaia
+
+# 레거시 alias (동일 동작)
 gaia start
 
-# 바로 GUI 실행
-gaia start gui
+# 직접 모드 실행
+gaia chat --gui --url https://example.com
+gaia ai --terminal --url https://example.com
+gaia plan --gui --spec /path/to/spec.pdf
+gaia plan --gui --resume <run-id>
 
-# 터미널 모드 실행
-gaia start terminal --plan artifacts/plans/sample_plan.json --url https://example.com
-gaia start terminal --plan artifacts/plans/sample_plan.json --url https://example.com --format json
-
-# 터미널 결과를 GUI에서 이어서 실행
-gaia start gui --resume <run-id>
+# legacy 명령도 유지됨
+gaia start gui --mode chat --url https://example.com
+gaia start terminal --mode ai --url https://example.com
 ```
 
 과거 플로우인 `python run_auto_test.py`는 스크립트가 제거되어 더 이상 사용되지 않습니다.
-또한 과거에는 `./scripts/run_gui.sh`가 `python -m gaia.main`로 실행됐으나 이제 `gaia start gui`를 사용합니다.
+또한 과거에는 `./scripts/run_gui.sh`가 `python -m gaia.main`로 실행됐으나 이제 `gaia plan --gui`를 사용합니다.
 
 GUI에서 기존 플랜 재사용 시 “이전 테스트 불러오기”로 `artifacts/plans/*.json` 선택 시 즉시 실행할 수 있습니다.
 

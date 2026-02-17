@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Iterable, List, Sequence
+from typing import Any, Callable, Iterable, List, Sequence
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
@@ -27,10 +27,36 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QGridLayout,
 )
-from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from gaia.src.gui.screencast_client import ScreencastClient
 from gaia.src.gui.exploration_viewer import ExplorationViewer
+
+
+class _WebViewFallback(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        self._status = QLabel(
+            "브라우저 미리보기 기능이 비활성화되었습니다.\n"
+            "PySide6 WebEngine을 사용할 수 없습니다.",
+            self,
+        )
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setWordWrap(True)
+        layout.addWidget(self._status)
+
+    def setUrl(self, url: QUrl | str) -> None:
+        text = url.toString() if hasattr(url, "toString") else str(url)
+        self._status.setText(f"브라우저 미리보기 기능이 비활성화되어 있습니다.\n주소: {text}")
+
+    def setHtml(self, html: str, base_url: Any | None = None) -> None:  # noqa: ARG002
+        self._status.setText(html[:120] + ("..." if len(html) > 120 else ""))
+
+
+def _build_browser_view(parent: QWidget) -> QWidget:
+    return _WebViewFallback(parent)
 
 
 class DropArea(QLabel):
@@ -682,7 +708,7 @@ class MainWindow(QMainWindow):
         self._back_to_setup_button: QPushButton
         self._view_logs_button: QPushButton | None
         self._url_input: QLineEdit
-        self._browser_view: QWebEngineView
+        self._browser_view: QWidget
         self._workflow_stage: str
         self._full_execution_logs: List[str] = []
         self._log_mode: str = "summary"  # "summary" or "full"
@@ -753,7 +779,7 @@ class MainWindow(QMainWindow):
         browser_layout.setSpacing(0)  # 간격 제거
 
         # 브라우저 제목을 숨겨 콘텐츠 영역을 최대화
-        self._browser_view = QWebEngineView(browser_card)
+        self._browser_view = _build_browser_view(browser_card)
         self._browser_view.setUrl(QUrl("about:blank"))
         base_height = 820
         if self._safe_geometry:
@@ -1242,6 +1268,17 @@ class MainWindow(QMainWindow):
 
     def set_url_field(self, url: str) -> None:
         self._url_input.setText(url)
+
+    def set_feature_query(self, query: str) -> None:
+        if not hasattr(self, "_feature_input"):
+            return
+        self._feature_input.setText(query)
+        if query.strip():
+            self._feature_input_container.show()
+            self._current_feature_query = query.strip()
+        else:
+            self._feature_input_container.hide()
+            self._current_feature_query = ""
 
     def show_html_in_browser(self, html_content: str) -> None:
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
