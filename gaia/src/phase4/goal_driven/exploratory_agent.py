@@ -17,6 +17,9 @@ from typing import Any, Dict, List, Optional, Set, Callable
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecord
+from gaia.src.phase4.memory.retriever import MemoryRetriever
+from gaia.src.phase4.memory.store import MemoryStore
 
 # GIF 생성을 위한 선택적 import
 try:
@@ -100,6 +103,7 @@ class ExploratoryAgent:
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
+        self._last_exec_meta: Dict[str, Any] = {}
         self._action_attempts: Dict[
             str, int
         ] = {}  # url_hash:element_id:action_type -> count
@@ -119,6 +123,12 @@ class ExploratoryAgent:
         self._semantic_cache: List[Dict[str, object]] = []
         self._semantic_cache_path = self._resolve_semantic_cache_path()
         self._load_semantic_cache()
+
+        # 실행 기억(KB)
+        self._memory_store = MemoryStore(enabled=True)
+        self._memory_retriever = MemoryRetriever(self._memory_store)
+        self._memory_episode_id: Optional[int] = None
+        self._memory_domain: str = ""
 
     def _log(self, message: str):
         """로그 출력"""
@@ -406,6 +416,93 @@ class ExploratoryAgent:
         except Exception as exc:
             self._log(f"⚠️ 시맨틱 캐시 저장 실패: {exc}")
 
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        parsed = urlparse(url or "")
+        return (parsed.netloc or "").lower()
+
+    def _memory_context(self) -> str:
+        if not self._memory_store.enabled or not self._memory_domain:
+            return ""
+        hints = self._memory_retriever.retrieve_lightweight(
+            domain=self._memory_domain,
+            goal_text="exploratory testing",
+            action_history=self._action_history[-6:],
+        )
+        return self._memory_retriever.format_for_prompt(hints)
+
+    def _record_action_memory(
+        self,
+        *,
+        step_number: int,
+        action_type: str,
+        selector: str,
+        success: bool,
+        error: Optional[str],
+    ) -> None:
+        if not self._memory_store.enabled or self._memory_episode_id is None:
+            return
+        meta = self._last_exec_meta or {}
+        reason_code = str(meta.get("reason_code") or ("ok" if success else "unknown_error"))
+        changed = reason_code not in {"no_state_change"}
+        try:
+            self._memory_store.record_action(
+                MemoryActionRecord(
+                    episode_id=self._memory_episode_id,
+                    domain=self._memory_domain,
+                    url=self._current_url or "",
+                    step_number=step_number,
+                    action=action_type,
+                    selector=selector,
+                    full_selector=selector,
+                    ref_id=str(meta.get("ref_id_used") or ""),
+                    success=success,
+                    effective=bool(meta.get("effective", success)),
+                    changed=changed,
+                    reason_code=reason_code,
+                    reason=str(meta.get("reason") or (error or "")),
+                    snapshot_id=str(meta.get("snapshot_id_used") or self._active_snapshot_id),
+                    dom_hash=self._active_dom_hash,
+                    epoch=self._active_snapshot_epoch,
+                    frame_index=None,
+                    tab_index=None,
+                    state_change=meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+                    attempt_logs=meta.get("attempt_logs") if isinstance(meta.get("attempt_logs"), list) else [],
+                )
+            )
+        except Exception:
+            return
+
+    def _record_exploration_summary(
+        self,
+        *,
+        result: ExplorationResult,
+    ) -> None:
+        if not self._memory_store.enabled:
+            return
+        status = "success" if result.completion_reason and "완료" in result.completion_reason else "finished"
+        try:
+            self._memory_store.add_dialog_summary(
+                MemorySummaryRecord(
+                    episode_id=self._memory_episode_id,
+                    domain=self._memory_domain,
+                    command="/ai",
+                    summary=(
+                        f"actions={result.total_actions}, pages={result.total_pages_visited}, "
+                        f"issues={len(result.issues_found)}, reason={result.completion_reason}"
+                    ),
+                    status=status,
+                    metadata={
+                        "total_actions": result.total_actions,
+                        "total_pages": result.total_pages_visited,
+                        "issues": len(result.issues_found),
+                        "completion_reason": result.completion_reason,
+                    },
+                )
+            )
+        except Exception:
+            return
+
     def _get_llm_cache_key(
         self,
         prompt: str,
@@ -590,6 +687,21 @@ class ExploratoryAgent:
         self._log(f"   최대 액션: {self.config.max_actions}")
         self._log("=" * 60)
 
+        self._memory_domain = self._extract_domain(start_url)
+        self._memory_episode_id = None
+        try:
+            self._memory_store.garbage_collect(retention_days=30)
+            self._memory_episode_id = self._memory_store.start_episode(
+                provider=(os.getenv("GAIA_LLM_PROVIDER") or "openai"),
+                model=(os.getenv("GAIA_LLM_MODEL") or os.getenv("VISION_MODEL") or "unknown"),
+                runtime="terminal",
+                domain=self._memory_domain,
+                goal_text="exploratory testing",
+                url=start_url,
+            )
+        except Exception:
+            self._memory_episode_id = None
+
         # 시작 URL로 이동
         self._log(f"📍 시작 URL로 이동")
         self._execute_action("goto", url=start_url)
@@ -716,6 +828,25 @@ class ExploratoryAgent:
                 decision=decision,
                 page_state=page_state,
             )
+            selector_for_memory = ""
+            if decision.selected_action:
+                if decision.selected_action.action_type == "navigate":
+                    selector_for_memory = decision.selected_action.element_id
+                else:
+                    selector_for_memory = (
+                        self._find_selector_by_element_id(
+                            decision.selected_action.element_id,
+                            page_state,
+                        )
+                        or ""
+                    )
+                self._record_action_memory(
+                    step_number=action_count,
+                    action_type=decision.selected_action.action_type,
+                    selector=selector_for_memory,
+                    success=success,
+                    error=error,
+                )
 
             # 9. 액션 결과 기록
             self._action_history.append(
@@ -849,6 +980,16 @@ class ExploratoryAgent:
             # 15. 실패한 경우 계속 진행할지 판단
             if not success and error:
                 self._log(f"⚠️  액션 실패: {error}")
+                reason_code = str(self._last_exec_meta.get("reason_code") or "unknown_error")
+                recovery = self._memory_retriever.retrieve_recovery(
+                    domain=self._memory_domain,
+                    goal_text="exploratory testing",
+                    reason_code=reason_code,
+                    limit=2,
+                )
+                recovery_text = self._memory_retriever.format_for_prompt(recovery, max_items=2)
+                if recovery_text:
+                    self._log(f"🧠 복구 힌트({reason_code}): {recovery_text}")
                 # 실패해도 계속 진행 (다른 요소 테스트)
 
             # 다음 스텝 전 대기
@@ -885,6 +1026,7 @@ class ExploratoryAgent:
             completed_at=datetime.now(),
             duration_seconds=duration,
         )
+        self._record_exploration_summary(result=result)
 
         # 결과 요약 출력
         self._print_summary(result)
@@ -1215,10 +1357,12 @@ class ExploratoryAgent:
                 self._log("ℹ️ BFS 큐는 남아있지만 현재 페이지에서 매칭 실패")
 
         # 프롬프트 구성
+        memory_context = self._memory_context()
         prompt = self._build_exploration_prompt(
             page_state=page_state,
             testable_actions=testable_actions,
             action_count=action_count,
+            memory_context=memory_context,
         )
 
         try:
@@ -1831,6 +1975,7 @@ class ExploratoryAgent:
         page_state: PageState,
         testable_actions: List[TestableAction],
         action_count: int,
+        memory_context: str = "",
     ) -> str:
         """탐색 프롬프트 생성"""
 
@@ -1867,6 +2012,9 @@ class ExploratoryAgent:
 
 ## 최근 수행한 액션
 {recent_history}
+
+## 도메인 실행 기억(KB)
+{memory_context or '없음'}
 
 ## 테스트 가능한 액션 목록 (우선순위 순)
 {actions_text}
@@ -2135,6 +2283,7 @@ JSON 응답:"""
         url: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         """MCP Host를 통해 액션 실행"""
+        self._last_exec_meta = {}
 
         resolved_ref_id = ref_id
         if (
@@ -2167,12 +2316,37 @@ JSON 응답:"""
                 success = bool(data.get("success"))
                 effective = bool(data.get("effective", True))
                 if success and effective:
+                    self._last_exec_meta = {
+                        "reason_code": "ok",
+                        "reason": "ok",
+                        "effective": True,
+                        "state_change": data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                        "attempt_logs": data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else [],
+                        "snapshot_id_used": str(data.get("snapshot_id_used") or ""),
+                        "ref_id_used": str(data.get("ref_id_used") or ""),
+                    }
                     return True, None
                 reason_code = data.get("reason_code") or "unknown_error"
                 reason = data.get("reason") or data.get("message") or data.get("detail") or "Unknown error"
+                self._last_exec_meta = {
+                    "reason_code": str(reason_code),
+                    "reason": str(reason),
+                    "effective": bool(effective),
+                    "state_change": data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                    "attempt_logs": data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else [],
+                    "snapshot_id_used": str(data.get("snapshot_id_used") or ""),
+                    "ref_id_used": str(data.get("ref_id_used") or ""),
+                }
                 self._log(f"❌ Ref action failed: [{reason_code}] {reason}")
                 return False, f"[{reason_code}] {reason}"
             except Exception as exc:
+                self._last_exec_meta = {
+                    "reason_code": "request_exception",
+                    "reason": str(exc),
+                    "effective": False,
+                    "state_change": {},
+                    "attempt_logs": [],
+                }
                 return False, str(exc)
 
         params: Dict[str, object] = {
@@ -2201,6 +2375,13 @@ JSON 응답:"""
             data = response.json()
 
             if data.get("success"):
+                self._last_exec_meta = {
+                    "reason_code": str(data.get("reason_code") or "ok"),
+                    "reason": str(data.get("reason") or "ok"),
+                    "effective": bool(data.get("effective", True)),
+                    "state_change": data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                    "attempt_logs": data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else [],
+                }
                 return True, None
             else:
                 error_msg = (
@@ -2208,10 +2389,24 @@ JSON 응답:"""
                     or data.get("detail")
                     or f"Unknown error (response: {data})"
                 )
+                self._last_exec_meta = {
+                    "reason_code": str(data.get("reason_code") or data.get("error") or "unknown_error"),
+                    "reason": str(error_msg),
+                    "effective": bool(data.get("effective", False)),
+                    "state_change": data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                    "attempt_logs": data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else [],
+                }
                 self._log(f"❌ Action failed: {error_msg}")
                 return False, error_msg
 
         except Exception as e:
+            self._last_exec_meta = {
+                "reason_code": "request_exception",
+                "reason": str(e),
+                "effective": False,
+                "state_change": {},
+                "attempt_logs": [],
+            }
             return False, str(e)
 
     def _evaluate_selector(self, selector: str, script: str) -> Optional[str]:

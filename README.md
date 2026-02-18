@@ -152,16 +152,9 @@ MCP_HOST_URL=http://localhost:8001
 ```
 
 ### 4. 실행 플로우
-1) 터미널 환경에서 MCP Host 실행
+1) 실행 모드
 ```bash
-./scripts/run_mcp_host.sh
-```
-
-※ `gaia`(및 `gaia start` alias)는 자동으로 MCP Host를 띄우지 않습니다. 배포/운영 시 `gaia` 실행 전/후로 MCP Host를 별도 관리하세요.
-
-2) 실행 모드
-```bash
-# 권장: gaia 단일 진입 (필수 설정 -> runtime 선택 -> chat hub)
+# 권장: gaia 단일 진입 (필수 설정 -> runtime/control 선택 -> chat hub)
 gaia
 
 # 레거시 alias (동일 동작)
@@ -178,10 +171,71 @@ gaia start gui --mode chat --url https://example.com
 gaia start terminal --mode ai --url https://example.com
 ```
 
+2) Telegram 원격 제어 (옵션)
+```bash
+# bot token 파일 준비
+mkdir -p ~/.gaia
+echo "<telegram-bot-token>" > ~/.gaia/telegram_bot_token
+
+# polling 모드
+gaia --control telegram \
+  --tg-mode polling \
+  --tg-token-file ~/.gaia/telegram_bot_token
+
+# webhook 모드
+gaia --control telegram \
+  --tg-mode webhook \
+  --tg-token-file ~/.gaia/telegram_bot_token \
+  --tg-webhook-url https://your.domain/gaia-bot \
+  --tg-webhook-bind 0.0.0.0:8088
+
+# (권장) 관리자 chat_id 고정 지정
+gaia --control telegram \
+  --tg-mode polling \
+  --tg-token-file ~/.gaia/telegram_bot_token \
+  --tg-allowlist 123456789,987654321
+```
+
+- 인터랙티브 `gaia` 실행 시 제어 채널에서 `telegram | no`를 먼저 선택합니다.
+- `telegram` 선택 시 Telegram 설정 전략 `reuse | fresh`를 선택합니다.
+- `reuse`에서 저장된 설정이 없으면 오류를 출력하고 `fresh`로 재설정하도록 안내합니다.
+- `fresh`에서는 파일 경로 대신 **Telegram Bot Token 문자열을 직접 입력**하고 기본 경로(`~/.gaia/telegram_bot_token`)에 저장합니다.
+- `--tg-allowlist`는 "사용자 전체 허용목록"이 아니라 **관리자 chat_id 목록**입니다.
+- 미승인 사용자는 텔레그램에서 `/pair request` 로 승인 요청합니다.
+- 관리자는 `/pair pending` 후 `/pair approve <request_id>` 로 승인합니다.
+- `--tg-allowlist`를 비우면 첫 번째 `/start` 사용자가 초기 관리자로 자동 등록됩니다.
+
+3) Chat Hub 운영 명령
+```text
+/help
+/status
+/stop
+/memory stats
+/memory clear
+```
+
+4) Telegram 페어링 명령
+```text
+/start
+/whoami
+/pair request
+/pair status
+/pair pending               # admin
+/pair approve <request_id>  # admin
+/pair reject <request_id>   # admin
+/pair revoke <chat_id>      # admin
+```
+
 과거 플로우인 `python run_auto_test.py`는 스크립트가 제거되어 더 이상 사용되지 않습니다.
 또한 과거에는 `./scripts/run_gui.sh`가 `python -m gaia.main`로 실행됐으나 이제 `gaia plan --gui`를 사용합니다.
 
 GUI에서 기존 플랜 재사용 시 “이전 테스트 불러오기”로 `artifacts/plans/*.json` 선택 시 즉시 실행할 수 있습니다.
+
+## 실행 기억(KB)
+- 저장 위치: `~/.gaia/memory/kb.sqlite3`
+- 기본 활성화: `gaia` 실행 시 자동 사용
+- 범위: 도메인 단위 재사용
+- 보관 기간: 30일 (자동 정리)
 
 ## 워크스페이스 구조
 ```

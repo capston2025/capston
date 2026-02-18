@@ -12,6 +12,7 @@ import os
 from dataclasses import dataclass
 import requests
 from typing import Any, Dict, List, Optional, Callable
+from urllib.parse import urlparse
 
 from .models import (
     TestGoal,
@@ -21,6 +22,12 @@ from .models import (
     StepResult,
     DOMElement,
 )
+from gaia.src.phase4.memory.models import (
+    MemoryActionRecord,
+    MemorySummaryRecord,
+)
+from gaia.src.phase4.memory.retriever import MemoryRetriever
+from gaia.src.phase4.memory.store import MemoryStore
 
 
 @dataclass
@@ -221,6 +228,23 @@ class StepSubAgent:
         return step_result, success, error
 
 
+@dataclass(slots=True)
+class ActionExecResult:
+    success: bool
+    effective: bool = True
+    reason_code: str = "ok"
+    reason: str = ""
+    state_change: Dict[str, Any] | None = None
+    attempt_logs: List[Dict[str, Any]] | None = None
+    snapshot_id_used: str = ""
+    ref_id_used: str = ""
+
+    def as_error_message(self) -> Optional[str]:
+        if self.success and self.effective:
+            return None
+        return f"[{self.reason_code}] {self.reason or 'Unknown error'}"
+
+
 class GoalDrivenAgent:
     """
     Goal-Driven 테스트 에이전트
@@ -273,6 +297,13 @@ class GoalDrivenAgent:
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
+        self._last_exec_result: Optional[ActionExecResult] = None
+
+        # 실행 기억(KB)
+        self._memory_store = MemoryStore(enabled=True)
+        self._memory_retriever = MemoryRetriever(self._memory_store)
+        self._memory_episode_id: Optional[int] = None
+        self._memory_domain: str = ""
 
     def _log(self, message: str):
         """로그 출력"""
@@ -453,15 +484,149 @@ class GoalDrivenAgent:
         success: bool,
         changed: bool,
         error: Optional[str],
+        reason_code: Optional[str] = None,
+        state_change: Optional[Dict[str, Any]] = None,
     ):
+        code = reason_code or (self._last_exec_result.reason_code if self._last_exec_result else "unknown")
+        state_info = ""
+        if isinstance(state_change, dict) and state_change:
+            effective = bool(state_change.get("effective", False))
+            state_info = f", effective={effective}"
         feedback = (
             f"Step {step_number}: action={decision.action.value}, "
             f"element_id={decision.element_id}, changed={changed}, success={success}, "
-            f"error={error or 'none'}"
+            f"reason_code={code}{state_info}, error={error or 'none'}"
         )
         self._action_feedback.append(feedback)
         if len(self._action_feedback) > 10:
             self._action_feedback = self._action_feedback[-10:]
+
+    @staticmethod
+    def _extract_domain(url: Optional[str]) -> str:
+        parsed = urlparse(url or "")
+        return (parsed.netloc or "").lower()
+
+    def _build_memory_context(self, goal: TestGoal) -> str:
+        if not self._memory_store.enabled or not self._memory_domain:
+            return ""
+        hints = self._memory_retriever.retrieve_lightweight(
+            domain=self._memory_domain,
+            goal_text=f"{goal.name} {goal.description}",
+            action_history=self._action_history[-6:],
+        )
+        return self._memory_retriever.format_for_prompt(hints)
+
+    def _record_recovery_hints(self, goal: TestGoal, reason_code: str) -> None:
+        if not self._memory_store.enabled or not self._memory_domain:
+            return
+        hints = self._memory_retriever.retrieve_recovery(
+            domain=self._memory_domain,
+            goal_text=f"{goal.name} {goal.description}",
+            reason_code=reason_code,
+            limit=3,
+        )
+        text = self._memory_retriever.format_for_prompt(hints, max_items=3)
+        if not text:
+            return
+        self._action_feedback.append(f"Recovery hints ({reason_code}): {text}")
+        if len(self._action_feedback) > 10:
+            self._action_feedback = self._action_feedback[-10:]
+
+    def _record_action_memory(
+        self,
+        *,
+        goal: TestGoal,
+        step_number: int,
+        decision: ActionDecision,
+        success: bool,
+        changed: bool,
+        error: Optional[str],
+    ) -> None:
+        if not self._memory_store.enabled:
+            return
+        if self._memory_episode_id is None:
+            return
+        exec_result = self._last_exec_result or ActionExecResult(
+            success=success,
+            effective=success,
+            reason_code="unknown",
+            reason=error or "",
+        )
+        selector = ""
+        full_selector = ""
+        ref_id = ""
+        frame_index: Optional[int] = None
+        tab_index: Optional[int] = None
+        if decision.element_id is not None:
+            selector = self._element_selectors.get(decision.element_id, "")
+            full_selector = self._element_full_selectors.get(decision.element_id, "")
+            ref_id = self._element_ref_ids.get(decision.element_id, "")
+            scope = self._element_scopes.get(decision.element_id, {})
+            if isinstance(scope, dict):
+                frame_index = scope.get("frame_index")
+                tab_index = scope.get("tab_index")
+
+        try:
+            self._memory_store.record_action(
+                MemoryActionRecord(
+                    episode_id=self._memory_episode_id,
+                    domain=self._memory_domain,
+                    url=goal.start_url or "",
+                    step_number=step_number,
+                    action=decision.action.value,
+                    selector=selector,
+                    full_selector=full_selector,
+                    ref_id=ref_id,
+                    success=bool(exec_result.success and exec_result.effective),
+                    effective=bool(exec_result.effective),
+                    changed=bool(changed),
+                    reason_code=exec_result.reason_code,
+                    reason=exec_result.reason or (error or ""),
+                    snapshot_id=exec_result.snapshot_id_used or self._active_snapshot_id,
+                    dom_hash=self._active_dom_hash,
+                    epoch=self._active_snapshot_epoch,
+                    frame_index=frame_index if isinstance(frame_index, int) else None,
+                    tab_index=tab_index if isinstance(tab_index, int) else None,
+                    state_change=exec_result.state_change or {},
+                    attempt_logs=exec_result.attempt_logs or [],
+                )
+            )
+        except Exception:
+            return
+
+    def _record_goal_summary(
+        self,
+        *,
+        goal: TestGoal,
+        status: str,
+        reason: str,
+        step_count: int,
+        duration_seconds: float,
+    ) -> None:
+        if not self._memory_store.enabled:
+            return
+        try:
+            self._memory_store.add_dialog_summary(
+                MemorySummaryRecord(
+                    episode_id=self._memory_episode_id,
+                    domain=self._memory_domain,
+                    command="/test",
+                    summary=(
+                        f"goal={goal.name}, status={status}, steps={step_count}, "
+                        f"reason={reason}, duration={duration_seconds:.2f}s"
+                    ),
+                    status=status,
+                    metadata={
+                        "goal_id": goal.id,
+                        "goal_name": goal.name,
+                        "steps": step_count,
+                        "reason": reason,
+                        "duration_seconds": duration_seconds,
+                    },
+                )
+            )
+        except Exception:
+            return
 
     @classmethod
     def _goal_text_blob(cls, goal: TestGoal) -> str:
@@ -546,7 +711,7 @@ class GoalDrivenAgent:
         reason: str,
     ) -> GoalResult:
         self._log(f"❌ {reason}")
-        return GoalResult(
+        result = GoalResult(
             goal_id=goal.id,
             goal_name=goal.name,
             success=False,
@@ -555,6 +720,14 @@ class GoalDrivenAgent:
             final_reason=reason,
             duration_seconds=time.time() - start_time,
         )
+        self._record_goal_summary(
+            goal=goal,
+            status="failed",
+            reason=reason,
+            step_count=step_count,
+            duration_seconds=result.duration_seconds,
+        )
+        return result
 
     def execute_goal(self, goal: TestGoal) -> GoalResult:
         """
@@ -574,6 +747,21 @@ class GoalDrivenAgent:
         self._log(f"🎯 목표 시작: {goal.name}")
         self._log(f"   설명: {goal.description}")
         self._log(f"   성공 조건: {goal.success_criteria}")
+
+        self._memory_domain = self._extract_domain(goal.start_url)
+        self._memory_episode_id = None
+        try:
+            self._memory_store.garbage_collect(retention_days=30)
+            self._memory_episode_id = self._memory_store.start_episode(
+                provider=(os.getenv("GAIA_LLM_PROVIDER") or "openai"),
+                model=(os.getenv("GAIA_LLM_MODEL") or os.getenv("VISION_MODEL") or "unknown"),
+                runtime="terminal",
+                domain=self._memory_domain,
+                goal_text=f"{goal.name} {goal.description}",
+                url=goal.start_url or "",
+            )
+        except Exception:
+            self._memory_episode_id = None
 
         # 시작 URL로 이동
         current_url = goal.start_url
@@ -683,7 +871,20 @@ class GoalDrivenAgent:
                     success=success,
                     changed=changed,
                     error=error,
+                    reason_code=self._last_exec_result.reason_code if self._last_exec_result else None,
+                    state_change=self._last_exec_result.state_change if self._last_exec_result else None,
                 )
+                self._record_action_memory(
+                    goal=goal,
+                    step_number=step_count,
+                    decision=auto_decision,
+                    success=success,
+                    changed=changed,
+                    error=error,
+                )
+                if not success or not changed:
+                    reason_code = self._last_exec_result.reason_code if self._last_exec_result else "unknown"
+                    self._record_recovery_hints(goal, reason_code)
                 if auto_decision.action in {ActionType.CLICK, ActionType.PRESS} and success and not changed:
                     ineffective_action_streak += 1
                 else:
@@ -712,10 +913,12 @@ class GoalDrivenAgent:
                 continue
 
             # 3. LLM에게 다음 액션 결정 요청
+            memory_context = self._build_memory_context(goal)
             decision = self._decide_next_action(
                 dom_elements=dom_elements,
                 goal=goal,
                 screenshot=screenshot,
+                memory_context=memory_context,
             )
 
             self._log(f"🤖 LLM 결정: {decision.action.value} - {decision.reasoning}")
@@ -759,8 +962,7 @@ class GoalDrivenAgent:
                     )
                 else:
                     self._log(f"✅ 목표 달성! 이유: {decision.goal_achievement_reason}")
-
-                    return GoalResult(
+                    result = GoalResult(
                         goal_id=goal.id,
                         goal_name=goal.name,
                         success=True,
@@ -769,6 +971,14 @@ class GoalDrivenAgent:
                         final_reason=decision.goal_achievement_reason or "목표 달성됨",
                         duration_seconds=time.time() - start_time,
                     )
+                    self._record_goal_summary(
+                        goal=goal,
+                        status="success",
+                        reason=result.final_reason,
+                        step_count=step_count,
+                        duration_seconds=result.duration_seconds,
+                    )
+                    return result
 
             signature = self._decision_signature(decision)
             orchestrator.record_llm_decision(
@@ -819,7 +1029,20 @@ class GoalDrivenAgent:
                 success=success,
                 changed=changed,
                 error=error,
+                reason_code=self._last_exec_result.reason_code if self._last_exec_result else None,
+                state_change=self._last_exec_result.state_change if self._last_exec_result else None,
             )
+            self._record_action_memory(
+                goal=goal,
+                step_number=step_count,
+                decision=decision,
+                success=success,
+                changed=changed,
+                error=error,
+            )
+            if not success or not changed:
+                reason_code = self._last_exec_result.reason_code if self._last_exec_result else "unknown"
+                self._record_recovery_hints(goal, reason_code)
 
             if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.NAVIGATE}:
                 if success and not changed:
@@ -870,7 +1093,15 @@ class GoalDrivenAgent:
                 },
                 timeout=30,
             )
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception:
+                data = {"error": response.text or "invalid_json_response"}
+
+            if response.status_code >= 400:
+                detail = data.get("detail") or data.get("error") or response.reason
+                self._log(f"DOM 분석 오류: HTTP {response.status_code} - {detail}")
+                return []
 
             # analyze_page는 success 필드 없이 elements를 직접 반환
             if "error" in data:
@@ -941,7 +1172,14 @@ class GoalDrivenAgent:
                 },
                 timeout=30,
             )
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception:
+                data = {"error": response.text or "invalid_json_response"}
+            if response.status_code >= 400:
+                detail = data.get("detail") or data.get("error") or response.reason
+                self._log(f"스크린샷 캡처 오류: HTTP {response.status_code} - {detail}")
+                return None
             screenshot = data.get("screenshot")
 
             if screenshot and self._screenshot_callback:
@@ -958,6 +1196,7 @@ class GoalDrivenAgent:
         dom_elements: List[DOMElement],
         goal: TestGoal,
         screenshot: Optional[str] = None,
+        memory_context: str = "",
     ) -> ActionDecision:
         """LLM에게 다음 액션 결정 요청"""
 
@@ -991,6 +1230,9 @@ class GoalDrivenAgent:
 
 ## 최근 액션 실행 피드백
 {chr(10).join(self._action_feedback[-5:]) if self._action_feedback else '없음'}
+
+## 도메인 실행 기억(KB)
+{memory_context or '없음'}
 
 ## 현재 화면의 DOM 요소 (클릭/입력 가능한 요소들)
 {elements_text}
@@ -1106,6 +1348,8 @@ JSON 응답:"""
     ) -> tuple[bool, Optional[str]]:
         """결정된 액션 실행"""
 
+        self._last_exec_result = None
+
         # 요소 ID로 셀렉터 찾기
         selector = None
         full_selector = None
@@ -1115,61 +1359,106 @@ JSON 응답:"""
             full_selector = self._element_full_selectors.get(decision.element_id)
             ref_id = self._element_ref_ids.get(decision.element_id)
             if not selector and not full_selector and not ref_id:
+                self._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="not_found",
+                    reason=f"요소 ID {decision.element_id}에 대한 ref/selector를 찾을 수 없음",
+                )
                 return False, f"요소 ID {decision.element_id}에 대한 ref/selector를 찾을 수 없음"
 
         try:
+            if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.HOVER} and decision.element_id is None:
+                self._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="missing_element_id",
+                    reason=f"{decision.action.value} 액션에는 element_id가 필요함",
+                )
+                return False, f"{decision.action.value} 액션에는 element_id가 필요함"
+
             if decision.action == ActionType.CLICK:
-                return self._execute_action(
+                self._last_exec_result = self._execute_action(
                     "click",
                     selector=selector,
                     full_selector=full_selector,
                     ref_id=ref_id,
                 )
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.FILL:
                 if not decision.value:
+                    self._last_exec_result = ActionExecResult(
+                        success=False,
+                        effective=False,
+                        reason_code="invalid_input",
+                        reason="fill 액션에 value가 필요함",
+                    )
                     return False, "fill 액션에 value가 필요함"
-                return self._execute_action(
+                self._last_exec_result = self._execute_action(
                     "fill",
                     selector=selector,
                     full_selector=full_selector,
                     ref_id=ref_id,
                     value=decision.value,
                 )
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.PRESS:
                 # press 액션은 키보드 입력 (Enter, Tab 등)
                 key = decision.value or "Enter"
-                return self._execute_action(
+                self._last_exec_result = self._execute_action(
                     "press",
                     selector=selector or "",
                     full_selector=full_selector,
                     ref_id=ref_id,
                     value=key,
                 )
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.SCROLL:
-                return self._execute_action("scroll", value="down")
+                self._last_exec_result = self._execute_action("scroll", value="down")
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.WAIT:
                 time.sleep(1)
+                self._last_exec_result = ActionExecResult(
+                    success=True,
+                    effective=True,
+                    reason_code="wait",
+                    reason="wait",
+                )
                 return True, None
 
             elif decision.action == ActionType.NAVIGATE:
-                return self._execute_action("goto", url=decision.value)
+                self._last_exec_result = self._execute_action("goto", url=decision.value)
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.HOVER:
-                return self._execute_action(
+                self._last_exec_result = self._execute_action(
                     "hover",
                     selector=selector,
                     full_selector=full_selector,
                     ref_id=ref_id,
                 )
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             else:
+                self._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="unsupported_action",
+                    reason=f"지원하지 않는 액션: {decision.action}",
+                )
                 return False, f"지원하지 않는 액션: {decision.action}"
 
         except Exception as e:
+            self._last_exec_result = ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="exception",
+                reason=str(e),
+            )
             return False, str(e)
 
     def _execute_action(
@@ -1180,7 +1469,7 @@ JSON 응답:"""
         ref_id: Optional[str] = None,
         value: Optional[str] = None,
         url: Optional[str] = None,
-    ) -> tuple[bool, Optional[str]]:
+    ) -> ActionExecResult:
         """MCP Host를 통해 액션 실행"""
 
         use_ref_protocol = bool(
@@ -1221,22 +1510,61 @@ JSON 응답:"""
                 },
                 timeout=60,
             )
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception:
+                data = {"error": response.text or "invalid_json_response"}
+
+            if response.status_code >= 400:
+                detail = str(data.get("detail") or data.get("error") or response.reason or "HTTP error")
+                return ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code=f"http_{response.status_code}",
+                    reason=detail,
+                    state_change={},
+                    attempt_logs=[],
+                    snapshot_id_used=str(data.get("snapshot_id_used") or ""),
+                    ref_id_used=str(data.get("ref_id_used") or ""),
+                )
 
             is_success = bool(data.get("success"))
             is_effective = bool(data.get("effective", True))
             if is_success and is_effective:
-                return True, None
-            else:
-                reason_code = data.get("reason_code") or data.get("error") or "unknown_error"
-                reason = data.get("reason") or data.get("message") or data.get("detail") or "Unknown error"
-                attempt_logs = data.get("attempt_logs")
-                if isinstance(attempt_logs, list) and attempt_logs:
-                    reason = f"{reason} (attempts={len(attempt_logs)})"
-                return False, f"[{reason_code}] {reason}"
+                return ActionExecResult(
+                    success=True,
+                    effective=True,
+                    reason_code="ok",
+                    reason="ok",
+                    state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                    attempt_logs=data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else [],
+                    snapshot_id_used=str(data.get("snapshot_id_used") or ""),
+                    ref_id_used=str(data.get("ref_id_used") or ""),
+                )
+
+            reason_code = str(data.get("reason_code") or data.get("error") or "unknown_error")
+            reason = str(data.get("reason") or data.get("message") or data.get("detail") or "Unknown error")
+            attempt_logs = data.get("attempt_logs")
+            if isinstance(attempt_logs, list) and attempt_logs:
+                reason = f"{reason} (attempts={len(attempt_logs)})"
+            return ActionExecResult(
+                success=is_success,
+                effective=is_effective,
+                reason_code=reason_code,
+                reason=reason,
+                state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                attempt_logs=attempt_logs if isinstance(attempt_logs, list) else [],
+                snapshot_id_used=str(data.get("snapshot_id_used") or ""),
+                ref_id_used=str(data.get("ref_id_used") or ""),
+            )
 
         except Exception as e:
-            return False, str(e)
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="request_exception",
+                reason=str(e),
+            )
 
     def _call_llm_text_only(self, prompt: str) -> str:
         """스크린샷 없이 텍스트만으로 LLM 호출 (provider 자동 선택)"""

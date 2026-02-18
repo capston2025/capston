@@ -26,6 +26,10 @@ AUTH_CHOICES = ("reuse", "fresh")
 RUNTIME_CHOICES = ("gui", "terminal")
 MODE_CHOICES = ("chat", "ai", "plan")
 OPENAI_AUTH_METHOD_CHOICES = ("oauth", "manual")
+CONTROL_CHOICES = ("local", "telegram")
+TELEGRAM_MODE_CHOICES = ("polling", "webhook")
+TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
+DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
 
 OPENAI_MODEL_CHOICES = (
     "gpt-5.3-codex",
@@ -91,25 +95,63 @@ def _load_profile() -> dict[str, str]:
     return {str(k): str(v) for k, v in data.items() if isinstance(v, (str, int, float))}
 
 
-def _resolve_mcp_target() -> tuple[str, int]:
+def _resolve_mcp_target() -> tuple[str, int, str]:
     raw_url = (os.getenv("MCP_HOST_URL", "http://127.0.0.1:8001") or "").strip()
     if "://" not in raw_url:
         raw_url = f"http://{raw_url}"
     parsed = urllib.parse.urlparse(raw_url)
     host = parsed.hostname or "127.0.0.1"
+    scheme = parsed.scheme or "http"
     if parsed.port:
         port = parsed.port
     else:
-        port = 443 if parsed.scheme == "https" else 80
-    return host, int(port)
+        port = 443 if scheme == "https" else 80
+    base_url = f"{scheme}://{host}:{int(port)}"
+    return host, int(port), base_url
 
 
-def _is_mcp_ready(host: str, port: int, timeout: float = 0.35) -> bool:
+def _is_tcp_open(host: str, port: int, timeout: float = 0.35) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
         return False
+
+
+def _is_mcp_ready(host: str, port: int, base_url: str, timeout: float = 0.8) -> bool:
+    if not _is_tcp_open(host, port, timeout=min(timeout, 0.35)):
+        return False
+
+    probes = (
+        (
+            f"{base_url.rstrip('/')}/health",
+            lambda payload: isinstance(payload, dict) and payload.get("status") == "ok",
+        ),
+        (
+            f"{base_url.rstrip('/')}/openapi.json",
+            lambda payload: isinstance(payload, dict)
+            and isinstance(payload.get("info"), dict)
+            and payload.get("info", {}).get("title") == "MCP Host",
+        ),
+    )
+
+    for url, validator in probes:
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if int(getattr(resp, "status", 0) or 0) != 200:
+                    continue
+                raw = resp.read().decode("utf-8")
+            payload = json.loads(raw)
+            if validator(payload):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _stop_spawned_mcp_host() -> None:
@@ -135,14 +177,23 @@ def _ensure_mcp_host_running() -> bool:
     global _MCP_HOST_LOG_FILE
     global _MCP_HOST_CLEANUP_REGISTERED
 
-    host, port = _resolve_mcp_target()
-    if _is_mcp_ready(host, port):
+    host, port, base_url = _resolve_mcp_target()
+    if _is_mcp_ready(host, port, base_url):
         return True
+
+    if _is_tcp_open(host, port) and not _is_mcp_ready(host, port, base_url):
+        print(
+            "MCP_HOST_URL가 GAIA MCP가 아닌 다른 서비스로 연결되어 있습니다. "
+            f"현재: {base_url}. "
+            "MCP_HOST_URL을 비우거나(기본값 사용) 다른 포트로 설정하세요.",
+            file=sys.stderr,
+        )
+        return False
 
     if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
         deadline = time.time() + 5.0
         while time.time() < deadline:
-            if _is_mcp_ready(host, port):
+            if _is_mcp_ready(host, port, base_url):
                 return True
             time.sleep(0.15)
         return False
@@ -163,7 +214,7 @@ def _ensure_mcp_host_running() -> bool:
     )
     deadline = time.time() + 10.0
     while time.time() < deadline:
-        if _is_mcp_ready(host, port):
+        if _is_mcp_ready(host, port, base_url):
             print(f"MCP host 자동 시작됨: {host}:{port}")
             return True
         if _MCP_HOST_PROCESS.poll() is not None:
@@ -516,6 +567,113 @@ def _resolve_runtime(parsed: argparse.Namespace, profile: dict[str, str], defaul
     return runtime
 
 
+def _resolve_control_channel(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
+    control = getattr(parsed, "control", None) or profile.get("control_channel", "local")
+    if control not in CONTROL_CHOICES:
+        control = "local"
+    if sys.stdin.isatty() and not getattr(parsed, "control", None):
+        selected = _prompt_select(
+            "Telegram 원격 제어를 사용하시겠어요?",
+            ("telegram", "no"),
+            default="telegram" if control == "telegram" else "no",
+        )
+        control = "telegram" if selected == "telegram" else "local"
+    return control
+
+
+def _resolve_telegram_setup_strategy(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
+    strategy = getattr(parsed, "tg_setup", None) or profile.get("telegram_setup_strategy", "reuse")
+    if strategy not in TELEGRAM_SETUP_CHOICES:
+        strategy = "reuse"
+    if sys.stdin.isatty() and not getattr(parsed, "tg_setup", None):
+        strategy = _prompt_select(
+            "Telegram 설정을 선택하세요",
+            TELEGRAM_SETUP_CHOICES,
+            default=strategy,
+        )
+    return strategy
+
+
+def _resolve_telegram_mode(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
+    mode = getattr(parsed, "tg_mode", None) or profile.get("telegram_mode", "polling")
+    if mode not in TELEGRAM_MODE_CHOICES:
+        mode = "polling"
+    if sys.stdin.isatty() and not getattr(parsed, "tg_mode", None):
+        mode = _prompt_select(
+            "Telegram 모드를 선택하세요",
+            TELEGRAM_MODE_CHOICES,
+            default=mode,
+        )
+    return mode
+
+
+def _parse_telegram_allowlist(raw: str) -> list[int]:
+    out: list[int] = []
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            out.append(int(token))
+        except ValueError:
+            continue
+    return out
+
+
+def _resolve_telegram_token_file(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
+    path = getattr(parsed, "tg_token_file", None) or profile.get("telegram_token_file", DEFAULT_TELEGRAM_TOKEN_FILE)
+    return path
+
+
+def _resolve_telegram_allowlist(parsed: argparse.Namespace, profile: dict[str, str]) -> tuple[list[int], str]:
+    raw = getattr(parsed, "tg_allowlist", None) or profile.get("telegram_allowlist", "")
+    if sys.stdin.isatty() and not getattr(parsed, "tg_allowlist", None):
+        raw = _prompt(
+            "Telegram 관리자 chat_id 목록(콤마 구분, 비우면 첫 /start 사용자가 관리자)",
+            default=raw,
+        )
+    parsed_ids = _parse_telegram_allowlist(raw)
+    return parsed_ids, raw
+
+
+def _resolve_telegram_webhook_url(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
+    url = getattr(parsed, "tg_webhook_url", None) or profile.get("telegram_webhook_url", "")
+    if sys.stdin.isatty() and not getattr(parsed, "tg_webhook_url", None):
+        url = _prompt("Telegram webhook URL", default=url)
+    return url
+
+
+def _resolve_telegram_webhook_bind(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
+    bind = getattr(parsed, "tg_webhook_bind", None) or profile.get("telegram_webhook_bind", "127.0.0.1:8088")
+    if sys.stdin.isatty() and not getattr(parsed, "tg_webhook_bind", None):
+        bind = _prompt_non_empty("Telegram webhook bind(host:port)", default=bind)
+    return bind
+
+
+def _materialize_telegram_token(
+    parsed: argparse.Namespace,
+    profile: dict[str, str],
+    *,
+    tg_setup: str,
+) -> str:
+    token_file = _resolve_telegram_token_file(parsed, profile)
+    token_value = (getattr(parsed, "tg_token", None) or "").strip()
+
+    if tg_setup == "fresh" and sys.stdin.isatty() and not token_value:
+        token_value = _prompt_non_empty("Telegram Bot Token")
+
+    if token_value:
+        path = Path(token_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{token_value}\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+        print(f"Telegram 토큰 저장됨: {path}")
+    return token_file
+
+
 def _resolve_provider(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
     provider = parsed.llm_provider or profile.get("provider") or os.getenv("GAIA_LLM_PROVIDER", "openai")
     if provider not in {"openai", "gemini"}:
@@ -641,6 +799,12 @@ def _persist_profile(
     auth_method: str,
     url: str | None,
     runtime: str,
+    control_channel: str | None = None,
+    telegram_mode: str | None = None,
+    telegram_token_file: str | None = None,
+    telegram_allowlist: str | None = None,
+    telegram_webhook_url: str | None = None,
+    telegram_webhook_bind: str | None = None,
 ) -> None:
     profile["provider"] = provider
     profile["model"] = model
@@ -650,6 +814,18 @@ def _persist_profile(
     profile["last_runtime"] = runtime
     if url:
         profile["last_url"] = url
+    if control_channel in CONTROL_CHOICES:
+        profile["control_channel"] = control_channel
+    if telegram_mode in TELEGRAM_MODE_CHOICES:
+        profile["telegram_mode"] = telegram_mode
+    if telegram_token_file:
+        profile["telegram_token_file"] = telegram_token_file
+    if telegram_allowlist is not None:
+        profile["telegram_allowlist"] = telegram_allowlist
+    if telegram_webhook_url is not None:
+        profile["telegram_webhook_url"] = telegram_webhook_url
+    if telegram_webhook_bind:
+        profile["telegram_webhook_bind"] = telegram_webhook_bind
     _save_profile(profile)
 
 
@@ -804,6 +980,14 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--resume")
     parser.add_argument("--feature-query")
     parser.add_argument("--max-actions", type=int, default=50)
+    parser.add_argument("--control", choices=CONTROL_CHOICES)
+    parser.add_argument("--tg-setup", choices=TELEGRAM_SETUP_CHOICES)
+    parser.add_argument("--tg-mode", choices=TELEGRAM_MODE_CHOICES)
+    parser.add_argument("--tg-token-file")
+    parser.add_argument("--tg-token", help="Telegram bot token (fresh setup).")
+    parser.add_argument("--tg-allowlist", help="Comma-separated telegram admin chat_id allowlist.")
+    parser.add_argument("--tg-webhook-url")
+    parser.add_argument("--tg-webhook-bind")
     args = parser.parse_args(list(argv or []))
 
     configured = _configure_session(args, require_url=True)
@@ -811,16 +995,160 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         return 1
     provider, model, auth_strategy, url, runtime = configured
     assert url is not None
+    profile = _load_profile()
+    control = _resolve_control_channel(args, profile)
+
+    if control == "telegram":
+        tg_setup = _resolve_telegram_setup_strategy(args, profile)
+        tg_mode = ""
+        tg_token_file = ""
+        tg_allowlist: list[int] = []
+        tg_allowlist_raw = ""
+        tg_webhook_url = ""
+        tg_webhook_bind = "127.0.0.1:8088"
+
+        if tg_setup == "reuse":
+            tg_mode = getattr(args, "tg_mode", None) or profile.get("telegram_mode", "")
+            tg_token_file = getattr(args, "tg_token_file", None) or profile.get("telegram_token_file", "")
+            tg_allowlist_raw = getattr(args, "tg_allowlist", None) or profile.get("telegram_allowlist", "")
+            tg_allowlist = _parse_telegram_allowlist(tg_allowlist_raw)
+            tg_webhook_url = getattr(args, "tg_webhook_url", None) or profile.get("telegram_webhook_url", "")
+            tg_webhook_bind = getattr(args, "tg_webhook_bind", None) or profile.get("telegram_webhook_bind", "127.0.0.1:8088")
+
+            if not tg_mode or not tg_token_file:
+                print(
+                    "저장된 Telegram 설정이 존재하지 않습니다. "
+                    "다시 실행해서 Telegram 설정에서 fresh를 선택하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+            if tg_mode not in TELEGRAM_MODE_CHOICES:
+                print(
+                    f"저장된 Telegram 모드가 유효하지 않습니다: {tg_mode}. "
+                    "fresh 설정으로 다시 저장하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+            if not Path(tg_token_file).exists():
+                print(
+                    f"저장된 Telegram token 파일이 존재하지 않습니다: {tg_token_file}. "
+                    "fresh 설정으로 경로를 다시 지정하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+        else:
+            tg_mode = _resolve_telegram_mode(args, profile)
+            tg_token_file = _materialize_telegram_token(args, profile, tg_setup=tg_setup)
+            tg_allowlist, tg_allowlist_raw = _resolve_telegram_allowlist(args, profile)
+            if tg_mode == "webhook":
+                tg_webhook_url = _resolve_telegram_webhook_url(args, profile)
+                tg_webhook_bind = _resolve_telegram_webhook_bind(args, profile)
+            else:
+                tg_webhook_url = ""
+                tg_webhook_bind = profile.get("telegram_webhook_bind", "127.0.0.1:8088")
+            if not Path(tg_token_file).exists():
+                print(
+                    "Telegram Bot Token이 설정되지 않았습니다. "
+                    "fresh에서 토큰을 입력하거나 --tg-token으로 전달하세요.",
+                    file=sys.stderr,
+                )
+                return 2
+
+        if tg_mode == "webhook" and not tg_webhook_url:
+            print("Webhook mode requires --tg-webhook-url.", file=sys.stderr)
+            return 2
+
+        profile["telegram_setup_strategy"] = tg_setup
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel=control,
+            telegram_mode=tg_mode,
+            telegram_token_file=tg_token_file,
+            telegram_allowlist=tg_allowlist_raw,
+            telegram_webhook_url=tg_webhook_url,
+            telegram_webhook_bind=tg_webhook_bind,
+        )
+
+        if args.mode:
+            print("Telegram 제어 채널에서는 --mode direct 실행을 무시하고 Chat Hub 대기 상태로 시작합니다.")
+
+        from gaia.chat_hub import HubContext
+        from gaia.telegram_bridge import TelegramConfig, run_telegram_bridge
+
+        return run_telegram_bridge(
+            HubContext(
+                provider=provider,
+                model=model,
+                auth_strategy=auth_strategy,
+                url=url,
+                runtime=runtime,
+                control_channel="telegram",
+                memory_enabled=True,
+            ),
+            TelegramConfig(
+                mode=tg_mode,
+                token_file=tg_token_file,
+                allowlist=tuple(tg_allowlist),
+                webhook_url=tg_webhook_url,
+                webhook_bind=tg_webhook_bind,
+            ),
+        )
 
     if args.mode == "chat":
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel="local",
+        )
         return _dispatch_chat(runtime, url, args.feature_query, repl=True)
     if args.mode == "ai":
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel="local",
+        )
         return _dispatch_ai(runtime, url, max(1, int(args.max_actions)))
     if args.mode == "plan":
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel="local",
+        )
         return _dispatch_plan(url, args.plan, args.spec, args.resume)
 
     from gaia.chat_hub import HubContext, run_chat_hub
 
+    _persist_profile(
+        profile,
+        provider=provider,
+        model=model,
+        auth_strategy=auth_strategy,
+        auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+        url=url,
+        runtime=runtime,
+        control_channel="local",
+    )
     return run_chat_hub(
         HubContext(
             provider=provider,
@@ -828,6 +1156,8 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             auth_strategy=auth_strategy,
             url=url,
             runtime=runtime,
+            control_channel="local",
+            memory_enabled=True,
         )
     )
 
@@ -868,6 +1198,14 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--terminal", action="store_true")
     parser.add_argument("--mode", choices=MODE_CHOICES)
+    parser.add_argument("--control", choices=CONTROL_CHOICES)
+    parser.add_argument("--tg-setup", choices=TELEGRAM_SETUP_CHOICES)
+    parser.add_argument("--tg-mode", choices=TELEGRAM_MODE_CHOICES)
+    parser.add_argument("--tg-token-file")
+    parser.add_argument("--tg-token")
+    parser.add_argument("--tg-allowlist")
+    parser.add_argument("--tg-webhook-url")
+    parser.add_argument("--tg-webhook-bind")
     return parser
 
 
@@ -951,6 +1289,22 @@ def run_start(argv: Sequence[str] | None = None) -> int:
         forwarded += ["--terminal"]
     if parsed.mode:
         forwarded += ["--mode", parsed.mode]
+    if parsed.control:
+        forwarded += ["--control", parsed.control]
+    if parsed.tg_setup:
+        forwarded += ["--tg-setup", parsed.tg_setup]
+    if parsed.tg_mode:
+        forwarded += ["--tg-mode", parsed.tg_mode]
+    if parsed.tg_token_file:
+        forwarded += ["--tg-token-file", parsed.tg_token_file]
+    if parsed.tg_token:
+        forwarded += ["--tg-token", parsed.tg_token]
+    if parsed.tg_allowlist:
+        forwarded += ["--tg-allowlist", parsed.tg_allowlist]
+    if parsed.tg_webhook_url:
+        forwarded += ["--tg-webhook-url", parsed.tg_webhook_url]
+    if parsed.tg_webhook_bind:
+        forwarded += ["--tg-webhook-bind", parsed.tg_webhook_bind]
     return run_launcher(forwarded)
 
 
