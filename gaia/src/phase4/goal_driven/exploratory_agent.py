@@ -152,6 +152,11 @@ class ExploratoryAgent:
             return "LLM 호출 중단: 인증 오류(401/Unauthorized)."
         if "forbidden" in text or "403" in text:
             return "LLM 호출 중단: 권한 오류(403 Forbidden)."
+        if "failed to read prompt from stdin" in text or "not valid utf-8" in text:
+            return (
+                "LLM 호출 중단: Codex CLI 입력 인코딩(UTF-8) 오류입니다. "
+                "최신 코드로 업데이트 후 다시 실행하세요."
+            )
         if "codex exec failed" in text or "unexpected argument" in text:
             return (
                 "LLM 호출 중단: Codex CLI 실행 인자/버전 오류입니다. "

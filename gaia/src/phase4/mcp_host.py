@@ -5,6 +5,7 @@ import uuid
 import time
 import hashlib
 import json as json_module
+import traceback
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -61,17 +62,29 @@ class BrowserSession:
                 )
 
             # 자동화 감지 우회 설정
-            self.browser = await playwright_instance.chromium.launch(
-                headless=False,  # 사용자 개입(로그인 등)을 위해 브라우저 표시
-                args=[
-                    "--disable-blink-features=AutomationControlled",  # 자동화 감지 비활성화
-                    "--disable-dev-shm-usage",
-                    "--disable-web-security",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                ],
-            )
+            try:
+                self.browser = await playwright_instance.chromium.launch(
+                    headless=False,  # 사용자 개입(로그인 등)을 위해 브라우저 표시
+                    args=[
+                        "--disable-blink-features=AutomationControlled",  # 자동화 감지 비활성화
+                        "--disable-dev-shm-usage",
+                        "--disable-web-security",
+                        "--disable-features=IsolateOrigins,site-per-process",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                    ],
+                )
+            except Exception as exc:
+                msg = str(exc)
+                if "Executable doesn't exist" in msg or "browserType.launch" in msg:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            "Chromium executable not found. "
+                            "Run: python -m playwright install chromium"
+                        ),
+                    ) from exc
+                raise
 
             # 페이지 생성 및 자동화 감지 우회 스크립트 주입
             self.page = await self.browser.new_page()
@@ -2907,124 +2920,130 @@ async def execute_action(request: McpRequest):
     """
     Executes a browser automation action.
     """
-    action = request.action
-    params = request.params
-    session_id = params.get("session_id", "default")
+    try:
+        action = request.action
+        params = request.params
+        session_id = params.get("session_id", "default")
 
-    if action == "analyze_page":
-        url = params.get(
-            "url"
-        )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
-        return await analyze_page(url, session_id)
+        if action == "analyze_page":
+            url = params.get(
+                "url"
+            )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
+            return await analyze_page(url, session_id)
 
-    elif action == "snapshot_page":
-        url = params.get("url")
-        return await snapshot_page(url, session_id)
+        elif action == "snapshot_page":
+            url = params.get("url")
+            return await snapshot_page(url, session_id)
 
-    elif action == "capture_screenshot":
-        url = params.get(
-            "url"
-        )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
-        return await capture_screenshot(url, session_id)
+        elif action == "capture_screenshot":
+            url = params.get(
+                "url"
+            )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
+            return await capture_screenshot(url, session_id)
 
-    elif action == "execute_action":
-        # 전체 시나리오 없이 단순 동작(클릭, 입력, 키 입력)을 실행합니다
-        url = params.get("url")
-        selector = params.get(
-            "selector", ""
-        )  # 일부 동작은 선택자가 비어 있을 수 있습니다
-        action_type = params.get("action")
-        value = params.get("value")
-        before_screenshot = params.get("before_screenshot")  # Vision AI용 이전 스크린샷
+        elif action == "execute_action":
+            # 전체 시나리오 없이 단순 동작(클릭, 입력, 키 입력)을 실행합니다
+            url = params.get("url")
+            selector = params.get(
+                "selector", ""
+            )  # 일부 동작은 선택자가 비어 있을 수 있습니다
+            action_type = params.get("action")
+            value = params.get("value")
+            before_screenshot = params.get("before_screenshot")  # Vision AI용 이전 스크린샷
 
-        # goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates 같은 동작은 선택자가 필요 없습니다
-        # 검증 동작도 선택자가 필요 없으며 value 매개변수를 사용합니다
-        actions_not_needing_selector = [
-            "goto",
-            "setViewport",
-            "evaluate",
-            "tab",
-            "scroll",
-            "wait",
-            "waitForTimeout",
-            "clickAt",
-            "click_at_coordinates",
-            "fillAt",
-            "fill_at_coordinates",
-            "expectTrue",
-            "expectAttribute",
-            "expectCountAtLeast",
-            "expectVisible",
-            "expectHidden",
-        ]
+            # goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates 같은 동작은 선택자가 필요 없습니다
+            # 검증 동작도 선택자가 필요 없으며 value 매개변수를 사용합니다
+            actions_not_needing_selector = [
+                "goto",
+                "setViewport",
+                "evaluate",
+                "tab",
+                "scroll",
+                "wait",
+                "waitForTimeout",
+                "clickAt",
+                "click_at_coordinates",
+                "fillAt",
+                "fill_at_coordinates",
+                "expectTrue",
+                "expectAttribute",
+                "expectCountAtLeast",
+                "expectVisible",
+                "expectHidden",
+            ]
 
-        if not action_type:
-            raise HTTPException(
-                status_code=400, detail="action is required for 'execute_action'."
+            if not action_type:
+                raise HTTPException(
+                    status_code=400, detail="action is required for 'execute_action'."
+                )
+
+            if action_type not in actions_not_needing_selector and not selector:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"selector is required for action '{action_type}'.",
+                )
+
+            return await execute_simple_action(
+                url,
+                selector,
+                action_type,
+                value,
+                session_id,
+                before_screenshot=before_screenshot,
             )
 
-        if action_type not in actions_not_needing_selector and not selector:
-            raise HTTPException(
-                status_code=400,
-                detail=f"selector is required for action '{action_type}'.",
+        elif action == "execute_ref_action":
+            snapshot_id = params.get("snapshot_id", "")
+            ref_id = params.get("ref_id", "")
+            action_type = params.get("action", "")
+            value = params.get("value")
+            url = params.get("url", "")
+            selector_hint = str(params.get("selector_hint", "") or "")
+            verify = bool(params.get("verify", True))
+
+            if not snapshot_id:
+                raise HTTPException(
+                    status_code=400, detail="snapshot_id is required for 'execute_ref_action'."
+                )
+            if not ref_id:
+                raise HTTPException(
+                    status_code=400, detail="ref_id is required for 'execute_ref_action'."
+                )
+            if not action_type:
+                raise HTTPException(
+                    status_code=400, detail="action is required for 'execute_ref_action'."
+                )
+            return await execute_ref_action_with_snapshot(
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+                ref_id=ref_id,
+                action=action_type,
+                value=value,
+                url=url,
+                selector_hint=selector_hint,
+                verify=verify,
             )
 
-        return await execute_simple_action(
-            url,
-            selector,
-            action_type,
-            value,
-            session_id,
-            before_screenshot=before_screenshot,
-        )
+        elif action == "execute_scenario":
+            scenario_data = params.get("scenario")
+            if not scenario_data:
+                raise HTTPException(
+                    status_code=400, detail="Scenario is required for 'execute_scenario'."
+                )
 
-    elif action == "execute_ref_action":
-        snapshot_id = params.get("snapshot_id", "")
-        ref_id = params.get("ref_id", "")
-        action_type = params.get("action", "")
-        value = params.get("value")
-        url = params.get("url", "")
-        selector_hint = str(params.get("selector_hint", "") or "")
-        verify = bool(params.get("verify", True))
+            try:
+                scenario = TestScenario(**scenario_data)
+                result = await run_test_scenario(scenario)
+                return result
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid scenario format: {e}")
 
-        if not snapshot_id:
-            raise HTTPException(
-                status_code=400, detail="snapshot_id is required for 'execute_ref_action'."
-            )
-        if not ref_id:
-            raise HTTPException(
-                status_code=400, detail="ref_id is required for 'execute_ref_action'."
-            )
-        if not action_type:
-            raise HTTPException(
-                status_code=400, detail="action is required for 'execute_ref_action'."
-            )
-        return await execute_ref_action_with_snapshot(
-            session_id=session_id,
-            snapshot_id=snapshot_id,
-            ref_id=ref_id,
-            action=action_type,
-            value=value,
-            url=url,
-            selector_hint=selector_hint,
-            verify=verify,
-        )
-
-    elif action == "execute_scenario":
-        scenario_data = params.get("scenario")
-        if not scenario_data:
-            raise HTTPException(
-                status_code=400, detail="Scenario is required for 'execute_scenario'."
-            )
-
-        try:
-            scenario = TestScenario(**scenario_data)
-            result = await run_test_scenario(scenario)
-            return result
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid scenario format: {e}")
-
-    raise HTTPException(status_code=400, detail=f"Action '{action}' not supported.")
+        raise HTTPException(status_code=400, detail=f"Action '{action}' not supported.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
 
 
 @app.post("/close_session")
