@@ -9,9 +9,7 @@ import select
 import socket
 import subprocess
 import sys
-import termios
 import time
-import tty
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -19,6 +17,12 @@ from pathlib import Path
 from typing import Sequence
 
 from gaia import auth as gaia_auth
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import termios
+    import tty
 
 
 PROFILE_PATH = Path.home() / ".gaia" / "cli_profile.json"
@@ -260,6 +264,19 @@ def _prompt_non_empty(prompt: str, default: str | None = None) -> str:
 def _read_key() -> str:
     if not sys.stdin.isatty():
         return ""
+    if os.name == "nt":
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):
+            nxt = msvcrt.getwch()
+            if nxt == "H":
+                return "UP"
+            if nxt == "P":
+                return "DOWN"
+            return nxt
+        if ch == "\r":
+            return "\n"
+        return ch
+
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
