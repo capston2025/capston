@@ -133,17 +133,26 @@ class LLMVisionClient:
                 run_cmd.append("-")
                 completed = subprocess.run(
                     run_cmd,
-                    input=prompt,
-                    text=True,
+                    input=prompt.encode("utf-8"),
                     capture_output=True,
                     check=False,
+                )
+                stdout_text = (
+                    completed.stdout.decode("utf-8", errors="replace")
+                    if isinstance(completed.stdout, (bytes, bytearray))
+                    else str(completed.stdout or "")
+                )
+                stderr_text = (
+                    completed.stderr.decode("utf-8", errors="replace")
+                    if isinstance(completed.stderr, (bytes, bytearray))
+                    else str(completed.stderr or "")
                 )
                 if completed.returncode == 0:
                     if output_file.exists():
                         return output_file.read_text(encoding="utf-8").strip()
-                    return (completed.stdout or "").strip()
+                    return (stdout_text or "").strip()
 
-                last_error = (completed.stderr or completed.stdout or "").strip()
+                last_error = (stderr_text or stdout_text or "").strip()
                 # 모델 지정 실패 계열이면 기본 모델로 재시도
                 lower_error = last_error.lower()
                 if candidate_model and (
