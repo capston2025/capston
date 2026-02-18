@@ -1,0 +1,2 @@
+"""GAIA package root."""
+
