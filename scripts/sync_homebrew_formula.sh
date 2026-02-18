@@ -65,13 +65,13 @@ text = path.read_text(encoding="utf-8")
 
 def replace(pattern: str, value: str) -> None:
     global text
-    new = re.sub(pattern, value, text, count=1)
+    new = re.sub(pattern, value, text, count=1, flags=re.MULTILINE)
     if new == text:
         raise RuntimeError(f"pattern not found: {pattern}")
     text = new
 
-replace(r'^\\s*version\\s+"[^"]+"$', f'  version "{version}"', text)
-replace(r'^\\s*sha256\\s+"[0-9a-f]{{64}}"$', f'  sha256 "{sha}"', text)
+replace(r'^\s*version\s+"[^"]+"\s*$', f'  version "{version}"')
+replace(r'^\s*sha256\s+(?::no_check|"[0-9a-f]{{64}}")\s*$', f'  sha256 "{sha}"')
 
 path.write_text(text, encoding="utf-8")
 PY

@@ -5,6 +5,7 @@ import uuid
 import time
 import hashlib
 import json as json_module
+from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -25,6 +26,11 @@ app = FastAPI(
 # 라이브 미리보기를 위한 전역 상태 (CDP 스크린캐스트용)
 screencast_subscribers: List[WebSocket] = []
 current_screencast_frame: Optional[str] = None
+
+
+@app.get("/health")
+async def health() -> Dict[str, str]:
+    return {"status": "ok"}
 
 
 # 브라우저 세션 관리
@@ -3086,7 +3092,21 @@ async def root():
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    bind_host = os.getenv("MCP_HOST_BIND_HOST", "0.0.0.0")
+    bind_port_raw = os.getenv("MCP_HOST_BIND_PORT")
+    if bind_port_raw:
+        try:
+            bind_port = int(bind_port_raw)
+        except ValueError:
+            bind_port = 8001
+    else:
+        raw_url = (os.getenv("MCP_HOST_URL", "http://127.0.0.1:8001") or "").strip()
+        if "://" not in raw_url:
+            raw_url = f"http://{raw_url}"
+        parsed = urlparse(raw_url)
+        bind_port = parsed.port or 8001
+
+    uvicorn.run(app, host=bind_host, port=bind_port)
 
 
 if __name__ == "__main__":
