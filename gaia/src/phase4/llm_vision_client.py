@@ -148,9 +148,17 @@ class LLMVisionClient:
                     else str(completed.stderr or "")
                 )
                 if completed.returncode == 0:
+                    content = ""
                     if output_file.exists():
-                        return output_file.read_text(encoding="utf-8").strip()
-                    return (stdout_text or "").strip()
+                        content = output_file.read_text(encoding="utf-8", errors="replace").strip()
+                    if not content:
+                        content = (stdout_text or "").strip()
+                    if content:
+                        return content
+
+                    last_error = "empty_response_from_codex_exec"
+                    # 첫 시도(model 지정)에서 빈 응답이면 기본 모델 시도도 해본다.
+                    continue
 
                 last_error = (stderr_text or stdout_text or "").strip()
                 # 모델 지정 실패 계열이면 기본 모델로 재시도

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from gaia.chat_hub import HubContext, dispatch_command
 from gaia.src.phase4.memory.store import MemoryStore
@@ -36,6 +38,15 @@ class _PairRequest:
     username: str
     full_name: str
     created_at: int
+
+
+@dataclass(slots=True)
+class _PendingIntervention:
+    kind: str
+    question: str
+    fields: list[str]
+    event: threading.Event
+    response_text: str = ""
 
 
 class _BufferedSink:
@@ -201,12 +212,16 @@ class _TelegramBridge:
         self.memory_store = memory_store
         self.queue: asyncio.Queue[_CommandEnvelope | None] = asyncio.Queue()
         self.worker_task: Optional[asyncio.Task] = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self._pending_interventions: dict[int, _PendingIntervention] = {}
+        self._pending_lock = threading.Lock()
         self.pairing = _PairingState(
             path=Path(config.pairing_file),
             configured_admins=config.allowlist,
         )
 
     async def post_init(self, _application) -> None:
+        self.loop = asyncio.get_running_loop()
         self.worker_task = asyncio.create_task(self._worker_loop(_application))
 
     async def post_shutdown(self, _application) -> None:
@@ -225,6 +240,165 @@ class _TelegramBridge:
                 kwargs["reply_to_message_id"] = reply_to_message_id
             await bot.send_message(**kwargs)
 
+    @staticmethod
+    def _parse_kv(text: str) -> Dict[str, str]:
+        aliases = {
+            "id": "username",
+            "user": "username",
+            "username": "username",
+            "email": "email",
+            "pw": "password",
+            "password": "password",
+            "goal": "goal_text",
+            "goal_text": "goal_text",
+        }
+        out: Dict[str, str] = {}
+        for token in (text or "").split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            key = aliases.get(key.strip().lower(), key.strip().lower())
+            value = value.strip().strip('"').strip("'")
+            if value:
+                out[key] = value
+        return out
+
+    @staticmethod
+    def _parse_intervention_response(kind: str, text: str) -> Dict[str, Any]:
+        raw = (text or "").strip()
+        low = raw.lower()
+        if low in {"cancel", "/cancel", "n", "no", "취소"}:
+            return {"action": "cancel", "proceed": False}
+
+        kv = _TelegramBridge._parse_kv(raw)
+        if kind == "auth":
+            if low in {"manual", "manual_done", "done", "수동완료"}:
+                return {"manual_done": True, "proceed": True}
+            wants_signup = any(
+                token in low for token in ("회원가입", "signup", "sign up", "register")
+            )
+            asks_credentials = (
+                ("아이디" in raw and "비밀번호" in raw and ("알려" in raw or "공유" in raw))
+                or "credential" in low
+            )
+
+            def _clean(v: str) -> str:
+                return v.strip().strip('"').strip("'").strip(".,!?")
+
+            # 자유형 문장에서 부가 필드 추출
+            dept = ""
+            year = ""
+            m_dept = re.search(r"(?:학과|과)\s*(?:는|은|:)?\s*([^\s,.!?]+)", raw)
+            if m_dept:
+                dept = _clean(m_dept.group(1))
+            m_year = re.search(r"([1-6])\s*학년", raw)
+            if m_year:
+                year = _clean(m_year.group(1))
+
+            # 자유형 아이디/비밀번호 추출
+            if "username" not in kv and "email" not in kv:
+                m_id = re.search(r"(?:아이디|id|username)\s*(?:는|은|:)?\s*([^\s,]+)", raw, re.IGNORECASE)
+                m_email = re.search(r"(?:이메일|email)\s*(?:는|은|:)?\s*([^\s,]+)", raw, re.IGNORECASE)
+                if m_id:
+                    kv["username"] = _clean(m_id.group(1))
+                if m_email:
+                    kv["email"] = _clean(m_email.group(1))
+            if "password" not in kv:
+                m_pw = re.search(r"(?:비밀번호|패스워드|password|pw)\s*(?:는|은|:)?\s*([^\s,]+)", raw, re.IGNORECASE)
+                if m_pw:
+                    kv["password"] = _clean(m_pw.group(1))
+
+            if wants_signup:
+                resp: Dict[str, Any] = {"auth_mode": "signup", "proceed": True}
+                resp.update(kv)
+                if dept:
+                    resp["department"] = dept
+                if year:
+                    resp["grade_year"] = year
+                if asks_credentials:
+                    resp["return_credentials"] = True
+                return resp
+
+            if kv:
+                if "username" in kv or "email" in kv:
+                    kv.setdefault("proceed", "true")
+                    return kv
+                return {"action": "cancel", "proceed": False}
+            return {"action": "cancel", "proceed": False}
+
+        if kind == "clarification":
+            if not kv and raw:
+                return {"goal_text": raw, "proceed": True}
+            if kv:
+                kv.setdefault("proceed", "true")
+                return kv
+            return {"action": "cancel", "proceed": False}
+
+        return {"action": "cancel", "proceed": False}
+
+    def _build_intervention_callback(self, application, chat_id: int, reply_to_message_id: int | None):
+        def _callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            loop = self.loop
+            if loop is None:
+                return {"action": "cancel", "proceed": False}
+
+            kind = str(payload.get("kind") or "input").strip().lower()
+            question = str(payload.get("question") or "추가 입력이 필요합니다.")
+            fields = payload.get("fields")
+            if not isinstance(fields, list):
+                fields = []
+
+            helper_lines = []
+            if kind == "auth":
+                helper_lines.append("응답 형식: username=<id_or_email> password=<pw> [email=<email>]")
+                helper_lines.append("또는: manual_done")
+            elif kind == "clarification":
+                helper_lines.append("응답 형식: <구체 목표 문장>")
+                helper_lines.append("또는: goal=\"...\" username=<id> password=<pw> [email=<email>]")
+            helper_lines.append("취소: /cancel")
+            text = "\n".join(["추가 입력 요청", question, *helper_lines]).strip()
+
+            pending = _PendingIntervention(
+                kind=kind,
+                question=question,
+                fields=[str(v) for v in fields],
+                event=threading.Event(),
+            )
+            with self._pending_lock:
+                self._pending_interventions[chat_id] = pending
+
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._send_text(application.bot, chat_id, text, reply_to_message_id),
+                    loop,
+                )
+                fut.result(timeout=15)
+            except Exception:
+                with self._pending_lock:
+                    self._pending_interventions.pop(chat_id, None)
+                return {"action": "cancel", "proceed": False}
+
+            waited = pending.event.wait(timeout=600)
+            with self._pending_lock:
+                self._pending_interventions.pop(chat_id, None)
+            if not waited:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._send_text(
+                            application.bot,
+                            chat_id,
+                            "입력 대기 시간(10분) 초과로 실행을 취소했습니다.",
+                            reply_to_message_id,
+                        ),
+                        loop,
+                    )
+                except Exception:
+                    pass
+                return {"action": "cancel", "proceed": False}
+            return self._parse_intervention_response(kind, pending.response_text)
+
+        return _callback
+
     async def _worker_loop(self, application) -> None:
         while True:
             item = await self.queue.get()
@@ -232,17 +406,25 @@ class _TelegramBridge:
                 return
             sink = _BufferedSink()
             try:
+                intervention_cb = self._build_intervention_callback(
+                    application,
+                    item.chat_id,
+                    item.reply_to_message_id,
+                )
                 result = await asyncio.to_thread(
                     dispatch_command,
                     self.hub_context,
                     item.raw_command,
                     sink,
                     self.memory_store,
+                    intervention_cb,
                 )
-                lines = list(sink.lines)
+                lines = [f"command: {item.raw_command[:120]}", f"status: {result.status}"]
+                lines.extend(sink.lines)
                 if result.output:
                     lines.append(result.output)
-                lines.append(f"exit_code={result.code}")
+                if not any("exit_code" in line for line in lines):
+                    lines.append(f"exit_code={result.code}")
                 payload = "\n".join(line for line in lines if line).strip()
                 if not payload:
                     payload = "완료"
@@ -447,6 +629,22 @@ class _TelegramBridge:
         if message.document:
             raw = await self._normalize_document_command(message, context)
         if not raw:
+            return
+
+        pending: Optional[_PendingIntervention] = None
+        with self._pending_lock:
+            pending = self._pending_interventions.get(chat_id)
+        if pending is not None:
+            lowered = raw.strip().lower()
+            if lowered.startswith("/pair"):
+                await message.reply_text("현재 실행이 추가 입력을 기다리는 중입니다. 응답 텍스트 또는 /cancel을 보내주세요.")
+                return
+            if lowered.startswith("/") and lowered not in {"/cancel"}:
+                await message.reply_text("현재 실행이 추가 입력을 기다리는 중입니다. 응답 텍스트를 보내거나 /cancel을 입력하세요.")
+                return
+            pending.response_text = "cancel" if lowered in {"/cancel", "cancel", "취소"} else raw
+            pending.event.set()
+            await message.reply_text("응답을 받았습니다. 실행을 계속합니다.")
             return
 
         if await self._handle_pair_command(raw, chat_id, message, context):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 import json
 import os
+import re
 from dataclasses import dataclass
 import requests
 from typing import Any, Dict, List, Optional, Callable
@@ -41,7 +42,7 @@ class FlowMasterOrchestrator:
     """
     마스터 오케스트레이터:
     - 실행 루프 예산 관리
-    - 로그인 모달 복구/중단 판단
+    - 반복 액션/반복 화면 중단 판단
     - 반복 액션/반복 화면 감지
     """
 
@@ -121,29 +122,6 @@ class FlowMasterOrchestrator:
     ) -> MasterDirective:
         if self.stop_reason:
             return MasterDirective(kind="stop", reason=self.stop_reason)
-
-        if login_gate_visible and not requires_login_interaction:
-            if close_element_id is not None:
-                if self.consecutive_auto_recovery >= self._auto_recovery_limit:
-                    self.stop_reason = (
-                        "로그인 모달 닫기 복구가 반복되어 중단했습니다. "
-                        "직접 로그인하거나 목표를 로그인 제외 동선으로 바꿔주세요."
-                    )
-                    return MasterDirective(kind="stop", reason=self.stop_reason)
-                return MasterDirective(
-                    kind="recover_login",
-                    close_element_id=close_element_id,
-                    reason="로그인 모달 자동 복구",
-                )
-
-            if not has_login_test_data:
-                self.login_gate_llm_loop_count += 1
-                if self.login_gate_llm_loop_count >= self._login_gate_loop_limit:
-                    self.stop_reason = (
-                        "로그인 화면이 반복되지만 닫기 요소를 찾지 못했습니다. "
-                        "직접 로그인 후 다시 실행하거나 test_data에 계정을 넣어주세요."
-                    )
-                    return MasterDirective(kind="stop", reason=self.stop_reason)
 
         return MasterDirective(kind="run_llm")
 
@@ -236,6 +214,8 @@ class ActionExecResult:
     reason: str = ""
     state_change: Dict[str, Any] | None = None
     attempt_logs: List[Dict[str, Any]] | None = None
+    retry_path: List[str] | None = None
+    attempt_count: int = 0
     snapshot_id_used: str = ""
     ref_id_used: str = ""
 
@@ -262,11 +242,13 @@ class GoalDrivenAgent:
         session_id: str = "goal_driven",
         log_callback: Optional[Callable[[str], None]] = None,
         screenshot_callback: Optional[Callable[[str], None]] = None,
+        intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     ):
         self.mcp_host_url = mcp_host_url
         self.session_id = session_id
         self._log_callback = log_callback
         self._screenshot_callback = screenshot_callback
+        self._intervention_callback = intervention_callback
 
         # Vision LLM 클라이언트 초기화 (CLI에서 선택한 provider/model 우선)
         provider = (
@@ -298,6 +280,10 @@ class GoalDrivenAgent:
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
         self._last_exec_result: Optional[ActionExecResult] = None
+        self._active_goal_text: str = ""
+        self._ineffective_ref_counts: Dict[str, int] = {}
+        self._last_success_click_intent: str = ""
+        self._success_click_intent_streak: int = 0
 
         # 실행 기억(KB)
         self._memory_store = MemoryStore(enabled=True)
@@ -350,6 +336,169 @@ class GoalDrivenAgent:
             "×",
         )
         return any(h in text for h in hints)
+
+    @classmethod
+    def _contains_progress_cta_hint(cls, value: Optional[str]) -> bool:
+        text = cls._normalize_text(value)
+        if not text:
+            return False
+        hints = (
+            "조합",
+            "생성",
+            "실행",
+            "적용",
+            "완료",
+            "제출",
+            "submit",
+            "apply",
+            "generate",
+            "run",
+            "continue",
+            "next step",
+        )
+        return any(h in text for h in hints)
+
+    @classmethod
+    def _contains_context_shift_hint(cls, value: Optional[str]) -> bool:
+        text = cls._normalize_text(value)
+        if not text:
+            return False
+        hints = (
+            "다음",
+            "next",
+            "더보기",
+            "more",
+            "페이지",
+            "pagination",
+            "page ",
+            "tab",
+            "탭",
+            "다음 페이지",
+            "next page",
+            "›",
+            "»",
+        )
+        return any(h in text for h in hints)
+
+    @classmethod
+    def _contains_expand_hint(cls, value: Optional[str]) -> bool:
+        text = cls._normalize_text(value)
+        if not text:
+            return False
+        hints = (
+            "확장",
+            "펼치",
+            "더보기",
+            "show more",
+            "expand",
+        )
+        return any(h in text for h in hints)
+
+    @staticmethod
+    def _is_numeric_page_label(value: Optional[str]) -> bool:
+        text = (value or "").strip()
+        return bool(re.fullmatch(r"\d{1,3}", text))
+
+    @classmethod
+    def _contains_next_pagination_hint(cls, value: Optional[str]) -> bool:
+        text = cls._normalize_text(value)
+        if not text:
+            return False
+        next_hints = (
+            "다음",
+            "next",
+            "next page",
+            "다음 페이지",
+            "›",
+            "»",
+            ">",
+        )
+        return any(h in text for h in next_hints)
+
+    @classmethod
+    def _contains_logout_hint(cls, value: Optional[str]) -> bool:
+        text = cls._normalize_text(value)
+        if not text:
+            return False
+        hints = (
+            "로그아웃",
+            "log out",
+            "logout",
+            "sign out",
+            "signout",
+        )
+        return any(h in text for h in hints)
+
+    def _goal_allows_logout(self) -> bool:
+        text = self._active_goal_text or ""
+        if not text:
+            return False
+        return self._contains_logout_hint(text)
+
+    def _is_ref_temporarily_blocked(self, ref_id: Optional[str]) -> bool:
+        if not ref_id:
+            return False
+        return int(self._ineffective_ref_counts.get(ref_id, 0)) >= 2
+
+    def _track_ref_outcome(
+        self,
+        *,
+        ref_id: Optional[str],
+        reason_code: str,
+        success: bool,
+        changed: bool,
+    ) -> None:
+        if not ref_id:
+            return
+        if success and changed:
+            self._ineffective_ref_counts.pop(ref_id, None)
+            return
+        if reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target"}:
+            self._ineffective_ref_counts[ref_id] = int(self._ineffective_ref_counts.get(ref_id, 0)) + 1
+
+    @staticmethod
+    def _state_change_indicates_progress(state_change: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(state_change, dict):
+            return False
+        if bool(state_change.get("effective")):
+            return True
+        progress_keys = (
+            "url_changed",
+            "dom_changed",
+            "target_visibility_changed",
+            "target_value_changed",
+            "target_value_matches",
+            "target_focus_changed",
+            "focus_changed",
+            "counter_changed",
+            "number_tokens_changed",
+            "status_text_changed",
+            "list_count_changed",
+            "interactive_count_changed",
+            "auth_state_changed",
+            "text_digest_changed",
+            "evidence_changed",
+        )
+        return any(bool(state_change.get(key)) for key in progress_keys)
+
+    @classmethod
+    def _build_click_intent_key(
+        cls,
+        *,
+        element: Optional[DOMElement],
+        full_selector: Optional[str],
+        selector: Optional[str],
+    ) -> str:
+        if element is None:
+            return ""
+        text = cls._normalize_text(element.text)
+        aria = cls._normalize_text(element.aria_label)
+        role = cls._normalize_text(element.role)
+        tag = cls._normalize_text(element.tag)
+        sel = cls._normalize_text(full_selector or selector)
+        if len(sel) > 120:
+            sel = sel[:120]
+        return f"{tag}|{role}|{text}|{aria}|{sel}"
 
     @classmethod
     def _is_login_gate(cls, dom_elements: List[DOMElement]) -> bool:
@@ -432,6 +581,302 @@ class GoalDrivenAgent:
         has_pw = any(k in keys for k in {"password", "pw", "passwd"})
         return has_id and has_pw
 
+    def _request_user_intervention(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not self._intervention_callback:
+            return None
+        try:
+            resp = self._intervention_callback(payload)
+            return resp if isinstance(resp, dict) else None
+        except Exception as exc:
+            self._log(f"사용자 개입 콜백 오류: {exc}")
+            return None
+
+    @staticmethod
+    def _merge_test_data(
+        goal: TestGoal,
+        payload: Dict[str, Any],
+        *,
+        blocked_keys: set[str] | None = None,
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        blocked = blocked_keys or set()
+        if not isinstance(goal.test_data, dict):
+            goal.test_data = {}
+        for key, value in payload.items():
+            norm_key = str(key or "").strip()
+            if not norm_key or norm_key in blocked:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if not cleaned:
+                    continue
+                goal.test_data[norm_key] = cleaned
+                continue
+            goal.test_data[norm_key] = value
+
+    @staticmethod
+    def _to_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "f", "no", "n", "off"}:
+            return False
+        return default
+
+    def _request_goal_clarification(self, goal: TestGoal) -> bool:
+        text = f"{goal.name} {goal.description}".strip().lower()
+        if not text:
+            return False
+
+        ambiguous_tokens = {"안녕", "하이", "hello", "hi", "test", "테스트", "해봐", "해줘"}
+        tokens = {w.strip() for w in text.replace("/", " ").split() if w.strip()}
+        looks_ambiguous = len(text) < 8 or (tokens and tokens.issubset(ambiguous_tokens))
+
+        sensitive_hints = (
+            "로그인",
+            "회원가입",
+            "인증",
+            "결제",
+            "payment",
+            "purchase",
+            "구매",
+            "주문",
+            "예약",
+        )
+        needs_sensitive_data = any(h in text for h in sensitive_hints)
+
+        if not looks_ambiguous and not (needs_sensitive_data and not self._has_login_test_data(goal)):
+            return True
+
+        callback_payload = {
+            "kind": "clarification",
+            "goal_name": goal.name,
+            "goal_description": goal.description,
+            "question": (
+                "목표가 모호하거나 중요한 입력 정보가 부족합니다. "
+                "구체 목표와 필요한 입력(id/pw/email 등)을 제공해 주세요."
+            ),
+            "fields": ["goal_text", "username", "email", "password", "proceed"],
+        }
+        callback_resp = self._request_user_intervention(callback_payload)
+        if callback_resp is not None:
+            if str(callback_resp.get("action") or "").lower() in {"cancel", "deny", "no"}:
+                return False
+
+            goal_text = str(callback_resp.get("goal_text") or "").strip()
+            if goal_text:
+                goal.name = goal_text[:40]
+                goal.description = goal_text
+                goal.success_criteria = [goal_text]
+
+            username = str(callback_resp.get("username") or "").strip()
+            email = str(callback_resp.get("email") or "").strip()
+            password = str(callback_resp.get("password") or "").strip()
+            if username or email or password:
+                if not isinstance(goal.test_data, dict):
+                    goal.test_data = {}
+                if username:
+                    goal.test_data["username"] = username
+                if email:
+                    goal.test_data["email"] = email
+                if password:
+                    goal.test_data["password"] = password
+            self._merge_test_data(
+                goal,
+                callback_resp,
+                blocked_keys={"action", "proceed", "goal_text", "username", "email", "password"},
+            )
+            proceed = callback_resp.get("proceed")
+            if isinstance(proceed, bool):
+                return proceed
+            if isinstance(proceed, str):
+                return self._to_bool(proceed, default=True)
+            return True
+
+        self._log("🙋 사용자 개입 필요: 목표가 모호하거나 중요한 정보가 부족합니다.")
+        try:
+            refined = input("구체 목표를 입력하세요 (비우면 기존 목표 유지): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self._log("사용자 입력이 중단되었습니다.")
+            return False
+        if refined:
+            goal.name = refined[:40]
+            goal.description = refined
+            goal.success_criteria = [refined]
+
+        if needs_sensitive_data and not self._has_login_test_data(goal):
+            try:
+                login_id = input("아이디/이메일 (건너뛰려면 Enter): ").strip()
+                password = input("비밀번호 (건너뛰려면 Enter): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self._log("사용자 입력이 중단되었습니다.")
+                return False
+            if login_id or password:
+                if not isinstance(goal.test_data, dict):
+                    goal.test_data = {}
+                if login_id:
+                    goal.test_data["username"] = login_id
+                    if "@" in login_id and not str(goal.test_data.get("email") or "").strip():
+                        goal.test_data["email"] = login_id
+                if password:
+                    goal.test_data["password"] = password
+        return True
+
+    def _request_login_intervention(self, goal: TestGoal) -> bool:
+        self._log("🙋 사용자 개입 필요: 로그인/인증 화면이 감지되었습니다.")
+        callback_payload = {
+            "kind": "auth",
+            "goal_name": goal.name,
+            "goal_description": goal.description,
+            "question": (
+                "로그인/인증 정보가 필요합니다. "
+                "진행 여부와 계정 정보(username/email/password) 또는 수동 로그인 완료 여부를 알려주세요."
+            ),
+            "fields": ["proceed", "username", "email", "password", "manual_done"],
+        }
+        callback_resp = self._request_user_intervention(callback_payload)
+        if callback_resp is not None:
+            if str(callback_resp.get("action") or "").lower() in {"cancel", "deny", "no"}:
+                self._log("로그인 개입이 취소되었습니다.")
+                return False
+            if bool(callback_resp.get("manual_done")):
+                self._log("사용자가 수동 로그인 완료를 전달했습니다.")
+                return True
+            auth_mode = str(callback_resp.get("auth_mode") or "").strip().lower()
+            username = str(callback_resp.get("username") or "").strip()
+            email = str(callback_resp.get("email") or "").strip()
+            password = str(callback_resp.get("password") or "").strip()
+            login_id = username or email
+            department = str(callback_resp.get("department") or "").strip()
+            grade_year = str(callback_resp.get("grade_year") or "").strip()
+            return_credentials = self._to_bool(callback_resp.get("return_credentials"), default=False)
+
+            if auth_mode in {"signup", "register"}:
+                if not login_id:
+                    suffix = int(time.time()) % 100000
+                    login_id = f"gaia_user_{suffix:05d}"
+                if not password:
+                    suffix = int(time.time()) % 100000
+                    password = f"Gaia!{suffix:05d}"
+                if "@" in login_id:
+                    email = email or login_id
+                    username = username or login_id.split("@")[0]
+                elif not email:
+                    email = f"{login_id}@gaia.local"
+                if not isinstance(goal.test_data, dict):
+                    goal.test_data = {}
+                goal.test_data["auth_mode"] = "signup"
+                goal.test_data["username"] = username or login_id
+                goal.test_data["email"] = email
+                goal.test_data["password"] = password
+                if department:
+                    goal.test_data["department"] = department
+                if grade_year:
+                    goal.test_data["grade_year"] = grade_year
+                goal.test_data["return_credentials"] = return_credentials
+                self._merge_test_data(
+                    goal,
+                    callback_resp,
+                    blocked_keys={
+                        "action",
+                        "proceed",
+                        "auth_mode",
+                        "manual_done",
+                        "username",
+                        "email",
+                        "password",
+                        "department",
+                        "grade_year",
+                        "return_credentials",
+                    },
+                )
+                self._log("사용자 요청에 따라 회원가입 모드로 진행합니다.")
+                if return_credentials:
+                    self._log(
+                        f"회원가입에 사용할 계정: username={goal.test_data.get('username')} "
+                        f"email={goal.test_data.get('email')} password={goal.test_data.get('password')}"
+                    )
+                return True
+
+            if login_id and password:
+                if not isinstance(goal.test_data, dict):
+                    goal.test_data = {}
+                goal.test_data["username"] = login_id
+                if email or ("@" in login_id and not str(goal.test_data.get("email") or "").strip()):
+                    goal.test_data["email"] = email or login_id
+                goal.test_data["password"] = password
+                self._merge_test_data(
+                    goal,
+                    callback_resp,
+                    blocked_keys={
+                        "action",
+                        "proceed",
+                        "auth_mode",
+                        "manual_done",
+                        "username",
+                        "email",
+                        "password",
+                        "department",
+                        "grade_year",
+                        "return_credentials",
+                    },
+                )
+                self._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
+                return True
+            self._log("로그인 정보가 충분하지 않습니다.")
+            return False
+
+        try:
+            answer = input("로그인을 진행할까요? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self._log("사용자 입력이 중단되었습니다.")
+            return False
+
+        if answer in {"n", "no"}:
+            self._log("로그인 개입이 취소되었습니다.")
+            return False
+
+        try:
+            login_id = input("아이디/이메일 (비우면 브라우저에서 수동 로그인): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self._log("사용자 입력이 중단되었습니다.")
+            return False
+
+        if not login_id:
+            self._log("브라우저에서 직접 로그인 후 Enter를 눌러 계속하세요.")
+            try:
+                input("로그인 완료 후 Enter: ")
+            except (EOFError, KeyboardInterrupt):
+                self._log("사용자 입력이 중단되었습니다.")
+                return False
+            return True
+
+        try:
+            password = input("비밀번호: ")
+        except (EOFError, KeyboardInterrupt):
+            self._log("사용자 입력이 중단되었습니다.")
+            return False
+
+        if not str(password or "").strip():
+            self._log("비밀번호가 비어 있어 진행을 중단합니다.")
+            return False
+
+        if not isinstance(goal.test_data, dict):
+            goal.test_data = {}
+        goal.test_data["username"] = login_id
+        if "@" in login_id and not str(goal.test_data.get("email") or "").strip():
+            goal.test_data["email"] = login_id
+        goal.test_data["password"] = password
+        self._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
+        return True
+
     @staticmethod
     def _decision_signature(decision: ActionDecision) -> str:
         element = decision.element_id if decision.element_id is not None else -1
@@ -443,6 +888,75 @@ class GoalDrivenAgent:
         reason = cls._normalize_text(decision.reasoning)
         close_hints = ("닫", "close", "x 버튼", "모달", "popup", "팝업")
         return decision.action.value in {"click", "wait"} and any(h in reason for h in close_hints)
+
+    def _pick_context_shift_element(
+        self,
+        dom_elements: List[DOMElement],
+        used_element_ids: set[int],
+    ) -> Optional[tuple[int, str]]:
+        candidates: List[tuple[int, int, str]] = []
+        for el in dom_elements:
+            if el.id in used_element_ids:
+                continue
+            selector = self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id) or ""
+            text = str(el.text or "").strip()
+            aria_label = str(el.aria_label or "").strip()
+            title = str(getattr(el, "title", None) or "").strip()
+            href = str(el.href or "").strip()
+            fields = [
+                text,
+                aria_label,
+                el.placeholder,
+                title,
+                selector,
+                href,
+            ]
+            score = 0
+            if any(self._contains_context_shift_hint(f) for f in fields):
+                score += 5
+            if any(self._contains_expand_hint(f) for f in fields):
+                score += 8
+            if any(self._contains_next_pagination_hint(f) for f in fields):
+                score += 9
+            if any(self._contains_progress_cta_hint(f) for f in fields):
+                score += 8
+            role = self._normalize_text(el.role)
+            tag = self._normalize_text(el.tag)
+            if role in {"tab", "link", "button"}:
+                score += 2
+            if tag in {"a", "button"}:
+                score += 1
+
+            normalized_selector = self._normalize_text(selector)
+            if any(k in normalized_selector for k in ("pagination", "pager", "page", "tab")):
+                score += 3
+            if any(k in normalized_selector for k in ("next", "다음", "pager-next", "page-next")):
+                score += 6
+            if any(k in normalized_selector for k in ("prev", "previous", "back", "이전")):
+                score -= 8
+            if any(k in normalized_selector for k in ("active", "current", "selected")):
+                score -= 4
+
+            is_numeric_page = (
+                self._is_numeric_page_label(text)
+                or self._is_numeric_page_label(aria_label)
+                or self._is_numeric_page_label(title)
+            )
+            if is_numeric_page:
+                score -= 7
+
+            if score <= 0:
+                continue
+
+            label = (el.text or el.aria_label or getattr(el, "title", None) or selector or f"element:{el.id}")
+            reason = f"반복 무효 액션 탈출을 위해 컨텍스트 전환 요소 시도: {str(label)[:60]}"
+            candidates.append((score, el.id, reason))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, element_id, reason = candidates[0]
+        return element_id, reason
 
     @staticmethod
     def _fatal_llm_reason(raw_reason: str) -> Optional[str]:
@@ -460,6 +974,11 @@ class GoalDrivenAgent:
             return "LLM 호출이 중단되었습니다: 인증 오류(401/Unauthorized)."
         if "forbidden" in text or "403" in text:
             return "LLM 호출이 중단되었습니다: 권한 오류(403 Forbidden)."
+        if "empty_response_from_codex_exec" in text or "empty_response_from_model" in text:
+            return (
+                "LLM 호출이 중단되었습니다: 모델 응답이 비어 있습니다. "
+                "Codex CLI 버전/로그인 상태를 확인하고 다시 시도하세요."
+            )
         if "failed to read prompt from stdin" in text or "not valid utf-8" in text:
             return (
                 "LLM 호출이 중단되었습니다: Codex CLI 입력 인코딩(UTF-8) 오류입니다. "
@@ -748,10 +1267,26 @@ class GoalDrivenAgent:
         self._action_history = []
         self._action_feedback = []
         steps: List[StepResult] = []
+        self._active_goal_text = f"{goal.name} {goal.description}".strip().lower()
+        self._ineffective_ref_counts = {}
+        self._last_success_click_intent = ""
+        self._success_click_intent_streak = 0
 
         self._log(f"🎯 목표 시작: {goal.name}")
         self._log(f"   설명: {goal.description}")
         self._log(f"   성공 조건: {goal.success_criteria}")
+
+        if not self._request_goal_clarification(goal):
+            return self._build_failure_result(
+                goal=goal,
+                steps=[],
+                step_count=0,
+                start_time=start_time,
+                reason=(
+                    "중요 정보/목표 명확화가 필요하지만 사용자 입력이 제공되지 않아 중단했습니다. "
+                    "목표를 더 구체화하거나 test_data를 함께 제공해 주세요."
+                ),
+            )
 
         self._memory_domain = self._extract_domain(goal.start_url)
         self._memory_episode_id = None
@@ -780,6 +1315,9 @@ class GoalDrivenAgent:
         orchestrator = FlowMasterOrchestrator(goal=goal, max_steps=goal.max_steps)
         sub_agent = StepSubAgent(self)
         ineffective_action_streak = 0
+        login_intervention_asked = False
+        force_context_shift = False
+        context_shift_used_elements: set[int] = set()
 
         while orchestrator.can_continue():
             step_count = orchestrator.begin_step()
@@ -820,22 +1358,35 @@ class GoalDrivenAgent:
             login_gate_visible = self._is_login_gate(dom_elements)
             if login_gate_visible:
                 self._log("🔐 로그인/인증 화면이 감지되었습니다.")
+                if not login_intervention_asked:
+                    has_login_test_data = self._has_login_test_data(goal)
+                    if not has_login_test_data:
+                        if not self._request_login_intervention(goal):
+                            return self._build_failure_result(
+                                goal=goal,
+                                steps=steps,
+                                step_count=step_count,
+                                start_time=start_time,
+                                reason=(
+                                    "로그인 화면에서 사용자 개입이 필요하지만 입력이 제공되지 않아 중단했습니다. "
+                                    "다시 실행 후 로그인 진행 여부/계정 정보를 입력해 주세요."
+                                ),
+                            )
+                        has_login_test_data = self._has_login_test_data(goal)
+                    else:
+                        self._log("🔁 기존 로그인/회원가입 입력 데이터를 재사용합니다.")
+                    login_intervention_asked = True
+            else:
+                login_intervention_asked = False
 
             # 2. 스크린샷 캡처
             screenshot = self._capture_screenshot()
-
-            close_element_id: Optional[int] = None
-            if login_gate_visible and not requires_login_interaction:
-                close_element_id = self._pick_login_modal_close_element(
-                    dom_elements,
-                    self._element_selectors,
-                )
 
             directive = orchestrator.next_directive(
                 login_gate_visible=login_gate_visible,
                 requires_login_interaction=requires_login_interaction,
                 has_login_test_data=has_login_test_data,
-                close_element_id=close_element_id,
+                close_element_id=None,
             )
 
             if directive.kind == "stop":
@@ -847,75 +1398,66 @@ class GoalDrivenAgent:
                     reason=directive.reason or "마스터 오케스트레이터가 실행을 중단했습니다.",
                 )
 
-            if directive.kind == "recover_login" and directive.close_element_id is not None:
-                auto_decision = ActionDecision(
-                    action=ActionType.CLICK,
-                    element_id=directive.close_element_id,
-                    reasoning="로그인 모달 닫기 버튼 자동 감지",
-                    confidence=0.95,
-                )
-                self._log("🧭 자동 복구: 로그인 모달 닫기 버튼을 먼저 클릭합니다.")
-                step_result, success, error = sub_agent.run_step(
-                    step_number=step_count,
-                    step_start=step_start,
-                    decision=auto_decision,
-                    dom_elements=dom_elements,
-                )
-                steps.append(step_result)
-                if success:
-                    self._action_history.append(
-                        f"Step {step_count}: {auto_decision.action.value} - {auto_decision.reasoning}"
+            if force_context_shift:
+                picked = self._pick_context_shift_element(dom_elements, context_shift_used_elements)
+                if picked is not None:
+                    picked_id, picked_reason = picked
+                    context_shift_used_elements.add(picked_id)
+                    shift_decision = ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=picked_id,
+                        reasoning=picked_reason,
+                        confidence=0.9,
                     )
-                else:
-                    self._log(f"⚠️ 자동 복구 실패: {error}")
-                post_dom = self._analyze_dom()
-                changed = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
-                self._record_action_feedback(
-                    step_number=step_count,
-                    decision=auto_decision,
-                    success=success,
-                    changed=changed,
-                    error=error,
-                    reason_code=self._last_exec_result.reason_code if self._last_exec_result else None,
-                    state_change=self._last_exec_result.state_change if self._last_exec_result else None,
-                )
-                self._record_action_memory(
-                    goal=goal,
-                    step_number=step_count,
-                    decision=auto_decision,
-                    success=success,
-                    changed=changed,
-                    error=error,
-                )
-                if not success or not changed:
-                    reason_code = self._last_exec_result.reason_code if self._last_exec_result else "unknown"
-                    self._record_recovery_hints(goal, reason_code)
-                if auto_decision.action in {ActionType.CLICK, ActionType.PRESS} and success and not changed:
-                    ineffective_action_streak += 1
-                else:
-                    ineffective_action_streak = 0
-                orchestrator.record_auto_recovery(success=success)
-                if orchestrator.stop_reason:
-                    return self._build_failure_result(
+                    self._log("🧭 무효 반복 감지: 페이지/섹션 전환을 우선 시도합니다.")
+                    step_result, success, error = sub_agent.run_step(
+                        step_number=step_count,
+                        step_start=step_start,
+                        decision=shift_decision,
+                        dom_elements=dom_elements,
+                    )
+                    steps.append(step_result)
+                    if success:
+                        self._action_history.append(
+                            f"Step {step_count}: {shift_decision.action.value} - {shift_decision.reasoning}"
+                        )
+                    else:
+                        self._log(f"⚠️ 컨텍스트 전환 실패: {error}")
+
+                    post_dom = self._analyze_dom()
+                    changed = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
+                    self._record_action_feedback(
+                        step_number=step_count,
+                        decision=shift_decision,
+                        success=success,
+                        changed=changed,
+                        error=error,
+                        reason_code=self._last_exec_result.reason_code if self._last_exec_result else None,
+                        state_change=self._last_exec_result.state_change if self._last_exec_result else None,
+                    )
+                    self._record_action_memory(
                         goal=goal,
-                        steps=steps,
-                        step_count=step_count,
-                        start_time=start_time,
-                        reason=orchestrator.stop_reason,
+                        step_number=step_count,
+                        decision=shift_decision,
+                        success=success,
+                        changed=changed,
+                        error=error,
                     )
-                if ineffective_action_streak >= 4:
-                    return self._build_failure_result(
-                        goal=goal,
-                        steps=steps,
-                        step_count=step_count,
-                        start_time=start_time,
-                        reason=(
-                            "명령은 성공으로 반환되지만 화면 변화가 반복적으로 없어 중단했습니다. "
-                            "선택자 품질 또는 모달 구조를 확인하세요."
-                        ),
-                    )
-                time.sleep(0.4)
-                continue
+
+                    if success and changed:
+                        ineffective_action_streak = 0
+                        force_context_shift = False
+                        context_shift_used_elements.clear()
+                        orchestrator.same_dom_count = 0
+                    else:
+                        if len(context_shift_used_elements) > 20:
+                            context_shift_used_elements.clear()
+                        force_context_shift = True
+                    time.sleep(0.4)
+                    continue
+                else:
+                    self._log("🧭 컨텍스트 전환 후보를 찾지 못해 기본 LLM 흐름으로 계속 진행합니다.")
+                    force_context_shift = False
 
             # 3. LLM에게 다음 액션 결정 요청
             memory_context = self._build_memory_context(goal)
@@ -1011,6 +1553,24 @@ class GoalDrivenAgent:
                 )
 
             # 5. 액션 실행
+            selected_element = None
+            if decision.element_id is not None:
+                selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+            selected_fields = []
+            if selected_element is not None:
+                selected_fields = [
+                    selected_element.text,
+                    selected_element.aria_label,
+                    getattr(selected_element, "title", None),
+                    self._element_full_selectors.get(selected_element.id),
+                    self._element_selectors.get(selected_element.id),
+                ]
+            click_intent_key = self._build_click_intent_key(
+                element=selected_element,
+                full_selector=self._element_full_selectors.get(selected_element.id) if selected_element else None,
+                selector=self._element_selectors.get(selected_element.id) if selected_element else None,
+            )
+
             step_result, success, error = sub_agent.run_step(
                 step_number=step_count,
                 step_start=step_start,
@@ -1027,7 +1587,10 @@ class GoalDrivenAgent:
                 self._log(f"⚠️ 액션 실패: {error}")
 
             post_dom = self._analyze_dom()
-            changed = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
+            state_change = self._last_exec_result.state_change if self._last_exec_result else None
+            changed_by_state = self._state_change_indicates_progress(state_change)
+            changed_by_dom = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
+            changed = bool(changed_by_state or changed_by_dom)
             self._record_action_feedback(
                 step_number=step_count,
                 decision=decision,
@@ -1035,7 +1598,7 @@ class GoalDrivenAgent:
                 changed=changed,
                 error=error,
                 reason_code=self._last_exec_result.reason_code if self._last_exec_result else None,
-                state_change=self._last_exec_result.state_change if self._last_exec_result else None,
+                state_change=state_change,
             )
             self._record_action_memory(
                 goal=goal,
@@ -1045,27 +1608,74 @@ class GoalDrivenAgent:
                 changed=changed,
                 error=error,
             )
+            reason_code = self._last_exec_result.reason_code if self._last_exec_result else "unknown"
+            ref_used = self._last_exec_result.ref_id_used if self._last_exec_result else ""
+            self._track_ref_outcome(
+                ref_id=ref_used,
+                reason_code=reason_code,
+                success=success,
+                changed=changed,
+            )
             if not success or not changed:
-                reason_code = self._last_exec_result.reason_code if self._last_exec_result else "unknown"
                 self._record_recovery_hints(goal, reason_code)
-
-            if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.NAVIGATE}:
-                if success and not changed:
-                    ineffective_action_streak += 1
-                else:
+                if reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
+                    ActionType.CLICK,
+                    ActionType.FILL,
+                    ActionType.PRESS,
+                }:
+                    force_context_shift = True
+                if reason_code in {"snapshot_not_found", "stale_snapshot", "ref_required", "ambiguous_ref_target", "not_found"}:
+                    self._log("♻️ snapshot/ref 갱신이 필요해 DOM을 재수집합니다.")
+                    _ = self._analyze_dom(url=current_url)
                     ineffective_action_streak = 0
+                    force_context_shift = False
+                    time.sleep(0.25)
+                    continue
+                if reason_code in {"request_exception", "http_5xx"}:
+                    attempt_count = self._last_exec_result.attempt_count if self._last_exec_result else 0
+                    backoff = min(2.5, 0.6 + (0.25 * max(0, attempt_count)))
+                    self._log(
+                        f"🌐 일시적 통신 오류({reason_code}) 감지: {backoff:.2f}s 대기 후 재시도합니다."
+                    )
+                    _ = self._analyze_dom(url=current_url)
+                    ineffective_action_streak = 0
+                    force_context_shift = False
+                    time.sleep(backoff)
+                    continue
+
+            if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.NAVIGATE, ActionType.SCROLL}:
+                if success and changed:
+                    ineffective_action_streak = 0
+                else:
+                    ineffective_action_streak += 1
             else:
                 ineffective_action_streak = 0
 
-            if ineffective_action_streak >= 4:
+            if decision.action == ActionType.CLICK and success and changed:
+                if click_intent_key and click_intent_key == self._last_success_click_intent:
+                    self._success_click_intent_streak += 1
+                else:
+                    self._last_success_click_intent = click_intent_key
+                    self._success_click_intent_streak = 1 if click_intent_key else 0
+            elif decision.action in {ActionType.CLICK, ActionType.SCROLL, ActionType.NAVIGATE, ActionType.PRESS}:
+                self._last_success_click_intent = ""
+                self._success_click_intent_streak = 0
+
+            if self._success_click_intent_streak >= 4:
+                self._log("🧭 동일 클릭 의도 반복 감지: 단계 전환 CTA 탐색으로 전환합니다.")
+                force_context_shift = True
+
+            if ineffective_action_streak >= 3:
+                force_context_shift = True
+            if ineffective_action_streak >= 8:
                 return self._build_failure_result(
                     goal=goal,
                     steps=steps,
                     step_count=step_count,
                     start_time=start_time,
                     reason=(
-                        "같은 유형의 무효 액션이 반복되어 중단했습니다. "
-                        "LLM 판단은 내려지고 있으나 실제 UI 상태 변화가 없습니다."
+                        "무효 액션이 장시간 반복되어 중단했습니다. "
+                        "컨텍스트 전환(페이지/탭/필터) 시도 후에도 상태 변화가 없습니다."
                     ),
                 )
 
@@ -1090,7 +1700,7 @@ class GoalDrivenAgent:
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
                 json={
-                    "action": "snapshot_page",
+                    "action": "browser_snapshot",
                     "params": {
                         "session_id": self.session_id,
                         "url": url or "",
@@ -1258,6 +1868,15 @@ class GoalDrivenAgent:
 6. **무효 액션 반복 금지**
    - 최근 실행 피드백에서 changed=false 또는 success=false인 액션/요소 조합은 반복하지 마세요.
    - 같은 요소를 2회 연속 클릭했는데 changed=false라면 다른 요소/전략을 선택하세요.
+7. **컨텍스트 전환 규칙**
+   - 같은 의도가 2회 이상 changed=false이면, 다음/페이지네이션/탭/필터/정렬 전환으로 화면 컨텍스트를 바꾼 뒤 다시 시도하세요.
+   - 목표 CTA(조합/생성/실행/적용)가 안 보일 때 `확장/더보기/show more/expand` 버튼이 보이면 스크롤보다 먼저 클릭하세요.
+   - 목록형 페이지에서는 동일 카드 반복 클릭보다 다른 카드/다음 페이지 이동을 우선하세요.
+   - 페이지네이션에서 "다음/next/›/»"가 보이면 숫자 페이지 버튼(1,2,3,4...)보다 우선 선택하세요.
+   - 숫자 페이지 버튼만 반복 클릭하지 말고, 진행 정체 시 반드시 "다음"으로 넘어가세요.
+8. **단계 전환 규칙(강제)**
+   - 동일한 클릭 의도가 여러 번 연속 성공해도 목표가 완료되지 않으면, 다음 액션은 단계 전환 CTA(조합/생성/실행/적용/제출/continue/run 등)를 우선 선택하세요.
+   - 해당 CTA가 보이지 않으면 스크롤/탭 전환/다음 페이지 이동으로 CTA를 먼저 찾으세요.
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
@@ -1324,6 +1943,19 @@ JSON 응답:"""
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+        if not text:
+            return ActionDecision(
+                action=ActionType.WAIT,
+                reasoning="LLM 오류: empty_response_from_model",
+                confidence=0.0,
+            )
+
+        # Codex CLI 로그가 앞에 붙을 수 있어 JSON 부분만 추출
+        if not text.startswith("{"):
+            first = text.find("{")
+            last = text.rfind("}")
+            if first != -1 and last != -1 and last > first:
+                text = text[first:last + 1].strip()
 
         try:
             data = json.loads(text)
@@ -1359,6 +1991,13 @@ JSON 응답:"""
         selector = None
         full_selector = None
         ref_id = None
+        requires_ref = decision.action in {
+            ActionType.CLICK,
+            ActionType.FILL,
+            ActionType.PRESS,
+            ActionType.HOVER,
+            ActionType.SCROLL,
+        }
         if decision.element_id is not None:
             selector = self._element_selectors.get(decision.element_id)
             full_selector = self._element_full_selectors.get(decision.element_id)
@@ -1371,6 +2010,28 @@ JSON 응답:"""
                     reason=f"요소 ID {decision.element_id}에 대한 ref/selector를 찾을 수 없음",
                 )
                 return False, f"요소 ID {decision.element_id}에 대한 ref/selector를 찾을 수 없음"
+            if requires_ref and (not ref_id or not self._active_snapshot_id):
+                _ = self._analyze_dom()
+                selector = self._element_selectors.get(decision.element_id)
+                full_selector = self._element_full_selectors.get(decision.element_id)
+                ref_id = self._element_ref_ids.get(decision.element_id)
+                if not ref_id or not self._active_snapshot_id:
+                    self._last_exec_result = ActionExecResult(
+                        success=False,
+                        effective=False,
+                        reason_code="ref_required",
+                        reason=(
+                            "Ref-only policy: 선택된 요소의 ref_id/snapshot_id가 없습니다. "
+                            "최신 snapshot 재수집 후 다시 결정해야 합니다."
+                        ),
+                    )
+                    return False, self._last_exec_result.as_error_message()
+        selected_element = None
+        if decision.element_id is not None:
+            try:
+                selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+            except Exception:
+                selected_element = None
 
         try:
             if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.HOVER} and decision.element_id is None:
@@ -1381,6 +2042,34 @@ JSON 응답:"""
                     reason=f"{decision.action.value} 액션에는 element_id가 필요함",
                 )
                 return False, f"{decision.action.value} 액션에는 element_id가 필요함"
+            if decision.action == ActionType.CLICK and selected_element is not None and not self._goal_allows_logout():
+                logout_fields = [
+                    selected_element.text,
+                    selected_element.aria_label,
+                    selected_element.title,
+                    selector,
+                    full_selector,
+                ]
+                if any(self._contains_logout_hint(field) for field in logout_fields):
+                    self._last_exec_result = ActionExecResult(
+                        success=False,
+                        effective=False,
+                        reason_code="blocked_logout_action",
+                        reason="목표와 무관한 로그아웃 액션을 차단했습니다.",
+                    )
+                    return False, self._last_exec_result.as_error_message()
+            if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS} and self._is_ref_temporarily_blocked(ref_id):
+                self._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="blocked_ref_no_progress",
+                    reason=(
+                        "같은 ref에서 상태 변화 없는 실패가 반복되어 임시 차단했습니다. "
+                        "다른 요소/페이지 전환을 시도합니다."
+                    ),
+                    ref_id_used=ref_id or "",
+                )
+                return False, self._last_exec_result.as_error_message()
 
             if decision.action == ActionType.CLICK:
                 self._last_exec_result = self._execute_action(
@@ -1422,7 +2111,14 @@ JSON 응답:"""
                 return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.SCROLL:
-                self._last_exec_result = self._execute_action("scroll", value="down")
+                scroll_value = decision.value or "down"
+                self._last_exec_result = self._execute_action(
+                    "scroll",
+                    selector=selector,
+                    full_selector=full_selector,
+                    ref_id=ref_id,
+                    value=scroll_value,
+                )
                 return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.WAIT:
@@ -1480,8 +2176,26 @@ JSON 응답:"""
         use_ref_protocol = bool(
             ref_id
             and self._active_snapshot_id
-            and action in {"click", "fill", "press", "hover"}
+            and action in {"click", "fill", "press", "hover", "scroll"}
         )
+        is_element_action = action in {
+            "click",
+            "fill",
+            "press",
+            "hover",
+            "scroll",
+            "select",
+            "dragAndDrop",
+            "dragSlider",
+        }
+        if is_element_action and not use_ref_protocol:
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="ref_required",
+                reason="Ref-only policy: snapshot_id + ref_id가 필요합니다.",
+            )
+
         if use_ref_protocol:
             params = {
                 "session_id": self.session_id,
@@ -1494,7 +2208,7 @@ JSON 응답:"""
             }
             if value is not None:
                 params["value"] = value
-            request_action = "execute_ref_action"
+            request_action = "browser_act"
         else:
             params = {
                 "session_id": self.session_id,
@@ -1504,7 +2218,9 @@ JSON 응답:"""
             }
             if value is not None:
                 params["value"] = value
-            request_action = "execute_action"
+            if action == "goto" and url:
+                params["value"] = url
+            request_action = "browser_act"
 
         try:
             response = requests.post(
@@ -1521,20 +2237,43 @@ JSON 응답:"""
                 data = {"error": response.text or "invalid_json_response"}
 
             if response.status_code >= 400:
-                detail = str(data.get("detail") or data.get("error") or response.reason or "HTTP error")
+                status_family = "http_4xx" if 400 <= response.status_code < 500 else "http_5xx"
+                detail_raw = data.get("detail")
+                if isinstance(detail_raw, dict):
+                    reason_code = str(detail_raw.get("reason_code") or status_family)
+                    detail = str(
+                        detail_raw.get("message")
+                        or detail_raw.get("detail")
+                        or detail_raw
+                    )
+                else:
+                    reason_code = status_family
+                    detail = str(data.get("detail") or data.get("error") or response.reason or "HTTP error")
+                attempt_logs = data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else []
+                retry_path = data.get("retry_path") if isinstance(data.get("retry_path"), list) else []
+                attempt_count = int(data.get("attempt_count") or len(attempt_logs) or 0)
                 return ActionExecResult(
                     success=False,
                     effective=False,
-                    reason_code=f"http_{response.status_code}",
+                    reason_code=reason_code,
                     reason=detail,
                     state_change={},
-                    attempt_logs=[],
+                    attempt_logs=attempt_logs,
+                    retry_path=retry_path,
+                    attempt_count=attempt_count,
                     snapshot_id_used=str(data.get("snapshot_id_used") or ""),
                     ref_id_used=str(data.get("ref_id_used") or ""),
                 )
 
             is_success = bool(data.get("success"))
             is_effective = bool(data.get("effective", True))
+            attempt_logs = data.get("attempt_logs")
+            retry_path = data.get("retry_path")
+            attempt_count = int(
+                data.get("attempt_count")
+                or (len(attempt_logs) if isinstance(attempt_logs, list) else 0)
+                or 0
+            )
             if is_success and is_effective:
                 return ActionExecResult(
                     success=True,
@@ -1542,14 +2281,21 @@ JSON 응답:"""
                     reason_code="ok",
                     reason="ok",
                     state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
-                    attempt_logs=data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else [],
+                    attempt_logs=attempt_logs if isinstance(attempt_logs, list) else [],
+                    retry_path=retry_path if isinstance(retry_path, list) else [],
+                    attempt_count=attempt_count,
                     snapshot_id_used=str(data.get("snapshot_id_used") or ""),
                     ref_id_used=str(data.get("ref_id_used") or ""),
                 )
 
             reason_code = str(data.get("reason_code") or data.get("error") or "unknown_error")
             reason = str(data.get("reason") or data.get("message") or data.get("detail") or "Unknown error")
-            attempt_logs = data.get("attempt_logs")
+            if reason_code in {"snapshot_not_found", "stale_snapshot", "ambiguous_ref_target"}:
+                reason = (
+                    f"{reason} | 최신 snapshot/ref로 다시 시도해야 합니다."
+                    if reason
+                    else "최신 snapshot/ref로 다시 시도해야 합니다."
+                )
             if isinstance(attempt_logs, list) and attempt_logs:
                 reason = f"{reason} (attempts={len(attempt_logs)})"
             return ActionExecResult(
@@ -1559,6 +2305,8 @@ JSON 응답:"""
                 reason=reason,
                 state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
                 attempt_logs=attempt_logs if isinstance(attempt_logs, list) else [],
+                retry_path=retry_path if isinstance(retry_path, list) else [],
+                attempt_count=attempt_count,
                 snapshot_id_used=str(data.get("snapshot_id_used") or ""),
                 ref_id_used=str(data.get("ref_id_used") or ""),
             )

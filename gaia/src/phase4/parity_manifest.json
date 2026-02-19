@@ -1,0 +1,29 @@
+{
+  "version": "openclaw-browser-parity-v1",
+  "source_policy": "hybrid_official_docs_plus_observable_public_behavior",
+  "required_gate": "all_entries_implemented_and_tested",
+  "entries": [
+    {"id": "browser_start", "source": "docs", "gaia_action": "browser_start", "status": "implemented", "tested": false, "test_id": "proto_browser_start"},
+    {"id": "browser_install", "source": "docs", "gaia_action": "browser_install", "status": "implemented", "tested": false, "test_id": "proto_browser_install"},
+    {"id": "browser_profiles", "source": "docs", "gaia_action": "browser_profiles", "status": "implemented", "tested": false, "test_id": "proto_browser_profiles"},
+    {"id": "browser_tabs", "source": "docs", "gaia_action": "browser_tabs", "status": "implemented", "tested": false, "test_id": "proto_browser_tabs"},
+    {"id": "browser_snapshot", "source": "docs", "gaia_action": "browser_snapshot", "status": "implemented", "tested": false, "test_id": "proto_browser_snapshot"},
+    {"id": "browser_act", "source": "docs", "gaia_action": "browser_act", "status": "implemented", "tested": false, "test_id": "proto_browser_act"},
+    {"id": "browser_wait", "source": "docs", "gaia_action": "browser_wait", "status": "implemented", "tested": false, "test_id": "proto_browser_wait"},
+    {"id": "browser_console_get", "source": "docs", "gaia_action": "browser_console_get", "status": "implemented", "tested": false, "test_id": "proto_browser_console_get"},
+    {"id": "browser_errors_get", "source": "docs", "gaia_action": "browser_errors_get", "status": "implemented", "tested": false, "test_id": "proto_browser_errors_get"},
+    {"id": "browser_requests_get", "source": "docs", "gaia_action": "browser_requests_get", "status": "implemented", "tested": false, "test_id": "proto_browser_requests_get"},
+    {"id": "browser_response_body", "source": "docs", "gaia_action": "browser_response_body", "status": "implemented", "tested": false, "test_id": "proto_browser_response_body"},
+    {"id": "browser_trace_start", "source": "docs", "gaia_action": "browser_trace_start", "status": "implemented", "tested": false, "test_id": "proto_browser_trace_start"},
+    {"id": "browser_trace_stop", "source": "docs", "gaia_action": "browser_trace_stop", "status": "implemented", "tested": false, "test_id": "proto_browser_trace_stop"},
+    {"id": "browser_highlight", "source": "docs", "gaia_action": "browser_highlight", "status": "implemented", "tested": false, "test_id": "proto_browser_highlight"},
+    {"id": "browser_dialog_arm", "source": "docs", "gaia_action": "browser_dialog_arm", "status": "implemented", "tested": false, "test_id": "proto_browser_dialog_arm"},
+    {"id": "browser_file_chooser_arm", "source": "docs", "gaia_action": "browser_file_chooser_arm", "status": "implemented", "tested": false, "test_id": "proto_browser_file_chooser_arm"},
+    {"id": "browser_download_wait", "source": "docs", "gaia_action": "browser_download_wait", "status": "implemented", "tested": false, "test_id": "proto_browser_download_wait"},
+    {"id": "browser_state", "source": "docs", "gaia_action": "browser_state", "status": "implemented", "tested": false, "test_id": "proto_browser_state"},
+    {"id": "browser_env", "source": "docs", "gaia_action": "browser_env", "status": "implemented", "tested": false, "test_id": "proto_browser_env"},
+    {"id": "browser_close", "source": "docs", "gaia_action": "browser_close", "status": "implemented", "tested": false, "test_id": "proto_browser_close"},
+    {"id": "ref_only_policy", "source": "decision", "gaia_action": "execute_action_selector_block", "status": "implemented", "tested": false, "test_id": "policy_ref_only"},
+    {"id": "reason_codes", "source": "decision", "gaia_action": "reason_code_schema", "status": "implemented", "tested": false, "test_id": "schema_reason_codes"}
+  ]
+}
