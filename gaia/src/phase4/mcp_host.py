@@ -832,6 +832,23 @@ def normalize_url(url: str) -> str:
 
 
 # --- Assertion Helper Functions ---
+async def _resolve_single_locator(page: Page, selector: str, timeout_ms: int = 1000):
+    """selector가 정확히 1개 요소에 매칭될 때만 Locator를 반환합니다."""
+    locator = page.locator(selector)
+    count = await locator.count()
+    if count == 0:
+        return None, f"not_found: selector '{selector}' matched 0 elements"
+    if count > 1:
+        return None, f"ambiguous_selector: selector '{selector}' matched {count} elements"
+
+    element = locator.nth(0)
+    try:
+        await element.wait_for(state="attached", timeout=timeout_ms)
+    except Exception:
+        pass
+    return element, None
+
+
 async def _execute_assertion(
     page: Page, action: str, selector: str, value: Any, before_screenshot: str = None
 ) -> Dict[str, Any]:
@@ -852,7 +869,9 @@ async def _execute_assertion(
             try:
                 if selector:
                     # Case A: selector로 찾기
-                    element = page.locator(selector).first
+                    element, locator_err = await _resolve_single_locator(page, selector)
+                    if locator_err:
+                        raise ValueError(locator_err)
                     await element.wait_for(
                         state="visible", timeout=500
                     )  # 짧은 타임아웃
@@ -863,7 +882,13 @@ async def _execute_assertion(
                     }
                 else:
                     # Case B: 텍스트로 찾기
-                    element = page.get_by_text(value, exact=False).first
+                    elements = page.get_by_text(value, exact=False)
+                    count = await elements.count()
+                    if count != 1:
+                        raise ValueError(
+                            f"ambiguous_text_target: text '{value}' matched {count} elements"
+                        )
+                    element = elements.nth(0)
                     await element.wait_for(
                         state="visible", timeout=500
                     )  # 짧은 타임아웃
@@ -950,7 +975,9 @@ async def _execute_assertion(
                     "success": False,
                     "message": "Selector required for expectHidden",
                 }
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                return {"success": False, "message": locator_err}
             await element.wait_for(state="hidden", timeout=30000)
             return {"success": True, "message": f"Element {selector} is hidden"}
 
@@ -982,7 +1009,9 @@ async def _execute_assertion(
                 }
 
             try:
-                element = page.locator(selector).first
+                element, locator_err = await _resolve_single_locator(page, selector)
+                if locator_err:
+                    return {"success": False, "message": locator_err}
                 text_content = await element.text_content(timeout=5000)
 
                 # Check if expected text is in the element's text content
@@ -1009,7 +1038,9 @@ async def _execute_assertion(
                     "success": False,
                     "message": "Selector and value [attr, expected] required",
                 }
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                return {"success": False, "message": locator_err}
             if isinstance(value, list) and len(value) >= 2:
                 attr_name, expected_value = value[0], value[1]
             else:
@@ -1777,7 +1808,9 @@ async def execute_simple_action(
             # 페이지나 요소를 스크롤합니다
             if selector and selector != "body":
                 # 특정 요소 기준으로 가장 가까운 스크롤 컨테이너를 우선 스크롤합니다.
-                element = page.locator(selector).first
+                element, locator_err = await _resolve_single_locator(page, selector)
+                if locator_err:
+                    raise ValueError(locator_err)
                 try:
                     bounding_box = await element.bounding_box()
                     if bounding_box:
@@ -1953,7 +1986,9 @@ async def execute_simple_action(
                 raise ValueError("Value (script) is required for 'evaluate' action")
             if selector:
                 # 특정 요소에서 평가합니다
-                element = page.locator(selector).first
+                element, locator_err = await _resolve_single_locator(page, selector)
+                if locator_err:
+                    raise ValueError(locator_err)
                 eval_result = await element.evaluate(value)
             else:
                 # 페이지에서 평가합니다
@@ -1973,7 +2008,9 @@ async def execute_simple_action(
             # 요소 위에 호버합니다
             if not selector:
                 raise ValueError("Selector is required for 'hover' action")
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
             try:
                 bounding_box = await element.bounding_box()
                 if bounding_box:
@@ -1991,8 +2028,12 @@ async def execute_simple_action(
                 raise ValueError(
                     "Both selector and value (target) required for 'dragAndDrop' action"
                 )
-            source = page.locator(selector).first
-            target = page.locator(value).first
+            source, source_err = await _resolve_single_locator(page, selector)
+            if source_err:
+                raise ValueError(source_err)
+            target, target_err = await _resolve_single_locator(page, value)
+            if target_err:
+                raise ValueError(target_err)
             await source.drag_to(target, timeout=30000)
 
         elif action == "dragSlider":
@@ -2006,7 +2047,9 @@ async def execute_simple_action(
                 )
 
             # 슬라이더 thumb 요소 찾기
-            thumb = page.locator(selector).first
+            thumb, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
 
             try:
                 # 슬라이더의 aria 속성에서 범위 정보 가져오기
@@ -2108,7 +2151,9 @@ async def execute_simple_action(
                     "Value (CSS property name) is required for 'storeCSSValue' action"
                 )
 
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
             css_property = value if isinstance(value, str) else value[0]
 
             # CSS 값 가져오기
@@ -2138,21 +2183,27 @@ async def execute_simple_action(
             # 요소가 화면에 보이도록 스크롤합니다
             if not selector:
                 raise ValueError("Selector is required for 'scrollIntoView' action")
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
             await element.scroll_into_view_if_needed(timeout=10000)
 
         elif action == "focus":
             # 요소에 포커스를 맞춥니다
             if not selector:
                 raise ValueError("Selector is required for 'focus' action")
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
             await element.focus(timeout=30000)
 
         elif action == "select":
             # 드롭다운에서 옵션을 선택합니다(값에 옵션 값 포함)
             if not selector or value is None:
                 raise ValueError("Selector and value required for 'select' action")
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
 
             # 옵션 값 확인 후 유효하지 않으면 첫 번째 옵션으로 대체
             options = await element.evaluate(
@@ -2174,7 +2225,9 @@ async def execute_simple_action(
                 raise ValueError(
                     "Selector and file path required for 'uploadFile' action"
                 )
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
             # value는 파일 경로 문자열 또는 파일 경로 리스트
             if isinstance(value, str):
                 await element.set_input_files(value, timeout=30000)
@@ -2192,7 +2245,9 @@ async def execute_simple_action(
                     "Value (CSS property name) is required for 'expectCSSChanged' action"
                 )
 
-            element = page.locator(selector).first
+            element, locator_err = await _resolve_single_locator(page, selector)
+            if locator_err:
+                raise ValueError(locator_err)
             css_property = value if isinstance(value, str) else value[0]
 
             # 현재 CSS 값 가져오기
@@ -2298,8 +2353,10 @@ async def execute_simple_action(
 
             fallback_selector = fallback_selectors[0] if fallback_selectors else None
 
-            # 선택자가 필요한 동작
-            element = page.locator(selector).first
+            # 선택자가 필요한 동작 (strict single-match)
+            element, locator_err = await _resolve_single_locator(page, selector, timeout_ms=5000)
+            if locator_err:
+                return {"success": False, "message": locator_err}
 
             # 클릭 애니메이션을 위해 요소 위치를 구합니다
             click_position = None
@@ -2314,7 +2371,9 @@ async def execute_simple_action(
                 # bounding_box 실패 시 fallback 시도
                 if fallback_selector:
                     try:
-                        element = page.locator(fallback_selector).first
+                        element, fallback_err = await _resolve_single_locator(page, fallback_selector, timeout_ms=5000)
+                        if fallback_err:
+                            raise ValueError(fallback_err)
                         bounding_box = await element.bounding_box(timeout=5000)
                         if bounding_box:
                             click_position = {
@@ -2427,9 +2486,14 @@ async def execute_simple_action(
                             if parent_selector:
                                 print(f"🎯 Found parent menu: {parent_selector}")
                                 # Playwright의 실제 hover() 사용
-                                parent_locator = page.locator(
+                                parent_locator_selector = (
                                     f"a:text('{parent_selector}'), button:text('{parent_selector}')"
-                                ).first
+                                )
+                                parent_locator, parent_err = await _resolve_single_locator(
+                                    page, parent_locator_selector, timeout_ms=5000
+                                )
+                                if parent_err:
+                                    raise ValueError(parent_err)
                                 await parent_locator.hover(timeout=5000)
                                 print(f"✅ Hovered parent menu, waiting for submenu...")
                                 await page.wait_for_timeout(
@@ -2451,7 +2515,9 @@ async def execute_simple_action(
                                         print(
                                             f"⚠️  Original selector failed, retrying with: {fb_selector}"
                                         )
-                                        element = page.locator(fb_selector).first
+                                        element, fb_err = await _resolve_single_locator(page, fb_selector)
+                                        if fb_err:
+                                            raise ValueError(fb_err)
                                         await _reveal_locator_in_scroll_context(element)
                                         await page.wait_for_timeout(150)
                                         await element.click(timeout=10000)
@@ -2470,7 +2536,9 @@ async def execute_simple_action(
                                 print(
                                     f"⚠️  Original selector failed, retrying with: {fb_selector}"
                                 )
-                                element = page.locator(fb_selector).first
+                                element, fb_err = await _resolve_single_locator(page, fb_selector)
+                                if fb_err:
+                                    raise ValueError(fb_err)
                                 await _reveal_locator_in_scroll_context(element)
                                 await page.wait_for_timeout(150)
                                 await element.click(timeout=10000)
@@ -2496,7 +2564,9 @@ async def execute_simple_action(
                                 print(
                                     f"⚠️  Original selector failed, retrying with: {fb_selector}"
                                 )
-                                element = page.locator(fb_selector).first
+                                element, fb_err = await _resolve_single_locator(page, fb_selector)
+                                if fb_err:
+                                    raise ValueError(fb_err)
                                 await _reveal_locator_in_scroll_context(element)
                                 await element.fill(value, timeout=10000)
                                 break
@@ -2520,7 +2590,9 @@ async def execute_simple_action(
                                 print(
                                     f"⚠️  Original selector failed, retrying with: {fb_selector}"
                                 )
-                                element = page.locator(fb_selector).first
+                                element, fb_err = await _resolve_single_locator(page, fb_selector)
+                                if fb_err:
+                                    raise ValueError(fb_err)
                                 await _reveal_locator_in_scroll_context(element)
                                 await element.press(value, timeout=10000)
                                 break
@@ -4601,7 +4673,9 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
                 continue
             elif step.action == "scroll":
                 if step.selector:
-                    element = page.locator(step.selector).first
+                    element, step_err = await _resolve_single_locator(page, step.selector)
+                    if step_err:
+                        raise ValueError(step_err)
                     await element.scroll_into_view_if_needed(timeout=10000)
                     logs.append(f"SUCCESS: Scrolled '{step.selector}' into view")
                 else:
@@ -4610,8 +4684,10 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
                     logs.append(f"SUCCESS: Scrolled page by {scroll_amount}px")
                 continue
 
-            # 여러 매치를 처리하기 위해 .first를 사용합니다(엄격 모드 위반 방지)
-            element = page.locator(step.selector).first
+            # strict single-match 정책으로 대상 요소를 선택합니다
+            element, step_err = await _resolve_single_locator(page, step.selector)
+            if step_err:
+                raise ValueError(step_err)
 
             if step.action == "click":
                 await element.click(timeout=10000)
@@ -4701,7 +4777,10 @@ async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
             toast_found = False
             for selector in toast_selectors:
                 try:
-                    toast = page.locator(selector).first
+                    matches = page.locator(selector)
+                    if await matches.count() != 1:
+                        continue
+                    toast = matches.nth(0)
                     await expect(toast).to_be_visible(timeout=2000)
                     if expected_text:
                         await expect(toast).to_contain_text(expected_text)
