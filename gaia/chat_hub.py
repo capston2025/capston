@@ -175,7 +175,12 @@ def _run_test(
     sink: HubSink,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> tuple[int, dict]:
-    if context.runtime == "gui":
+    runtime = context.runtime
+    if context.control_channel == "telegram" and runtime == "gui":
+        runtime = "terminal"
+        sink.info("telegram 채널에서는 GUI 대신 terminal runtime으로 실행합니다.")
+
+    if runtime == "gui":
         code = _run_gui("--mode", "chat", "--url", context.url, "--feature-query", query)
         return code, {
             "goal": query,
@@ -199,7 +204,8 @@ def _run_test(
 
 
 def _run_ai(context: HubContext, max_actions: int = 50) -> int:
-    if context.runtime == "gui":
+    runtime = "terminal" if context.control_channel == "telegram" else context.runtime
+    if runtime == "gui":
         return _run_gui("--mode", "ai", "--url", context.url)
 
     from gaia.terminal import run_ai_terminal

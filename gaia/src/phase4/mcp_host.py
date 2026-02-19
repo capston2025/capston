@@ -6,6 +6,8 @@ import time
 import hashlib
 import json as json_module
 import traceback
+import re
+from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -456,15 +458,23 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
               const interactiveCount = document.querySelectorAll(
                 'button, a, input, textarea, select, [role="button"], [role="tab"], [role="menuitem"], [role="link"]'
               ).length;
-              const bodyText = ((document.body && document.body.innerText) || '').slice(0, 1000);
+              const bodyText = ((document.body && document.body.innerText) || '');
+              const clipped = bodyText.replace(/\\s+/g, ' ').trim().slice(0, 800);
+              const liveNodes = Array.from(document.querySelectorAll(
+                '[role="status"],[aria-live],.toast,.alert,.snackbar,[class*="toast"],[class*="alert"],[class*="snackbar"],[class*="notification"]'
+              )).slice(0, 8);
+              const liveTexts = liveNodes
+                .map((el) => ((el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim()))
+                .filter(Boolean)
+                .map((t) => t.slice(0, 100));
               const loginVisible = /(로그인|log in|sign in)/i.test(bodyText);
               const logoutVisible = /(로그아웃|log out|sign out)/i.test(bodyText);
               const scrollY = Number(window.scrollY || 0);
               const docHeight = Number((document.documentElement && document.documentElement.scrollHeight) || 0);
               return {
-                text_digest: '',
+                text_digest: clipped,
                 number_tokens: [],
-                live_texts: [],
+                live_texts: liveTexts,
                 counters: [],
                 list_count: Number(listCount || 0),
                 interactive_count: Number(interactiveCount || 0),
@@ -500,6 +510,25 @@ def _sorted_text_list(value: Any) -> List[str]:
     normalized = [str(v).strip() for v in value if str(v).strip()]
     normalized.sort()
     return normalized[:100]
+
+
+def _extract_live_texts(value: Any, limit: int = 8) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    dedup: List[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = str(item).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(text[:200])
+        if len(dedup) >= max(1, int(limit)):
+            break
+    return dedup
 
 
 async def _read_focus_signature(page: Page) -> str:
@@ -1127,6 +1156,48 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 const elements = [];
                 let gaiaRefSeq = 0;
 
+                const scanRoots = (() => {
+                    const roots = [document];
+                    const seen = new Set([document]);
+                    const queue = [document];
+                    while (queue.length > 0) {
+                        const root = queue.shift();
+                        let nodes = [];
+                        try {
+                            nodes = Array.from(root.querySelectorAll('*'));
+                        } catch (_) {
+                            nodes = [];
+                        }
+                        for (const node of nodes) {
+                            if (!node || !node.shadowRoot) continue;
+                            if (seen.has(node.shadowRoot)) continue;
+                            seen.add(node.shadowRoot);
+                            roots.push(node.shadowRoot);
+                            queue.push(node.shadowRoot);
+                        }
+                    }
+                    return roots;
+                })();
+
+                function queryAll(selector) {
+                    const out = [];
+                    const seen = new Set();
+                    for (const root of scanRoots) {
+                        let found = [];
+                        try {
+                            found = Array.from(root.querySelectorAll(selector));
+                        } catch (_) {
+                            continue;
+                        }
+                        for (const el of found) {
+                            if (!el || seen.has(el)) continue;
+                            seen.add(el);
+                            out.push(el);
+                        }
+                    }
+                    return out;
+                }
+
                 function isVisible(el) {
                     const style = window.getComputedStyle(el);
                     // 매우 완화된 표시 여부 검사 - iframe 내부 요소도 감지
@@ -1135,7 +1206,12 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 }
 
                 function assignDomRef(el) {
-                    const ref = `gaia-${Date.now().toString(36)}-${gaiaRefSeq++}`;
+                    const existing = (el.getAttribute('data-gaia-dom-ref') || '').trim();
+                    if (existing) {
+                        return existing;
+                    }
+                    const tag = (el.tagName || 'el').toLowerCase();
+                    const ref = `gaia-${tag}-${Date.now().toString(36)}-${gaiaRefSeq++}`;
                     try {
                         el.setAttribute('data-gaia-dom-ref', ref);
                     } catch (_) {}
@@ -1201,7 +1277,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     };
                 }
 
-                document.querySelectorAll('input, textarea, select').forEach(el => {
+                queryAll('input, textarea, select').forEach(el => {
                     if (!isVisible(el)) return;
 
                     elements.push({
@@ -1224,7 +1300,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
 
                 // 버튼과 상호작용 가능한 역할 요소를 수집
                 // 상호작용 UI에서 자주 사용하는 ARIA 역할
-                document.querySelectorAll(`
+                queryAll(`
                     button,
                     a:not([href]),
                     [role="button"],
@@ -1284,7 +1360,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     });
                 });
 
-                document.querySelectorAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
+                queryAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
                     if (!isVisible(el)) return;
                     if (el.tagName === 'BUTTON') return;
                     if (el.tagName === 'A' && el.hasAttribute('href')) return;
@@ -1310,7 +1386,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     }
                 });
 
-                document.querySelectorAll('a[href]').forEach(el => {
+                queryAll('a[href]').forEach(el => {
                     if (!isVisible(el)) return;
 
                     const href = el.href;
@@ -1337,6 +1413,69 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         },
                         bounding_box: getBoundingBox(el),
                         element_type: 'link'
+                    });
+                });
+
+                // 시맨틱/구조 신호 수집 (OpenClaw 스타일 보강)
+                queryAll(`
+                    [aria-controls],
+                    [aria-expanded],
+                    [aria-haspopup],
+                    [tabindex]:not([tabindex="-1"]),
+                    [data-testid],
+                    [data-test],
+                    [data-qa],
+                    [contenteditable="true"],
+                    summary,
+                    details > summary
+                `.replace(/\s+/g, '')).forEach(el => {
+                    if (!isVisible(el)) return;
+                    if (!el || !el.tagName) return;
+
+                    const tag = el.tagName.toLowerCase();
+                    if (['html', 'body', 'head', 'meta', 'style', 'script', 'link'].includes(tag)) return;
+
+                    const role = (el.getAttribute('role') || '').trim().toLowerCase();
+                    const ariaLabel = (el.getAttribute('aria-label') || '').trim();
+                    const title = (el.getAttribute('title') || '').trim();
+                    const text = (el.innerText || '').trim();
+                    const testid =
+                        (el.getAttribute('data-testid') || '').trim() ||
+                        (el.getAttribute('data-test') || '').trim() ||
+                        (el.getAttribute('data-qa') || '').trim();
+                    const style = window.getComputedStyle(el);
+                    const pointerLike = style.cursor === 'pointer';
+                    const box = getBoundingBox(el);
+
+                    // 너무 의미 없는 wrapper 노드는 제외
+                    const hasSignal =
+                        !!role ||
+                        !!ariaLabel ||
+                        !!title ||
+                        !!testid ||
+                        pointerLike ||
+                        (text && text.length <= 180);
+                    if (!hasSignal) return;
+                    if (box.width <= 0 || box.height <= 0) return;
+
+                    elements.push({
+                        tag: tag,
+                        dom_ref: assignDomRef(el),
+                        selector: getUniqueSelector(el),
+                        text: text ? text.slice(0, 180) : '',
+                        attributes: {
+                            role: role,
+                            'aria-label': ariaLabel,
+                            title: title,
+                            placeholder: el.getAttribute('placeholder') || '',
+                            'aria-controls': el.getAttribute('aria-controls') || '',
+                            'aria-expanded': el.getAttribute('aria-expanded') || '',
+                            'aria-haspopup': el.getAttribute('aria-haspopup') || '',
+                            tabindex: el.getAttribute('tabindex') || '',
+                            'data-testid': testid,
+                        },
+                        bounding_box: box,
+                        element_type: 'semantic'
                     });
                 });
 
@@ -1391,7 +1530,21 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 print(f"  Traceback: {traceback.format_exc()}")
                 continue
 
-        print(f"Total found {len(all_elements)} interactive elements across all frames")
+        # 중복 제거 후 시그널 점수 기반으로 상위 요소 유지 (밀도는 높이고 노이즈는 억제)
+        all_elements = _dedupe_elements_by_dom_ref(all_elements)
+        try:
+            max_elements = int(os.getenv("GAIA_DOM_MAX_ELEMENTS", "2200"))
+        except Exception:
+            max_elements = 2200
+        max_elements = max(200, min(max_elements, 8000))
+        if len(all_elements) > max_elements:
+            all_elements = sorted(
+                all_elements,
+                key=_element_signal_score,
+                reverse=True,
+            )[:max_elements]
+
+        print(f"Total found {len(all_elements)} interactive/semantic elements across all frames")
         # 디버깅용으로 처음 10개 요소를 출력합니다
         if len(all_elements) <= 10:
             element_strs = [
@@ -2428,15 +2581,70 @@ def _select_frame_for_ref(page: Page, ref_meta: Dict[str, Any]):
 async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], _selector_hint: str):
     frame, frame_index = _select_frame_for_ref(page, ref_meta)
     dom_ref = str(ref_meta.get("dom_ref") or "").strip()
+    selector_hint = str(_selector_hint or "").strip()
+
+    async def _resolve_with_selector_hint():
+        if not selector_hint:
+            return None, frame_index, "", ""
+        try:
+            hint_group = frame.locator(selector_hint)
+            hint_count = await hint_group.count()
+            if hint_count <= 0:
+                return None, frame_index, selector_hint, "hint_not_found"
+            if hint_count == 1:
+                return hint_group.nth(0), frame_index, selector_hint, ""
+
+            bbox = ref_meta.get("bounding_box") if isinstance(ref_meta.get("bounding_box"), dict) else {}
+            try:
+                target_cx = float(
+                    bbox.get("center_x", (float(bbox.get("x", 0.0)) + float(bbox.get("width", 0.0)) / 2.0))
+                )
+                target_cy = float(
+                    bbox.get("center_y", (float(bbox.get("y", 0.0)) + float(bbox.get("height", 0.0)) / 2.0))
+                )
+            except Exception:
+                target_cx = None
+                target_cy = None
+
+            best_idx = None
+            best_dist = None
+            inspect_limit = min(hint_count, 25)
+            if target_cx is not None and target_cy is not None:
+                for idx in range(inspect_limit):
+                    candidate = hint_group.nth(idx)
+                    try:
+                        cand_box = await candidate.bounding_box()
+                    except Exception:
+                        cand_box = None
+                    if not cand_box:
+                        continue
+                    cx = float(cand_box.get("x", 0.0)) + (float(cand_box.get("width", 0.0)) / 2.0)
+                    cy = float(cand_box.get("y", 0.0)) + (float(cand_box.get("height", 0.0)) / 2.0)
+                    dist = ((cx - target_cx) ** 2) + ((cy - target_cy) ** 2)
+                    if best_dist is None or dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
+            if best_idx is not None:
+                return hint_group.nth(best_idx), frame_index, f"{selector_hint} [hint:nth={best_idx}]", ""
+            return None, frame_index, selector_hint, f"ambiguous_selector_matches:{hint_count}"
+        except Exception as hint_exc:
+            return None, frame_index, selector_hint, f"hint_error:{hint_exc}"
+
     if not dom_ref:
-        return None, frame_index, "", "dom_ref_missing"
+        fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
+        if fallback_locator is not None:
+            return fallback_locator, fallback_frame_idx, fallback_selector, ""
+        return None, frame_index, selector_hint or "", "dom_ref_missing"
 
     try:
         selector_to_use = f'[data-gaia-dom-ref="{dom_ref}"]'
         locator_group = frame.locator(selector_to_use)
         match_count = await locator_group.count()
         if match_count <= 0:
-            return None, frame_index, selector_to_use, "not_found"
+            fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
+            if fallback_locator is not None:
+                return fallback_locator, fallback_frame_idx, fallback_selector, ""
+            return None, frame_index, fallback_selector or selector_to_use, fallback_error or "not_found"
         if match_count == 1:
             return locator_group.nth(0), frame_index, selector_to_use, ""
 
@@ -2478,9 +2686,15 @@ async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], _selec
                 "",
             )
 
-        return None, frame_index, selector_to_use, f"ambiguous_selector_matches:{match_count}"
+        fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
+        if fallback_locator is not None:
+            return fallback_locator, fallback_frame_idx, fallback_selector, ""
+        return None, frame_index, fallback_selector or selector_to_use, fallback_error or f"ambiguous_selector_matches:{match_count}"
     except Exception as exc:
-        return None, frame_index, selector_to_use, str(exc)
+        fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
+        if fallback_locator is not None:
+            return fallback_locator, fallback_frame_idx, fallback_selector, ""
+        return None, frame_index, fallback_selector or selector_to_use, fallback_error or str(exc)
 
 
 def _parse_scroll_payload(value: Any) -> Dict[str, Any]:
@@ -2613,7 +2827,7 @@ async def _scroll_locator_container(locator, value: Any) -> Dict[str, Any]:
 async def _execute_action_on_locator(action: str, page: Page, locator, value: Any):
     if action == "click":
         await _reveal_locator_in_scroll_context(locator)
-        await locator.click(timeout=10000)
+        await locator.click(timeout=8000, no_wait_after=True)
         return
     if action == "fill":
         if value is None:
@@ -2624,7 +2838,7 @@ async def _execute_action_on_locator(action: str, page: Page, locator, value: An
     if action == "press":
         key = str(value or "Enter")
         await _reveal_locator_in_scroll_context(locator)
-        await locator.press(key, timeout=10000)
+        await locator.press(key, timeout=8000, no_wait_after=True)
         return
     if action == "hover":
         await _reveal_locator_in_scroll_context(locator)
@@ -2724,6 +2938,7 @@ async def execute_ref_action_with_snapshot(
     retry_path: List[str] = []
     stale_recovered = False
     reason_code = "unknown_error"
+    last_live_texts: List[str] = []
 
     requested_snapshot = session.snapshots.get(snapshot_id)
     requested_meta = (
@@ -2731,26 +2946,68 @@ async def execute_ref_action_with_snapshot(
         if requested_snapshot
         else None
     )
+    initial_ref_state: Optional[str] = None
     if not requested_snapshot:
-        reason_code = "snapshot_not_found"
+        initial_ref_state = "snapshot_not_found"
     elif requested_meta is None:
-        reason_code = "not_found"
+        initial_ref_state = "not_found"
     elif not str(requested_meta.get("dom_ref") or "").strip():
-        reason_code = "stale_snapshot"
+        initial_ref_state = "stale_snapshot"
 
-    if reason_code in {"snapshot_not_found", "stale_snapshot", "not_found"}:
-        if reason_code == "snapshot_not_found":
+    if initial_ref_state:
+        retry_path.append(f"recover:{initial_ref_state}")
+        try:
+            fresh_snapshot_result = await snapshot_page(
+                url=(page.url or None), session_id=session_id
+            )
+            fresh_snapshot_id = str(fresh_snapshot_result.get("snapshot_id") or "")
+            fresh_snapshot = (
+                session.snapshots.get(fresh_snapshot_id)
+                if fresh_snapshot_id
+                else None
+            )
+            recovered_meta: Optional[Dict[str, Any]] = None
+            recovered_ref_id = ref_id
+
+            if isinstance(fresh_snapshot, dict):
+                recovered_meta = _resolve_ref_meta_from_snapshot(fresh_snapshot, ref_id)
+                if recovered_meta is None:
+                    recovered_meta = _resolve_stale_ref(requested_meta, fresh_snapshot)
+                    if isinstance(recovered_meta, dict):
+                        recovered_ref_id = str(
+                            recovered_meta.get("ref_id") or recovered_ref_id
+                        )
+                if isinstance(recovered_meta, dict):
+                    requested_snapshot = fresh_snapshot
+                    requested_meta = recovered_meta
+                    snapshot_id = fresh_snapshot_id or snapshot_id
+                    ref_id = recovered_ref_id
+                    stale_recovered = True
+                    reason_code = "stale_ref_recovered"
+                    retry_path.append("recover:ok")
+        except Exception as recover_exc:
+            retry_path.append(f"recover:error:{recover_exc}")
+
+    if (
+        not isinstance(requested_snapshot, dict)
+        or not isinstance(requested_meta, dict)
+        or not str(requested_meta.get("dom_ref") or "").strip()
+    ):
+        if initial_ref_state == "snapshot_not_found":
             fail_message = "snapshot을 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-        elif reason_code == "not_found":
+            fail_code = "snapshot_not_found"
+        elif initial_ref_state == "not_found":
             fail_message = "snapshot 내 ref를 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
+            fail_code = "not_found"
         else:
             fail_message = "snapshot/ref가 stale 상태입니다. 최신 snapshot 기준으로 다시 의사결정하세요."
+            fail_code = "stale_snapshot"
         return {
             "success": False,
             "effective": False,
-            "reason_code": reason_code,
+            "reason_code": fail_code,
             "reason": fail_message,
-            "stale_recovered": False,
+            "stale_recovered": stale_recovered,
             "retry_path": retry_path,
             "attempt_logs": attempt_logs,
         }
@@ -2837,7 +3094,36 @@ async def execute_ref_action_with_snapshot(
         "evidence_changed": False,
         "probe_wait_ms": 0,
         "probe_scroll": "none",
+        "live_texts_after": [],
     }
+    ref_attrs = requested_meta.get("attributes") if isinstance(requested_meta.get("attributes"), dict) else {}
+    ref_selector_text = " ".join(
+        [
+            str(requested_meta.get("selector") or ""),
+            str(requested_meta.get("full_selector") or ""),
+            str(requested_meta.get("text") or ""),
+            str((ref_attrs or {}).get("type") or ""),
+            str((ref_attrs or {}).get("role") or ""),
+            str((ref_attrs or {}).get("aria-label") or ""),
+        ]
+    ).lower()
+    submit_like_click = bool(
+        action == "click"
+        and (
+            str((ref_attrs or {}).get("type") or "").lower() == "submit"
+            or "submit" in ref_selector_text
+            or "로그인" in ref_selector_text
+            or "회원가입" in ref_selector_text
+            or "sign in" in ref_selector_text
+            or "log in" in ref_selector_text
+            or "sign up" in ref_selector_text
+            or "register" in ref_selector_text
+        )
+    )
+    probe_wait_schedule: Tuple[int, ...] = (250,) if submit_like_click else (350, 700, 1500)
+    verify_for_action = verify and (not submit_like_click)
+    if submit_like_click:
+        max_action_seconds = min(max_action_seconds, 20.0)
 
     for attempt_idx, (mode, candidate_selector) in enumerate(candidates, start=1):
         if _deadline_exceeded():
@@ -2879,9 +3165,7 @@ async def execute_ref_action_with_snapshot(
         locator_found = True
         before_url = page.url
         before_dom_hash = await _compute_runtime_dom_hash(page)
-        attrs = requested_meta.get("attributes") if isinstance(requested_meta.get("attributes"), dict) else {}
-        target_type = str(attrs.get("type") or "").strip().lower()
-        evidence_collector = _collect_page_evidence_light if target_type == "submit" else _collect_page_evidence
+        evidence_collector = _collect_page_evidence_light if submit_like_click else _collect_page_evidence
         before_evidence = await evidence_collector(page)
         before_focus = await _read_focus_signature(page)
         before_target = await _safe_read_target_state(locator)
@@ -2904,8 +3188,11 @@ async def execute_ref_action_with_snapshot(
             print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
             continue
 
+        if submit_like_click:
+            await page.wait_for_timeout(250)
+
         effective = False
-        for probe_wait_ms in (350, 700, 1500):
+        for probe_wait_ms in probe_wait_schedule:
             if _deadline_exceeded():
                 reason_code = "action_timeout"
                 break
@@ -2929,13 +3216,17 @@ async def execute_ref_action_with_snapshot(
                 before_focus=before_focus,
                 after_focus=after_focus,
             )
+            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
+            if live_texts_after:
+                state_change["live_texts_after"] = live_texts_after
+                last_live_texts = live_texts_after
             state_change["probe_wait_ms"] = probe_wait_ms
             state_change["probe_scroll"] = "none"
-            effective = bool(state_change.get("effective", True)) if verify else True
+            effective = bool(state_change.get("effective", True)) if verify_for_action else True
             if effective:
                 break
 
-        if verify and not effective and action in {"click", "press"}:
+        if verify_for_action and not effective and action in {"click", "press"}:
             scroll_probes: List[Tuple[str, str]] = [
                 ("top", "window.scrollTo(0, 0)"),
                 (
@@ -2975,6 +3266,10 @@ async def execute_ref_action_with_snapshot(
                     before_focus=before_focus,
                     after_focus=after_focus,
                 )
+                live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
+                if live_texts_after:
+                    state_change["live_texts_after"] = live_texts_after
+                    last_live_texts = live_texts_after
                 state_change["probe_wait_ms"] = 1500
                 state_change["probe_scroll"] = probe_name
                 effective = bool(state_change.get("effective", True))
@@ -3022,6 +3317,7 @@ async def execute_ref_action_with_snapshot(
                 "locator_found": locator_found,
                 "interaction_success": interaction_success,
                 "state_change": state_change,
+                "live_texts": last_live_texts,
                 "retry_path": retry_path,
                 "attempt_count": len(attempt_logs),
                 "attempt_logs": attempt_logs,
@@ -3049,6 +3345,7 @@ async def execute_ref_action_with_snapshot(
         "locator_found": locator_found,
         "interaction_success": interaction_success,
         "state_change": state_change,
+        "live_texts": last_live_texts,
         "retry_path": retry_path,
         "attempt_count": len(attempt_logs),
         "attempt_logs": attempt_logs,
@@ -3141,6 +3438,431 @@ def _dedupe_elements_by_dom_ref(elements: List[Dict[str, Any]]) -> List[Dict[str
     return deduped
 
 
+def _element_is_interactive(item: Dict[str, Any]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    tag = str(item.get("tag") or "").strip().lower()
+    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+    role = str(attrs.get("role") or "").strip().lower()
+    element_type = str(item.get("element_type") or "").strip().lower()
+    interactive_tags = {"button", "a", "input", "select", "textarea", "option", "summary"}
+    interactive_roles = {
+        "button",
+        "link",
+        "tab",
+        "menuitem",
+        "checkbox",
+        "radio",
+        "switch",
+        "combobox",
+        "textbox",
+        "option",
+        "slider",
+    }
+    if tag in interactive_tags:
+        return True
+    if role in interactive_roles:
+        return True
+    if element_type in {"button", "link", "input", "checkbox", "radio", "select", "textarea", "semantic"}:
+        return True
+    if str(attrs.get("onclick") or "").strip():
+        return True
+    return False
+
+
+_ROLE_INTERACTIVE = {
+    "button",
+    "link",
+    "textbox",
+    "checkbox",
+    "radio",
+    "combobox",
+    "listbox",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "searchbox",
+    "slider",
+    "spinbutton",
+    "switch",
+    "tab",
+    "treeitem",
+}
+
+_ROLE_CONTENT = {
+    "heading",
+    "cell",
+    "gridcell",
+    "columnheader",
+    "rowheader",
+    "listitem",
+    "article",
+    "region",
+    "main",
+    "navigation",
+}
+
+_ROLE_STRUCTURAL = {
+    "generic",
+    "group",
+    "list",
+    "table",
+    "row",
+    "rowgroup",
+    "grid",
+    "treegrid",
+    "menu",
+    "menubar",
+    "toolbar",
+    "tablist",
+    "tree",
+    "directory",
+    "document",
+    "application",
+    "presentation",
+    "none",
+}
+
+
+def _snapshot_line_depth(line: str) -> int:
+    indent = len(line) - len(line.lstrip(" "))
+    return max(0, indent // 2)
+
+
+def _compact_role_tree(snapshot: str) -> str:
+    lines = snapshot.split("\n")
+    out: List[str] = []
+    for i, line in enumerate(lines):
+        if "[ref=" in line:
+            out.append(line)
+            continue
+        if ":" in line and not line.rstrip().endswith(":"):
+            out.append(line)
+            continue
+        current_depth = _snapshot_line_depth(line)
+        has_ref_child = False
+        for j in range(i + 1, len(lines)):
+            child_depth = _snapshot_line_depth(lines[j])
+            if child_depth <= current_depth:
+                break
+            if "[ref=" in lines[j]:
+                has_ref_child = True
+                break
+        if has_ref_child:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _limit_snapshot_text(snapshot: str, max_chars: int) -> tuple[str, bool]:
+    limit = max(200, min(int(max_chars or 24000), 120000))
+    if len(snapshot) <= limit:
+        return snapshot, False
+    return f"{snapshot[:limit]}\n\n[...TRUNCATED - page too large]", True
+
+
+def _parse_ai_ref(suffix: str) -> Optional[str]:
+    m = re.search(r"\[ref=(e\d+)\]", suffix or "", flags=re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1)
+
+
+def _role_snapshot_stats(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+    interactive = 0
+    for item in refs.values():
+        role = str((item or {}).get("role") or "").strip().lower()
+        if role in _ROLE_INTERACTIVE:
+            interactive += 1
+    return {
+        "lines": len(snapshot.split("\n")) if snapshot else 0,
+        "chars": len(snapshot),
+        "refs": len(refs),
+        "interactive": interactive,
+    }
+
+
+def _build_role_snapshot_from_aria_text(
+    aria_snapshot: str,
+    *,
+    interactive: bool,
+    compact: bool,
+    max_depth: Optional[int] = None,
+    line_limit: int = 500,
+    max_chars: int = 64000,
+) -> Dict[str, Any]:
+    lines = str(aria_snapshot or "").split("\n")
+    refs: Dict[str, Dict[str, Any]] = {}
+    refs_by_key: Dict[str, List[str]] = defaultdict(list)
+    counts_by_key: Dict[str, int] = defaultdict(int)
+    out: List[str] = []
+    ref_counter = 0
+
+    def _next_ref() -> str:
+        nonlocal ref_counter
+        ref_counter += 1
+        return f"e{ref_counter}"
+
+    for line in lines:
+        depth = _snapshot_line_depth(line)
+        if max_depth is not None and depth > max_depth:
+            continue
+
+        m = re.match(r'^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$', line)
+        if not m:
+            if not interactive:
+                out.append(line)
+            continue
+
+        prefix, role_raw, name, suffix = m.group(1), m.group(2), m.group(3), m.group(4)
+        if role_raw.startswith("/"):
+            if not interactive:
+                out.append(line)
+            continue
+
+        role = (role_raw or "").lower()
+        if interactive and role not in _ROLE_INTERACTIVE:
+            continue
+        if compact and role in _ROLE_STRUCTURAL and not name:
+            continue
+
+        should_have_ref = role in _ROLE_INTERACTIVE or (role in _ROLE_CONTENT and bool(name))
+        if not should_have_ref:
+            out.append(line)
+            continue
+
+        ref = _next_ref()
+        key = f"{role}:{name or ''}"
+        nth = counts_by_key[key]
+        counts_by_key[key] += 1
+        refs_by_key[key].append(ref)
+
+        ref_payload: Dict[str, Any] = {"role": role}
+        if name:
+            ref_payload["name"] = name
+        if nth > 0:
+            ref_payload["nth"] = nth
+        refs[ref] = ref_payload
+
+        enhanced = f"{prefix}{role_raw}"
+        if name:
+            enhanced += f' "{name}"'
+        enhanced += f" [ref={ref}]"
+        if nth > 0:
+            enhanced += f" [nth={nth}]"
+        if suffix:
+            enhanced += suffix
+        out.append(enhanced)
+
+    duplicate_keys = {k for k, v in refs_by_key.items() if len(v) > 1}
+    for ref, data in refs.items():
+        key = f"{data.get('role', '')}:{data.get('name', '')}"
+        if key not in duplicate_keys:
+            data.pop("nth", None)
+
+    snapshot = "\n".join(out) or "(empty)"
+    if compact:
+        snapshot = _compact_role_tree(snapshot)
+    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
+    snapshot = "\n".join(trimmed_lines)
+    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
+    return {
+        "snapshot": snapshot,
+        "refs": refs,
+        "truncated": truncated,
+        "stats": _role_snapshot_stats(snapshot, refs),
+    }
+
+
+def _build_role_snapshot_from_ai_text(
+    ai_snapshot: str,
+    *,
+    interactive: bool,
+    compact: bool,
+    max_depth: Optional[int] = None,
+    line_limit: int = 500,
+    max_chars: int = 64000,
+) -> Dict[str, Any]:
+    lines = str(ai_snapshot or "").split("\n")
+    refs: Dict[str, Dict[str, Any]] = {}
+    out: List[str] = []
+
+    for line in lines:
+        depth = _snapshot_line_depth(line)
+        if max_depth is not None and depth > max_depth:
+            continue
+
+        m = re.match(r'^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$', line)
+        if not m:
+            out.append(line)
+            continue
+
+        _, role_raw, name, suffix = m.group(1), m.group(2), m.group(3), m.group(4)
+        if role_raw.startswith("/"):
+            out.append(line)
+            continue
+
+        role = (role_raw or "").lower()
+        if interactive and role not in _ROLE_INTERACTIVE:
+            continue
+        if compact and role in _ROLE_STRUCTURAL and not name:
+            continue
+
+        ref = _parse_ai_ref(suffix or "")
+        if ref:
+            refs[ref] = {"role": role, **({"name": name} if name else {})}
+        out.append(line)
+
+    snapshot = "\n".join(out) or "(empty)"
+    if compact:
+        snapshot = _compact_role_tree(snapshot)
+    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
+    snapshot = "\n".join(trimmed_lines)
+    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
+    return {
+        "snapshot": snapshot,
+        "refs": refs,
+        "truncated": truncated,
+        "stats": _role_snapshot_stats(snapshot, refs),
+    }
+
+
+def _build_role_refs_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    refs: Dict[str, Dict[str, Any]] = {}
+    counts_by_key: Dict[str, int] = defaultdict(int)
+    refs_by_key: Dict[str, List[str]] = defaultdict(list)
+
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref_id") or "").strip()
+        if not ref:
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        role = str(attrs.get("role") or "").strip().lower()
+        if not role:
+            tag = str(item.get("tag") or "").strip().lower()
+            if tag == "a":
+                role = "link"
+            elif tag in {"input", "textarea"}:
+                role = "textbox"
+            elif tag == "select":
+                role = "combobox"
+            elif tag == "button":
+                role = "button"
+            else:
+                role = "generic"
+
+        name = str(item.get("text") or attrs.get("aria-label") or "").strip() or None
+        key = f"{role}:{name or ''}"
+        nth = counts_by_key[key]
+        counts_by_key[key] += 1
+        refs_by_key[key].append(ref)
+
+        payload: Dict[str, Any] = {"role": role}
+        if name:
+            payload["name"] = name
+        if nth > 0:
+            payload["nth"] = nth
+        refs[ref] = payload
+
+    duplicate_keys = {k for k, v in refs_by_key.items() if len(v) > 1}
+    for ref, data in refs.items():
+        key = f"{data.get('role', '')}:{data.get('name', '')}"
+        if key not in duplicate_keys:
+            data.pop("nth", None)
+    return refs
+
+
+async def _try_snapshot_for_ai(page: Page, timeout_ms: int = 5000) -> Optional[str]:
+    timeout_ms = max(500, min(int(timeout_ms or 5000), 60000))
+
+    # Playwright 내부 채널 snapshotForAI 시도 (OpenClaw parity)
+    try:
+        impl = getattr(page, "_impl_obj", None)
+        channel = getattr(impl, "_channel", None)
+        send = getattr(channel, "send", None)
+        if callable(send):
+            res = await send("snapshotForAI", {"timeout": timeout_ms, "track": "response"})
+            if isinstance(res, dict):
+                text = str(res.get("full") or "")
+                if text.strip():
+                    return text
+    except Exception:
+        pass
+
+    # fallback: 접근성 스냅샷 문자열
+    try:
+        locator = page.locator(":root")
+        aria_text = await locator.aria_snapshot(timeout=timeout_ms)
+        if isinstance(aria_text, str) and aria_text.strip():
+            return aria_text
+    except Exception:
+        pass
+    return None
+
+
+def _build_snapshot_text(
+    elements: List[Dict[str, Any]],
+    *,
+    interactive_only: bool,
+    compact: bool,
+    limit: int,
+    max_chars: int,
+) -> Dict[str, Any]:
+    lines: List[str] = []
+    char_count = 0
+    max_items = max(1, min(int(limit or 200), 5000))
+    max_chars = max(200, min(int(max_chars or 24000), 120000))
+    for idx, item in enumerate(elements):
+        if not isinstance(item, dict):
+            continue
+        if interactive_only and not _element_is_interactive(item):
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        tag = str(item.get("tag") or "").strip().lower() or "node"
+        role = str(attrs.get("role") or "").strip().lower()
+        ref = str(item.get("ref_id") or "").strip() or f"e{idx}"
+        text = str(item.get("text") or "").strip()
+        aria_label = str(attrs.get("aria-label") or "").strip()
+        placeholder = str(attrs.get("placeholder") or "").strip()
+        title = str(attrs.get("title") or "").strip()
+        label = text or aria_label or placeholder or title
+        label = re.sub(r"\s+", " ", label).strip()
+        if len(label) > 140:
+            label = label[:140]
+        kind = role or tag
+        if compact:
+            if label:
+                line = f"- {kind} \"{label}\" [ref={ref}]"
+            else:
+                line = f"- {kind} [ref={ref}]"
+        else:
+            line = f"- tag={tag} role={role or '-'} ref={ref}"
+            if label:
+                line += f" text=\"{label}\""
+            if placeholder:
+                line += f" placeholder=\"{placeholder[:80]}\""
+        if char_count + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        char_count += len(line) + 1
+        if len(lines) >= max_items:
+            break
+    return {
+        "lines": lines,
+        "text": "\n".join(lines),
+        "stats": {
+            "line_count": len(lines),
+            "char_count": char_count,
+            "interactive_only": bool(interactive_only),
+            "compact": bool(compact),
+            "limit": max_items,
+            "max_chars": max_chars,
+        },
+    }
+
+
 async def _browser_start(params: Dict[str, Any]) -> Dict[str, Any]:
     session_id = str(params.get("session_id", "default"))
     url = str(params.get("url") or "")
@@ -3207,6 +3929,21 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
     session_id = str(params.get("session_id", "default"))
     tab_id = params.get("tab_id")
     url = str(params.get("url") or "")
+    snapshot_format = str(params.get("format") or "").strip().lower()
+    mode = str(params.get("mode") or "").strip().lower()
+    refs_mode = str(params.get("refs") or "ref").strip().lower()
+    if refs_mode not in {"ref", "role", "aria"}:
+        refs_mode = "ref"
+
+    if mode == "efficient" and snapshot_format == "aria":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "invalid_snapshot_options",
+                "message": "mode=efficient is not allowed with format=aria",
+            },
+        )
+
     if tab_id is not None:
         session, page = await _resolve_session_page(session_id, tab_id=int(tab_id))
         if url:
@@ -3224,7 +3961,7 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
         session, page = await _resolve_session_page(session_id)
     elements = snap.get("dom_elements") or snap.get("elements") or []
     elements_by_ref = _extract_elements_by_ref(snap)
-    return {
+    result = {
         "success": True,
         "reason_code": "ok",
         "session_id": session_id,
@@ -3238,6 +3975,172 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
         "elements_by_ref": elements_by_ref,
         "current_url": page.url,
     }
+
+    wants_text_snapshot = bool(snapshot_format in {"ai", "aria", "role"} or mode == "efficient")
+    if wants_text_snapshot:
+        interactive = bool(params.get("interactive", mode == "efficient"))
+        compact = bool(params.get("compact", mode == "efficient"))
+        limit = int(params.get("limit") or 700)
+        max_chars = int(params.get("max_chars") or params.get("maxChars") or 64000)
+        timeout_ms = int(params.get("timeout_ms") or params.get("timeoutMs") or 5000)
+        max_depth_raw = params.get("max_depth", params.get("maxDepth"))
+        max_depth: Optional[int] = None
+        if max_depth_raw is not None and str(max_depth_raw).strip() != "":
+            try:
+                max_depth = max(0, int(max_depth_raw))
+            except Exception:
+                max_depth = None
+        selector = str(params.get("selector") or "").strip()
+        frame_filter = params.get("frame")
+        requested_format = snapshot_format or ("ai" if mode == "efficient" else "ref")
+
+        if refs_mode == "aria" and (selector or frame_filter is not None):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": "invalid_snapshot_options",
+                    "message": "refs=aria does not support selector/frame snapshots yet.",
+                },
+            )
+
+        filtered_elements = elements
+        if selector:
+            needle = selector.lower()
+            filtered_elements = [
+                el for el in filtered_elements
+                if needle in str(el.get("selector") or "").lower()
+                or needle in str(el.get("full_selector") or "").lower()
+            ]
+        if frame_filter is not None:
+            try:
+                frame_idx = int(frame_filter)
+                filtered_elements = [
+                    el for el in filtered_elements
+                    if int(((el.get("scope") or {}).get("frame_index", el.get("frame_index", 0)) or 0)) == frame_idx
+                ]
+            except Exception:
+                pass
+
+        refs_from_elements = _build_role_refs_from_elements(filtered_elements)
+        meta_base = {
+            "selector": selector,
+            "frame": frame_filter,
+            "interactive": interactive,
+            "compact": compact,
+            "limit": limit,
+            "max_chars": max_chars,
+            "max_depth": max_depth,
+            "timeout_ms": timeout_ms,
+            "refs_mode_requested": refs_mode,
+        }
+
+        used_special_snapshot = False
+
+        # OpenClaw parity: role/aria snapshot 우선
+        if requested_format in {"role", "aria"}:
+            aria_text = ""
+            try:
+                target_locator = None
+                if frame_filter is not None:
+                    frame_idx = int(frame_filter)
+                    frames = page.frames
+                    if frame_idx < 0 or frame_idx >= len(frames):
+                        raise ValueError(f"frame index out of range: {frame_idx}")
+                    frame_obj = frames[frame_idx]
+                    if selector:
+                        target_locator = frame_obj.locator(selector).first
+                    else:
+                        target_locator = frame_obj.locator(":root")
+                else:
+                    if selector:
+                        target_locator = page.locator(selector).first
+                    else:
+                        target_locator = page.locator(":root")
+                aria_text = await target_locator.aria_snapshot(timeout=max(500, min(timeout_ms, 60000)))
+            except Exception:
+                aria_text = ""
+
+            if isinstance(aria_text, str) and aria_text.strip():
+                role_payload = _build_role_snapshot_from_aria_text(
+                    aria_text,
+                    interactive=interactive,
+                    compact=compact,
+                    max_depth=max_depth,
+                    line_limit=max(1, min(limit, 2000)),
+                    max_chars=max_chars,
+                )
+                role_refs = role_payload.get("refs") if isinstance(role_payload.get("refs"), dict) else {}
+                effective_refs_mode = refs_mode
+                if refs_mode == "aria":
+                    # Python 환경에서는 role 경로로 폴백될 수 있음
+                    effective_refs_mode = "role"
+                result.update(
+                    {
+                        "format": requested_format,
+                        "mode": mode or "full",
+                        "refs_mode": effective_refs_mode,
+                        "snapshot": role_payload.get("snapshot", ""),
+                        "snapshot_lines": str(role_payload.get("snapshot", "")).split("\n"),
+                        "snapshot_stats": role_payload.get("stats", {}),
+                        "refs": role_refs,
+                        "meta": {**meta_base, "snapshot_source": "aria_snapshot"},
+                    }
+                )
+                used_special_snapshot = True
+
+        # OpenClaw parity: ai snapshot (_snapshotForAI) 우선 시도
+        if (not used_special_snapshot) and requested_format in {"ai"}:
+            ai_text = await _try_snapshot_for_ai(page, timeout_ms=timeout_ms)
+            if isinstance(ai_text, str) and ai_text.strip():
+                ai_payload = _build_role_snapshot_from_ai_text(
+                    ai_text,
+                    interactive=interactive,
+                    compact=compact,
+                    max_depth=max_depth,
+                    line_limit=max(1, min(limit, 5000)),
+                    max_chars=max_chars,
+                )
+                parsed_refs = ai_payload.get("refs") if isinstance(ai_payload.get("refs"), dict) else {}
+                effective_refs = parsed_refs or refs_from_elements
+                effective_refs_mode = "aria" if parsed_refs else "role"
+                if refs_mode == "ref":
+                    effective_refs_mode = "ref"
+                result.update(
+                    {
+                        "format": requested_format,
+                        "mode": mode or "full",
+                        "refs_mode": effective_refs_mode,
+                        "snapshot": ai_payload.get("snapshot", ""),
+                        "snapshot_lines": str(ai_payload.get("snapshot", "")).split("\n"),
+                        "snapshot_stats": ai_payload.get("stats", {}),
+                        "refs": effective_refs,
+                        "meta": {**meta_base, "snapshot_source": "ai_snapshot"},
+                    }
+                )
+                used_special_snapshot = True
+
+        if not used_special_snapshot:
+            text_payload = _build_snapshot_text(
+                filtered_elements,
+                interactive_only=interactive,
+                compact=compact,
+                limit=limit,
+                max_chars=max_chars,
+            )
+            result.update(
+                {
+                    "format": requested_format,
+                    "mode": mode or "full",
+                    "refs_mode": refs_mode,
+                    "snapshot": text_payload.get("text", ""),
+                    "snapshot_lines": text_payload.get("lines", []),
+                    "snapshot_stats": text_payload.get("stats", {}),
+                    "refs": refs_from_elements,
+                    "meta": {**meta_base, "snapshot_source": "dom_elements"},
+                }
+            )
+
+    return result
 
 
 async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -3339,6 +4242,14 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
     js_expr = str(params.get("js") or "")
     target_url = str(params.get("url") or "")
     load_state = str(params.get("load_state") or "")
+    text_contains = str(params.get("text") or "")
+    text_gone = str(params.get("text_gone") or params.get("textGone") or "")
+    time_ms = params.get("time_ms", params.get("timeMs"))
+    if isinstance(time_ms, (int, str)) and str(time_ms).strip():
+        try:
+            timeout_ms = max(timeout_ms, int(time_ms))
+        except Exception:
+            pass
 
     if target_url:
         current = normalize_url(page.url)
@@ -3349,6 +4260,10 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
         await page.wait_for_load_state(load_state, timeout=timeout_ms)
     if selector:
         await page.locator(selector).first.wait_for(state=selector_state, timeout=timeout_ms)
+    if text_contains:
+        await page.locator(f"text={text_contains}").first.wait_for(state="visible", timeout=timeout_ms)
+    if text_gone:
+        await page.locator(f"text={text_gone}").first.wait_for(state="hidden", timeout=timeout_ms)
     if js_expr:
         start = time.time()
         ok = False
@@ -3371,6 +4286,8 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
         "meta": {
             "selector": selector,
             "selector_state": selector_state,
+            "text": text_contains,
+            "text_gone": text_gone,
             "load_state": load_state,
             "js": bool(js_expr),
             "timeout_ms": timeout_ms,
@@ -3890,6 +4807,53 @@ async def execute_action(request: McpRequest):
         action = request.action
         params = request.params
         session_id = params.get("session_id", "default")
+
+        action_aliases = {
+            "start": "browser_start",
+            "install": "browser_install",
+            "profiles": "browser_profiles",
+            "tabs": "browser_tabs",
+            "snapshot": "browser_snapshot",
+            "act": "browser_act",
+            "wait": "browser_wait",
+            "console": "browser_console_get",
+            "console_get": "browser_console_get",
+            "errors": "browser_errors_get",
+            "errors_get": "browser_errors_get",
+            "requests": "browser_requests_get",
+            "requests_get": "browser_requests_get",
+            "response_body": "browser_response_body",
+            "trace_start": "browser_trace_start",
+            "trace_stop": "browser_trace_stop",
+            "highlight": "browser_highlight",
+            "dialog_arm": "browser_dialog_arm",
+            "file_chooser_arm": "browser_file_chooser_arm",
+            "download_wait": "browser_download_wait",
+            "state": "browser_state",
+            "env": "browser_env",
+            "close": "browser_close",
+            "browser.start": "browser_start",
+            "browser.install": "browser_install",
+            "browser.profiles": "browser_profiles",
+            "browser.tabs": "browser_tabs",
+            "browser.snapshot": "browser_snapshot",
+            "browser.act": "browser_act",
+            "browser.wait": "browser_wait",
+            "browser.console_get": "browser_console_get",
+            "browser.errors_get": "browser_errors_get",
+            "browser.requests_get": "browser_requests_get",
+            "browser.response_body": "browser_response_body",
+            "browser.trace_start": "browser_trace_start",
+            "browser.trace_stop": "browser_trace_stop",
+            "browser.highlight": "browser_highlight",
+            "browser.dialog_arm": "browser_dialog_arm",
+            "browser.file_chooser_arm": "browser_file_chooser_arm",
+            "browser.download_wait": "browser_download_wait",
+            "browser.state": "browser_state",
+            "browser.env": "browser_env",
+            "browser.close": "browser_close",
+        }
+        action = action_aliases.get(action, action)
 
         if action == "browser_start":
             return await _browser_start(params)

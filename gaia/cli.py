@@ -1016,6 +1016,9 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     control = _resolve_control_channel(args, profile)
 
     if control == "telegram":
+        if runtime != "terminal":
+            print("Telegram 제어 채널에서는 terminal runtime으로 고정합니다.")
+            runtime = "terminal"
         tg_setup = _resolve_telegram_setup_strategy(args, profile)
         tg_mode = ""
         tg_token_file = ""
