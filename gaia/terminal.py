@@ -8,7 +8,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from gaia.common import (
     build_run_context,
@@ -396,19 +396,49 @@ def run_terminal(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
+def _extract_inline_test_data(query: str) -> tuple[str, Dict[str, str]]:
+    tokens = [t for t in str(query or "").split() if t.strip()]
+    data: Dict[str, str] = {}
+    keep: list[str] = []
+    aliases = {
+        "id": "username",
+        "user": "username",
+        "username": "username",
+        "email": "email",
+        "pw": "password",
+        "password": "password",
+    }
+    for tok in tokens:
+        if "=" not in tok:
+            keep.append(tok)
+            continue
+        k, v = tok.split("=", 1)
+        key = aliases.get(k.strip().lower())
+        if not key:
+            keep.append(tok)
+            continue
+        value = v.strip().strip('"').strip("'")
+        if value:
+            data[key] = value
+    return " ".join(keep).strip(), data
+
+
 def _build_test_goal(url: str, query: str) -> TestGoal:
+    clean_query, inline_data = _extract_inline_test_data(query)
+    query_text = clean_query or query
     ts = int(time.time())
-    words = [w for w in query.replace("/", " ").split() if w.strip()]
+    words = [w for w in query_text.replace("/", " ").split() if w.strip()]
     keywords = words[:5]
     return TestGoal(
         id=f"CHAT_{ts}",
-        name=(query[:40] or "chat test").strip(),
-        description=query,
+        name=(query_text[:40] or "chat test").strip(),
+        description=query_text,
         priority="MUST",
         keywords=keywords,
-        success_criteria=[query],
+        success_criteria=[query_text],
         max_steps=20,
         start_url=url,
+        test_data=inline_data,
     )
 
 
@@ -425,11 +455,16 @@ def _print_llm_failure_help(reason: str) -> None:
     print("  3) OpenAI는 manual(API key)로 재인증")
 
 
-def _run_single_chat_goal(url: str, query: str) -> int:
+def _run_single_chat_goal(
+    url: str,
+    query: str,
+    intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+) -> Tuple[int, Dict[str, Any]]:
     goal = _build_test_goal(url=url, query=query)
     agent = GoalDrivenAgent(
         mcp_host_url=CONFIG.mcp.host_url,
         session_id=f"chat_{int(time.time())}",
+        intervention_callback=intervention_callback,
     )
     print(f"목표 실행: {goal.description}")
     result = agent.execute_goal(goal)
@@ -441,7 +476,39 @@ def _run_single_chat_goal(url: str, query: str) -> int:
     print(f"duration: {result.duration_seconds:.2f}s")
     if not result.success:
         _print_llm_failure_help(result.final_reason)
-    return 0 if result.success else 1
+    summary = {
+        "goal": result.goal_name,
+        "status": "success" if result.success else "failed",
+        "steps": result.total_steps,
+        "reason": result.final_reason,
+        "duration_seconds": round(float(result.duration_seconds), 2),
+    }
+    if isinstance(goal.test_data, dict):
+        auth_payload = {}
+        for key in (
+            "auth_mode",
+            "username",
+            "email",
+            "password",
+            "department",
+            "grade_year",
+            "return_credentials",
+        ):
+            value = goal.test_data.get(key)
+            if value not in (None, "", False):
+                auth_payload[key] = value
+        if auth_payload:
+            summary["auth"] = auth_payload
+    return (0 if result.success else 1), summary
+
+
+def run_chat_terminal_once(
+    *,
+    url: str,
+    query: str,
+    intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    return _run_single_chat_goal(url=url, query=query, intervention_callback=intervention_callback)
 
 
 def run_chat_terminal(
@@ -459,7 +526,8 @@ def run_chat_terminal(
             print("A query is required when repl=False.", file=sys.stderr)
             return 2
         try:
-            return _run_single_chat_goal(url, initial_query)
+            code, _ = _run_single_chat_goal(url, initial_query)
+            return code
         except Exception as exc:
             print(f"Terminal chat failed: {exc}", file=sys.stderr)
             return 1
@@ -503,7 +571,7 @@ def run_chat_terminal(
             continue
 
         try:
-            code = _run_single_chat_goal(current_url, line)
+            code, _ = _run_single_chat_goal(current_url, line)
             if code != 0:
                 print(f"실행 종료 코드: {code}")
         except Exception as exc:
@@ -544,6 +612,7 @@ def run_ai_terminal(*, url: str, max_actions: int = 50) -> int:
 __all__ = [
     "run_terminal",
     "run_chat_terminal",
+    "run_chat_terminal_once",
     "run_ai_terminal",
     "build_run_context",
     "_build_summary",

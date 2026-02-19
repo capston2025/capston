@@ -152,6 +152,11 @@ class ExploratoryAgent:
             return "LLM 호출 중단: 인증 오류(401/Unauthorized)."
         if "forbidden" in text or "403" in text:
             return "LLM 호출 중단: 권한 오류(403 Forbidden)."
+        if "empty_response_from_codex_exec" in text or "empty_response_from_model" in text:
+            return (
+                "LLM 호출 중단: 모델 응답이 비어 있습니다. "
+                "Codex CLI 버전/로그인 상태를 확인하고 다시 시도하세요."
+            )
         if "failed to read prompt from stdin" in text or "not valid utf-8" in text:
             return (
                 "LLM 호출 중단: Codex CLI 입력 인코딩(UTF-8) 오류입니다. "
@@ -1163,12 +1168,20 @@ class ExploratoryAgent:
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
                 json={
-                    "action": "snapshot_page",
+                    "action": "browser_snapshot",
                     "params": {"session_id": self.session_id},
                 },
                 timeout=30,
             )
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception:
+                data = {"error": response.text or "invalid_json_response"}
+
+            if response.status_code >= 400:
+                detail = data.get("detail") or data.get("error") or response.reason
+                self._log(f"DOM 분석 오류: HTTP {response.status_code} - {detail}")
+                return []
 
             if "error" in data:
                 self._log(f"DOM 분석 오류: {data['error']}")
@@ -2069,6 +2082,19 @@ JSON 응답:"""
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
+        if not text:
+            return ExplorationDecision(
+                should_continue=False,
+                reasoning="LLM 오류: empty_response_from_model",
+                confidence=0.0,
+            )
+
+        # Codex CLI 로그가 앞에 붙는 경우 JSON 부분만 추출
+        if not text.startswith("{"):
+            first = text.find("{")
+            last = text.rfind("}")
+            if first != -1 and last != -1 and last > first:
+                text = text[first:last + 1].strip()
 
         try:
             data = json.loads(text)
@@ -2291,15 +2317,35 @@ JSON 응답:"""
         self._last_exec_meta = {}
 
         resolved_ref_id = ref_id
+        is_element_action = action in {
+            "click",
+            "fill",
+            "press",
+            "hover",
+            "scroll",
+            "select",
+            "dragAndDrop",
+            "dragSlider",
+        }
         if (
             not resolved_ref_id
             and selector
-            and action in {"click", "fill", "press", "hover"}
+            and is_element_action
             and self._active_snapshot_id
         ):
             resolved_ref_id = self._selector_to_ref_id.get(selector)
 
-        if resolved_ref_id and action in {"click", "fill", "press", "hover"} and self._active_snapshot_id:
+        if is_element_action and not (resolved_ref_id and self._active_snapshot_id):
+            self._last_exec_meta = {
+                "reason_code": "ref_required",
+                "reason": "Ref-only policy: snapshot_id + ref_id required",
+                "effective": False,
+                "state_change": {},
+                "attempt_logs": [],
+            }
+            return False, "[ref_required] Ref-only policy: snapshot_id + ref_id required"
+
+        if resolved_ref_id and is_element_action and self._active_snapshot_id:
             ref_params: Dict[str, object] = {
                 "session_id": self.session_id,
                 "snapshot_id": self._active_snapshot_id,
@@ -2314,7 +2360,7 @@ JSON 응답:"""
             try:
                 response = requests.post(
                     f"{self.mcp_host_url}/execute",
-                    json={"action": "execute_ref_action", "params": ref_params},
+                    json={"action": "browser_act", "params": ref_params},
                     timeout=self.config.action_timeout,
                 )
                 data = response.json()
@@ -2369,7 +2415,7 @@ JSON 응답:"""
         try:
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
-                json={"action": "execute_action", "params": params},
+                json={"action": "browser_act", "params": params},
                 timeout=self.config.action_timeout,
             )
 
