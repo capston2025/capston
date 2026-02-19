@@ -844,8 +844,10 @@ async def _resolve_single_locator(page: Page, selector: str, timeout_ms: int = 1
     element = locator.nth(0)
     try:
         await element.wait_for(state="attached", timeout=timeout_ms)
-    except Exception:
-        pass
+    except Exception as e:
+        print(
+            f"Warning: _resolve_single_locator에서 '{selector}' 엘리먼트를 기다리는 중 오류 발생: {e}"
+        )
     return element, None
 
 
@@ -885,8 +887,11 @@ async def _execute_assertion(
                     elements = page.get_by_text(value, exact=False)
                     count = await elements.count()
                     if count != 1:
+                        error_prefix = (
+                            "ambiguous_text_target" if count > 1 else "not_found_text_target"
+                        )
                         raise ValueError(
-                            f"ambiguous_text_target: text '{value}' matched {count} elements"
+                            f"{error_prefix}: text '{value}' matched {count} elements"
                         )
                     element = elements.nth(0)
                     await element.wait_for(
