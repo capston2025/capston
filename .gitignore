@@ -35,9 +35,11 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.playwright-cli/
 playwright-report/
 server/playwright-report/
 server/test-results/
+venv.pip_install_and_link Pathname.pwd
 
 # Sub-projects or external code
 /server/playwright-mcp/
