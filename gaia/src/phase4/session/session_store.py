@@ -26,7 +26,7 @@ def session_file_path(session_key: str) -> Path:
 
 def allocate_session_id(session_key: str) -> str:
     safe = _safe_key(session_key)
-    return f"{safe}_{int(time.time())}"
+    return f"{safe}_{time.time_ns()}"
 
 
 def load_session_state(session_key: str) -> Optional[SessionState]:
@@ -58,4 +58,3 @@ def save_session_state(state: SessionState) -> Path:
         encoding="utf-8",
     )
     return path
-

@@ -2117,9 +2117,8 @@ Return JSON (no markdown):
                 "select",
                 "dragAndDrop",
                 "dragSlider",
-                "focus",
             }
-            action_name = action
+            action_name = "click" if action == "focus" else action
             act_params: Dict[str, Any] = {
                 "session_id": self.session_id,
                 "url": url,

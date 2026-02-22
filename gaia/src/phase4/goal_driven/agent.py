@@ -233,6 +233,10 @@ class GoalDrivenAgent:
             dom = self._analyze_dom()
             if dom:
                 return dom
+        # 이미 진행된 실행 컨텍스트를 잃지 않기 위해, 중후반 phase에서는 시작 URL 강제 복귀를 피합니다.
+        if (self._runtime_phase or "").upper() in {"AUTH", "COMPOSE", "APPLY", "VERIFY"} or self._no_progress_counter > 0:
+            self._log("🛠️ DOM 복구: 현재 컨텍스트 유지(시작 URL 강제 복귀 생략)")
+            return []
         start_url = str(getattr(goal, "start_url", "") or "").strip()
         if start_url:
             self._log("🛠️ DOM 복구: 시작 URL로 재동기화 시도")
@@ -271,8 +275,9 @@ class GoalDrivenAgent:
 
         numeric_values: List[int] = []
         metric_terms: List[str] = []
-        for match in re.finditer(r"(?<!\d)(\d{1,3})(?!\d)\s*([^\d\s,.;:()]{1,12})?", text):
-            value = int(match.group(1))
+        number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
+        for match in re.finditer(rf"(?<!\d){number_pattern}(?!\d)\s*([^\d\s,.;:()]{1,12})?", text):
+            value = int(str(match.group(1)).replace(",", ""))
             numeric_values.append(value)
             maybe_term = (match.group(2) or "").strip()
             if maybe_term:
@@ -315,20 +320,43 @@ class GoalDrivenAgent:
         text = cls._normalize_text(value)
         if not text:
             return []
+
+        number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
+
+        def _to_int(raw: str) -> int:
+            return int(str(raw).replace(",", ""))
+
         numbers: List[int] = []
         term_matches = 0
         for term in metric_terms or []:
             safe_term = re.escape(str(term))
-            for m in re.finditer(rf"(\d{{1,3}})\s*{safe_term}", text):
-                numbers.append(int(m.group(1)))
+            for m in re.finditer(rf"{number_pattern}\s*{safe_term}", text):
+                numbers.append(_to_int(m.group(1)))
                 term_matches += 1
-            for m in re.finditer(rf"{safe_term}\s*(\d{{1,3}})", text):
-                numbers.append(int(m.group(1)))
+            for m in re.finditer(rf"{safe_term}\s*{number_pattern}", text):
+                numbers.append(_to_int(m.group(1)))
                 term_matches += 1
         if term_matches > 0:
-            numbers.extend(int(m.group(1)) for m in re.finditer(r"\((\d{1,3})\)", text))
+            numbers.extend(_to_int(m.group(1)) for m in re.finditer(rf"\({number_pattern}\)", text))
             return numbers
-        return [int(m.group(1)) for m in re.finditer(r"(?<!\d)(\d{1,3})(?!\d)", text)]
+
+        # metric_terms가 있는데 매칭이 없으면 잡음 가능성이 높으므로 보수적으로 무시합니다.
+        if metric_terms:
+            return []
+
+        contextual_numbers: List[int] = []
+        context_patterns = [
+            rf"(?:총|합계|count|counts|items?|item|total|현재|수량|개수|학점)\s*[:=]?\s*{number_pattern}",
+            rf"{number_pattern}\s*(?:개|건|명|점|학점|items?|item|count)",
+        ]
+        for pattern in context_patterns:
+            for m in re.finditer(pattern, text):
+                contextual_numbers.append(_to_int(m.group(1)))
+        if contextual_numbers:
+            return contextual_numbers
+
+        # 마지막 fallback은 괄호형 수치만 허용해 일반 DOM 숫자 노이즈를 줄입니다.
+        return [_to_int(m.group(1)) for m in re.finditer(rf"\({number_pattern}\)", text)]
 
     def _estimate_goal_metric_from_dom(self, dom_elements: List[DOMElement]) -> Optional[float]:
         metric_kind = str(self._goal_constraints.get("metric") or "").strip().lower()
@@ -349,7 +377,19 @@ class GoalDrivenAgent:
                     continue
                 values.extend(self._extract_metric_values_from_text(str(field), metric_terms))
 
-        filtered = [v for v in values if 0 <= int(v) <= 300]
+        collect_min = self._goal_constraints.get("collect_min")
+        apply_target = self._goal_constraints.get("apply_target")
+        dynamic_upper = 10000
+        try:
+            if collect_min is not None:
+                dynamic_upper = max(dynamic_upper, int(collect_min) * 4)
+            if apply_target is not None:
+                dynamic_upper = max(dynamic_upper, int(apply_target) * 4)
+        except Exception:
+            pass
+        dynamic_upper = min(dynamic_upper, 1_000_000)
+
+        filtered = [v for v in values if 0 <= int(v) <= dynamic_upper]
         if not filtered:
             return None
         return float(max(filtered))
@@ -568,8 +608,30 @@ class GoalDrivenAgent:
         self._log(
             "🧱 목표 제약 가드: 수집 후보를 찾지 못해 대기/컨텍스트 전환을 유도합니다."
         )
+        scroll_target_id: Optional[int] = None
+        shift_pick = self._pick_collect_context_shift_element(dom_elements, set())
+        if shift_pick is not None:
+            scroll_target_id = shift_pick[0]
+        elif dom_elements:
+            for el in dom_elements:
+                ref_id = self._element_ref_ids.get(el.id)
+                if ref_id and not self._is_ref_temporarily_blocked(ref_id):
+                    scroll_target_id = el.id
+                    break
+        if scroll_target_id is None:
+            return ActionDecision(
+                action=ActionType.WAIT,
+                reasoning=(
+                    f"최소 수집 기준({collect_min}{metric_label}) 미달이며 유효한 ref 대상을 찾지 못했습니다. "
+                    "DOM 재수집 후 다시 시도합니다."
+                ),
+                confidence=0.45,
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
         return ActionDecision(
             action=ActionType.SCROLL,
+            element_id=scroll_target_id,
             reasoning=(
                 f"최소 수집 기준({collect_min}{metric_label}) 미달 상태입니다. "
                 "수집 가능한 요소가 보일 때까지 컨텍스트를 전환합니다."
@@ -2114,11 +2176,30 @@ class GoalDrivenAgent:
                 else:
                     if collect_unmet:
                         self._log("🧭 전환 후보 부족: 수집 CTA 노출을 위해 스크롤 전환을 시도합니다.")
-                        shift_decision = ActionDecision(
-                            action=ActionType.SCROLL,
-                            reasoning="수집 목표 미달 상태에서 새 수집 요소 탐색을 위한 스크롤 전환",
-                            confidence=0.6,
-                        )
+                        scroll_target_id: Optional[int] = None
+                        shift_pick = self._pick_collect_context_shift_element(dom_elements, set())
+                        if shift_pick is not None:
+                            scroll_target_id = shift_pick[0]
+                        elif dom_elements:
+                            for el in dom_elements:
+                                ref_id = self._element_ref_ids.get(el.id)
+                                if ref_id and not self._is_ref_temporarily_blocked(ref_id):
+                                    scroll_target_id = el.id
+                                    break
+                        if scroll_target_id is None:
+                            self._log("🧭 스크롤 전환 대상(ref)을 찾지 못해 이번 스텝은 대기로 전환합니다.")
+                            shift_decision = ActionDecision(
+                                action=ActionType.WAIT,
+                                reasoning="컨텍스트 전환 대상(ref) 부재로 DOM 재수집 대기",
+                                confidence=0.45,
+                            )
+                        else:
+                            shift_decision = ActionDecision(
+                                action=ActionType.SCROLL,
+                                element_id=scroll_target_id,
+                                reasoning="수집 목표 미달 상태에서 새 수집 요소 탐색을 위한 스크롤 전환",
+                                confidence=0.6,
+                            )
                         step_result, success, error = sub_agent.run_step(
                             step_number=step_count,
                             step_start=step_start,
@@ -3051,6 +3132,7 @@ JSON 응답:"""
                 ActionType.FILL,
                 ActionType.PRESS,
                 ActionType.HOVER,
+                ActionType.SCROLL,
                 ActionType.SELECT,
             } and decision.element_id is None:
                 self._last_exec_result = ActionExecResult(
