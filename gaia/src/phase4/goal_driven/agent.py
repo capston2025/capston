@@ -750,7 +750,7 @@ class GoalDrivenAgent:
         if success and changed:
             self._ineffective_ref_counts.pop(ref_id, None)
             return
-        if reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target"}:
+        if reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "ambiguous_selector"}:
             self._ineffective_ref_counts[ref_id] = int(self._ineffective_ref_counts.get(ref_id, 0)) + 1
 
     @staticmethod
@@ -858,7 +858,7 @@ class GoalDrivenAgent:
             if int(stat.get("hard_fail") or 0) > 0:
                 stat["hard_fail"] = int(stat["hard_fail"]) - 1
             return
-        if reason_code in {"no_state_change", "not_actionable", "blocked_ref_no_progress", "ambiguous_ref_target"}:
+        if reason_code in {"no_state_change", "not_actionable", "blocked_ref_no_progress", "ambiguous_ref_target", "ambiguous_selector"}:
             stat["soft_fail"] = min(200, int(stat.get("soft_fail") or 0) + 1)
         else:
             stat["hard_fail"] = min(200, int(stat.get("hard_fail") or 0) + 1)
@@ -2485,13 +2485,13 @@ class GoalDrivenAgent:
                     time.sleep(0.25)
                     continue
 
-                if self._no_progress_counter >= 2 and reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
+                if self._no_progress_counter >= 2 and reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "ambiguous_selector", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
                     ActionType.CLICK,
                     ActionType.FILL,
                     ActionType.PRESS,
                 }:
                     force_context_shift = True
-                if reason_code in {"snapshot_not_found", "stale_snapshot", "ref_required", "ambiguous_ref_target", "not_found"}:
+                if reason_code in {"snapshot_not_found", "stale_snapshot", "ref_required", "ambiguous_ref_target", "ambiguous_selector", "not_found"}:
                     self._log("♻️ snapshot/ref 갱신이 필요해 DOM을 재수집합니다.")
                     _ = self._analyze_dom()
                     ineffective_action_streak = 0
@@ -3396,7 +3396,7 @@ JSON 응답:"""
 
             reason_code = str(data.get("reason_code") or data.get("error") or "unknown_error")
             reason = str(data.get("reason") or data.get("message") or data.get("detail") or "Unknown error")
-            if reason_code in {"snapshot_not_found", "stale_snapshot", "ambiguous_ref_target"}:
+            if reason_code in {"snapshot_not_found", "stale_snapshot", "ambiguous_ref_target", "ambiguous_selector"}:
                 reason = (
                     f"{reason} | 최신 snapshot/ref로 다시 시도해야 합니다."
                     if reason

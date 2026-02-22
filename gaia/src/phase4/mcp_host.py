@@ -5084,13 +5084,14 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
     )
     ok = bool(legacy.get("success"))
     reason = str(legacy.get("message") or legacy.get("reason") or "")
-    reason_code = "ok" if ok else str(legacy.get("reason_code") or "failed")
+    reason_code = str(legacy.get("reason_code") or ("ok" if ok else "failed"))
+    effective = bool(legacy.get("effective", ok))
     return {
         "success": ok,
-        "effective": ok,
+        "effective": effective,
         "reason_code": reason_code,
         "reason": reason or ("ok" if ok else "action_failed"),
-        "state_change": {"effective": ok},
+        "state_change": {"effective": effective},
         "attempt_logs": [],
         "snapshot_id_used": snapshot_id,
         "ref_id_used": ref_id,

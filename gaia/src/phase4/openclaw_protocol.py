@@ -83,6 +83,8 @@ REASON_CODES = {
     "request_exception",
     "tab_scope_mismatch",
     "frame_scope_mismatch",
+    "ambiguous_selector",
+    "ambiguous_ref_target",
     "http_4xx",
     "http_5xx",
 }
