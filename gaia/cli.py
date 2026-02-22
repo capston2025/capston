@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Sequence
 
 from gaia import auth as gaia_auth
+from gaia.src.phase4.session import (
+    WORKSPACE_DEFAULT,
+    SessionState,
+    allocate_session_id,
+    load_session_state,
+    save_session_state,
+)
 
 if os.name == "nt":
     import msvcrt
@@ -240,6 +247,57 @@ def _save_profile(profile: dict[str, str]) -> None:
         json.dumps(profile, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _resolve_session_binding(
+    parsed: argparse.Namespace,
+    profile: dict[str, str],
+) -> tuple[str, str, bool]:
+    workspace = profile.get("last_workspace", WORKSPACE_DEFAULT)
+    explicit_session = getattr(parsed, "session", None)
+    session_key = explicit_session or profile.get("last_session_key") or workspace
+    session_key = (session_key or WORKSPACE_DEFAULT).strip() or WORKSPACE_DEFAULT
+    is_new_session = bool(getattr(parsed, "new_session", False))
+
+    if is_new_session:
+        mcp_session_id = allocate_session_id(session_key)
+        return session_key, mcp_session_id, True
+
+    saved = load_session_state(session_key)
+    if saved and saved.mcp_session_id:
+        return session_key, saved.mcp_session_id, False
+
+    if explicit_session:
+        return session_key, session_key, False
+
+    profile_session_id = (profile.get("last_mcp_session_id") or "").strip()
+    if profile_session_id:
+        return session_key, profile_session_id, False
+
+    return session_key, session_key, False
+
+
+def _persist_session_state(
+    *,
+    session_key: str,
+    mcp_session_id: str,
+    url: str | None,
+    last_snapshot_id: str | None = None,
+    pending_user_input: dict[str, str] | None = None,
+) -> None:
+    state = load_session_state(session_key) or SessionState(
+        session_key=session_key,
+        mcp_session_id=mcp_session_id,
+    )
+    state.session_key = session_key
+    state.mcp_session_id = mcp_session_id
+    if url:
+        state.last_url = url
+    if last_snapshot_id is not None:
+        state.last_snapshot_id = str(last_snapshot_id or "")
+    if pending_user_input is not None:
+        state.pending_user_input = dict(pending_user_input)
+    save_session_state(state)
 
 
 def _default_model(provider: str) -> str:
@@ -804,6 +862,8 @@ def _build_common_parser(prog: str, description: str) -> argparse.ArgumentParser
     parser.add_argument("--runtime", choices=RUNTIME_CHOICES)
     parser.add_argument("--gui", action="store_true", help="Force GUI runtime")
     parser.add_argument("--terminal", action="store_true", help="Force terminal runtime")
+    parser.add_argument("--session", help=f"Session key (default: {WORKSPACE_DEFAULT})")
+    parser.add_argument("--new-session", action="store_true", help="Force new MCP session id")
     return parser
 
 
@@ -822,6 +882,9 @@ def _persist_profile(
     telegram_allowlist: str | None = None,
     telegram_webhook_url: str | None = None,
     telegram_webhook_bind: str | None = None,
+    workspace: str | None = None,
+    session_key: str | None = None,
+    mcp_session_id: str | None = None,
 ) -> None:
     profile["provider"] = provider
     profile["model"] = model
@@ -843,11 +906,24 @@ def _persist_profile(
         profile["telegram_webhook_url"] = telegram_webhook_url
     if telegram_webhook_bind:
         profile["telegram_webhook_bind"] = telegram_webhook_bind
+    if workspace:
+        profile["last_workspace"] = workspace
+    if session_key:
+        profile["last_session_key"] = session_key
+    if mcp_session_id:
+        profile["last_mcp_session_id"] = mcp_session_id
     _save_profile(profile)
 
 
-def _configure_session(parsed: argparse.Namespace, *, require_url: bool) -> tuple[str, str, str, str | None, str] | None:
+def _configure_session(
+    parsed: argparse.Namespace,
+    *,
+    require_url: bool,
+) -> tuple[str, str, str, str | None, str, str, str, bool] | None:
     profile = _load_profile()
+    session_key, mcp_session_id, is_new_session = _resolve_session_binding(parsed, profile)
+    os.environ["GAIA_SESSION_KEY"] = session_key
+    os.environ["GAIA_MCP_SESSION_ID"] = mcp_session_id
     provider = _resolve_provider(parsed, profile)
     auth_strategy = _resolve_auth_strategy(parsed, profile)
     auth_method = _resolve_openai_auth_method(parsed, profile, provider)
@@ -880,8 +956,25 @@ def _configure_session(parsed: argparse.Namespace, *, require_url: bool) -> tupl
         auth_method=auth_method,
         url=url,
         runtime=runtime,
+        workspace=session_key,
+        session_key=session_key,
+        mcp_session_id=mcp_session_id,
     )
-    return provider, model, auth_strategy, url, runtime
+    _persist_session_state(
+        session_key=session_key,
+        mcp_session_id=mcp_session_id,
+        url=url,
+    )
+    return (
+        provider,
+        model,
+        auth_strategy,
+        url,
+        runtime,
+        session_key,
+        mcp_session_id,
+        is_new_session,
+    )
 
 
 def run_gui(argv: Sequence[str] | None = None) -> int:
@@ -912,7 +1005,14 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     return launch_gui(forwarded)
 
 
-def _dispatch_chat(runtime: str, url: str, feature_query: str | None, repl: bool) -> int:
+def _dispatch_chat(
+    runtime: str,
+    url: str,
+    feature_query: str | None,
+    repl: bool,
+    *,
+    session_id: str,
+) -> int:
     if runtime == "gui":
         forwarded = ["--mode", "chat", "--url", url]
         if feature_query:
@@ -921,16 +1021,21 @@ def _dispatch_chat(runtime: str, url: str, feature_query: str | None, repl: bool
 
     from gaia.terminal import run_chat_terminal
 
-    return run_chat_terminal(url=url, initial_query=feature_query, repl=repl)
+    return run_chat_terminal(
+        url=url,
+        initial_query=feature_query,
+        repl=repl,
+        session_id=session_id,
+    )
 
 
-def _dispatch_ai(runtime: str, url: str, max_actions: int) -> int:
+def _dispatch_ai(runtime: str, url: str, max_actions: int, *, session_id: str) -> int:
     if runtime == "gui":
         return run_gui(["--mode", "ai", "--url", url])
 
     from gaia.terminal import run_ai_terminal
 
-    return run_ai_terminal(url=url, max_actions=max_actions)
+    return run_ai_terminal(url=url, max_actions=max_actions, session_id=session_id)
 
 
 def _dispatch_plan(url: str | None, plan: str | None, spec: str | None, resume: str | None) -> int:
@@ -955,9 +1060,15 @@ def run_chat(argv: Sequence[str] | None = None) -> int:
     configured = _configure_session(args, require_url=True)
     if not configured:
         return 1
-    _, _, _, url, runtime = configured
+    _, _, _, url, runtime, _, mcp_session_id, _ = configured
     assert url is not None
-    return _dispatch_chat(runtime, url, args.feature_query, repl=not args.once)
+    return _dispatch_chat(
+        runtime,
+        url,
+        args.feature_query,
+        repl=not args.once,
+        session_id=mcp_session_id,
+    )
 
 
 def run_ai(argv: Sequence[str] | None = None) -> int:
@@ -968,9 +1079,14 @@ def run_ai(argv: Sequence[str] | None = None) -> int:
     configured = _configure_session(args, require_url=True)
     if not configured:
         return 1
-    _, _, _, url, runtime = configured
+    _, _, _, url, runtime, _, mcp_session_id, _ = configured
     assert url is not None
-    return _dispatch_ai(runtime, url, max(1, int(args.max_actions)))
+    return _dispatch_ai(
+        runtime,
+        url,
+        max(1, int(args.max_actions)),
+        session_id=mcp_session_id,
+    )
 
 
 def run_plan(argv: Sequence[str] | None = None) -> int:
@@ -983,7 +1099,7 @@ def run_plan(argv: Sequence[str] | None = None) -> int:
     configured = _configure_session(args, require_url=False)
     if not configured:
         return 1
-    _, _, _, url, runtime = configured
+    _, _, _, url, runtime, _, _, _ = configured
     if runtime == "terminal":
         print("plan/spec 실행은 GUI를 사용합니다. GUI로 전환합니다.")
     return _dispatch_plan(url, args.plan, args.spec, args.resume)
@@ -1010,8 +1126,20 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     configured = _configure_session(args, require_url=True)
     if not configured:
         return 1
-    provider, model, auth_strategy, url, runtime = configured
+    (
+        provider,
+        model,
+        auth_strategy,
+        url,
+        runtime,
+        session_key,
+        mcp_session_id,
+        session_new,
+    ) = configured
     assert url is not None
+    saved_state = load_session_state(session_key)
+    last_snapshot_id = str(saved_state.last_snapshot_id or "") if saved_state else ""
+    pending_user_input = dict(saved_state.pending_user_input) if saved_state else {}
     profile = _load_profile()
     control = _resolve_control_channel(args, profile)
 
@@ -1093,6 +1221,9 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             telegram_allowlist=tg_allowlist_raw,
             telegram_webhook_url=tg_webhook_url,
             telegram_webhook_bind=tg_webhook_bind,
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
         )
 
         if args.mode:
@@ -1100,6 +1231,35 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
 
         from gaia.chat_hub import HubContext
         from gaia.telegram_bridge import TelegramConfig, run_telegram_bridge
+
+        def _on_session_update(ctx: HubContext) -> None:
+            profile_local = _load_profile()
+            _persist_profile(
+                profile_local,
+                provider=ctx.provider,
+                model=ctx.model,
+                auth_strategy=ctx.auth_strategy,
+                auth_method=getattr(args, "auth_method", None)
+                or profile_local.get("default_openai_auth_method", "oauth"),
+                url=ctx.url,
+                runtime=ctx.runtime,
+                control_channel=ctx.control_channel,
+                telegram_mode=tg_mode,
+                telegram_token_file=tg_token_file,
+                telegram_allowlist=tg_allowlist_raw,
+                telegram_webhook_url=tg_webhook_url,
+                telegram_webhook_bind=tg_webhook_bind,
+                workspace=ctx.workspace,
+                session_key=ctx.session_key,
+                mcp_session_id=ctx.session_id,
+            )
+            _persist_session_state(
+                session_key=ctx.session_key,
+                mcp_session_id=ctx.session_id,
+                url=ctx.url,
+                last_snapshot_id=ctx.last_snapshot_id,
+                pending_user_input={k: str(v) for k, v in ctx.pending_user_input.items()},
+            )
 
         return run_telegram_bridge(
             HubContext(
@@ -1110,6 +1270,13 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 runtime=runtime,
                 control_channel="telegram",
                 memory_enabled=True,
+                workspace=session_key,
+                session_key=session_key,
+                session_id=mcp_session_id,
+                session_new=session_new,
+                last_snapshot_id=last_snapshot_id,
+                pending_user_input=pending_user_input,
+                on_session_update=_on_session_update,
             ),
             TelegramConfig(
                 mode=tg_mode,
@@ -1130,8 +1297,17 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             url=url,
             runtime=runtime,
             control_channel="local",
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
         )
-        return _dispatch_chat(runtime, url, args.feature_query, repl=True)
+        return _dispatch_chat(
+            runtime,
+            url,
+            args.feature_query,
+            repl=True,
+            session_id=mcp_session_id,
+        )
     if args.mode == "ai":
         _persist_profile(
             profile,
@@ -1142,8 +1318,16 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             url=url,
             runtime=runtime,
             control_channel="local",
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
         )
-        return _dispatch_ai(runtime, url, max(1, int(args.max_actions)))
+        return _dispatch_ai(
+            runtime,
+            url,
+            max(1, int(args.max_actions)),
+            session_id=mcp_session_id,
+        )
     if args.mode == "plan":
         _persist_profile(
             profile,
@@ -1154,6 +1338,9 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             url=url,
             runtime=runtime,
             control_channel="local",
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
         )
         return _dispatch_plan(url, args.plan, args.spec, args.resume)
 
@@ -1168,7 +1355,35 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         url=url,
         runtime=runtime,
         control_channel="local",
+        workspace=session_key,
+        session_key=session_key,
+        mcp_session_id=mcp_session_id,
     )
+
+    def _on_session_update(ctx: HubContext) -> None:
+        profile_local = _load_profile()
+        _persist_profile(
+            profile_local,
+            provider=ctx.provider,
+            model=ctx.model,
+            auth_strategy=ctx.auth_strategy,
+            auth_method=getattr(args, "auth_method", None)
+            or profile_local.get("default_openai_auth_method", "oauth"),
+            url=ctx.url,
+            runtime=ctx.runtime,
+            control_channel=ctx.control_channel,
+            workspace=ctx.workspace,
+            session_key=ctx.session_key,
+            mcp_session_id=ctx.session_id,
+        )
+        _persist_session_state(
+            session_key=ctx.session_key,
+            mcp_session_id=ctx.session_id,
+            url=ctx.url,
+            last_snapshot_id=ctx.last_snapshot_id,
+            pending_user_input={k: str(v) for k, v in ctx.pending_user_input.items()},
+        )
+
     return run_chat_hub(
         HubContext(
             provider=provider,
@@ -1178,6 +1393,13 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             runtime=runtime,
             control_channel="local",
             memory_enabled=True,
+            workspace=session_key,
+            session_key=session_key,
+            session_id=mcp_session_id,
+            session_new=session_new,
+            last_snapshot_id=last_snapshot_id,
+            pending_user_input=pending_user_input,
+            on_session_update=_on_session_update,
         )
     )
 
@@ -1196,6 +1418,8 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     gui.add_argument("--llm-model")
     gui.add_argument("--auth", choices=AUTH_CHOICES)
     gui.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
+    gui.add_argument("--session")
+    gui.add_argument("--new-session", action="store_true")
     terminal = subparsers.add_parser("terminal")
     terminal.add_argument("--mode", choices=("plan", "ai", "chat"), default="chat")
     terminal.add_argument("--url")
@@ -1209,6 +1433,8 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     terminal.add_argument("--auth", choices=AUTH_CHOICES)
     terminal.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
     terminal.add_argument("--runtime", choices=RUNTIME_CHOICES, default="terminal")
+    terminal.add_argument("--session")
+    terminal.add_argument("--new-session", action="store_true")
     parser.add_argument("--llm-provider", choices=("openai", "gemini"))
     parser.add_argument("--llm-model")
     parser.add_argument("--auth", choices=AUTH_CHOICES)
@@ -1217,6 +1443,8 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime", choices=RUNTIME_CHOICES)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--terminal", action="store_true")
+    parser.add_argument("--session")
+    parser.add_argument("--new-session", action="store_true")
     parser.add_argument("--mode", choices=MODE_CHOICES)
     parser.add_argument("--control", choices=CONTROL_CHOICES)
     parser.add_argument("--tg-setup", choices=TELEGRAM_SETUP_CHOICES)
@@ -1249,6 +1477,10 @@ def run_start(argv: Sequence[str] | None = None) -> int:
             forwarded += ["--auth", parsed.auth]
         if parsed.auth_method:
             forwarded += ["--auth-method", parsed.auth_method]
+        if parsed.session:
+            forwarded += ["--session", parsed.session]
+        if parsed.new_session:
+            forwarded += ["--new-session"]
         if parsed.mode == "ai":
             return run_ai(forwarded)
         if parsed.mode == "plan":
@@ -1275,6 +1507,10 @@ def run_start(argv: Sequence[str] | None = None) -> int:
             forwarded += ["--auth", parsed.auth]
         if parsed.auth_method:
             forwarded += ["--auth-method", parsed.auth_method]
+        if parsed.session:
+            forwarded += ["--session", parsed.session]
+        if parsed.new_session:
+            forwarded += ["--new-session"]
         if parsed.mode == "ai":
             forwarded += ["--max-actions", str(parsed.max_actions)]
             return run_ai(forwarded)
@@ -1307,6 +1543,10 @@ def run_start(argv: Sequence[str] | None = None) -> int:
         forwarded += ["--gui"]
     if parsed.terminal:
         forwarded += ["--terminal"]
+    if parsed.session:
+        forwarded += ["--session", parsed.session]
+    if parsed.new_session:
+        forwarded += ["--new-session"]
     if parsed.mode:
         forwarded += ["--mode", parsed.mode]
     if parsed.control:

@@ -169,6 +169,10 @@ gaia plan --gui --resume <run-id>
 # legacy 명령도 유지됨
 gaia start gui --mode chat --url https://example.com
 gaia start terminal --mode ai --url https://example.com
+
+# 세션 제어
+gaia --session workspace_default      # 지정 세션 키 재사용
+gaia --new-session                    # 새 MCP 세션 강제 생성
 ```
 
 2) Telegram 원격 제어 (옵션)
@@ -209,10 +213,17 @@ gaia --control telegram \
 ```text
 /help
 /status
+/session
+/session new
+/session reuse <key>
+/handoff
+/handoff key=value ...
 /stop
 /memory stats
 /memory clear
 ```
+
+- 세션 포인터는 `~/.gaia/sessions/<session-key>.json`에 저장되어 다음 실행에서 동일 브라우저/MCP 세션을 재사용합니다.
 
 4) Telegram 페어링 명령
 ```text

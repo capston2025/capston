@@ -10,7 +10,6 @@ import time
 import json
 import os
 import re
-from dataclasses import dataclass
 import requests
 from typing import Any, Dict, List, Optional, Callable
 from urllib.parse import urlparse
@@ -23,207 +22,19 @@ from .models import (
     StepResult,
     DOMElement,
 )
+from .parsing import parse_multi_values, parse_wait_payload
+from .runtime import (
+    ActionExecResult,
+    FlowMasterOrchestrator,
+    StepSubAgent,
+)
 from gaia.src.phase4.memory.models import (
     MemoryActionRecord,
     MemorySummaryRecord,
 )
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
-
-
-@dataclass
-class MasterDirective:
-    kind: str
-    reason: str = ""
-    close_element_id: Optional[int] = None
-
-
-class FlowMasterOrchestrator:
-    """
-    마스터 오케스트레이터:
-    - 실행 루프 예산 관리
-    - 반복 액션/반복 화면 중단 판단
-    - 반복 액션/반복 화면 감지
-    """
-
-    def __init__(self, goal: TestGoal, max_steps: int):
-        self.goal = goal
-        try:
-            parsed_max_steps = int(max_steps or 0)
-        except Exception:
-            parsed_max_steps = 0
-
-        # 기존 20 고정 체감 완화를 위해 최소 예산을 상향
-        self.max_steps = max(parsed_max_steps, 40)
-        self.step_count = 0
-        self.stop_reason: Optional[str] = None
-
-        self.last_decision_signature: Optional[str] = None
-        self.same_decision_count = 0
-        self.last_dom_signature: Optional[str] = None
-        self.same_dom_count = 0
-        self.no_dom_count = 0
-
-        self.login_gate_llm_loop_count = 0
-        self.consecutive_auto_recovery = 0
-        self.auto_recovery_fail_count = 0
-
-        self._same_decision_limit = 5
-        self._same_dom_limit = 10
-        self._no_dom_limit = 3
-        self._login_gate_loop_limit = 3
-        self._auto_recovery_limit = 4
-        self._auto_recovery_fail_limit = 2
-
-    def can_continue(self) -> bool:
-        return self.stop_reason is None and self.step_count < self.max_steps
-
-    def begin_step(self) -> int:
-        self.step_count += 1
-        return self.step_count
-
-    def observe_no_dom(self):
-        self.no_dom_count += 1
-        if self.no_dom_count >= self._no_dom_limit and not self.stop_reason:
-            self.stop_reason = (
-                "DOM 요소를 반복적으로 읽지 못해 실행을 중단했습니다. "
-                "페이지 로딩 상태나 MCP host 연결을 확인하세요."
-            )
-
-    def observe_dom(self, dom_elements: List[DOMElement]):
-        self.no_dom_count = 0
-
-        signature_parts: List[str] = []
-        for el in dom_elements[:15]:
-            signature_parts.append(
-                f"{el.tag}:{(el.text or '')[:24]}:{el.role or ''}:{el.type or ''}"
-            )
-        dom_signature = "|".join(signature_parts)
-
-        if dom_signature == self.last_dom_signature:
-            self.same_dom_count += 1
-        else:
-            self.last_dom_signature = dom_signature
-            self.same_dom_count = 1
-
-        if self.same_dom_count >= self._same_dom_limit and not self.stop_reason:
-            self.stop_reason = (
-                "화면 상태가 반복되어 더 이상 진행이 어렵습니다. "
-                "현재 페이지에서 수동 전환 후 다시 시도하세요."
-            )
-
-    def next_directive(
-        self,
-        *,
-        login_gate_visible: bool,
-        requires_login_interaction: bool,
-        has_login_test_data: bool,
-        close_element_id: Optional[int],
-    ) -> MasterDirective:
-        if self.stop_reason:
-            return MasterDirective(kind="stop", reason=self.stop_reason)
-
-        return MasterDirective(kind="run_llm")
-
-    def record_auto_recovery(self, success: bool):
-        self.consecutive_auto_recovery += 1
-        if success:
-            self.auto_recovery_fail_count = 0
-        else:
-            self.auto_recovery_fail_count += 1
-
-        if (
-            self.auto_recovery_fail_count >= self._auto_recovery_fail_limit
-            and not self.stop_reason
-        ):
-            self.stop_reason = (
-                "로그인 모달 자동 복구가 연속 실패하여 중단했습니다. "
-                "모달 구조를 확인하거나 수동으로 화면을 정리해 주세요."
-            )
-
-    def record_llm_decision(
-        self,
-        *,
-        decision_signature: str,
-        looks_like_modal_close_loop: bool,
-        login_gate_visible: bool,
-        has_login_test_data: bool,
-    ):
-        if decision_signature == self.last_decision_signature:
-            self.same_decision_count += 1
-        else:
-            self.last_decision_signature = decision_signature
-            self.same_decision_count = 1
-
-        if self.same_decision_count >= self._same_decision_limit and not self.stop_reason:
-            self.stop_reason = (
-                "동일 액션이 반복되어 실행을 중단했습니다. "
-                "목표를 더 구체적으로 입력하거나 /url 후 다시 시도하세요."
-            )
-
-        if login_gate_visible and not has_login_test_data and looks_like_modal_close_loop:
-            self.login_gate_llm_loop_count += 1
-        else:
-            self.login_gate_llm_loop_count = 0
-
-        if self.login_gate_llm_loop_count >= self._login_gate_loop_limit and not self.stop_reason:
-            self.stop_reason = (
-                "로그인 모달 반복으로 목표를 진행할 수 없어 중단했습니다. "
-                "먼저 로그인 후 다시 실행하거나, test_data에 로그인 계정을 넣어주세요."
-            )
-
-        if not login_gate_visible:
-            self.consecutive_auto_recovery = 0
-            self.auto_recovery_fail_count = 0
-
-
-class StepSubAgent:
-    """
-    스텝 서브에이전트:
-    - 마스터가 내린 액션 1건 실행
-    - StepResult 생성
-    """
-
-    def __init__(self, owner: "GoalDrivenAgent"):
-        self.owner = owner
-
-    def run_step(
-        self,
-        *,
-        step_number: int,
-        step_start: float,
-        decision: ActionDecision,
-        dom_elements: List[DOMElement],
-    ) -> tuple[StepResult, bool, Optional[str]]:
-        success, error = self.owner._execute_decision(decision, dom_elements)
-        step_result = StepResult(
-            step_number=step_number,
-            action=decision,
-            success=success,
-            error_message=error,
-            duration_ms=int((time.time() - step_start) * 1000),
-        )
-        return step_result, success, error
-
-
-@dataclass(slots=True)
-class ActionExecResult:
-    success: bool
-    effective: bool = True
-    reason_code: str = "ok"
-    reason: str = ""
-    state_change: Dict[str, Any] | None = None
-    attempt_logs: List[Dict[str, Any]] | None = None
-    retry_path: List[str] | None = None
-    attempt_count: int = 0
-    snapshot_id_used: str = ""
-    ref_id_used: str = ""
-
-    def as_error_message(self) -> Optional[str]:
-        if self.success and self.effective:
-            return None
-        return f"[{self.reason_code}] {self.reason or 'Unknown error'}"
-
+from gaia.src.phase4.orchestrator import MasterOrchestrator
 
 class GoalDrivenAgent:
     """
@@ -287,8 +98,16 @@ class GoalDrivenAgent:
         self._intent_stats: Dict[str, Dict[str, int]] = {}
         self._context_shift_round: int = 0
         self._last_context_shift_intent: str = ""
-        self._runtime_phase: str = "collect"
+        self._runtime_phase: str = "COLLECT"
+        self._progress_counter: int = 0
+        self._no_progress_counter: int = 0
+        self._handoff_state: Dict[str, Any] = {}
         self._memory_selector_bias: Dict[str, float] = {}
+        self._recent_click_element_ids: List[int] = []
+        self._last_dom_top_ids: List[int] = []
+        self._goal_constraints: Dict[str, Any] = {}
+        self._goal_metric_value: Optional[float] = None
+        self._goal_tokens: set[str] = set()
 
         # 실행 기억(KB)
         self._memory_store = MemoryStore(enabled=True)
@@ -305,6 +124,43 @@ class GoalDrivenAgent:
     @staticmethod
     def _normalize_text(value: Optional[str]) -> str:
         return (value or "").strip().lower()
+
+    @staticmethod
+    def _tokenize_text(value: Optional[str]) -> List[str]:
+        text = (value or "").lower()
+        return [t for t in re.findall(r"[0-9a-zA-Z가-힣_]+", text) if len(t) >= 2]
+
+    def _derive_goal_tokens(self, goal: TestGoal) -> set[str]:
+        blob = self._goal_text_blob(goal)
+        tokens = set(self._tokenize_text(blob))
+        stop_tokens = {
+            "그리고",
+            "그다음",
+            "다음",
+            "먼저",
+            "이후",
+            "진행",
+            "테스트",
+            "the",
+            "and",
+            "then",
+            "with",
+            "from",
+            "that",
+            "this",
+        }
+        return {t for t in tokens if t not in stop_tokens}
+
+    def _goal_overlap_score(self, *values: Optional[str]) -> float:
+        if not self._goal_tokens:
+            return 0.0
+        value_tokens: set[str] = set()
+        for value in values:
+            if value:
+                value_tokens.update(self._tokenize_text(str(value)))
+        if not value_tokens:
+            return 0.0
+        return float(min(len(value_tokens.intersection(self._goal_tokens)), 6))
 
     @classmethod
     def _contains_login_hint(cls, value: Optional[str]) -> bool:
@@ -344,60 +200,15 @@ class GoalDrivenAgent:
 
     @classmethod
     def _contains_progress_cta_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "조합",
-            "생성",
-            "실행",
-            "적용",
-            "완료",
-            "제출",
-            "submit",
-            "apply",
-            "generate",
-            "run",
-            "continue",
-            "next step",
-        )
-        return any(h in text for h in hints)
+        return False
 
     @classmethod
     def _contains_context_shift_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "다음",
-            "next",
-            "더보기",
-            "more",
-            "페이지",
-            "pagination",
-            "page ",
-            "tab",
-            "탭",
-            "다음 페이지",
-            "next page",
-            "›",
-            "»",
-        )
-        return any(h in text for h in hints)
+        return False
 
     @classmethod
     def _contains_expand_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "확장",
-            "펼치",
-            "더보기",
-            "show more",
-            "expand",
-        )
-        return any(h in text for h in hints)
+        return False
 
     @staticmethod
     def _is_numeric_page_label(value: Optional[str]) -> bool:
@@ -406,105 +217,379 @@ class GoalDrivenAgent:
 
     @classmethod
     def _contains_wishlist_like_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "위시리스트",
-            "wishlist",
-            "장바구니",
-            "my timetable",
-            "내 시간표",
-            "담은 과목",
-        )
-        return any(h in text for h in hints)
+        return False
 
     @classmethod
     def _contains_add_like_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "담기",
-            "바로 추가",
-            "추가",
-            "add",
-            "put",
-            "cart",
-        )
-        return any(h in text for h in hints)
+        return False
 
     @classmethod
     def _contains_execute_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "시작",
-            "실행",
-            "generate",
-            "run",
-            "start",
-            "조합 만들기",
-            "조합 시작",
-            "build",
-        )
-        return any(h in text for h in hints)
+        return False
+
+    def _recover_dom_after_empty(self, goal: "TestGoal") -> List["DOMElement"]:
+        for attempt in range(2):
+            time.sleep(0.8 + (0.4 * attempt))
+            dom = self._analyze_dom()
+            if dom:
+                return dom
+        start_url = str(getattr(goal, "start_url", "") or "").strip()
+        if start_url:
+            self._log("🛠️ DOM 복구: 시작 URL로 재동기화 시도")
+            _ = self._execute_action("goto", url=start_url)
+            time.sleep(1.2)
+            dom = self._analyze_dom()
+            if dom:
+                return dom
+        return []
 
     @classmethod
     def _contains_apply_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "적용",
-            "선택",
-            "확정",
-            "완료",
-            "저장",
-            "반영",
-            "apply",
-            "select",
-            "confirm",
-            "save",
-        )
-        return any(h in text for h in hints)
+        return False
+
+    @classmethod
+    def _contains_completion_hint(cls, value: Optional[str]) -> bool:
+        return False
 
     @classmethod
     def _contains_configure_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "학점",
-            "설정",
-            "옵션",
-            "필터",
-            "정렬",
-            "범위",
-            "credit",
-            "option",
-            "filter",
-            "sort",
-            "range",
-        )
-        return any(h in text for h in hints)
+        return False
 
     @classmethod
     def _contains_next_pagination_hint(cls, value: Optional[str]) -> bool:
         text = cls._normalize_text(value)
         if not text:
             return False
-        next_hints = (
-            "다음",
-            "next",
-            "next page",
-            "다음 페이지",
-            "›",
-            "»",
-            ">",
+        return any(ch in text for ch in ("›", "»", ">"))
+
+    @classmethod
+    def _derive_goal_constraints(cls, goal: TestGoal) -> Dict[str, Any]:
+        blob = cls._goal_text_blob(goal)
+        text = cls._normalize_text(blob)
+        if not text:
+            return {}
+
+        numeric_values: List[int] = []
+        metric_terms: List[str] = []
+        for match in re.finditer(r"(?<!\d)(\d{1,3})(?!\d)\s*([^\d\s,.;:()]{1,12})?", text):
+            value = int(match.group(1))
+            numeric_values.append(value)
+            maybe_term = (match.group(2) or "").strip()
+            if maybe_term:
+                metric_terms.append(maybe_term)
+
+        if not numeric_values:
+            return {}
+
+        collect_min: Optional[int] = None
+        apply_target: Optional[int] = None
+
+        if len(numeric_values) >= 2:
+            collect_min = max(numeric_values)
+            apply_target = min(numeric_values)
+        else:
+            collect_min = numeric_values[0]
+
+        if apply_target is not None and collect_min is not None and apply_target >= collect_min:
+            apply_target = None
+
+        term_freq: Dict[str, int] = {}
+        for term in metric_terms:
+            term_freq[term] = int(term_freq.get(term, 0)) + 1
+        sorted_terms = sorted(term_freq.items(), key=lambda kv: kv[1], reverse=True)
+        top_terms = [t for t, _ in sorted_terms[:4]]
+        metric_label = top_terms[0] if top_terms else "count"
+        require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
+
+        return {
+            "metric": "numeric",
+            "metric_label": metric_label,
+            "metric_terms": top_terms,
+            "collect_min": collect_min,
+            "apply_target": apply_target,
+            "require_collect_before_progress": require_collect_before_progress,
+        }
+
+    @classmethod
+    def _extract_metric_values_from_text(cls, value: str, metric_terms: List[str]) -> List[int]:
+        text = cls._normalize_text(value)
+        if not text:
+            return []
+        numbers: List[int] = []
+        term_matches = 0
+        for term in metric_terms or []:
+            safe_term = re.escape(str(term))
+            for m in re.finditer(rf"(\d{{1,3}})\s*{safe_term}", text):
+                numbers.append(int(m.group(1)))
+                term_matches += 1
+            for m in re.finditer(rf"{safe_term}\s*(\d{{1,3}})", text):
+                numbers.append(int(m.group(1)))
+                term_matches += 1
+        if term_matches > 0:
+            numbers.extend(int(m.group(1)) for m in re.finditer(r"\((\d{1,3})\)", text))
+            return numbers
+        return [int(m.group(1)) for m in re.finditer(r"(?<!\d)(\d{1,3})(?!\d)", text)]
+
+    def _estimate_goal_metric_from_dom(self, dom_elements: List[DOMElement]) -> Optional[float]:
+        metric_kind = str(self._goal_constraints.get("metric") or "").strip().lower()
+        if metric_kind != "numeric":
+            return None
+        metric_terms = [str(x) for x in (self._goal_constraints.get("metric_terms") or []) if str(x).strip()]
+
+        values: List[int] = []
+        for el in dom_elements:
+            fields = [
+                el.text,
+                el.aria_label,
+                el.placeholder,
+                getattr(el, "title", None),
+            ]
+            for field in fields:
+                if not field:
+                    continue
+                values.extend(self._extract_metric_values_from_text(str(field), metric_terms))
+
+        filtered = [v for v in values if 0 <= int(v) <= 300]
+        if not filtered:
+            return None
+        return float(max(filtered))
+
+    def _is_collect_constraint_unmet(self) -> bool:
+        collect_min = self._goal_constraints.get("collect_min")
+        if collect_min is None:
+            return False
+        current = self._goal_metric_value
+        if current is None:
+            return True
+        return float(current) + 1e-9 < float(collect_min)
+
+    def _apply_phase_constraints(self, detected_phase: str) -> str:
+        if not self._is_collect_constraint_unmet():
+            return detected_phase
+        if detected_phase in {"COMPOSE", "APPLY", "VERIFY"}:
+            return "COLLECT"
+        return detected_phase
+
+    def _is_progress_transition_element(self, el: Optional[DOMElement]) -> bool:
+        if el is None:
+            return False
+        fields = self._fields_for_element(el)
+        return any(
+            self._contains_progress_cta_hint(f)
+            or self._contains_execute_hint(f)
+            or self._contains_apply_hint(f)
+            for f in fields
         )
-        return any(h in text for h in next_hints)
+
+    def _pick_collect_element(self, dom_elements: List[DOMElement]) -> Optional[tuple[int, str]]:
+        candidates: List[tuple[float, int, str]] = []
+        recent_clicks = self._recent_click_element_ids[-14:]
+        for el in dom_elements:
+            fields = self._fields_for_element(el)
+
+            ref_id = self._element_ref_ids.get(el.id)
+            if not ref_id or self._is_ref_temporarily_blocked(ref_id):
+                continue
+
+            role = self._normalize_text(el.role)
+            tag = self._normalize_text(el.tag)
+            if role not in {"button", "link", "menuitem", ""} and tag not in {"button", "a", "input"}:
+                continue
+
+            score = 4.5
+            score += 2.0 * self._goal_overlap_score(
+                el.text,
+                el.aria_label,
+                getattr(el, "title", None),
+                self._element_full_selectors.get(el.id),
+            )
+
+            repeat_count = recent_clicks.count(el.id)
+            if repeat_count > 0:
+                score -= min(5.0, 1.6 * repeat_count)
+
+            score += self._selector_bias_for_fields(fields)
+            score += 0.8 * self._adaptive_intent_bias(self._candidate_intent_key("click", fields))
+            score = self._clamp_score(score, low=-20.0, high=30.0)
+            if score <= 0.5:
+                continue
+
+            label = str(el.text or el.aria_label or getattr(el, "title", None) or f"element:{el.id}")
+            reason = f"목표 제약상 수집 단계 유지: {label[:60]}"
+            candidates.append((score, el.id, reason))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, element_id, reason = candidates[0]
+        return element_id, reason
+
+    def _pick_collect_context_shift_element(
+        self,
+        dom_elements: List[DOMElement],
+        used_element_ids: set[int],
+    ) -> Optional[tuple[int, str, str]]:
+        candidates: List[tuple[float, int, str, str]] = []
+        recent_clicks = self._recent_click_element_ids[-12:]
+        for el in dom_elements:
+            if el.id in used_element_ids:
+                continue
+            ref_id = self._element_ref_ids.get(el.id)
+            if not ref_id or self._is_ref_temporarily_blocked(ref_id):
+                continue
+
+            fields = self._fields_for_element(el)
+            selector = self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id) or ""
+            role = self._normalize_text(el.role)
+            tag = self._normalize_text(el.tag)
+            is_navigation_candidate = role in {"tab", "link", "button", "menuitem"} or tag in {"a", "button"}
+            if not is_navigation_candidate:
+                continue
+
+            normalized_selector = self._normalize_text(selector)
+            text = self._normalize_text(el.text)
+            aria = self._normalize_text(el.aria_label)
+            has_arrow = any(ch in text or ch in aria for ch in ("›", "»", "→", ">"))
+            nav_like_selector = any(k in normalized_selector for k in ("page", "pager", "nav", "tab"))
+            if not (has_arrow or nav_like_selector):
+                continue
+
+            score = 12.0
+            if el.id in recent_clicks:
+                score -= 2.4
+            if has_arrow:
+                score += 2.8
+            if self._is_numeric_page_label(el.text) or self._is_numeric_page_label(el.aria_label) or self._is_numeric_page_label(getattr(el, "title", None)):
+                score -= 3.0
+            score += self._goal_overlap_score(el.text, el.aria_label, getattr(el, "title", None))
+
+            intent_key = self._candidate_intent_key("click", fields)
+            score += self._adaptive_intent_bias(intent_key)
+            score = self._clamp_score(score, low=-20.0, high=30.0)
+            if score <= 1.0:
+                continue
+
+            label = str(el.text or el.aria_label or getattr(el, "title", None) or f"element:{el.id}")
+            reason = f"수집 정체 복구: 다음/페이지 전환 우선 ({label[:60]})"
+            candidates.append((score, el.id, reason, intent_key))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, element_id, reason, intent_key = candidates[0]
+        return element_id, reason, intent_key
+
+    def _build_goal_constraint_prompt(self) -> str:
+        collect_min = self._goal_constraints.get("collect_min")
+        metric_label = str(self._goal_constraints.get("metric_label") or "단위")
+        if collect_min is None:
+            return ""
+        current = self._goal_metric_value
+        current_text = "unknown" if current is None else str(int(current))
+        apply_target = self._goal_constraints.get("apply_target")
+        target_line = ""
+        if apply_target is not None:
+            target_line = f"\n   - 최종 목표값: {int(apply_target)}{metric_label}"
+        return (
+            "\n9. **목표 제약(강제)**"
+            f"\n   - 현재 추정값: {current_text}{metric_label}"
+            f"\n   - 최소 수집 기준: {int(collect_min)}{metric_label}"
+            f"{target_line}"
+            "\n   - 최소 수집 기준 미만이면 단계 전환 CTA를 선택하지 말고 수집 액션만 선택하세요."
+        )
+
+    def _enforce_goal_constraints_on_decision(
+        self,
+        decision: ActionDecision,
+        dom_elements: List[DOMElement],
+    ) -> ActionDecision:
+        if (self._runtime_phase or "").upper() == "AUTH" or self._is_login_gate(dom_elements):
+            return ActionDecision(
+                action=decision.action,
+                element_id=decision.element_id,
+                value=decision.value,
+                reasoning=decision.reasoning,
+                confidence=decision.confidence,
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        if not self._is_collect_constraint_unmet():
+            return decision
+
+        collect_min = int(self._goal_constraints.get("collect_min") or 0)
+        metric_label = str(self._goal_constraints.get("metric_label") or "")
+        current = self._goal_metric_value
+        current_text = "unknown" if current is None else str(int(current))
+
+        selected_element: Optional[DOMElement] = None
+        if decision.element_id is not None:
+            selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+
+        blocked_goal_done = bool(decision.is_goal_achieved)
+        if not blocked_goal_done and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}:
+            if selected_element is not None:
+                overlap = self._goal_overlap_score(
+                    selected_element.text,
+                    selected_element.aria_label,
+                    getattr(selected_element, "title", None),
+                    self._element_full_selectors.get(selected_element.id),
+                )
+                if overlap >= 1.0:
+                    return ActionDecision(
+                        action=decision.action,
+                        element_id=decision.element_id,
+                        value=decision.value,
+                        reasoning=decision.reasoning,
+                        confidence=decision.confidence,
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+        elif not blocked_goal_done:
+            return decision
+
+        picked = self._pick_collect_element(dom_elements)
+        if picked is not None:
+            picked_id, picked_reason = picked
+            self._log(
+                "🧱 목표 제약 가드: "
+                f"현재 {current_text}{metric_label} < 최소 {collect_min}{metric_label}, "
+                "수집 액션으로 교체합니다."
+            )
+            return ActionDecision(
+                action=ActionType.CLICK,
+                element_id=picked_id,
+                reasoning=picked_reason,
+                confidence=0.82,
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        self._log(
+            "🧱 목표 제약 가드: 수집 후보를 찾지 못해 대기/컨텍스트 전환을 유도합니다."
+        )
+        return ActionDecision(
+            action=ActionType.SCROLL,
+            reasoning=(
+                f"최소 수집 기준({collect_min}{metric_label}) 미달 상태입니다. "
+                "수집 가능한 요소가 보일 때까지 컨텍스트를 전환합니다."
+            ),
+            confidence=0.5,
+            is_goal_achieved=False,
+            goal_achievement_reason=None,
+        )
+
+    def _constraint_failure_reason(self) -> Optional[str]:
+        if not self._is_collect_constraint_unmet():
+            return None
+        collect_min = int(self._goal_constraints.get("collect_min") or 0)
+        metric_label = str(self._goal_constraints.get("metric_label") or "")
+        current = self._goal_metric_value
+        current_text = "unknown" if current is None else str(int(current))
+        return (
+            f"목표 제약 미충족: 최소 {collect_min}{metric_label} 수집 전에는 완료로 판정할 수 없습니다. "
+            f"(현재 추정값: {current_text}{metric_label})"
+        )
 
     @classmethod
     def _contains_logout_hint(cls, value: Optional[str]) -> bool:
@@ -736,35 +821,16 @@ class GoalDrivenAgent:
         return self._clamp_score(bias, low=-10.0, high=10.0)
 
     def _infer_runtime_phase(self, dom_elements: List[DOMElement]) -> str:
-        add_count = 0
-        configure_count = 0
-        execute_count = 0
-        apply_count = 0
-        progress_count = 0
-
-        for el in dom_elements:
-            fields = self._fields_for_element(el)
-            if any(self._contains_add_like_hint(f) for f in fields):
-                add_count += 1
-            if any(self._contains_configure_hint(f) for f in fields):
-                configure_count += 1
-            if any(self._contains_execute_hint(f) for f in fields):
-                execute_count += 1
-            if any(self._contains_apply_hint(f) for f in fields):
-                apply_count += 1
-            if any(self._contains_progress_cta_hint(f) for f in fields):
-                progress_count += 1
-
-        if apply_count > 0:
-            return "apply"
-        if execute_count > 0 and progress_count > 0:
-            return "execute"
-        if configure_count > 0 and progress_count > 0:
-            return "configure"
-        if add_count > 0:
-            return "collect"
-        # 신호가 약하면 이전 phase를 유지해 흔들림 방지
-        return self._runtime_phase or "collect"
+        if self._is_login_gate(dom_elements):
+            return "AUTH"
+        if self._is_collect_constraint_unmet():
+            return "COLLECT"
+        if self._progress_counter > 0:
+            if self._runtime_phase in {"COLLECT", "COMPOSE"}:
+                return "APPLY"
+            if self._runtime_phase:
+                return self._runtime_phase
+        return self._runtime_phase or "COLLECT"
 
     @classmethod
     def _is_login_gate(cls, dom_elements: List[DOMElement]) -> bool:
@@ -919,6 +985,11 @@ class GoalDrivenAgent:
         needs_sensitive_data = any(h in text for h in sensitive_hints)
 
         if not looks_ambiguous and not (needs_sensitive_data and not self._has_login_test_data(goal)):
+            self._handoff_state = {
+                "kind": "clarification",
+                "provided": False,
+                "phase": self._runtime_phase,
+            }
             return True
 
         callback_payload = {
@@ -959,6 +1030,12 @@ class GoalDrivenAgent:
                 callback_resp,
                 blocked_keys={"action", "proceed", "goal_text", "username", "email", "password"},
             )
+            self._handoff_state = {
+                "kind": "clarification",
+                "provided": True,
+                "phase": self._runtime_phase,
+                "timestamp": int(time.time()),
+            }
             proceed = callback_resp.get("proceed")
             if isinstance(proceed, bool):
                 return proceed
@@ -976,6 +1053,12 @@ class GoalDrivenAgent:
             goal.name = refined[:40]
             goal.description = refined
             goal.success_criteria = [refined]
+            self._handoff_state = {
+                "kind": "clarification",
+                "provided": True,
+                "phase": self._runtime_phase,
+                "timestamp": int(time.time()),
+            }
 
         if needs_sensitive_data and not self._has_login_test_data(goal):
             try:
@@ -997,6 +1080,12 @@ class GoalDrivenAgent:
 
     def _request_login_intervention(self, goal: TestGoal) -> bool:
         self._log("🙋 사용자 개입 필요: 로그인/인증 화면이 감지되었습니다.")
+        self._handoff_state = {
+            "kind": "auth",
+            "phase": self._runtime_phase,
+            "requested": True,
+            "timestamp": int(time.time()),
+        }
         callback_payload = {
             "kind": "auth",
             "goal_name": goal.name,
@@ -1014,6 +1103,8 @@ class GoalDrivenAgent:
                 return False
             if bool(callback_resp.get("manual_done")):
                 self._log("사용자가 수동 로그인 완료를 전달했습니다.")
+                self._handoff_state["provided"] = True
+                self._handoff_state["mode"] = "manual_done"
                 return True
             auth_mode = str(callback_resp.get("auth_mode") or "").strip().lower()
             username = str(callback_resp.get("username") or "").strip()
@@ -1069,6 +1160,8 @@ class GoalDrivenAgent:
                         f"회원가입에 사용할 계정: username={goal.test_data.get('username')} "
                         f"email={goal.test_data.get('email')} password={goal.test_data.get('password')}"
                     )
+                self._handoff_state["provided"] = True
+                self._handoff_state["mode"] = "signup"
                 return True
 
             if login_id and password:
@@ -1095,6 +1188,8 @@ class GoalDrivenAgent:
                     },
                 )
                 self._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
+                self._handoff_state["provided"] = True
+                self._handoff_state["mode"] = "login"
                 return True
             self._log("로그인 정보가 충분하지 않습니다.")
             return False
@@ -1122,6 +1217,8 @@ class GoalDrivenAgent:
             except (EOFError, KeyboardInterrupt):
                 self._log("사용자 입력이 중단되었습니다.")
                 return False
+            self._handoff_state["provided"] = True
+            self._handoff_state["mode"] = "manual_done"
             return True
 
         try:
@@ -1141,6 +1238,8 @@ class GoalDrivenAgent:
             goal.test_data["email"] = login_id
         goal.test_data["password"] = password
         self._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
+        self._handoff_state["provided"] = True
+        self._handoff_state["mode"] = "login"
         return True
 
     @staticmethod
@@ -1161,8 +1260,9 @@ class GoalDrivenAgent:
         used_element_ids: set[int],
     ) -> Optional[tuple[int, str, str]]:
         self._context_shift_round += 1
-        phase = self._runtime_phase or "collect"
+        phase = (self._runtime_phase or "COLLECT").upper()
         exploration_slot = (self._context_shift_round % 4) == 0
+        collect_unmet = self._is_collect_constraint_unmet()
 
         add_candidates_visible = False
         for probe_el in dom_elements:
@@ -1222,11 +1322,6 @@ class GoalDrivenAgent:
             if tag in {"a", "button"}:
                 score += 1.2
 
-            if has_expand and has_wishlist_like:
-                score -= 10.0
-                if add_candidates_visible:
-                    score -= 5.0
-
             normalized_selector = self._normalize_text(selector)
             if any(k in normalized_selector for k in ("pagination", "pager", "page", "tab", "tabs", "nav")):
                 score += 2.2
@@ -1245,14 +1340,14 @@ class GoalDrivenAgent:
             if is_numeric_page and not has_next:
                 score -= 3.5
 
-            if phase == "collect":
+            if phase in {"AUTH", "COLLECT"}:
                 if has_progress:
                     score += 2.0
                 if has_next:
                     score += 1.5
                 if has_expand and not has_wishlist_like:
                     score -= 1.0
-            elif phase == "configure":
+            elif phase == "COMPOSE":
                 if has_configure:
                     score += 2.5
                 if has_context_shift:
@@ -1261,18 +1356,30 @@ class GoalDrivenAgent:
                     score += 3.0
                 if has_add_like:
                     score -= 1.5
-            elif phase == "execute":
+            elif phase == "APPLY":
                 if has_execute or has_progress:
                     score += 4.0
                 if has_next:
                     score += 2.2
                 if has_add_like:
                     score -= 2.5
-            elif phase == "apply":
+            elif phase == "VERIFY":
                 if has_apply or has_progress:
                     score += 4.5
                 if has_add_like:
                     score -= 3.5
+
+            if collect_unmet:
+                if has_next:
+                    score += 5.5
+                if has_progress or has_execute or has_apply:
+                    score -= 6.0
+                if has_add_like:
+                    score += 0.8
+                if is_numeric_page and not has_next:
+                    score -= 5.0
+                if any(k in normalized_selector for k in ("last", "first", "처음", "마지막")):
+                    score -= 2.5
 
             intent_key = self._candidate_intent_key("click", fields)
             score += self._adaptive_intent_bias(intent_key)
@@ -1619,6 +1726,10 @@ class GoalDrivenAgent:
                     "회원가입 제출 및 완료 신호가 필요합니다.",
                 )
 
+        constraint_reason = self._constraint_failure_reason()
+        if constraint_reason:
+            return False, constraint_reason
+
         return True, None
 
     def _build_failure_result(
@@ -1670,8 +1781,25 @@ class GoalDrivenAgent:
         self._intent_stats = {}
         self._context_shift_round = 0
         self._last_context_shift_intent = ""
-        self._runtime_phase = "collect"
+        self._runtime_phase = "COLLECT"
+        self._progress_counter = 0
+        self._no_progress_counter = 0
+        self._handoff_state = {}
         self._memory_selector_bias = {}
+        self._recent_click_element_ids = []
+        self._last_dom_top_ids = []
+        self._goal_tokens = self._derive_goal_tokens(goal)
+        self._goal_constraints = self._derive_goal_constraints(goal)
+        self._goal_metric_value = None
+
+        collect_min = self._goal_constraints.get("collect_min")
+        apply_target = self._goal_constraints.get("apply_target")
+        metric_label = str(self._goal_constraints.get("metric_label") or "")
+        if collect_min is not None:
+            msg = f"🧩 목표 제약 감지: 최소 수집 {int(collect_min)}{metric_label}"
+            if apply_target is not None:
+                msg += f", 적용 목표 {int(apply_target)}{metric_label}"
+            self._log(msg)
 
         self._log(f"🎯 목표 시작: {goal.name}")
         self._log(f"   설명: {goal.description}")
@@ -1713,16 +1841,23 @@ class GoalDrivenAgent:
         requires_login_interaction = self._goal_requires_login_interaction(goal)
         has_login_test_data = self._has_login_test_data(goal)
         orchestrator = FlowMasterOrchestrator(goal=goal, max_steps=goal.max_steps)
+        master_orchestrator = MasterOrchestrator()
         sub_agent = StepSubAgent(self)
         ineffective_action_streak = 0
         scroll_streak = 0
         login_intervention_asked = False
         force_context_shift = False
         context_shift_used_elements: set[int] = set()
+        context_shift_fail_streak = 0
+        last_metric_value: Optional[float] = None
+        collect_metric_stall_count = 0
+        context_shift_cooldown = 0
 
         while orchestrator.can_continue():
             step_count = orchestrator.begin_step()
             step_start = time.time()
+            if context_shift_cooldown > 0:
+                context_shift_cooldown -= 1
 
             self._log(f"\n--- Step {step_count}/{orchestrator.max_steps} ---")
 
@@ -1730,8 +1865,7 @@ class GoalDrivenAgent:
             dom_elements = self._analyze_dom()
             if not dom_elements:
                 self._log("⚠️ DOM 요소를 찾을 수 없음, 잠시 대기 후 재시도")
-                time.sleep(1)
-                dom_elements = self._analyze_dom()
+                dom_elements = self._recover_dom_after_empty(goal)
                 if not dom_elements:
                     orchestrator.observe_no_dom()
                     if orchestrator.stop_reason:
@@ -1744,20 +1878,47 @@ class GoalDrivenAgent:
                         )
                     continue
 
+            self._goal_metric_value = self._estimate_goal_metric_from_dom(dom_elements)
+            collect_unmet = self._is_collect_constraint_unmet()
+            if collect_unmet:
+                if self._goal_metric_value is None:
+                    collect_metric_stall_count += 1
+                elif last_metric_value is None:
+                    collect_metric_stall_count = 0
+                elif float(self._goal_metric_value) <= float(last_metric_value) + 1e-9:
+                    collect_metric_stall_count += 1
+                else:
+                    collect_metric_stall_count = 0
+            else:
+                collect_metric_stall_count = 0
+            if self._goal_metric_value is not None:
+                last_metric_value = float(self._goal_metric_value)
+
             orchestrator.observe_dom(dom_elements)
             if orchestrator.stop_reason:
-                return self._build_failure_result(
-                    goal=goal,
-                    steps=steps,
-                    step_count=step_count,
-                    start_time=start_time,
-                    reason=orchestrator.stop_reason,
-                )
+                if collect_unmet and "화면 상태가 반복" in str(orchestrator.stop_reason):
+                    self._log("🧭 수집 기준 미충족 상태에서 화면 반복 감지: 즉시 컨텍스트 전환으로 복구 시도합니다.")
+                    orchestrator.stop_reason = None
+                    orchestrator.same_dom_count = 0
+                    force_context_shift = True
+                else:
+                    return self._build_failure_result(
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=orchestrator.stop_reason,
+                    )
 
             detected_phase = self._infer_runtime_phase(dom_elements)
+            guarded_phase = self._apply_phase_constraints(detected_phase)
+            if guarded_phase != detected_phase:
+                self._log(f"🧱 제약 가드: phase {detected_phase} -> {guarded_phase}")
+            detected_phase = guarded_phase
             if detected_phase != self._runtime_phase:
                 self._log(f"🔁 phase 전환: {self._runtime_phase} -> {detected_phase}")
             self._runtime_phase = detected_phase
+            master_orchestrator.set_phase(detected_phase)
 
             self._log(f"📊 DOM 요소 {len(dom_elements)}개 발견")
             before_signature = self._dom_progress_signature(dom_elements)
@@ -1794,6 +1955,9 @@ class GoalDrivenAgent:
                 has_login_test_data=has_login_test_data,
                 close_element_id=None,
             )
+            master_directive = master_orchestrator.next_directive(
+                auth_required=bool(login_gate_visible and not has_login_test_data)
+            )
 
             if directive.kind == "stop":
                 return self._build_failure_result(
@@ -1804,8 +1968,79 @@ class GoalDrivenAgent:
                     reason=directive.reason or "마스터 오케스트레이터가 실행을 중단했습니다.",
                 )
 
+            if master_directive.kind == "handoff" and master_directive.reason == "auth_required":
+                self._handoff_state = {
+                    "kind": "auth_required",
+                    "phase": self._runtime_phase,
+                    "url": goal.start_url,
+                }
+
+            if master_directive.kind == "handoff" and master_directive.reason == "no_progress":
+                no_progress_count = int(
+                    (master_directive.handoff_payload or {}).get("count")
+                    or self._no_progress_counter
+                    or 0
+                )
+                self._handoff_state = {
+                    "kind": "no_progress",
+                    "phase": self._runtime_phase,
+                    "url": goal.start_url,
+                    "count": no_progress_count,
+                }
+                callback_resp = self._request_user_intervention(
+                    {
+                        "kind": "no_progress",
+                        "goal_name": goal.name,
+                        "goal_description": goal.description,
+                        "phase": self._runtime_phase,
+                        "question": (
+                            f"상태 변화가 {no_progress_count}회 연속으로 감지되지 않았습니다. "
+                            "추가 지시(예: 우선할 버튼/필터/입력값)를 제공하거나 proceed=true로 계속하세요."
+                        ),
+                        "fields": ["instruction", "proceed"],
+                    }
+                )
+                if isinstance(callback_resp, dict):
+                    proceed = self._to_bool(callback_resp.get("proceed"), default=True)
+                    instruction = str(callback_resp.get("instruction") or "").strip()
+                    if instruction:
+                        self._action_feedback.append(f"사용자 추가 지시: {instruction}")
+                        if len(self._action_feedback) > 10:
+                            self._action_feedback = self._action_feedback[-10:]
+                    if not proceed:
+                        return self._build_failure_result(
+                            goal=goal,
+                            steps=steps,
+                            step_count=step_count,
+                            start_time=start_time,
+                            reason="사용자 요청으로 실행을 중단했습니다.",
+                        )
+                if context_shift_fail_streak >= 3 or context_shift_cooldown > 0:
+                    force_context_shift = False
+                    self._action_feedback.append(
+                        "컨텍스트 전환이 연속 실패해 일반 LLM 액션으로 복귀합니다."
+                    )
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+                else:
+                    force_context_shift = True
+
+            if collect_unmet and collect_metric_stall_count >= 2 and context_shift_cooldown <= 0:
+                force_context_shift = True
+                self._action_feedback.append(
+                    "수집 지표가 정체되어 페이지/탭/섹션 전환을 강제합니다."
+                )
+                if len(self._action_feedback) > 10:
+                    self._action_feedback = self._action_feedback[-10:]
+
             if force_context_shift:
-                picked = self._pick_context_shift_element(dom_elements, context_shift_used_elements)
+                picked = (
+                    self._pick_collect_context_shift_element(dom_elements, context_shift_used_elements)
+                    if collect_unmet
+                    else None
+                )
+                if picked is None:
+                    picked = self._pick_context_shift_element(dom_elements, context_shift_used_elements)
                 if picked is not None:
                     picked_id, picked_reason, picked_intent_key = picked
                     context_shift_used_elements.add(picked_id)
@@ -1858,13 +2093,52 @@ class GoalDrivenAgent:
                         context_shift_used_elements.clear()
                         self._last_context_shift_intent = ""
                         orchestrator.same_dom_count = 0
+                        context_shift_fail_streak = 0
+                        context_shift_cooldown = 0
                     else:
+                        context_shift_fail_streak += 1
                         if len(context_shift_used_elements) > 20:
                             context_shift_used_elements.clear()
-                        force_context_shift = True
+                        if context_shift_fail_streak >= 3:
+                            self._log(
+                                "🧭 컨텍스트 전환이 연속 실패해 일반 액션 전략으로 복귀합니다."
+                            )
+                            force_context_shift = False
+                            context_shift_used_elements.clear()
+                            self._last_context_shift_intent = ""
+                            context_shift_cooldown = 4
+                        else:
+                            force_context_shift = True
                     time.sleep(0.4)
                     continue
                 else:
+                    if collect_unmet:
+                        self._log("🧭 전환 후보 부족: 수집 CTA 노출을 위해 스크롤 전환을 시도합니다.")
+                        shift_decision = ActionDecision(
+                            action=ActionType.SCROLL,
+                            reasoning="수집 목표 미달 상태에서 새 수집 요소 탐색을 위한 스크롤 전환",
+                            confidence=0.6,
+                        )
+                        step_result, success, error = sub_agent.run_step(
+                            step_number=step_count,
+                            step_start=step_start,
+                            decision=shift_decision,
+                            dom_elements=dom_elements,
+                        )
+                        steps.append(step_result)
+                        post_dom = self._analyze_dom()
+                        changed = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
+                        if success and changed:
+                            context_shift_fail_streak = 0
+                            force_context_shift = False
+                            context_shift_cooldown = 0
+                        else:
+                            context_shift_fail_streak += 1
+                            force_context_shift = context_shift_fail_streak < 3
+                            if context_shift_fail_streak >= 3:
+                                context_shift_cooldown = 4
+                        time.sleep(0.3)
+                        continue
                     self._log("🧭 컨텍스트 전환 후보를 찾지 못해 기본 LLM 흐름으로 계속 진행합니다.")
                     force_context_shift = False
 
@@ -1902,6 +2176,8 @@ class GoalDrivenAgent:
                     start_time=start_time,
                     reason=fatal_reason,
                 )
+
+            decision = self._enforce_goal_constraints_on_decision(decision, dom_elements)
 
             # 4. 목표 달성 확인
             if decision.is_goal_achieved:
@@ -2005,12 +2281,32 @@ class GoalDrivenAgent:
                 )
             else:
                 self._log(f"⚠️ 액션 실패: {error}")
+            if decision.action == ActionType.CLICK and decision.element_id is not None:
+                self._recent_click_element_ids.append(int(decision.element_id))
+                if len(self._recent_click_element_ids) > 24:
+                    self._recent_click_element_ids = self._recent_click_element_ids[-24:]
 
             post_dom = self._analyze_dom()
+            refreshed_metric = self._estimate_goal_metric_from_dom(post_dom) if post_dom else None
+            if refreshed_metric is not None:
+                self._goal_metric_value = refreshed_metric
             state_change = self._last_exec_result.state_change if self._last_exec_result else None
             changed_by_state = self._state_change_indicates_progress(state_change)
             changed_by_dom = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
             changed = bool(changed_by_state or changed_by_dom)
+            if changed:
+                self._progress_counter += 1
+                self._no_progress_counter = 0
+            else:
+                self._no_progress_counter += 1
+            master_orchestrator.record_progress(
+                changed=changed,
+                signal={
+                    "reason_code": self._last_exec_result.reason_code if self._last_exec_result else "unknown",
+                    "phase": self._runtime_phase,
+                    "step": step_count,
+                },
+            )
             self._record_action_feedback(
                 step_number=step_count,
                 decision=decision,
@@ -2037,6 +2333,30 @@ class GoalDrivenAgent:
                 success=success,
                 changed=changed,
             )
+            if action_intent_key:
+                intent_soft_fail_streaks = getattr(self, "_intent_soft_fail_streaks", {}) or {}
+                if success and changed:
+                    intent_soft_fail_streaks.pop(action_intent_key, None)
+                elif reason_code in {
+                    "no_state_change",
+                    "not_actionable",
+                    "ambiguous_ref_target",
+                    "blocked_ref_no_progress",
+                }:
+                    streak = int(intent_soft_fail_streaks.get(action_intent_key, 0)) + 1
+                    intent_soft_fail_streaks[action_intent_key] = streak
+                    if streak >= 2:
+                        force_context_shift = True
+                        intent_soft_fail_streaks[action_intent_key] = 0
+                        self._action_feedback.append(
+                            "같은 의도를 반복했지만 진행 신호가 없습니다. "
+                            "다른 페이지/섹션/탭으로 전환한 뒤 다음 행동을 선택하세요."
+                        )
+                        if len(self._action_feedback) > 10:
+                            self._action_feedback = self._action_feedback[-10:]
+                else:
+                    intent_soft_fail_streaks.pop(action_intent_key, None)
+                self._intent_soft_fail_streaks = intent_soft_fail_streaks
             if (
                 login_gate_visible
                 and decision.action == ActionType.CLICK
@@ -2084,7 +2404,7 @@ class GoalDrivenAgent:
                     time.sleep(0.25)
                     continue
 
-                if reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
+                if self._no_progress_counter >= 2 and reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
                     ActionType.CLICK,
                     ActionType.FILL,
                     ActionType.PRESS,
@@ -2112,6 +2432,8 @@ class GoalDrivenAgent:
             if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.NAVIGATE, ActionType.SCROLL}:
                 if success and changed:
                     ineffective_action_streak = 0
+                    context_shift_fail_streak = 0
+                    context_shift_cooldown = 0
                 else:
                     ineffective_action_streak += 1
             else:
@@ -2122,21 +2444,27 @@ class GoalDrivenAgent:
                 force_context_shift = True
                 scroll_streak = 0
 
-            if decision.action == ActionType.CLICK and success and changed:
-                if click_intent_key and click_intent_key == self._last_success_click_intent:
-                    self._success_click_intent_streak += 1
-                else:
+            if decision.action == ActionType.CLICK:
+                if click_intent_key and (not success or not changed):
+                    if click_intent_key == self._last_success_click_intent:
+                        self._success_click_intent_streak += 1
+                    else:
+                        self._last_success_click_intent = click_intent_key
+                        self._success_click_intent_streak = 1
+                elif click_intent_key and success and changed:
                     self._last_success_click_intent = click_intent_key
-                    self._success_click_intent_streak = 1 if click_intent_key else 0
+                    self._success_click_intent_streak = 0
+                else:
+                    self._success_click_intent_streak = 0
             elif decision.action in {ActionType.CLICK, ActionType.SCROLL, ActionType.NAVIGATE, ActionType.PRESS}:
                 self._last_success_click_intent = ""
                 self._success_click_intent_streak = 0
 
-            if self._success_click_intent_streak >= 4:
+            if self._success_click_intent_streak >= 3 and self._no_progress_counter >= 2:
                 self._log("🧭 동일 클릭 의도 반복 감지: 단계 전환 CTA 탐색으로 전환합니다.")
                 force_context_shift = True
 
-            if ineffective_action_streak >= 3:
+            if ineffective_action_streak >= 3 and self._no_progress_counter >= 2:
                 force_context_shift = True
             if ineffective_action_streak >= 8:
                 return self._build_failure_result(
@@ -2200,6 +2528,7 @@ class GoalDrivenAgent:
             self._element_selectors = {}
             self._element_full_selectors = {}
             self._element_ref_ids = {}
+            self._selector_to_ref_id = {}
             self._element_scopes = {}
             self._active_snapshot_id = str(data.get("snapshot_id") or "")
             self._active_dom_hash = str(data.get("dom_hash") or "")
@@ -2221,6 +2550,10 @@ class GoalDrivenAgent:
                     self._element_full_selectors[idx] = full_selector
                 if isinstance(ref_id, str) and ref_id:
                     self._element_ref_ids[idx] = ref_id
+                    if selector:
+                        self._selector_to_ref_id[selector] = ref_id
+                    if full_selector:
+                        self._selector_to_ref_id[full_selector] = ref_id
                 if isinstance(scope, dict):
                     self._element_scopes[idx] = scope
 
@@ -2288,6 +2621,12 @@ class GoalDrivenAgent:
 
         # DOM 요소를 LLM이 이해하기 쉬운 형태로 변환
         elements_text = self._format_dom_for_llm(dom_elements)
+        recent_repeated = self._recent_click_element_ids[-8:]
+        recent_block_text = (
+            ", ".join(str(x) for x in recent_repeated)
+            if recent_repeated
+            else "없음"
+        )
         signup_rule = ""
         if self._goal_mentions_signup(goal):
             signup_rule = """
@@ -2295,6 +2634,7 @@ class GoalDrivenAgent:
    - 회원가입 화면/모달 진입만으로는 절대 성공이 아닙니다.
    - 입력값 채움 + 제출 버튼 클릭 + 완료 신호(완료 문구/로그인 상태 변화) 확인 전까지 is_goal_achieved=false를 유지하세요.
 """
+        constraint_rule = self._build_goal_constraint_prompt()
 
         # 프롬프트 구성
         prompt = f"""당신은 웹 테스트 자동화 에이전트입니다.
@@ -2310,7 +2650,7 @@ class GoalDrivenAgent:
 
 ## 현재 실행 phase (참고)
 - phase: {self._runtime_phase}
-- collect=후보 수집, configure=조건/필터 조정, execute=조합/실행 트리거, apply=결과 반영/확정
+- AUTH=인증/로그인 처리, COLLECT=후보 수집, COMPOSE=조합/설정, APPLY=반영/실행, VERIFY=완료 검증
 - phase는 가이드일 뿐이며, 실제 DOM/상태 변화 증거를 우선하세요.
 
 ## 사용 가능한 테스트 데이터
@@ -2321,6 +2661,9 @@ class GoalDrivenAgent:
 
 ## 최근 액션 실행 피드백
 {chr(10).join(self._action_feedback[-5:]) if self._action_feedback else '없음'}
+
+## 최근 반복 클릭 element_id (가능하면 회피)
+{recent_block_text}
 
 ## 도메인 실행 기억(KB)
 {memory_context or '없음'}
@@ -2341,25 +2684,25 @@ class GoalDrivenAgent:
 4. **중간 단계 파악**: 기획서에 없는 단계도 스스로 파악하세요
    - 예: "로그인" 목표 → (1)로그인 탭 클릭 → (2)이메일 입력 → (3)비밀번호 입력 → (4)제출 버튼 클릭
 {signup_rule}
+{constraint_rule}
 6. **무효 액션 반복 금지**
    - 최근 실행 피드백에서 changed=false 또는 success=false인 액션/요소 조합은 반복하지 마세요.
    - 같은 요소를 2회 연속 클릭했는데 changed=false라면 다른 요소/전략을 선택하세요.
 7. **컨텍스트 전환 규칙**
    - 같은 의도가 2회 이상 changed=false이면, 다음/페이지네이션/탭/필터/정렬 전환으로 화면 컨텍스트를 바꾼 뒤 다시 시도하세요.
-   - 목표 CTA(조합/생성/실행/적용)가 안 보일 때 `확장/더보기/show more/expand`는 **콘텐츠 영역 확장일 때만** 우선 선택하세요.
-   - `위시리스트/장바구니/내 시간표` 같은 패널 확장 버튼은 우선순위를 낮추고, 먼저 과목 추가/페이지네이션/CTA 탐색을 진행하세요.
+   - 목표 단계 전환 CTA가 안 보일 때 `확장/더보기/show more/expand`는 **콘텐츠 영역 확장일 때만** 우선 선택하세요.
    - 목록형 페이지에서는 동일 카드 반복 클릭보다 다른 카드/다음 페이지 이동을 우선하세요.
    - 페이지네이션에서 "다음/next/›/»"가 보이면 숫자 페이지 버튼(1,2,3,4...)보다 우선 선택하세요.
    - 숫자 페이지 버튼만 반복 클릭하지 말고, 진행 정체 시 반드시 "다음"으로 넘어가세요.
 8. **단계 전환 규칙(강제)**
-   - 동일한 클릭 의도가 여러 번 연속 성공해도 목표가 완료되지 않으면, 다음 액션은 단계 전환 CTA(조합/생성/실행/적용/제출/continue/run 등)를 우선 선택하세요.
+   - 동일한 클릭 의도가 여러 번 연속 성공해도 목표가 완료되지 않으면, 다음 액션은 단계 전환 CTA를 우선 선택하세요.
    - 해당 CTA가 보이지 않으면 스크롤/탭 전환/다음 페이지 이동으로 CTA를 먼저 찾으세요.
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
-    "action": "click" | "fill" | "press" | "scroll" | "wait",
+    "action": "click" | "fill" | "press" | "scroll" | "wait" | "select",
     "element_id": 요소ID (숫자),
-    "value": "입력값 (fill인 경우) 또는 키 이름 (press인 경우, 예: Enter)",
+    "value": "입력값 (fill), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms)",
     "reasoning": "이 액션을 선택한 이유",
     "confidence": 0.0~1.0,
     "is_goal_achieved": true | false,
@@ -2390,7 +2733,7 @@ JSON 응답:"""
 
     def _format_dom_for_llm(self, elements: List[DOMElement]) -> str:
         """DOM 요소를 LLM이 이해하기 쉬운 텍스트로 변환"""
-        phase = self._runtime_phase or "collect"
+        phase = (self._runtime_phase or "COLLECT").upper()
 
         def _score(el: DOMElement) -> float:
             text = self._normalize_text(el.text)
@@ -2438,31 +2781,29 @@ JSON 응답:"""
 
             if has_expand and not has_progress:
                 score -= 2.0
-            if has_expand and has_wishlist_like:
-                score -= 8.0
 
-            if phase == "collect":
+            if phase in {"AUTH", "COLLECT"}:
                 if has_add_like:
                     score += 4.0
                 if has_progress:
                     score += 1.5
                 if has_apply:
                     score -= 1.0
-            elif phase == "configure":
+            elif phase == "COMPOSE":
                 if has_configure:
                     score += 4.0
                 if has_progress:
                     score += 2.5
                 if has_add_like:
                     score -= 1.5
-            elif phase == "execute":
-                if has_execute or has_progress:
+            elif phase == "APPLY":
+                if has_execute or has_progress or has_apply:
                     score += 5.0
                 if has_next:
                     score += 2.0
                 if has_add_like:
                     score -= 2.5
-            elif phase == "apply":
+            elif phase == "VERIFY":
                 if has_apply or has_progress:
                     score += 5.5
                 if has_add_like:
@@ -2474,9 +2815,28 @@ JSON 응답:"""
             if text:
                 score += min(2.5, len(text) / 18.0)
 
+            recent_clicks = self._recent_click_element_ids[-10:]
+            if recent_clicks:
+                for offset, recent_id in enumerate(reversed(recent_clicks), start=1):
+                    if recent_id == el.id:
+                        score -= max(1.2, 4.5 - (offset * 0.45))
+                        break
+                repeat_count = recent_clicks.count(el.id)
+                if repeat_count > 1:
+                    score -= min(4.0, 0.9 * (repeat_count - 1))
+
+            if self._last_dom_top_ids and el.id in recent_clicks:
+                try:
+                    previous_rank = self._last_dom_top_ids.index(el.id)
+                except ValueError:
+                    previous_rank = -1
+                if 0 <= previous_rank < 5:
+                    score -= max(1.0, 3.2 - (previous_rank * 0.5))
+
             return self._clamp_score(score, low=-25.0, high=35.0)
 
         ranked = sorted(elements, key=_score, reverse=True)
+        self._last_dom_top_ids = [el.id for el in ranked[:12]]
         try:
             dom_limit = int(os.getenv("GAIA_LLM_DOM_LIMIT", "260"))
         except Exception:
@@ -2570,6 +2930,7 @@ JSON 응답:"""
             ActionType.PRESS,
             ActionType.HOVER,
             ActionType.SCROLL,
+            ActionType.SELECT,
         }
         if decision.element_id is not None:
             selector = self._element_selectors.get(decision.element_id)
@@ -2588,6 +2949,14 @@ JSON 응답:"""
                 selector = self._element_selectors.get(decision.element_id)
                 full_selector = self._element_full_selectors.get(decision.element_id)
                 ref_id = self._element_ref_ids.get(decision.element_id)
+                if not ref_id:
+                    selector_to_ref = getattr(self, "_selector_to_ref_id", {}) or {}
+                    for candidate in (full_selector, selector):
+                        if candidate:
+                            mapped_ref = selector_to_ref.get(candidate)
+                            if mapped_ref:
+                                ref_id = mapped_ref
+                                break
                 if not ref_id or not self._active_snapshot_id:
                     self._last_exec_result = ActionExecResult(
                         success=False,
@@ -2606,8 +2975,84 @@ JSON 응답:"""
             except Exception:
                 selected_element = None
 
+        element_actions = {
+            ActionType.CLICK,
+            ActionType.FILL,
+            ActionType.PRESS,
+            ActionType.HOVER,
+            ActionType.SCROLL,
+            ActionType.SELECT,
+        }
+        retriable_reason_codes = {
+            "snapshot_not_found",
+            "stale_snapshot",
+            "ref_required",
+            "not_found",
+            "ambiguous_ref_target",
+            "no_state_change",
+            "not_actionable",
+        }
+
+        def _refresh_ref_binding() -> None:
+            nonlocal selector, full_selector, ref_id
+            _ = self._analyze_dom()
+            selector_to_ref = getattr(self, "_selector_to_ref_id", {}) or {}
+            if decision.element_id is not None:
+                selector = self._element_selectors.get(decision.element_id) or selector
+                full_selector = self._element_full_selectors.get(decision.element_id) or full_selector
+                ref_id = self._element_ref_ids.get(decision.element_id) or ref_id
+            if not ref_id:
+                for candidate in (full_selector, selector):
+                    if candidate:
+                        mapped_ref = selector_to_ref.get(candidate)
+                        if mapped_ref:
+                            ref_id = mapped_ref
+                            break
+
+        def _execute_with_ref_recovery(
+            action_name: str,
+            action_value: Optional[str] = None,
+        ) -> tuple[bool, Optional[str]]:
+            nonlocal selector, full_selector, ref_id
+            self._last_exec_result = self._execute_action(
+                action_name,
+                selector=selector,
+                full_selector=full_selector,
+                ref_id=ref_id,
+                value=action_value,
+            )
+            should_retry = (
+                decision.action in element_actions
+                and self._last_exec_result.reason_code in retriable_reason_codes
+            )
+            if should_retry:
+                prev_snapshot = self._active_snapshot_id
+                prev_ref = ref_id or ""
+                _refresh_ref_binding()
+                if ref_id and self._active_snapshot_id:
+                    self._last_exec_result = self._execute_action(
+                        action_name,
+                        selector=selector,
+                        full_selector=full_selector,
+                        ref_id=ref_id,
+                        value=action_value,
+                    )
+                    if (
+                        self._last_exec_result.success
+                        and self._last_exec_result.effective
+                        and (prev_snapshot != self._active_snapshot_id or prev_ref != (ref_id or ""))
+                    ):
+                        self._log("♻️ stale/ref 오류 복구: 최신 snapshot/ref 재매핑 후 재시도 성공")
+            return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
+
         try:
-            if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.HOVER} and decision.element_id is None:
+            if decision.action in {
+                ActionType.CLICK,
+                ActionType.FILL,
+                ActionType.PRESS,
+                ActionType.HOVER,
+                ActionType.SELECT,
+            } and decision.element_id is None:
                 self._last_exec_result = ActionExecResult(
                     success=False,
                     effective=False,
@@ -2645,13 +3090,7 @@ JSON 응답:"""
                 return False, self._last_exec_result.as_error_message()
 
             if decision.action == ActionType.CLICK:
-                self._last_exec_result = self._execute_action(
-                    "click",
-                    selector=selector,
-                    full_selector=full_selector,
-                    ref_id=ref_id,
-                )
-                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
+                return _execute_with_ref_recovery("click")
 
             elif decision.action == ActionType.FILL:
                 if not decision.value:
@@ -2662,60 +3101,38 @@ JSON 응답:"""
                         reason="fill 액션에 value가 필요함",
                     )
                     return False, "fill 액션에 value가 필요함"
-                self._last_exec_result = self._execute_action(
-                    "fill",
-                    selector=selector,
-                    full_selector=full_selector,
-                    ref_id=ref_id,
-                    value=decision.value,
-                )
-                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
+                return _execute_with_ref_recovery("fill", action_value=decision.value)
 
             elif decision.action == ActionType.PRESS:
                 # press 액션은 키보드 입력 (Enter, Tab 등)
                 key = decision.value or "Enter"
-                self._last_exec_result = self._execute_action(
-                    "press",
-                    selector=selector or "",
-                    full_selector=full_selector,
-                    ref_id=ref_id,
-                    value=key,
-                )
-                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
+                return _execute_with_ref_recovery("press", action_value=key)
 
             elif decision.action == ActionType.SCROLL:
                 scroll_value = decision.value or "down"
-                self._last_exec_result = self._execute_action(
-                    "scroll",
-                    selector=selector,
-                    full_selector=full_selector,
-                    ref_id=ref_id,
-                    value=scroll_value,
-                )
-                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
+                return _execute_with_ref_recovery("scroll", action_value=scroll_value)
+
+            elif decision.action == ActionType.SELECT:
+                if not decision.value:
+                    self._last_exec_result = ActionExecResult(
+                        success=False,
+                        effective=False,
+                        reason_code="invalid_input",
+                        reason="select 액션에 value(values)가 필요함",
+                    )
+                    return False, "select 액션에 value(values)가 필요함"
+                return _execute_with_ref_recovery("select", action_value=decision.value)
 
             elif decision.action == ActionType.WAIT:
-                time.sleep(1)
-                self._last_exec_result = ActionExecResult(
-                    success=True,
-                    effective=True,
-                    reason_code="wait",
-                    reason="wait",
-                )
-                return True, None
+                self._last_exec_result = self._execute_action("wait", value=decision.value)
+                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.NAVIGATE:
                 self._last_exec_result = self._execute_action("goto", url=decision.value)
                 return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.HOVER:
-                self._last_exec_result = self._execute_action(
-                    "hover",
-                    selector=selector,
-                    full_selector=full_selector,
-                    ref_id=ref_id,
-                )
-                return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
+                return _execute_with_ref_recovery("hover")
 
             else:
                 self._last_exec_result = ActionExecResult(
@@ -2742,6 +3159,7 @@ JSON 응답:"""
         full_selector: Optional[str] = None,
         ref_id: Optional[str] = None,
         value: Optional[str] = None,
+        values: Optional[List[str]] = None,
         url: Optional[str] = None,
     ) -> ActionExecResult:
         """MCP Host를 통해 액션 실행"""
@@ -2749,7 +3167,7 @@ JSON 응답:"""
         use_ref_protocol = bool(
             ref_id
             and self._active_snapshot_id
-            and action in {"click", "fill", "press", "hover", "scroll"}
+            and action in {"click", "fill", "press", "hover", "scroll", "scrollIntoView", "select"}
         )
         is_element_action = action in {
             "click",
@@ -2757,6 +3175,7 @@ JSON 응답:"""
             "press",
             "hover",
             "scroll",
+            "scrollIntoView",
             "select",
             "dragAndDrop",
             "dragSlider",
@@ -2779,21 +3198,53 @@ JSON 응답:"""
                 "verify": True,
                 "selector_hint": full_selector or selector or "",
             }
-            if value is not None:
+            if action == "select":
+                parsed_values = values or parse_multi_values(value)
+                if not parsed_values:
+                    return ActionExecResult(
+                        success=False,
+                        effective=False,
+                        reason_code="invalid_input",
+                        reason="select 액션에는 values가 필요합니다.",
+                    )
+                params["values"] = parsed_values
+                params["value"] = parsed_values if len(parsed_values) > 1 else parsed_values[0]
+            elif value is not None:
                 params["value"] = value
             request_action = "browser_act"
         else:
-            params = {
-                "session_id": self.session_id,
-                "action": action,
-                "url": url or "",
-                "selector": full_selector or selector or "",
-            }
-            if value is not None:
-                params["value"] = value
-            if action == "goto" and url:
-                params["value"] = url
-            request_action = "browser_act"
+            if action == "wait":
+                wait_payload = parse_wait_payload(value)
+                simple_wait_only = bool(wait_payload) and set(wait_payload.keys()).issubset({"time_ms", "timeMs"})
+                if simple_wait_only:
+                    wait_ms = wait_payload.get("time_ms", wait_payload.get("timeMs", 1000))
+                    try:
+                        wait_ms = max(0, int(wait_ms))
+                    except Exception:
+                        wait_ms = 1000
+                    params = {
+                        "session_id": self.session_id,
+                        "action": "wait",
+                        "value": wait_ms,
+                        "url": url or "",
+                    }
+                    request_action = "browser_act"
+                else:
+                    params = {"session_id": self.session_id}
+                    params.update(wait_payload)
+                    request_action = "browser_wait"
+            else:
+                params = {
+                    "session_id": self.session_id,
+                    "action": action,
+                    "url": url or "",
+                    "selector": full_selector or selector or "",
+                }
+                if value is not None:
+                    params["value"] = value
+                if action == "goto" and url:
+                    params["value"] = url
+                request_action = "browser_act"
 
         try:
             response = requests.post(

@@ -7,6 +7,7 @@ import hashlib
 import json as json_module
 import traceback
 import re
+import weakref
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
@@ -300,6 +301,7 @@ class BrowserSession:
 
 # 활성 세션 저장소
 active_sessions: Dict[str, BrowserSession] = {}
+_page_target_id_cache: "weakref.WeakKeyDictionary[Page, str]" = weakref.WeakKeyDictionary()
 
 
 def _build_snapshot_dom_hash(url: str, elements: List[Dict[str, Any]]) -> str:
@@ -1702,6 +1704,105 @@ async def capture_screenshot(
     }
 
 
+def _normalize_timeout_ms(raw: Any, default_ms: int, min_ms: int = 500, max_ms: int = 120000) -> int:
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default_ms)
+    return max(min_ms, min(max_ms, value))
+
+
+async def _reset_session_connection(session: BrowserSession, reason: str = "") -> None:
+    try:
+        if session.cdp_session is not None:
+            try:
+                await session.cdp_session.detach()
+            except Exception:
+                pass
+    finally:
+        session.cdp_session = None
+
+    if session.browser is not None:
+        try:
+            await session.browser.close()
+        except Exception:
+            pass
+
+    session.browser = None
+    session.page = None
+    session.current_url = ""
+    session.screencast_active = False
+    session.dialog_listener_armed = False
+    session.file_chooser_listener_armed = False
+    session.current_snapshot_id = ""
+    session.current_dom_hash = ""
+    session.snapshots = {}
+    if reason:
+        print(f"[session-reset] {session.session_id}: {reason}")
+
+
+async def _evaluate_js_with_timeout(
+    page: Page,
+    script: str,
+    *,
+    selector: str = "",
+    timeout_ms: int = 20000,
+) -> Any:
+    fn_text = str(script or "").strip()
+    if not fn_text:
+        raise ValueError("Value (script) is required for 'evaluate' action")
+    timeout_ms = _normalize_timeout_ms(timeout_ms, 20000)
+
+    if selector:
+        element = page.locator(selector).first
+        return await element.evaluate(
+            """
+            (el, payload) => {
+              const { fnBody, timeoutMs } = payload || {};
+              try {
+                const candidate = eval("(" + fnBody + ")");
+                const result = (typeof candidate === "function") ? candidate(el) : candidate;
+                if (result && typeof result.then === "function") {
+                  return Promise.race([
+                    result,
+                    new Promise((_, reject) =>
+                      setTimeout(() => reject(new Error("evaluate timed out after " + timeoutMs + "ms")), timeoutMs)
+                    )
+                  ]);
+                }
+                return result;
+              } catch (err) {
+                throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
+              }
+            }
+            """,
+            {"fnBody": fn_text, "timeoutMs": timeout_ms},
+        )
+
+    return await page.evaluate(
+        """
+        ({ fnBody, timeoutMs }) => {
+          try {
+            const candidate = eval("(" + fnBody + ")");
+            const result = (typeof candidate === "function") ? candidate() : candidate;
+            if (result && typeof result.then === "function") {
+              return Promise.race([
+                result,
+                new Promise((_, reject) =>
+                  setTimeout(() => reject(new Error("evaluate timed out after " + timeoutMs + "ms")), timeoutMs)
+                )
+              ]);
+            }
+            return result;
+          } catch (err) {
+            throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
+          }
+        }
+        """,
+        {"fnBody": fn_text, "timeoutMs": timeout_ms},
+    )
+
+
 async def execute_simple_action(
     url: str,
     selector: str,
@@ -1709,6 +1810,7 @@ async def execute_simple_action(
     value: str = None,
     session_id: str = "default",
     before_screenshot: str = None,
+    action_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Execute a simple action (click, fill, press, scroll, tab) using persistent session.
@@ -1733,6 +1835,26 @@ async def execute_simple_action(
 
     session = active_sessions[session_id]
     page = await session.get_or_create_page()
+
+    if is_element_action(action):
+        return {
+            "success": False,
+            "reason_code": "legacy_selector_forbidden",
+            "message": (
+                "legacy selector element actions are disabled. "
+                "use browser_snapshot + browser_act(snapshot_id, ref_id)."
+            ),
+        }
+
+    if legacy_selector_forbidden(action, selector):
+        return {
+            "success": False,
+            "reason_code": "legacy_selector_forbidden",
+            "message": (
+                "legacy selector element actions are disabled. "
+                "use browser_snapshot + browser_act(snapshot_id, ref_id)."
+            ),
+        }
 
     try:
         # URL이 변경되었고 비어 있지 않을 때에만 이동합니다
@@ -1951,13 +2073,42 @@ async def execute_simple_action(
             # 자바스크립트를 실행합니다(값에 스크립트 포함)
             if value is None:
                 raise ValueError("Value (script) is required for 'evaluate' action")
-            if selector:
-                # 특정 요소에서 평가합니다
-                element = page.locator(selector).first
-                eval_result = await element.evaluate(value)
-            else:
-                # 페이지에서 평가합니다
-                eval_result = await page.evaluate(value)
+            env_default = os.getenv("GAIA_EVALUATE_TIMEOUT_MS", "20000")
+            timeout_raw = (
+                (action_options or {}).get("timeoutMs")
+                if isinstance(action_options, dict)
+                else None
+            )
+            if timeout_raw is None and isinstance(action_options, dict):
+                timeout_raw = action_options.get("timeout_ms")
+            eval_timeout_ms = _normalize_timeout_ms(
+                timeout_raw if timeout_raw is not None else env_default,
+                20000,
+            )
+            try:
+                eval_result = await _evaluate_js_with_timeout(
+                    page,
+                    str(value),
+                    selector=selector,
+                    timeout_ms=eval_timeout_ms,
+                )
+            except Exception as eval_exc:
+                msg = str(eval_exc)
+                lower_msg = msg.lower()
+                if "evaluate timed out after" in lower_msg or "timed out" in lower_msg:
+                    await _reset_session_connection(
+                        session,
+                        reason=f"evaluate_timeout:{msg[:180]}",
+                    )
+                    return {
+                        "success": False,
+                        "reason_code": "action_timeout",
+                        "message": (
+                            f"Evaluate timed out after {eval_timeout_ms}ms. "
+                            "Session connection was reset; retry with a smaller/bounded fn."
+                        ),
+                    }
+                raise
 
             # 평가 결과를 스크린샷과 함께 반환합니다
             screenshot_bytes = await page.screenshot(full_page=False)
@@ -2581,70 +2732,16 @@ def _select_frame_for_ref(page: Page, ref_meta: Dict[str, Any]):
 async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], _selector_hint: str):
     frame, frame_index = _select_frame_for_ref(page, ref_meta)
     dom_ref = str(ref_meta.get("dom_ref") or "").strip()
-    selector_hint = str(_selector_hint or "").strip()
-
-    async def _resolve_with_selector_hint():
-        if not selector_hint:
-            return None, frame_index, "", ""
-        try:
-            hint_group = frame.locator(selector_hint)
-            hint_count = await hint_group.count()
-            if hint_count <= 0:
-                return None, frame_index, selector_hint, "hint_not_found"
-            if hint_count == 1:
-                return hint_group.nth(0), frame_index, selector_hint, ""
-
-            bbox = ref_meta.get("bounding_box") if isinstance(ref_meta.get("bounding_box"), dict) else {}
-            try:
-                target_cx = float(
-                    bbox.get("center_x", (float(bbox.get("x", 0.0)) + float(bbox.get("width", 0.0)) / 2.0))
-                )
-                target_cy = float(
-                    bbox.get("center_y", (float(bbox.get("y", 0.0)) + float(bbox.get("height", 0.0)) / 2.0))
-                )
-            except Exception:
-                target_cx = None
-                target_cy = None
-
-            best_idx = None
-            best_dist = None
-            inspect_limit = min(hint_count, 25)
-            if target_cx is not None and target_cy is not None:
-                for idx in range(inspect_limit):
-                    candidate = hint_group.nth(idx)
-                    try:
-                        cand_box = await candidate.bounding_box()
-                    except Exception:
-                        cand_box = None
-                    if not cand_box:
-                        continue
-                    cx = float(cand_box.get("x", 0.0)) + (float(cand_box.get("width", 0.0)) / 2.0)
-                    cy = float(cand_box.get("y", 0.0)) + (float(cand_box.get("height", 0.0)) / 2.0)
-                    dist = ((cx - target_cx) ** 2) + ((cy - target_cy) ** 2)
-                    if best_dist is None or dist < best_dist:
-                        best_dist = dist
-                        best_idx = idx
-            if best_idx is not None:
-                return hint_group.nth(best_idx), frame_index, f"{selector_hint} [hint:nth={best_idx}]", ""
-            return None, frame_index, selector_hint, f"ambiguous_selector_matches:{hint_count}"
-        except Exception as hint_exc:
-            return None, frame_index, selector_hint, f"hint_error:{hint_exc}"
 
     if not dom_ref:
-        fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
-        if fallback_locator is not None:
-            return fallback_locator, fallback_frame_idx, fallback_selector, ""
-        return None, frame_index, selector_hint or "", "dom_ref_missing"
+        return None, frame_index, "", "dom_ref_missing"
 
     try:
         selector_to_use = f'[data-gaia-dom-ref="{dom_ref}"]'
         locator_group = frame.locator(selector_to_use)
         match_count = await locator_group.count()
         if match_count <= 0:
-            fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
-            if fallback_locator is not None:
-                return fallback_locator, fallback_frame_idx, fallback_selector, ""
-            return None, frame_index, fallback_selector or selector_to_use, fallback_error or "not_found"
+            return None, frame_index, selector_to_use, "not_found"
         if match_count == 1:
             return locator_group.nth(0), frame_index, selector_to_use, ""
 
@@ -2685,16 +2782,10 @@ async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], _selec
                 f'{selector_to_use} [nth={best_idx}]',
                 "",
             )
-
-        fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
-        if fallback_locator is not None:
-            return fallback_locator, fallback_frame_idx, fallback_selector, ""
-        return None, frame_index, fallback_selector or selector_to_use, fallback_error or f"ambiguous_selector_matches:{match_count}"
+        return None, frame_index, selector_to_use, f"ambiguous_selector_matches:{match_count}"
     except Exception as exc:
-        fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
-        if fallback_locator is not None:
-            return fallback_locator, fallback_frame_idx, fallback_selector, ""
-        return None, frame_index, fallback_selector or selector_to_use, fallback_error or str(exc)
+        selector_to_use = f'[data-gaia-dom-ref="{dom_ref}"]'
+        return None, frame_index, selector_to_use, str(exc)
 
 
 def _parse_scroll_payload(value: Any) -> Dict[str, Any]:
@@ -2824,40 +2915,91 @@ async def _scroll_locator_container(locator, value: Any) -> Dict[str, Any]:
     )
 
 
-async def _execute_action_on_locator(action: str, page: Page, locator, value: Any):
+async def _execute_action_on_locator(
+    action: str,
+    page: Page,
+    locator,
+    value: Any,
+    options: Optional[Dict[str, Any]] = None,
+):
+    opts = dict(options or {})
+
+    def _normalize_timeout(raw: Any, default_ms: int) -> int:
+        try:
+            candidate = int(raw)
+        except Exception:
+            candidate = default_ms
+        return max(500, min(60000, candidate))
+
     if action == "click":
         await _reveal_locator_in_scroll_context(locator)
-        await locator.click(timeout=8000, no_wait_after=True)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 8000)
+        button = str(opts.get("button") or "left").strip().lower()
+        if button not in {"left", "right", "middle"}:
+            button = "left"
+        modifiers_raw = opts.get("modifiers")
+        modifiers: Optional[List[str]] = None
+        if isinstance(modifiers_raw, list):
+            allowed_mods = {"Alt", "Control", "Meta", "Shift"}
+            normalized_mods = [str(m).strip() for m in modifiers_raw if str(m).strip() in allowed_mods]
+            if normalized_mods:
+                modifiers = normalized_mods
+        double_click = bool(opts.get("doubleClick") or opts.get("double_click"))
+        click_kwargs: Dict[str, Any] = {
+            "button": button,
+            "timeout": timeout_ms,
+            "no_wait_after": True,
+        }
+        if modifiers:
+            click_kwargs["modifiers"] = modifiers
+        if double_click:
+            await locator.dblclick(**click_kwargs)
+        else:
+            await locator.click(**click_kwargs)
         return
     if action == "fill":
         if value is None:
             raise ValueError("fill requires value")
         await _reveal_locator_in_scroll_context(locator)
-        await locator.fill(str(value), timeout=10000)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
+        await locator.fill(str(value), timeout=timeout_ms)
         return
     if action == "press":
         key = str(value or "Enter")
         await _reveal_locator_in_scroll_context(locator)
-        await locator.press(key, timeout=8000, no_wait_after=True)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 8000)
+        await locator.press(key, timeout=timeout_ms, no_wait_after=True)
         return
     if action == "hover":
         await _reveal_locator_in_scroll_context(locator)
-        await locator.hover(timeout=10000)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
+        await locator.hover(timeout=timeout_ms)
         return
     if action == "scroll":
         await _scroll_locator_container(locator, value)
+        return
+    if action == "scrollIntoView":
+        await _reveal_locator_in_scroll_context(locator)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
+        await locator.scroll_into_view_if_needed(timeout=timeout_ms)
         return
     if action == "select":
         if value is None:
             raise ValueError("select requires value")
         await _reveal_locator_in_scroll_context(locator)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
         if isinstance(value, dict):
             payload = dict(value)
             if "index" in payload:
                 payload["index"] = int(payload["index"])
-            await locator.select_option(**payload, timeout=10000)
+            await locator.select_option(**payload, timeout=timeout_ms)
+        elif isinstance(value, list):
+            normalized_values = [str(item).strip() for item in value if str(item).strip()]
+            if not normalized_values:
+                raise ValueError("select requires at least one value")
+            await locator.select_option(value=normalized_values, timeout=timeout_ms)
         else:
-            await locator.select_option(str(value), timeout=10000)
+            await locator.select_option(value=str(value), timeout=timeout_ms)
         return
     if action == "dragAndDrop":
         if value is None:
@@ -2868,7 +3010,8 @@ async def _execute_action_on_locator(action: str, page: Page, locator, value: An
         target = page.locator(target_selector).first
         await _reveal_locator_in_scroll_context(locator)
         await _reveal_locator_in_scroll_context(target)
-        await locator.drag_to(target, timeout=10000)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
+        await locator.drag_to(target, timeout=timeout_ms)
         return
     if action == "dragSlider":
         if value is None:
@@ -2901,17 +3044,16 @@ async def execute_ref_action_with_snapshot(
     ref_id: str,
     action: str,
     value: Any = None,
+    options: Optional[Dict[str, Any]] = None,
     url: str = "",
     selector_hint: str = "",
     verify: bool = True,
+    tab_id: Optional[Any] = None,
 ) -> Dict[str, Any]:
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
-    if session_id not in active_sessions:
-        active_sessions[session_id] = BrowserSession(session_id)
-    session = active_sessions[session_id]
-    page = await session.get_or_create_page()
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
 
     if url:
         current_normalized = normalize_url(page.url)
@@ -2947,6 +3089,26 @@ async def execute_ref_action_with_snapshot(
         else None
     )
     initial_ref_state: Optional[str] = None
+    if isinstance(requested_snapshot, dict):
+        snap_epoch = int(requested_snapshot.get("epoch") or 0)
+        snap_dom_hash = str(requested_snapshot.get("dom_hash") or "")
+        snap_tab_index = int(requested_snapshot.get("tab_index") or 0)
+        parsed_epoch = 0
+        parsed_hash_short = ""
+        try:
+            parts = str(snapshot_id).split(":")
+            if len(parts) >= 3:
+                parsed_epoch = int(parts[-2] or 0)
+                parsed_hash_short = str(parts[-1] or "")
+        except Exception:
+            parsed_epoch = 0
+            parsed_hash_short = ""
+        if parsed_epoch and parsed_epoch != snap_epoch:
+            initial_ref_state = "stale_snapshot"
+        if parsed_hash_short and snap_dom_hash and not snap_dom_hash.startswith(parsed_hash_short):
+            initial_ref_state = "stale_snapshot"
+        if snap_tab_index != _get_tab_index(page):
+            initial_ref_state = "stale_snapshot"
     if not requested_snapshot:
         initial_ref_state = "snapshot_not_found"
     elif requested_meta is None:
@@ -3171,7 +3333,7 @@ async def execute_ref_action_with_snapshot(
         before_target = await _safe_read_target_state(locator)
 
         try:
-            await _execute_action_on_locator(action, page, locator, value)
+            await _execute_action_on_locator(action, page, locator, value, options=options)
             interaction_success = True
         except Exception as action_exc:
             reason_code = "not_actionable"
@@ -3323,6 +3485,8 @@ async def execute_ref_action_with_snapshot(
                 "attempt_logs": attempt_logs,
                 "screenshot": screenshot_base64,
                 "current_url": session.current_url,
+                "tab_id": _get_tab_index(page),
+                "targetId": _get_tab_index(page),
             }
 
     screenshot = None
@@ -3351,6 +3515,8 @@ async def execute_ref_action_with_snapshot(
         "attempt_logs": attempt_logs,
         "screenshot": screenshot,
         "current_url": session.current_url,
+        "tab_id": _get_tab_index(page),
+        "targetId": _get_tab_index(page),
     }
 
 
@@ -3363,27 +3529,209 @@ def _tab_payload(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any
         title = ""
     return {
         "tab_id": idx,
+        "targetId": idx,
         "active": current,
         "url": page.url,
         "title": title,
     }
 
 
-async def _resolve_session_page(session_id: str, tab_id: Optional[int] = None) -> Tuple[BrowserSession, Page]:
+async def _get_page_target_id(page: Page) -> str:
+    cached = _page_target_id_cache.get(page)
+    if cached:
+        return cached
+
+    cdp_session: Optional[CDPSession] = None
+    try:
+        cdp_session = await page.context.new_cdp_session(page)
+        info = await cdp_session.send("Target.getTargetInfo")
+        target_info = info.get("targetInfo") if isinstance(info, dict) else {}
+        target_id = str((target_info or {}).get("targetId") or "").strip()
+        if target_id:
+            _page_target_id_cache[page] = target_id
+        return target_id
+    except Exception:
+        return ""
+    finally:
+        if cdp_session is not None:
+            try:
+                await cdp_session.detach()
+            except Exception:
+                pass
+
+
+async def _list_browser_targets(browser: Optional[Browser]) -> List[Dict[str, str]]:
+    if browser is None:
+        return []
+    browser_cdp: Optional[CDPSession] = None
+    try:
+        browser_cdp = await browser.new_browser_cdp_session()
+        payload = await browser_cdp.send("Target.getTargets")
+        infos = payload.get("targetInfos") if isinstance(payload, dict) else []
+        out: List[Dict[str, str]] = []
+        if isinstance(infos, list):
+            for info in infos:
+                if not isinstance(info, dict):
+                    continue
+                target_id = str(info.get("targetId") or "").strip()
+                target_url = str(info.get("url") or "").strip()
+                if target_id:
+                    out.append({"targetId": target_id, "url": target_url})
+        return out
+    except Exception:
+        return []
+    finally:
+        if browser_cdp is not None:
+            try:
+                await browser_cdp.detach()
+            except Exception:
+                pass
+
+
+async def _resolve_page_from_tab_identifier(
+    pages: List[Page],
+    tab_identifier: Any,
+    browser: Optional[Browser] = None,
+) -> Tuple[str, Optional[int], Optional[Page], List[str]]:
+    idx = _coerce_tab_id(tab_identifier)
+    if idx is not None:
+        if 0 <= idx < len(pages):
+            return "ok", idx, pages[idx], []
+        return "not_found", None, None, []
+
+    needle = str(tab_identifier or "").strip()
+    if not needle:
+        return "not_found", None, None, []
+
+    exact_match: Optional[Tuple[int, Page, str]] = None
+    prefix_matches: List[Tuple[int, Page, str]] = []
+    lower = needle.lower()
+    for idx2, candidate in enumerate(pages):
+        target_id = await _get_page_target_id(candidate)
+        if not target_id:
+            continue
+        if target_id == needle:
+            exact_match = (idx2, candidate, target_id)
+            break
+        if target_id.lower().startswith(lower):
+            prefix_matches.append((idx2, candidate, target_id))
+
+    if exact_match is not None:
+        idx2, candidate, _ = exact_match
+        return "ok", idx2, candidate, []
+    if len(prefix_matches) == 1:
+        idx2, candidate, _ = prefix_matches[0]
+        return "ok", idx2, candidate, []
+    if len(prefix_matches) > 1:
+        return "ambiguous", None, None, [item[2] for item in prefix_matches]
+
+    # OpenClaw parity: target id를 직접 페이지에서 얻지 못하면
+    # browser-level target 목록으로 targetId -> URL 매핑 후 URL 기반으로 페이지를 찾습니다.
+    targets = await _list_browser_targets(browser)
+    if targets:
+        target_exact = next((t for t in targets if t.get("targetId") == needle), None)
+        if target_exact is None:
+            target_prefixes = [t for t in targets if str(t.get("targetId", "")).lower().startswith(lower)]
+            if len(target_prefixes) > 1:
+                return "ambiguous", None, None, [str(t.get("targetId") or "") for t in target_prefixes]
+            target_exact = target_prefixes[0] if len(target_prefixes) == 1 else None
+        if target_exact is not None:
+            target_id = str(target_exact.get("targetId") or "")
+            target_url = str(target_exact.get("url") or "")
+            url_matches = [idx3 for idx3, p in enumerate(pages) if str(p.url or "") == target_url]
+            if len(url_matches) == 1:
+                idx3 = url_matches[0]
+                return "ok", idx3, pages[idx3], []
+            if len(url_matches) > 1:
+                same_url_targets = [t for t in targets if str(t.get("url") or "") == target_url]
+                if len(same_url_targets) == len(url_matches):
+                    target_index = next(
+                        (i for i, t in enumerate(same_url_targets) if str(t.get("targetId") or "") == target_id),
+                        -1,
+                    )
+                    if 0 <= target_index < len(url_matches):
+                        idx3 = url_matches[target_index]
+                        return "ok", idx3, pages[idx3], []
+
+    return "not_found", None, None, []
+
+
+async def _tab_payload_async(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
+    payload = _tab_payload(session, page, idx)
+    target_id = await _get_page_target_id(page)
+    if target_id:
+        payload["cdp_target_id"] = target_id
+    return payload
+
+
+async def _tabs_payload_async(session: BrowserSession, pages: List[Page]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, candidate in enumerate(pages):
+        out.append(await _tab_payload_async(session, candidate, idx))
+    return out
+
+
+def _coerce_tab_id(tab_id: Any) -> Optional[int]:
+    if tab_id is None:
+        return None
+    if isinstance(tab_id, bool):
+        return None
+    if isinstance(tab_id, int):
+        return tab_id
+    text = str(tab_id).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    for prefix in ("tab:", "tab-", "tab_"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    try:
+        return int(text)
+    except Exception:
+        return None
+
+
+async def _resolve_session_page(session_id: str, tab_id: Optional[Any] = None) -> Tuple[BrowserSession, Page]:
     if session_id not in active_sessions:
         active_sessions[session_id] = BrowserSession(session_id)
     session = active_sessions[session_id]
     page = await session.get_or_create_page()
 
     if tab_id is not None:
-        try:
-            pages = page.context.pages
-            idx = int(tab_id)
-            if 0 <= idx < len(pages):
-                page = pages[idx]
-                session.page = page
-        except Exception:
-            pass
+        pages = list(page.context.pages)
+        status, _, resolved_page, matches = await _resolve_page_from_tab_identifier(
+            pages,
+            tab_id,
+            session.browser,
+        )
+        if status == "ok" and resolved_page is not None:
+            page = resolved_page
+        elif len(pages) == 1:
+            # OpenClaw parity: stale/foreign target가 와도 단일 탭이면 복구해서 진행.
+            page = pages[0]
+        elif status == "ambiguous":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": "ambiguous_target_id",
+                    "message": "ambiguous target id prefix",
+                    "matches": matches,
+                },
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "reason_code": "not_found",
+                    "message": f"tab not found: {tab_id}",
+                },
+            )
+
+    if session.page is not page:
+        session.page = page
+        session.dialog_listener_armed = False
+        session.file_chooser_listener_armed = False
 
     session.observability.attach_page(page)
     session._ensure_dialog_listener()
@@ -3883,6 +4231,7 @@ async def _browser_start(params: Dict[str, Any]) -> Dict[str, Any]:
         "reason_code": "ok",
         "session_id": session_id,
         "tab_id": _get_tab_index(page),
+        "targetId": _get_tab_index(page),
         "current_url": page.url,
     }
 
@@ -3913,27 +4262,244 @@ async def _browser_profiles(_params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _browser_tabs(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    tabs = await _tabs_payload_async(session, list(page.context.pages))
+    current_tab_id = _get_tab_index(page)
+    current_target_id = await _get_page_target_id(page)
+    current_tab_payload = await _tab_payload_async(session, page, current_tab_id)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "running": True,
+        "session_id": session_id,
+        "tabs": tabs,
+        "current_tab_id": current_tab_id,
+        "targetId": current_tab_id,
+        "cdp_target_id": current_target_id,
+        "tab": current_tab_payload,
+    }
+
+
+async def _browser_tabs_open(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    def as_bool(value: Any, default: bool = True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+            return default
+        if value is None:
+            return default
+        return bool(value)
+
+    session_id = str(pick("session_id", "default"))
+    url = str(pick("url") or "")
+    activate = as_bool(pick("activate", True), True)
     session, page = await _resolve_session_page(session_id)
-    tabs = [_tab_payload(session, p, idx) for idx, p in enumerate(page.context.pages)]
+    context = page.context
+    new_page = await context.new_page()
+    session.observability.attach_page(new_page)
+    if url:
+        await new_page.goto(url, timeout=60000)
+        try:
+            await new_page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+    if activate:
+        session.page = new_page
+        session.dialog_listener_armed = False
+        session.file_chooser_listener_armed = False
+    current_page = session.page or new_page
+    session.observability.attach_page(current_page)
+    tabs = await _tabs_payload_async(session, list(context.pages))
+    current_tab_id = _get_tab_index(current_page)
+    current_target_id = await _get_page_target_id(current_page)
+    opened_tab_payload = await _tab_payload_async(session, new_page, _get_tab_index(new_page))
     return {
         "success": True,
         "reason_code": "ok",
         "session_id": session_id,
+        "tab": opened_tab_payload,
         "tabs": tabs,
-        "current_tab_id": _get_tab_index(page),
+        "current_tab_id": current_tab_id,
+        "targetId": current_tab_id,
+        "cdp_target_id": current_target_id,
     }
 
 
+async def _browser_tabs_focus(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    target_id_raw = pick("targetId", pick("tab_id", pick("index")))
+    if target_id_raw is None or not str(target_id_raw).strip():
+        return build_error("invalid_input", "targetId/tab_id/index is required for tabs.focus")
+    try:
+        session, focused_page = await _resolve_session_page(session_id, tab_id=target_id_raw)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        extra: Dict[str, Any] = {}
+        if isinstance(detail.get("matches"), list):
+            extra["matches"] = detail.get("matches")
+        return build_error(
+            str(detail.get("reason_code") or "not_found"),
+            str(detail.get("message") or detail or "tab not found"),
+            **extra,
+        )
+    tabs = await _tabs_payload_async(session, list(focused_page.context.pages))
+    current_tab_id = _get_tab_index(focused_page)
+    current_target_id = await _get_page_target_id(focused_page)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "session_id": session_id,
+        "current_tab_id": current_tab_id,
+        "targetId": current_tab_id,
+        "cdp_target_id": current_target_id,
+        "tab": await _tab_payload_async(session, focused_page, current_tab_id),
+        "tabs": tabs,
+    }
+
+
+async def _browser_tabs_close(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    pages = list(page.context.pages)
+    target_raw = pick("targetId", pick("tab_id", pick("index")))
+    if target_raw is None or not str(target_raw).strip():
+        target_page = page
+    else:
+        status, _, resolved_page, matches = await _resolve_page_from_tab_identifier(
+            pages,
+            target_raw,
+            session.browser,
+        )
+        if status == "ambiguous":
+            return build_error("ambiguous_target_id", "ambiguous target id prefix", matches=matches)
+        if status != "ok" or resolved_page is None:
+            return build_error("not_found", f"tab not found: {target_raw}")
+        target_page = resolved_page
+
+    target_id = _get_tab_index(target_page)
+    was_active = session.page is target_page
+    await target_page.close()
+    remaining = page.context.pages
+    if not remaining:
+        fallback_page = await page.context.new_page()
+        remaining = [fallback_page]
+    if was_active or session.page not in remaining:
+        next_idx = min(target_id, len(remaining) - 1)
+        session.page = remaining[next_idx]
+        session.dialog_listener_armed = False
+        session.file_chooser_listener_armed = False
+    active_page = session.page or remaining[0]
+    session.observability.attach_page(active_page)
+    tabs = await _tabs_payload_async(session, list(active_page.context.pages))
+    current_tab_id = _get_tab_index(active_page)
+    current_target_id = await _get_page_target_id(active_page)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "session_id": session_id,
+        "closed_tab_id": target_id,
+        "current_tab_id": current_tab_id,
+        "targetId": current_tab_id,
+        "cdp_target_id": current_target_id,
+        "current_url": active_page.url,
+        "tab": await _tab_payload_async(session, active_page, current_tab_id),
+        "tabs": tabs,
+    }
+
+
+async def _browser_tabs_action(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+    op = str(
+        params.get("tab_action")
+        or params.get("op")
+        or params.get("action")
+        or (payload.get("tab_action") if isinstance(payload, dict) else None)
+        or (payload.get("op") if isinstance(payload, dict) else None)
+        or (payload.get("action") if isinstance(payload, dict) else None)
+        or "list"
+    ).strip().lower()
+    if op in {"list"}:
+        return await _browser_tabs(params)
+    if op in {"new", "open"}:
+        return await _browser_tabs_open(params)
+    if op in {"select", "focus"}:
+        return await _browser_tabs_focus(params)
+    if op in {"close", "delete"}:
+        return await _browser_tabs_close(params)
+    return build_error("invalid_input", "tabs.action must be one of: list|new|open|select|focus|close")
+
+
 async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    tab_id = params.get("tab_id")
-    url = str(params.get("url") or "")
-    snapshot_format = str(params.get("format") or "").strip().lower()
-    mode = str(params.get("mode") or "").strip().lower()
-    refs_mode = str(params.get("refs") or "ref").strip().lower()
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    url = str(pick("url") or "")
+    snapshot_format = str(pick("format") or "").strip().lower()
+    mode = str(pick("mode") or "").strip().lower()
+    refs_mode = str(pick("refs", "ref") or "ref").strip().lower()
+    labels = bool(pick("labels", False))
     if refs_mode not in {"ref", "role", "aria"}:
         refs_mode = "ref"
+    if snapshot_format and snapshot_format not in {"ai", "aria", "role", "ref"}:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "invalid_snapshot_options",
+                "message": "format must be one of: ai, aria, role, ref",
+            },
+        )
 
     if mode == "efficient" and snapshot_format == "aria":
         raise HTTPException(
@@ -3943,9 +4509,18 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
                 "message": "mode=efficient is not allowed with format=aria",
             },
         )
+    if labels and snapshot_format == "aria":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "invalid_snapshot_options",
+                "message": "labels require format=ai|role|ref",
+            },
+        )
 
-    if tab_id is not None:
-        session, page = await _resolve_session_page(session_id, tab_id=int(tab_id))
+    normalized_tab_id = _coerce_tab_id(tab_id)
+    if normalized_tab_id is not None:
+        session, page = await _resolve_session_page(session_id, tab_id=normalized_tab_id)
         if url:
             current = normalize_url(page.url)
             target = normalize_url(url)
@@ -3963,13 +4538,16 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
     elements_by_ref = _extract_elements_by_ref(snap)
     result = {
         "success": True,
+        "ok": True,
         "reason_code": "ok",
         "session_id": session_id,
         "tab_id": _get_tab_index(page),
+        "targetId": _get_tab_index(page),
         "snapshot_id": snap.get("snapshot_id", ""),
         "epoch": int(snap.get("epoch") or 0),
         "dom_hash": str(snap.get("dom_hash") or ""),
         "mode": "ref",
+        "format": snapshot_format or "ref",
         "elements": elements,
         "dom_elements": elements,
         "elements_by_ref": elements_by_ref,
@@ -3978,20 +4556,20 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
 
     wants_text_snapshot = bool(snapshot_format in {"ai", "aria", "role"} or mode == "efficient")
     if wants_text_snapshot:
-        interactive = bool(params.get("interactive", mode == "efficient"))
-        compact = bool(params.get("compact", mode == "efficient"))
-        limit = int(params.get("limit") or 700)
-        max_chars = int(params.get("max_chars") or params.get("maxChars") or 64000)
-        timeout_ms = int(params.get("timeout_ms") or params.get("timeoutMs") or 5000)
-        max_depth_raw = params.get("max_depth", params.get("maxDepth"))
+        interactive = bool(pick("interactive", mode == "efficient"))
+        compact = bool(pick("compact", mode == "efficient"))
+        limit = int(pick("limit") or 700)
+        max_chars = int(pick("max_chars") or pick("maxChars") or 64000)
+        timeout_ms = int(pick("timeout_ms") or pick("timeoutMs") or 5000)
+        max_depth_raw = pick("max_depth", pick("maxDepth"))
         max_depth: Optional[int] = None
         if max_depth_raw is not None and str(max_depth_raw).strip() != "":
             try:
                 max_depth = max(0, int(max_depth_raw))
             except Exception:
                 max_depth = None
-        selector = str(params.get("selector") or "").strip()
-        frame_filter = params.get("frame")
+        selector = str(pick("selector") or "").strip()
+        frame_filter = pick("frame")
         requested_format = snapshot_format or ("ai" if mode == "efficient" else "ref")
 
         if refs_mode == "aria" and (selector or frame_filter is not None):
@@ -4083,6 +4661,9 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
                         "snapshot_lines": str(role_payload.get("snapshot", "")).split("\n"),
                         "snapshot_stats": role_payload.get("stats", {}),
                         "refs": role_refs,
+                        "labels": [] if labels else None,
+                        "labelsCount": 0 if labels else None,
+                        "labelsSkipped": 0 if labels else None,
                         "meta": {**meta_base, "snapshot_source": "aria_snapshot"},
                     }
                 )
@@ -4114,6 +4695,9 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
                         "snapshot_lines": str(ai_payload.get("snapshot", "")).split("\n"),
                         "snapshot_stats": ai_payload.get("stats", {}),
                         "refs": effective_refs,
+                        "labels": [] if labels else None,
+                        "labelsCount": 0 if labels else None,
+                        "labelsSkipped": 0 if labels else None,
                         "meta": {**meta_base, "snapshot_source": "ai_snapshot"},
                     }
                 )
@@ -4136,25 +4720,222 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
                     "snapshot_lines": text_payload.get("lines", []),
                     "snapshot_stats": text_payload.get("stats", {}),
                     "refs": refs_from_elements,
+                    "labels": [] if labels else None,
+                    "labelsCount": 0 if labels else None,
+                    "labelsSkipped": 0 if labels else None,
                     "meta": {**meta_base, "snapshot_source": "dom_elements"},
                 }
             )
-
+    result["ok"] = bool(result.get("success", True))
     return result
 
 
 async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    action = str(params.get("action") or "")
-    url = str(params.get("url") or "")
-    value = params.get("value")
-    verify = bool(params.get("verify", True))
-    snapshot_id = str(params.get("snapshot_id") or "")
-    ref_id = str(params.get("ref_id") or "")
-    selector_hint = str(params.get("selector_hint") or params.get("selector") or "")
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    selector_raw = pick("selector")
+    selector_provided = bool(str(selector_raw or "").strip())
+    raw_action = str(
+        (payload.get("kind") if isinstance(payload, dict) else None)
+        or params.get("kind")
+        or (payload.get("action") if isinstance(payload, dict) else None)
+        or params.get("action")
+        or ""
+    ).strip()
+    action = raw_action
+    force_double_click = False
+    action_lower = action.lower()
+    type_submit = False
+    if action_lower in {"doubleclick", "dblclick"}:
+        action = "click"
+        force_double_click = True
+    elif action_lower == "type":
+        action = "fill"
+        type_submit = bool(pick("submit", False))
+    elif action_lower == "drag":
+        action = "dragAndDrop"
+    url = str(pick("url") or "")
+    value = pick("value")
+    if action == "fill" and value is None:
+        text_value = pick("text")
+        if text_value is not None:
+            value = str(text_value)
+    values = pick("values")
+    fields = pick("fields")
+    verify = bool(pick("verify", True))
+    snapshot_id = str(pick("snapshot_id") or pick("snapshotId") or "")
+    ref_id = str(pick("ref_id") or pick("refId") or pick("ref") or "")
+    selector_hint = str(
+        pick("selector_hint")
+        or pick("selectorHint")
+        or pick("selector")
+        or ""
+    )
+    action_options: Dict[str, Any] = {}
+    for option_key in ("timeoutMs", "timeout_ms", "doubleClick", "double_click", "button", "modifiers"):
+        option_value = pick(option_key)
+        if option_value is not None:
+            action_options[option_key] = option_value
+    if force_double_click:
+        action_options["doubleClick"] = True
 
     if not action:
         raise HTTPException(status_code=400, detail="action is required for 'browser_act'.")
+    if selector_provided and action != "wait":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "legacy_selector_forbidden",
+                "message": "'selector' is not supported for /act. Use snapshot refs.",
+            },
+        )
+
+    evaluate_enabled_raw = str(os.getenv("GAIA_BROWSER_EVALUATE_ENABLED", "true")).strip().lower()
+    evaluate_enabled = evaluate_enabled_raw not in {"0", "false", "no", "off"}
+
+    if action == "evaluate":
+        eval_expr = pick("fn") if pick("fn") is not None else value
+        if eval_expr is None or not str(eval_expr).strip():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": "invalid_input",
+                    "message": "fn is required for evaluate",
+                },
+            )
+        if not evaluate_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "reason_code": "not_actionable",
+                    "message": (
+                        "evaluate is disabled by config (browser.evaluateEnabled=false).\n"
+                        "Docs: /gateway/configuration#browser-openclaw-managed-browser"
+                    ),
+                },
+            )
+        value = eval_expr
+
+    if action == "resize":
+        width = pick("width")
+        height = pick("height")
+        if width is None or height is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": "invalid_input",
+                    "message": "width and height are required for resize",
+                },
+            )
+
+    if action == "select" and values is None and (value is None or not str(value).strip()):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "invalid_input",
+                "message": "ref and values are required for select",
+            },
+        )
+
+    if action == "fill" and isinstance(fields, list):
+        if not snapshot_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": "ref_required",
+                    "message": "snapshot_id is required when using fill fields[]",
+                },
+            )
+        field_results: List[Dict[str, Any]] = []
+        for idx, field in enumerate(fields, start=1):
+            if not isinstance(field, dict):
+                continue
+            field_ref = str(field.get("ref") or field.get("refId") or field.get("ref_id") or "")
+            if not field_ref:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "reason_code": "ref_required",
+                        "message": f"fields[{idx}] missing ref/refId",
+                    },
+                )
+            field_type = str(field.get("type") or "text").strip().lower()
+            field_value = field.get("value")
+            if field_type in {"select", "dropdown"}:
+                action_name = "select"
+                action_value = field.get("values") if isinstance(field.get("values"), list) else field_value
+            elif field_type in {"checkbox", "radio", "toggle", "switch"}:
+                truthy = bool(field_value)
+                if not truthy:
+                    field_results.append(
+                        {
+                            "index": idx,
+                            "ref_id": field_ref,
+                            "skipped": True,
+                            "reason": "falsy target for checkbox/radio",
+                        }
+                    )
+                    continue
+                action_name = "click"
+                action_value = field_value
+            else:
+                action_name = "fill"
+                action_value = "" if field_value is None else str(field_value)
+            single_result = await execute_ref_action_with_snapshot(
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+                ref_id=field_ref,
+                action=action_name,
+                value=action_value,
+                options=action_options,
+                url=url,
+                selector_hint=selector_hint,
+                verify=verify,
+                tab_id=tab_id,
+            )
+            field_results.append(
+                {
+                    "index": idx,
+                    "ref_id": field_ref,
+                    "type": field_type,
+                    "action": action_name,
+                    "success": bool(single_result.get("success", False)),
+                    "effective": bool(single_result.get("effective", False)),
+                    "reason_code": str(single_result.get("reason_code") or "unknown_error"),
+                    "reason": str(single_result.get("reason") or ""),
+                }
+            )
+            if not bool(single_result.get("success", False)) or not bool(single_result.get("effective", False)):
+                return {
+                    "success": False,
+                    "effective": False,
+                    "reason_code": str(single_result.get("reason_code") or "unknown_error"),
+                    "reason": str(single_result.get("reason") or "fill fields execution failed"),
+                    "fields": field_results,
+                    "snapshot_id_used": snapshot_id,
+                }
+        return {
+            "success": True,
+            "effective": True,
+            "reason_code": "ok",
+            "reason": "fill fields applied",
+            "fields": field_results,
+            "snapshot_id_used": snapshot_id,
+        }
+
+    if action == "select" and isinstance(values, list):
+        normalized_values = [str(item).strip() for item in values if str(item).strip()]
+        if normalized_values:
+            value = normalized_values if len(normalized_values) > 1 else normalized_values[0]
 
     if is_element_action(action):
         if not snapshot_id or not ref_id:
@@ -4171,10 +4952,28 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
             ref_id=ref_id,
             action=action,
             value=value,
+            options=action_options,
             url=url,
             selector_hint=selector_hint,
             verify=verify,
+            tab_id=tab_id,
         )
+        if type_submit and bool(result.get("success")) and bool(result.get("effective")):
+            press_result = await execute_ref_action_with_snapshot(
+                session_id=session_id,
+                snapshot_id=snapshot_id,
+                ref_id=ref_id,
+                action="press",
+                value="Enter",
+                options=action_options,
+                url=url,
+                selector_hint=selector_hint,
+                verify=verify,
+                tab_id=tab_id,
+            )
+            if not bool(press_result.get("success")) or not bool(press_result.get("effective")):
+                return press_result
+            result = press_result
         result.setdefault("snapshot_id_used", snapshot_id)
         result.setdefault("ref_id_used", ref_id)
         result.setdefault("retry_path", [])
@@ -4183,8 +4982,71 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
         result.setdefault("state_change", {})
         return result
 
-    session, page = await _resolve_session_page(session_id)
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    if action == "close":
+        close_result = await _browser_tabs_close(
+            {
+                "session_id": session_id,
+                "targetId": tab_id if tab_id is not None else _get_tab_index(page),
+            }
+        )
+        ok = bool(close_result.get("success"))
+        return {
+            "success": ok,
+            "effective": ok,
+            "reason_code": str(close_result.get("reason_code") or ("ok" if ok else "failed")),
+            "reason": str(close_result.get("reason") or ("tab closed" if ok else "tab close failed")),
+            "state_change": {"effective": ok, "tab_closed": ok},
+            "attempt_logs": [],
+            "snapshot_id_used": snapshot_id,
+            "ref_id_used": ref_id,
+            "retry_path": [],
+            "attempt_count": 0,
+            "current_url": page.url,
+            "tab": close_result.get("tab"),
+            "tabs": close_result.get("tabs", []),
+        }
+
     if action == "wait":
+        wait_payload: Dict[str, Any] = {"session_id": session_id}
+        if tab_id is not None:
+            wait_payload["tab_id"] = tab_id
+        if isinstance(value, dict):
+            wait_payload.update(dict(value))
+        for key in (
+            "selector",
+            "selector_state",
+            "js",
+            "fn",
+            "url",
+            "load_state",
+            "loadState",
+            "text",
+            "text_gone",
+            "textGone",
+            "timeout_ms",
+            "timeoutMs",
+            "time_ms",
+            "timeMs",
+        ):
+            picked = pick(key)
+            if picked is not None:
+                wait_payload[key] = picked
+        if "loadState" in wait_payload and "load_state" not in wait_payload:
+            wait_payload["load_state"] = wait_payload.pop("loadState")
+        if "textGone" in wait_payload and "text_gone" not in wait_payload:
+            wait_payload["text_gone"] = wait_payload.pop("textGone")
+        if "timeoutMs" in wait_payload and "timeout_ms" not in wait_payload:
+            wait_payload["timeout_ms"] = wait_payload.pop("timeoutMs")
+        if "timeMs" in wait_payload and "time_ms" not in wait_payload:
+            wait_payload["time_ms"] = wait_payload.pop("timeMs")
+        if "fn" in wait_payload and "js" not in wait_payload:
+            wait_payload["js"] = wait_payload.pop("fn")
+
+        rich_wait_keys = {"selector", "js", "url", "load_state", "text", "text_gone", "timeout_ms", "time_ms"}
+        if any(wait_payload.get(k) not in (None, "") for k in rich_wait_keys):
+            return await _browser_wait(wait_payload)
+
         wait_ms = int(value) if isinstance(value, (int, str)) and str(value).strip() else 500
         await page.wait_for_timeout(max(0, wait_ms))
         session.current_url = page.url
@@ -4202,20 +5064,27 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
             "retry_path": [],
             "attempt_count": 0,
             "current_url": session.current_url,
+            "tab_id": _get_tab_index(page),
+            "targetId": _get_tab_index(page),
             "screenshot": screenshot,
         }
 
     legacy = await execute_simple_action(
         url=url,
-        selector=str(params.get("selector") or ""),
-        action=action,
-        value=value,
+        selector="",
+        action=("setViewport" if action == "resize" else action),
+        value=(
+            value
+            if action != "resize"
+            else [pick("width"), pick("height")]
+        ) if action != "evaluate" else (pick("fn") if pick("fn") is not None else value),
         session_id=session_id,
         before_screenshot=None,
+        action_options=action_options,
     )
     ok = bool(legacy.get("success"))
     reason = str(legacy.get("message") or legacy.get("reason") or "")
-    reason_code = "ok" if ok else "failed"
+    reason_code = "ok" if ok else str(legacy.get("reason_code") or "failed")
     return {
         "success": ok,
         "effective": ok,
@@ -4228,28 +5097,84 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
         "retry_path": [],
         "attempt_count": 0,
         "current_url": legacy.get("current_url", page.url),
+        "tab_id": _get_tab_index(page),
+        "targetId": _get_tab_index(page),
         "screenshot": legacy.get("screenshot"),
     }
 
 
 async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    tab_id = params.get("tab_id")
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
     session, page = await _resolve_session_page(session_id, tab_id=tab_id)
-    timeout_ms = int(params.get("timeout_ms") or 15000)
-    selector = str(params.get("selector") or "")
-    selector_state = str(params.get("selector_state") or "visible")
-    js_expr = str(params.get("js") or "")
-    target_url = str(params.get("url") or "")
-    load_state = str(params.get("load_state") or "")
-    text_contains = str(params.get("text") or "")
-    text_gone = str(params.get("text_gone") or params.get("textGone") or "")
-    time_ms = params.get("time_ms", params.get("timeMs"))
+    timeout_ms = int(pick("timeout_ms") or pick("timeoutMs") or 20000)
+    selector = str(pick("selector") or "")
+    selector_state = str(pick("selector_state") or "visible")
+    js_expr = str(pick("js") or pick("fn") or "")
+    target_url = str(pick("url") or "")
+    load_state = str(pick("load_state") or pick("loadState") or "")
+    text_contains = str(pick("text") or "")
+    text_gone = str(pick("text_gone") or pick("textGone") or "")
+    allowed_load_states = {"load", "domcontentloaded", "networkidle"}
+    if load_state and load_state not in allowed_load_states:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "invalid_input",
+                "message": "load_state must be one of: load, domcontentloaded, networkidle",
+            },
+        )
+    evaluate_enabled_raw = str(os.getenv("GAIA_BROWSER_EVALUATE_ENABLED", "true")).strip().lower()
+    evaluate_enabled = evaluate_enabled_raw not in {"0", "false", "no", "off"}
+    if js_expr and not evaluate_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "reason_code": "not_actionable",
+                "message": (
+                    "wait --fn is disabled by config (browser.evaluateEnabled=false).\n"
+                    "Docs: /gateway/configuration#browser-openclaw-managed-browser"
+                ),
+            },
+        )
+    time_ms = pick("time_ms", pick("timeMs"))
+    explicit_time_ms: Optional[int] = None
     if isinstance(time_ms, (int, str)) and str(time_ms).strip():
         try:
-            timeout_ms = max(timeout_ms, int(time_ms))
+            explicit_time_ms = max(0, int(time_ms))
+            timeout_ms = max(timeout_ms, explicit_time_ms)
         except Exception:
             pass
+
+    if (
+        explicit_time_ms is None
+        and not selector
+        and not text_contains
+        and not text_gone
+        and not target_url
+        and not load_state
+        and not js_expr
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "reason_code": "invalid_input",
+                "message": "wait requires at least one of: timeMs, text, textGone, selector, url, loadState, fn",
+            },
+        )
+
+    has_wait_conditions = any((target_url, load_state, selector, text_contains, text_gone, js_expr))
+    if explicit_time_ms is not None and not has_wait_conditions:
+        await page.wait_for_timeout(explicit_time_ms)
 
     if target_url:
         current = normalize_url(page.url)
@@ -4279,10 +5204,13 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
             return build_error("not_found", "js condition not satisfied", timeout_ms=timeout_ms)
 
     session.current_url = page.url
+    tab_idx = _get_tab_index(page)
     return {
         "success": True,
         "reason_code": "ok",
         "current_url": session.current_url,
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
         "meta": {
             "selector": selector,
             "selector_state": selector_state,
@@ -4295,114 +5223,478 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def _browser_console_get(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    session, _ = await _resolve_session_page(session_id)
-    limit = int(params.get("limit") or 100)
-    level = str(params.get("level") or "")
+async def _browser_screenshot(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    def as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+            return default
+        if value is None:
+            return default
+        return bool(value)
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    url = str(pick("url") or "")
+    full_page = as_bool(pick("full_page", pick("fullPage", False)), False)
+    image_type = str(pick("type") or "png").strip().lower()
+    if image_type not in {"png", "jpeg", "webp"}:
+        image_type = "png"
+    quality_raw = pick("quality")
+    quality = None
+    if quality_raw is not None and str(quality_raw).strip():
+        try:
+            quality = max(1, min(100, int(quality_raw)))
+        except Exception:
+            quality = None
+    output_path = str(pick("path") or "")
+
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    if url:
+        current = normalize_url(page.url)
+        target = normalize_url(url)
+        if current != target:
+            await page.goto(url, timeout=60000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+    screenshot_kwargs: Dict[str, Any] = {"full_page": full_page, "type": image_type}
+    if quality is not None and image_type in {"jpeg", "webp"}:
+        screenshot_kwargs["quality"] = quality
+    screenshot_bytes = await page.screenshot(**screenshot_kwargs)
+    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+    saved_path = ""
+    if output_path:
+        screenshot_root = (Path.home() / ".gaia" / "screenshots").resolve()
+        screenshot_root.mkdir(parents=True, exist_ok=True)
+        requested = Path(output_path).expanduser().resolve()
+        if not requested.is_relative_to(screenshot_root):
+            return build_error("not_actionable", f"screenshot path must be under {screenshot_root}")
+        requested.parent.mkdir(parents=True, exist_ok=True)
+        requested.write_bytes(screenshot_bytes)
+        saved_path = str(requested)
+
+    session.current_url = page.url
+    tab_idx = _get_tab_index(page)
     return {
         "success": True,
         "reason_code": "ok",
+        "session_id": session_id,
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
+        "current_url": page.url,
+        "screenshot": screenshot_base64,
+        "mime_type": f"image/{image_type}",
+        "saved_path": saved_path,
+        "meta": {"full_page": full_page, "type": image_type, "quality": quality},
+    }
+
+
+async def _browser_pdf(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    def as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+            return default
+        if value is None:
+            return default
+        return bool(value)
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    url = str(pick("url") or "")
+    output_path = str(pick("path") or "")
+    fmt = str(pick("format") or "A4")
+    landscape = as_bool(pick("landscape", False), False)
+    print_background = as_bool(pick("printBackground", pick("print_background", True)), True)
+    scale_raw = pick("scale")
+    scale = None
+    if scale_raw is not None and str(scale_raw).strip():
+        try:
+            scale = max(0.1, min(2.0, float(scale_raw)))
+        except Exception:
+            scale = None
+    margin = pick("margin")
+    margin_dict = margin if isinstance(margin, dict) else None
+
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    if url:
+        current = normalize_url(page.url)
+        target = normalize_url(url)
+        if current != target:
+            await page.goto(url, timeout=60000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+    pdf_root = (Path.home() / ".gaia" / "pdf").resolve()
+    pdf_root.mkdir(parents=True, exist_ok=True)
+    if output_path:
+        requested = Path(output_path).expanduser().resolve()
+        if not requested.is_relative_to(pdf_root):
+            return build_error("not_actionable", f"pdf path must be under {pdf_root}")
+        final_path = requested
+    else:
+        final_path = (pdf_root / f"{session_id}_{int(time.time())}.pdf").resolve()
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pdf_kwargs: Dict[str, Any] = {
+        "path": str(final_path),
+        "format": fmt,
+        "landscape": landscape,
+        "print_background": print_background,
+    }
+    if scale is not None:
+        pdf_kwargs["scale"] = scale
+    if margin_dict is not None:
+        pdf_kwargs["margin"] = margin_dict
+    await page.pdf(**pdf_kwargs)
+
+    session.current_url = page.url
+    tab_idx = _get_tab_index(page)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "session_id": session_id,
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
+        "current_url": page.url,
+        "path": str(final_path),
+        "meta": {
+            "format": fmt,
+            "landscape": landscape,
+            "print_background": print_background,
+            "scale": scale,
+        },
+    }
+
+
+async def _browser_console_get(params: Dict[str, Any]) -> Dict[str, Any]:
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
+    limit = int(pick("limit") or 100)
+    level = str(pick("level") or "")
+    tab_idx = _get_tab_index(session.page) if session.page else 0
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
         "items": session.observability.get_console(limit=limit, level=level),
         "meta": {"limit": limit, "level": level},
     }
 
 
 async def _browser_errors_get(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    session, _ = await _resolve_session_page(session_id)
-    limit = int(params.get("limit") or 100)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
+    limit = int(pick("limit") or 100)
+    tab_idx = _get_tab_index(session.page) if session.page else 0
     return {
         "success": True,
         "reason_code": "ok",
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
         "items": session.observability.get_errors(limit=limit),
         "meta": {"limit": limit},
     }
 
 
 async def _browser_requests_get(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    session, _ = await _resolve_session_page(session_id)
-    limit = int(params.get("limit") or 100)
-    url_contains = str(params.get("url_contains") or "")
-    status = params.get("status")
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
+    limit = int(pick("limit") or 100)
+    url_contains = str(pick("url_contains") or "")
+    pattern = str(pick("pattern") or pick("filter") or "")
+    method = str(pick("method") or "")
+    resource_type = str(pick("resource_type") or "")
+    clear_raw = pick("clear", False)
+    if isinstance(clear_raw, str):
+        clear = clear_raw.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        clear = bool(clear_raw)
+    status = pick("status")
     status_int = int(status) if isinstance(status, (int, str)) and str(status).strip() else None
-    items = session.observability.get_requests(limit=limit, url_contains=url_contains, status=status_int)
+    if clear:
+        session.observability.clear_requests()
+    items = session.observability.get_requests(
+        limit=limit,
+        url_contains=url_contains,
+        pattern=pattern,
+        method=method,
+        resource_type=resource_type,
+        status=status_int,
+    )
+    tab_idx = _get_tab_index(session.page) if session.page else 0
     return {
         "success": True,
         "reason_code": "ok",
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
         "items": items,
-        "meta": {"limit": limit, "url_contains": url_contains, "status": status_int},
+        "meta": {
+            "limit": limit,
+            "url_contains": url_contains,
+            "pattern": pattern,
+            "method": method,
+            "resource_type": resource_type,
+            "status": status_int,
+            "clear": clear,
+        },
     }
 
 
 async def _browser_response_body(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    session, _ = await _resolve_session_page(session_id)
-    request_id = str(params.get("request_id") or "")
-    url = str(params.get("url") or "")
-    result = await session.observability.get_response_body(request_id=request_id, url=url)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
+    request_id = str(pick("request_id") or "")
+    url = str(pick("url") or "")
+    url_contains = str(pick("url_contains") or "")
+    pattern = str(pick("pattern") or pick("filter") or "")
+    method = str(pick("method") or "")
+    max_chars_raw = pick("max_chars", pick("maxChars"))
+    max_chars = int(max_chars_raw) if isinstance(max_chars_raw, (int, str)) and str(max_chars_raw).strip() else 200_000
+    result = await session.observability.get_response_body(
+        request_id=request_id,
+        url=url,
+        url_contains=url_contains,
+        pattern=pattern,
+        method=method,
+        max_chars=max_chars,
+    )
     if not result.get("success"):
         return result
+    tab_idx = _get_tab_index(session.page) if session.page else 0
     return {
         "success": True,
         "reason_code": "ok",
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
         "item": result.get("body", {}),
-        "meta": {"request_id": request_id, "url": url},
+        "meta": {
+            "request_id": request_id,
+            "url": url,
+            "url_contains": url_contains,
+            "pattern": pattern,
+            "method": method,
+            "max_chars": max_chars,
+        },
     }
 
 
 async def _browser_trace_start(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    session, page = await _resolve_session_page(session_id)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    def as_bool(value: Any, default: bool = True) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in {"1", "true", "yes", "on"}:
+                return True
+            if v in {"0", "false", "no", "off"}:
+                return False
+            return default
+        if value is None:
+            return default
+        return bool(value)
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    tab_idx = _get_tab_index(page)
     if session.trace_active:
-        return {"success": True, "reason_code": "ok", "active": True, "message": "trace already active"}
-    await page.context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        return {
+            "success": True,
+            "reason_code": "ok",
+            "active": True,
+            "message": "trace already active",
+            "tab_id": tab_idx,
+            "targetId": tab_idx,
+        }
+    screenshots = as_bool(pick("screenshots", True), True)
+    snapshots = as_bool(pick("snapshots", True), True)
+    sources = as_bool(pick("sources", True), True)
+    await page.context.tracing.start(screenshots=screenshots, snapshots=snapshots, sources=sources)
     session.trace_active = True
-    return {"success": True, "reason_code": "ok", "active": True}
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "active": True,
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
+        "meta": {"screenshots": screenshots, "snapshots": snapshots, "sources": sources},
+    }
 
 
 async def _browser_trace_stop(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    session, page = await _resolve_session_page(session_id)
-    output_path = str(params.get("path") or "")
-    if not output_path:
-        output_path = str(
-            Path.home()
-            / ".gaia"
-            / "traces"
-            / f"{session_id}_{int(time.time())}.zip"
-        )
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+    output_path = str(pick("path") or "")
+    trace_root = (Path.home() / ".gaia" / "traces").resolve()
+    trace_root.mkdir(parents=True, exist_ok=True)
+    if output_path:
+        requested = Path(output_path).expanduser().resolve()
+        if not requested.is_relative_to(trace_root):
+            return build_error(
+                "not_actionable",
+                f"trace path must be under {trace_root}",
+            )
+        final_path = requested
+    else:
+        final_path = (trace_root / f"{session_id}_{int(time.time())}.zip").resolve()
+    final_path.parent.mkdir(parents=True, exist_ok=True)
     if session.trace_active:
-        await page.context.tracing.stop(path=output_path)
+        await page.context.tracing.stop(path=str(final_path))
         session.trace_active = False
-        session.trace_path = output_path
-    return {"success": True, "reason_code": "ok", "active": False, "path": output_path}
+        session.trace_path = str(final_path)
+    tab_idx = _get_tab_index(page)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "active": False,
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
+        "path": str(final_path),
+        "meta": {"trace_root": str(trace_root)},
+    }
 
 
 async def _browser_highlight(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
     session, page = await _resolve_session_page(session_id)
-    selector = str(params.get("selector") or "")
-    snapshot_id = str(params.get("snapshot_id") or "")
-    ref_id = str(params.get("ref_id") or "")
-    duration_ms = int(params.get("duration_ms") or 1200)
+    selector = str(pick("selector") or "")
+    snapshot_id = str(pick("snapshot_id") or "")
+    ref_id = str(pick("ref_id") or pick("ref") or "")
+    duration_ms = int(pick("duration_ms", 1200) or 1200)
+
+    if selector:
+        return build_error(
+            "legacy_selector_forbidden",
+            "selector is not supported for highlight; use ref (and optional snapshot_id).",
+        )
+    if not ref_id:
+        return build_error("ref_required", "ref is required for highlight.")
+    if not snapshot_id:
+        snapshot_id = str(session.current_snapshot_id or "")
+    if not snapshot_id and session.snapshots:
+        try:
+            snapshot_id = max(
+                session.snapshots.keys(),
+                key=lambda sid: int((session.snapshots.get(sid) or {}).get("epoch") or 0),
+            )
+        except Exception:
+            snapshot_id = next(iter(session.snapshots.keys()), "")
+    if not snapshot_id:
+        return build_error("snapshot_not_found", "snapshot_id is required for highlight.")
 
     locator = None
-    if snapshot_id and ref_id:
-        snap = session.snapshots.get(snapshot_id)
-        if snap:
-            meta = _resolve_ref_meta_from_snapshot(snap, ref_id)
-            if meta:
-                candidates = _build_ref_candidates(meta)
-                for _, cand in candidates:
-                    loc, _, _, _ = await _resolve_locator_from_ref(page, meta, cand)
-                    if loc is not None:
-                        locator = loc
-                        break
-    if locator is None and selector:
-        locator = page.locator(selector).first
+    snap = session.snapshots.get(snapshot_id)
+    if not snap:
+        return build_error("snapshot_not_found", f"snapshot not found: {snapshot_id}")
+    meta = _resolve_ref_meta_from_snapshot(snap, ref_id)
+    if not meta:
+        return build_error("not_found", f"ref not found in snapshot: {ref_id}")
+    candidates = _build_ref_candidates(meta)
+    for _, cand in candidates:
+        loc, _, _, _ = await _resolve_locator_from_ref(page, meta, cand)
+        if loc is not None:
+            locator = loc
+            break
     if locator is None:
         return build_error("not_found", "target not found for highlight")
 
@@ -4424,16 +5716,33 @@ async def _browser_highlight(params: Dict[str, Any]) -> Dict[str, Any]:
     )
     screenshot_bytes = await page.screenshot(full_page=False)
     screenshot = base64.b64encode(screenshot_bytes).decode("utf-8")
-    return {"success": True, "reason_code": "ok", "duration_ms": duration_ms, "screenshot": screenshot}
+    tab_idx = _get_tab_index(page)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "duration_ms": duration_ms,
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
+        "screenshot": screenshot,
+    }
 
 
 async def _browser_dialog_arm(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    mode = str(params.get("mode") or "dismiss").strip().lower()
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    mode = str(pick("mode") or "dismiss").strip().lower()
     if mode not in {"accept", "dismiss"}:
         return build_error("not_actionable", "mode must be accept|dismiss")
-    prompt_text = str(params.get("prompt_text") or "")
-    session, _ = await _resolve_session_page(session_id)
+    prompt_text = str(pick("prompt_text") or pick("promptText") or "")
+    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
     session.dialog_mode = mode
     session.dialog_prompt_text = prompt_text
     session._ensure_dialog_listener()
@@ -4441,79 +5750,182 @@ async def _browser_dialog_arm(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _browser_file_chooser_arm(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    files = params.get("files")
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    files = pick("files")
     if isinstance(files, str):
         file_list = [files]
     elif isinstance(files, list):
         file_list = [str(p) for p in files if str(p).strip()]
     else:
         file_list = []
-    session, _ = await _resolve_session_page(session_id)
+    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
     session.file_chooser_files = file_list
     session._ensure_file_chooser_listener()
     return {"success": True, "reason_code": "ok", "files": file_list}
 
 
 async def _browser_download_wait(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    timeout_ms = int(params.get("timeout_ms") or 20000)
-    path = str(params.get("path") or "")
-    session, page = await _resolve_session_page(session_id)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    timeout_ms = int(pick("timeout_ms") or pick("timeoutMs") or 20000)
+    path = str(pick("path") or "")
+    tab_id = pick("tab_id", pick("targetId"))
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
 
     download = await page.wait_for_event("download", timeout=timeout_ms)
     suggested_name = download.suggested_filename
-    save_path = path
-    if not save_path:
-        save_path = str(Path.home() / ".gaia" / "downloads" / f"{int(time.time())}_{suggested_name}")
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    await download.save_as(save_path)
+    base_download_dir = (Path.home() / ".gaia" / "downloads").resolve()
+    base_download_dir.mkdir(parents=True, exist_ok=True)
+    if path:
+        save_target = Path(path).expanduser().resolve()
+        if not save_target.is_relative_to(base_download_dir):
+            return build_error(
+                "not_actionable",
+                f"download path must be under {base_download_dir}",
+            )
+    else:
+        save_target = (base_download_dir / f"{int(time.time())}_{suggested_name}").resolve()
+    save_target.parent.mkdir(parents=True, exist_ok=True)
+    await download.save_as(str(save_target))
     payload = {
         "url": download.url,
         "suggested_filename": suggested_name,
-        "saved_path": save_path,
+        "saved_path": str(save_target),
     }
     session.observability.add_download_event(payload)
-    return {"success": True, "reason_code": "ok", "item": payload}
+    tab_idx = _get_tab_index(page)
+    return {
+        "success": True,
+        "reason_code": "ok",
+        "tab_id": tab_idx,
+        "targetId": tab_idx,
+        "item": payload,
+    }
 
 
 async def _browser_state(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    op = str(params.get("op") or "get").strip().lower()
-    session, page = await _resolve_session_page(session_id)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    profile = str(pick("profile") or "default")
+    kind = str(pick("kind") or "").strip().lower()
+    op = str(pick("op") or "get").strip().lower()
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
     if op == "get":
+        tab_idx = _get_tab_index(page)
         state = await BrowserStateStore.get_state(page)
-        return {"success": True, "reason_code": "ok", "state": state}
+        if kind in {"local", "local_storage"}:
+            state = {"local_storage": dict(state.get("local_storage") or {}), "url": state.get("url", "")}
+        elif kind in {"session", "session_storage"}:
+            state = {"session_storage": dict(state.get("session_storage") or {}), "url": state.get("url", "")}
+        return {
+            "success": True,
+            "reason_code": "ok",
+            "tab_id": tab_idx,
+            "targetId": tab_idx,
+            "state": state,
+            "meta": {"profile": profile, "kind": kind or "all", "op": op},
+        }
     if op == "set":
-        state_payload = params.get("state") if isinstance(params.get("state"), dict) else {}
+        state_payload = pick("state") if isinstance(pick("state"), dict) else {}
+        if kind in {"local", "local_storage"}:
+            local_payload = state_payload.get("local_storage", state_payload.get("local", state_payload))
+            if not isinstance(local_payload, dict):
+                return build_error("invalid_input", "local_storage payload must be an object")
+            state_payload = {"local_storage": local_payload}
+        elif kind in {"session", "session_storage"}:
+            session_payload = state_payload.get("session_storage", state_payload.get("session", state_payload))
+            if not isinstance(session_payload, dict):
+                return build_error("invalid_input", "session_storage payload must be an object")
+            state_payload = {"session_storage": session_payload}
+        elif kind == "cookies":
+            cookies_payload = state_payload.get("cookies", state_payload)
+            if not isinstance(cookies_payload, list):
+                return build_error("invalid_input", "cookies payload must be an array")
+            state_payload = {"cookies": cookies_payload}
         meta = await BrowserStateStore.set_state(page, state_payload)
-        return {"success": True, "reason_code": "ok", "meta": meta}
+        meta["profile"] = profile
+        meta["kind"] = kind or "all"
+        tab_idx = _get_tab_index(page)
+        return {"success": True, "reason_code": "ok", "tab_id": tab_idx, "targetId": tab_idx, "meta": meta}
     if op == "clear":
-        clear_payload = params.get("state") if isinstance(params.get("state"), dict) else {}
+        clear_payload = pick("state") if isinstance(pick("state"), dict) else {}
+        if kind in {"local", "local_storage"}:
+            clear_payload = {"local_storage": clear_payload.get("local_storage", clear_payload.get("local", True))}
+        elif kind in {"session", "session_storage"}:
+            clear_payload = {"session_storage": clear_payload.get("session_storage", clear_payload.get("session", True))}
+        elif kind == "cookies":
+            clear_payload = {"cookies": clear_payload.get("cookies", True)}
         meta = await BrowserStateStore.clear_state(page, clear_payload)
-        return {"success": True, "reason_code": "ok", "meta": meta}
+        meta["profile"] = profile
+        meta["kind"] = kind or "all"
+        tab_idx = _get_tab_index(page)
+        return {"success": True, "reason_code": "ok", "tab_id": tab_idx, "targetId": tab_idx, "meta": meta}
     return build_error("not_actionable", "state op must be get|set|clear")
 
 
 async def _browser_env(params: Dict[str, Any]) -> Dict[str, Any]:
-    session_id = str(params.get("session_id", "default"))
-    op = str(params.get("op") or "get").strip().lower()
-    session, page = await _resolve_session_page(session_id)
+    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
+
+    def pick(key: str, default: Any = None) -> Any:
+        if key in params:
+            return params.get(key)
+        if isinstance(payload, dict) and key in payload:
+            return payload.get(key)
+        return default
+
+    session_id = str(pick("session_id", "default"))
+    tab_id = pick("tab_id", pick("targetId"))
+    profile = str(pick("profile") or "default")
+    op = str(pick("op") or "get").strip().lower()
+    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
     if op == "get":
+        tab_idx = _get_tab_index(page)
         return {
             "success": True,
             "reason_code": "ok",
+            "tab_id": tab_idx,
+            "targetId": tab_idx,
             "state": dict(session.env_overrides),
+            "meta": {"profile": profile, "op": op},
         }
     if op == "set":
-        env_payload = params.get("env") if isinstance(params.get("env"), dict) else {}
+        env_payload = pick("env") if isinstance(pick("env"), dict) else {}
         result = await BrowserStateStore.apply_env(page, env_payload)
         session.env_overrides.update(result.get("applied", {}))
+        tab_idx = _get_tab_index(page)
         return {
             "success": True,
             "reason_code": "ok",
+            "tab_id": tab_idx,
+            "targetId": tab_idx,
             "state": dict(session.env_overrides),
-            "meta": result,
+            "meta": dict(result, profile=profile),
         }
     return build_error("not_actionable", "env op must be get|set")
 
@@ -4813,9 +6225,21 @@ async def execute_action(request: McpRequest):
             "install": "browser_install",
             "profiles": "browser_profiles",
             "tabs": "browser_tabs",
+            "tabs.open": "browser_tabs_open",
+            "tabs.new": "browser_tabs_open",
+            "tabs.focus": "browser_tabs_focus",
+            "tabs.close": "browser_tabs_close",
+            "tabs.delete": "browser_tabs_close",
+            "tabs.action": "browser_tabs_action",
+            "tabs_open": "browser_tabs_open",
+            "tabs_focus": "browser_tabs_focus",
+            "tabs_close": "browser_tabs_close",
+            "tabs_action": "browser_tabs_action",
             "snapshot": "browser_snapshot",
             "act": "browser_act",
             "wait": "browser_wait",
+            "screenshot": "browser_screenshot",
+            "pdf": "browser_pdf",
             "console": "browser_console_get",
             "console_get": "browser_console_get",
             "errors": "browser_errors_get",
@@ -4836,9 +6260,21 @@ async def execute_action(request: McpRequest):
             "browser.install": "browser_install",
             "browser.profiles": "browser_profiles",
             "browser.tabs": "browser_tabs",
+            "browser.tabs_open": "browser_tabs_open",
+            "browser.tabs_focus": "browser_tabs_focus",
+            "browser.tabs_close": "browser_tabs_close",
+            "browser.tabs_action": "browser_tabs_action",
+            "browser.tabs.open": "browser_tabs_open",
+            "browser.tabs.new": "browser_tabs_open",
+            "browser.tabs.focus": "browser_tabs_focus",
+            "browser.tabs.close": "browser_tabs_close",
+            "browser.tabs.delete": "browser_tabs_close",
+            "browser.tabs.action": "browser_tabs_action",
             "browser.snapshot": "browser_snapshot",
             "browser.act": "browser_act",
             "browser.wait": "browser_wait",
+            "browser.screenshot": "browser_screenshot",
+            "browser.pdf": "browser_pdf",
             "browser.console_get": "browser_console_get",
             "browser.errors_get": "browser_errors_get",
             "browser.requests_get": "browser_requests_get",
@@ -4867,6 +6303,18 @@ async def execute_action(request: McpRequest):
         elif action == "browser_tabs":
             return await _browser_tabs(params)
 
+        elif action == "browser_tabs_open":
+            return await _browser_tabs_open(params)
+
+        elif action == "browser_tabs_focus":
+            return await _browser_tabs_focus(params)
+
+        elif action == "browser_tabs_close":
+            return await _browser_tabs_close(params)
+
+        elif action == "browser_tabs_action":
+            return await _browser_tabs_action(params)
+
         elif action == "browser_snapshot":
             return await _browser_snapshot(params)
 
@@ -4875,6 +6323,12 @@ async def execute_action(request: McpRequest):
 
         elif action == "browser_wait":
             return await _browser_wait(params)
+
+        elif action == "browser_screenshot":
+            return await _browser_screenshot(params)
+
+        elif action == "browser_pdf":
+            return await _browser_pdf(params)
 
         elif action == "browser_console_get":
             return await _browser_console_get(params)
@@ -4982,12 +6436,27 @@ async def execute_action(request: McpRequest):
                     status_code=400, detail="action is required for 'execute_action'."
                 )
 
-            if legacy_selector_forbidden(action_type):
+            if is_element_action(action_type):
                 raise HTTPException(
                     status_code=400,
                     detail={
-                        "reason_code": "ref_required",
-                        "message": "selector_not_allowed_use_browser_act_ref",
+                        "reason_code": "legacy_selector_forbidden",
+                        "message": (
+                            "legacy selector element actions are disabled. "
+                            "use browser_snapshot + browser_act(snapshot_id, ref_id)."
+                        ),
+                    },
+                )
+
+            if legacy_selector_forbidden(action_type, selector):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "reason_code": "legacy_selector_forbidden",
+                        "message": (
+                            "legacy selector element actions are disabled. "
+                            "use browser_snapshot + browser_act(snapshot_id, ref_id)."
+                        ),
                     },
                 )
 
@@ -5012,6 +6481,7 @@ async def execute_action(request: McpRequest):
             action_type = params.get("action", "")
             value = params.get("value")
             url = params.get("url", "")
+            tab_id = params.get("tab_id", params.get("targetId"))
             selector_hint = str(params.get("selector_hint", "") or "")
             verify = bool(params.get("verify", True))
 
@@ -5035,31 +6505,47 @@ async def execute_action(request: McpRequest):
                     "action": action_type,
                     "value": value,
                     "url": url,
+                    "tab_id": tab_id,
                     "selector_hint": selector_hint,
                     "verify": verify,
                 }
             )
 
         elif action == "execute_scenario":
-            scenario_data = params.get("scenario")
-            if not scenario_data:
-                raise HTTPException(
-                    status_code=400, detail="Scenario is required for 'execute_scenario'."
-                )
-
-            try:
-                scenario = TestScenario(**scenario_data)
-                result = await run_test_scenario(scenario)
-                return result
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Invalid scenario format: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": "legacy_selector_forbidden",
+                    "message": (
+                        "execute_scenario legacy selector path is disabled. "
+                        "use browser_snapshot + browser_act(snapshot_id, ref_id)."
+                    ),
+                },
+            )
 
         raise HTTPException(status_code=400, detail=f"Action '{action}' not supported.")
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        detail = exc.detail
+        if isinstance(detail, dict) and detail.get("reason_code"):
+            raise
+        normalized_code = "http_4xx" if 400 <= int(exc.status_code) < 500 else "http_5xx"
+        message = str(detail if detail is not None else "HTTP error")
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "reason_code": normalized_code,
+                "message": message,
+            },
+        ) from exc
     except Exception as exc:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "reason_code": "http_5xx",
+                "message": f"{type(exc).__name__}: {exc}",
+            },
+        ) from exc
 
 
 @app.post("/close_session")
@@ -5118,6 +6604,11 @@ async def websocket_screencast(websocket: WebSocket):
 async def root():
     return {
         "message": "MCP Host is running.",
+        "enabled": True,
+        "profile": "default",
+        "running": bool(playwright_instance),
+        "chosenBrowser": "chromium",
+        "headless": False,
         "active_sessions": len(active_sessions),
         "screencast_subscribers": len(screencast_subscribers),
         "screencast_active": any(s.screencast_active for s in active_sessions.values()),
