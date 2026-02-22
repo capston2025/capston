@@ -91,6 +91,8 @@ class IntelligentOrchestrator:
         # Load healed selector cache from previous runs
         self.healed_selector_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._load_healed_selector_cache()
+        self._selector_to_ref_id: Dict[str, str] = {}
+        self._active_snapshot_id: str = ""
 
     # ==================== Dynamic ID Detection & Stable Selector Generation ====================
 
@@ -552,14 +554,13 @@ Return ONLY a JSON array:
                 true;
             """
             payload = {
-                "action": "execute_action",
+                "action": "browser_act",
                 "params": {
                     "url": current_url,
-                    "selector": "",
                     "action": "evaluate",
-                    "value": clear_script,
-                    "session_id": self.session_id
-                }
+                    "fn": clear_script,
+                    "session_id": self.session_id,
+                },
             }
             try:
                 response = requests.post(
@@ -2100,40 +2101,88 @@ Return JSON (no markdown):
     def _execute_action(self, action: str, selector: str, params: List[Any], url: str, before_screenshot: str = None) -> bool:
         """Execute a browser action using MCP host."""
         try:
-            # Build payload based on action type
-            # For actions that need full params array (setViewport, dragAndDrop), send the whole array
-            # For others, send first param only
+            # Build value payload
             if action in ["setViewport", "dragAndDrop"]:
                 value = params if params else None
             else:
                 value = params[0] if params else None
 
-            payload = {
-                "action": "execute_action",
-                "params": {
-                    "url": url,
-                    "selector": selector,
-                    "action": action,
-                    "value": value,
-                    "session_id": self.session_id
-                }
+            element_actions = {
+                "click",
+                "fill",
+                "press",
+                "hover",
+                "scroll",
+                "scrollIntoView",
+                "select",
+                "dragAndDrop",
+                "dragSlider",
+            }
+            action_name = "click" if action == "focus" else action
+            act_params: Dict[str, Any] = {
+                "session_id": self.session_id,
+                "url": url,
+                "action": action_name,
             }
 
-            # Assertion일 때만 before_screenshot 전달 (Vision AI Fallback용)
-            if action in ["expectVisible", "expectHidden", "expectTrue"] and before_screenshot:
-                payload["params"]["before_screenshot"] = before_screenshot
+            if action_name == "setViewport":
+                action_name = "resize"
+                act_params["action"] = action_name
+                width = None
+                height = None
+                if isinstance(value, list) and len(value) >= 2:
+                    width, height = value[0], value[1]
+                if width is not None and height is not None:
+                    act_params["width"] = int(width)
+                    act_params["height"] = int(height)
+
+            if action_name in element_actions:
+                ref_id = self._selector_to_ref_id.get(selector or "")
+                snapshot_id = self._active_snapshot_id
+                if not ref_id or not snapshot_id:
+                    error_msg = "[ref_required] snapshot_id + ref_id required for element actions"
+                    self.last_action_error = error_msg
+                    print(f"Action execution failed: {error_msg}")
+                    return False
+                act_params["snapshot_id"] = snapshot_id
+                act_params["ref_id"] = ref_id
+                act_params["verify"] = True
+                if selector:
+                    act_params["selector_hint"] = selector
+                if value is not None:
+                    act_params["value"] = value
+            else:
+                if action_name == "goto" and url:
+                    act_params["value"] = url
+                elif action_name == "evaluate":
+                    if value is not None:
+                        act_params["fn"] = value
+                elif value is not None:
+                    act_params["value"] = value
+                if action_name == "wait" and selector:
+                    act_params["selector"] = selector
+
+            payload = {"action": "browser_act", "params": act_params}
 
             response = requests.post(
                 f"{self.mcp_config.host_url}/execute",
                 json=payload,
                 timeout=90  # Increased from 30s to 90s for complex operations
             )
-            response.raise_for_status()
             data = response.json()
 
-            success = data.get("success", False)
+            success = bool(data.get("success", False))
+            effective = bool(data.get("effective", True))
+            if success and not effective:
+                success = False
             if not success:
-                error_msg = data.get('message', 'Unknown error')
+                error_msg = str(
+                    data.get("reason")
+                    or data.get("message")
+                    or data.get("detail")
+                    or data.get("error")
+                    or "Unknown error"
+                )
                 print(f"Action execution failed: {error_msg}")
                 # Store error message for self-healing
                 self.last_action_error = error_msg
@@ -2167,15 +2216,18 @@ Return JSON (no markdown):
         Returns:
             True if click succeeded, False otherwise
         """
+        click_script = (
+            f"(() => {{ const el = document.elementFromPoint({int(x)}, {int(y)}); "
+            "if (!el) return false; el.click(); return true; }})()"
+        )
         payload = {
-            "action": "execute_action",
+            "action": "browser_act",
             "params": {
+                "session_id": self.session_id,
                 "url": url,
-                "selector": "",  # No selector needed for coordinate click
-                "action": "click_at_coordinates",
-                "value": [x, y],  # Pass as array [x, y]
-                "session_id": self.session_id
-            }
+                "action": "evaluate",
+                "fn": click_script,
+            },
         }
 
         try:
@@ -2184,7 +2236,6 @@ Return JSON (no markdown):
                 json=payload,
                 timeout=90
             )
-            response.raise_for_status()
             data = response.json()
             return data.get("success", False)
         except Exception as e:
@@ -2336,8 +2387,24 @@ Respond with JSON only:
             response.raise_for_status()
             data = response.json()
 
+            raw_dom_elements = data.get("dom_elements", []) or []
+            self._active_snapshot_id = str(data.get("snapshot_id") or "")
+            self._selector_to_ref_id = {}
+            for raw_elem in raw_dom_elements:
+                if not isinstance(raw_elem, dict):
+                    continue
+                ref_id = str(raw_elem.get("ref_id") or "").strip()
+                if not ref_id:
+                    continue
+                selector = str(raw_elem.get("selector") or "").strip()
+                full_selector = str(raw_elem.get("full_selector") or "").strip()
+                if selector:
+                    self._selector_to_ref_id[selector] = ref_id
+                if full_selector:
+                    self._selector_to_ref_id[full_selector] = ref_id
+
             # Extract DOM elements
-            dom_elements = [DomElement(**elem) for elem in data.get("dom_elements", [])]
+            dom_elements = [DomElement(**elem) for elem in raw_dom_elements]
 
             # Extract current URL from page.url
             current_url = data.get("url", "")
@@ -2346,6 +2413,8 @@ Respond with JSON only:
             print(f"Failed to get page state: {e}")
             dom_elements = []
             current_url = ""
+            self._active_snapshot_id = ""
+            self._selector_to_ref_id = {}
 
         return screenshot, dom_elements, current_url
 
@@ -2371,23 +2440,14 @@ Respond with JSON only:
 
         try:
             # Navigate to base URL
-            payload = {
-                "action": "execute_action",
-                "params": {
-                    "url": base_url,
-                    "selector": None,
-                    "action": "goto",
-                    "value": None,
-                    "session_id": self.session_id
-                }
-            }
-
-            response = requests.post(
-                f"{self.mcp_config.host_url}/execute",
-                json=payload,
-                timeout=90
+            goto_success = self._execute_action(
+                action="goto",
+                selector="",
+                params=[base_url],
+                url=base_url,
             )
-            response.raise_for_status()
+            if not goto_success:
+                return False
 
             # Wait for page to load
             time.sleep(2)

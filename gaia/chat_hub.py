@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Protocol
 from urllib.parse import urlparse
 
@@ -12,6 +12,7 @@ import requests
 
 from gaia.src.phase4.memory.models import MemorySummaryRecord
 from gaia.src.phase4.memory.store import MemoryStore
+from gaia.src.phase4.session import WORKSPACE_DEFAULT, allocate_session_id, load_session_state
 
 
 @dataclass(slots=True)
@@ -24,8 +25,14 @@ class HubContext:
     control_channel: str = "local"
     stop_requested: bool = False
     memory_enabled: bool = True
-    session_id: str = "chat_hub"
+    workspace: str = WORKSPACE_DEFAULT
+    session_key: str = WORKSPACE_DEFAULT
+    session_id: str = WORKSPACE_DEFAULT
+    session_new: bool = False
     last_snapshot_id: str = ""
+    pending_user_input: Dict[str, Any] = field(default_factory=dict)
+    pending_user_response: Dict[str, Any] = field(default_factory=dict)
+    on_session_update: Optional[Callable[["HubContext"], None]] = None
 
 
 @dataclass(slots=True)
@@ -73,6 +80,11 @@ def _help_text() -> str:
         "/env get|set [json]              브라우저 환경 상태\n"
         "/url <new-url>                   대상 URL 변경\n"
         "/runtime <gui|terminal>          기본 런타임 변경\n"
+        "/session                         세션 상태 조회\n"
+        "/session new                     새 세션 발급\n"
+        "/session reuse <key>             세션 키 재사용/전환\n"
+        "/handoff                         pending 사용자 요청 조회\n"
+        "/handoff key=value ...           pending 요청 응답 등록\n"
         "/status                          현재 세션 상태\n"
         "/stop                            실행 중단 요청 플래그 설정\n"
         "/memory stats                    도메인 KB 통계\n"
@@ -140,14 +152,132 @@ def _parse_value(text: str):
     return raw
 
 
+def _notify_session_update(context: HubContext) -> None:
+    callback = context.on_session_update
+    if not callback:
+        return
+    try:
+        callback(context)
+    except Exception:
+        return
+
+
+def _parse_kv_tokens(raw: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for token in str(raw or "").split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        k = key.strip()
+        v = value.strip().strip('"').strip("'")
+        if k and v:
+            out[k] = v
+    return out
+
+
+def _build_hub_intervention_callback(context: HubContext, sink: HubSink):
+    def _callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        context.pending_user_input = dict(payload or {})
+        _notify_session_update(context)
+        if context.pending_user_response:
+            response = dict(context.pending_user_response)
+            context.pending_user_response = {}
+            context.pending_user_input = {}
+            _notify_session_update(context)
+            return response
+
+        question = str((payload or {}).get("question") or "").strip()
+        if not question:
+            question = "추가 입력이 필요합니다."
+        sink.info(
+            "추가 입력 요청이 대기 중입니다.\n"
+            f"- {question}\n"
+            "응답: /handoff key=value ...\n"
+            "예시: /handoff username=user123 password=pass123 proceed=true"
+        )
+        return {"action": "cancel", "proceed": False}
+
+    return _callback
+
+
+def _handle_session_command(context: HubContext, raw: str) -> CommandResult:
+    parts = [p for p in raw.split() if p]
+    if len(parts) == 1:
+        payload = {
+            "workspace": context.workspace,
+            "session_key": context.session_key,
+            "session_id": context.session_id,
+            "session_new": context.session_new,
+            "last_snapshot_id": context.last_snapshot_id,
+        }
+        return CommandResult(code=0, output=json.dumps(payload, ensure_ascii=False, indent=2))
+
+    if len(parts) >= 2 and parts[1] == "new":
+        context.session_id = allocate_session_id(context.session_key or context.workspace or WORKSPACE_DEFAULT)
+        context.session_new = True
+        context.last_snapshot_id = ""
+        context.pending_user_input = {}
+        context.pending_user_response = {}
+        _notify_session_update(context)
+        return CommandResult(code=0, output=f"새 세션 발급: {context.session_id}")
+
+    if len(parts) >= 3 and parts[1] == "reuse":
+        key = str(parts[2]).strip()
+        if not key:
+            return CommandResult(code=2, status="error", output="형식: /session reuse <key>")
+        loaded = load_session_state(key)
+        context.session_key = key
+        context.workspace = key
+        context.session_id = loaded.mcp_session_id if loaded and loaded.mcp_session_id else key
+        context.session_new = False
+        context.last_snapshot_id = str(loaded.last_snapshot_id or "") if loaded else ""
+        context.pending_user_input = dict(loaded.pending_user_input) if loaded else {}
+        context.pending_user_response = {}
+        _notify_session_update(context)
+        return CommandResult(code=0, output=f"세션 재사용: key={context.session_key}, id={context.session_id}")
+
+    return CommandResult(code=2, status="error", output="형식: /session | /session new | /session reuse <key>")
+
+
+def _handle_handoff_command(context: HubContext, raw: str) -> CommandResult:
+    parts = raw.split(maxsplit=1)
+    if len(parts) == 1:
+        if not context.pending_user_input:
+            return CommandResult(code=0, output="대기 중인 사용자 입력 요청이 없습니다.")
+        return CommandResult(
+            code=0,
+            output=(
+                "대기 중인 요청:\n"
+                + json.dumps(context.pending_user_input, ensure_ascii=False, indent=2)
+            ),
+        )
+
+    response = _parse_kv_tokens(parts[1])
+    if not response:
+        return CommandResult(code=2, status="error", output="형식: /handoff key=value ...")
+    if "proceed" not in response and "action" not in response:
+        response["proceed"] = "true"
+    context.pending_user_response = response
+    _notify_session_update(context)
+    return CommandResult(code=0, output="handoff 응답이 저장되었습니다. 다음 실행에서 자동 반영됩니다.")
+
+
 def _run_gui(*args: str) -> int:
     from gaia.main import main as launch_gui
 
     return launch_gui(list(args))
 
 
-def _build_telegram_intervention_callback(sink: HubSink):
+def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
     def _callback(payload: dict) -> dict:
+        context.pending_user_input = dict(payload or {})
+        _notify_session_update(context)
+        if context.pending_user_response:
+            response = dict(context.pending_user_response)
+            context.pending_user_response = {}
+            context.pending_user_input = {}
+            _notify_session_update(context)
+            return response
         kind = str(payload.get("kind") or "").strip().lower()
         if kind == "auth":
             sink.info(
@@ -193,11 +323,15 @@ def _run_test(
     from gaia.terminal import run_chat_terminal_once
 
     cb = intervention_callback
-    if cb is None and context.control_channel == "telegram":
-        cb = _build_telegram_intervention_callback(sink)
+    if cb is None:
+        if context.control_channel == "telegram":
+            cb = _build_telegram_intervention_callback(context, sink)
+        else:
+            cb = _build_hub_intervention_callback(context, sink)
     code, summary = run_chat_terminal_once(
         url=context.url,
         query=query,
+        session_id=context.session_id,
         intervention_callback=cb,
     )
     return code, summary
@@ -210,7 +344,11 @@ def _run_ai(context: HubContext, max_actions: int = 50) -> int:
 
     from gaia.terminal import run_ai_terminal
 
-    return run_ai_terminal(url=context.url, max_actions=max_actions)
+    return run_ai_terminal(
+        url=context.url,
+        max_actions=max_actions,
+        session_id=context.session_id,
+    )
 
 
 def _run_plan(context: HubContext, raw: str) -> int:
@@ -257,11 +395,18 @@ def dispatch_command(
             "url": context.url,
             "runtime": context.runtime,
             "control": context.control_channel,
+            "workspace": context.workspace,
+            "session_key": context.session_key,
             "stop_requested": context.stop_requested,
             "session_id": context.session_id,
             "last_snapshot_id": context.last_snapshot_id,
+            "pending_user_input": bool(context.pending_user_input),
         }
         return CommandResult(code=0, output=json.dumps(payload, ensure_ascii=False, indent=2))
+    if line.startswith("/session"):
+        return _handle_session_command(context, line)
+    if line.startswith("/handoff"):
+        return _handle_handoff_command(context, line)
     if line == "/stop":
         context.stop_requested = True
         return CommandResult(
@@ -276,12 +421,14 @@ def dispatch_command(
         if not new_url:
             return CommandResult(code=2, status="error", output="URL을 입력해주세요.")
         context.url = new_url
+        _notify_session_update(context)
         return CommandResult(code=0, output=f"url 변경됨: {context.url}")
     if line.startswith("/runtime "):
         runtime = line[9:].strip().lower()
         if runtime not in {"gui", "terminal"}:
             return CommandResult(code=2, status="error", output="runtime은 gui 또는 terminal만 가능합니다.")
         context.runtime = runtime
+        _notify_session_update(context)
         return CommandResult(code=0, output=f"runtime 변경됨: {context.runtime}")
     if line == "/memory stats":
         if not memory_store or not memory_store.enabled:
@@ -308,6 +455,7 @@ def dispatch_command(
         if code >= 400:
             return CommandResult(code=code, status="error", output=f"snapshot 실패: {data.get('detail') or data}")
         context.last_snapshot_id = str(data.get("snapshot_id") or "")
+        _notify_session_update(context)
         summary = {
             "snapshot_id": context.last_snapshot_id,
             "epoch": data.get("epoch"),
@@ -350,6 +498,10 @@ def dispatch_command(
         )
         if code >= 400:
             return CommandResult(code=code, status="error", output=f"act 실패: {data.get('detail') or data}")
+        snapshot_used = str(data.get("snapshot_id_used") or "")
+        if snapshot_used and snapshot_used != context.last_snapshot_id:
+            context.last_snapshot_id = snapshot_used
+            _notify_session_update(context)
         return CommandResult(code=0, output=json.dumps(data, ensure_ascii=False, indent=2))
 
     if line.startswith("/wait"):
@@ -556,6 +708,9 @@ def run_chat_hub(context: HubContext) -> int:
     sink.info(f"- url: {context.url}")
     sink.info(f"- runtime: {context.runtime}")
     sink.info(f"- control: {context.control_channel}")
+    sink.info(f"- workspace: {context.workspace}")
+    sink.info(f"- session_key: {context.session_key}")
+    sink.info(f"- session_id: {context.session_id}")
     sink.info("명령어 도움말: /help")
 
     while True:

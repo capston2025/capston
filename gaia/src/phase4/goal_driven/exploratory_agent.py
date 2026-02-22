@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecord
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
+from gaia.src.phase4.orchestrator import MasterOrchestrator
 
 # GIF 생성을 위한 선택적 import
 try:
@@ -129,6 +130,9 @@ class ExploratoryAgent:
         self._memory_retriever = MemoryRetriever(self._memory_store)
         self._memory_episode_id: Optional[int] = None
         self._memory_domain: str = ""
+        self._runtime_phase: str = "COLLECT"
+        self._progress_counter: int = 0
+        self._no_progress_counter: int = 0
 
     def _log(self, message: str):
         """로그 출력"""
@@ -674,6 +678,28 @@ class ExploratoryAgent:
             self._log("❌ 사용자가 탐색 중단을 요청했습니다.")
             return False
 
+    def _infer_runtime_phase(self, page_state: PageState) -> str:
+        elements = page_state.interactive_elements or []
+        text_blob = " ".join(
+            [
+                str(getattr(e, "text", "") or "")
+                + " "
+                + str(getattr(e, "description", "") or "")
+                + " "
+                + str(getattr(e, "selector", "") or "")
+                for e in elements[:300]
+            ]
+        ).lower()
+        if any(k in text_blob for k in ("로그인", "회원가입", "password", "signin", "auth")):
+            return "AUTH"
+        if any(k in text_blob for k in ("완료", "성공", "applied", "saved", "completed")):
+            return "VERIFY"
+        if any(k in text_blob for k in ("실행", "조합", "생성", "run", "generate", "submit")):
+            return "APPLY"
+        if any(k in text_blob for k in ("필터", "정렬", "설정", "옵션", "filter", "sort", "option")):
+            return "COMPOSE"
+        return "COLLECT"
+
     def explore(self, start_url: str) -> ExplorationResult:
         """
         완전 자율 탐색 시작
@@ -720,6 +746,7 @@ class ExploratoryAgent:
         self._seed_urls = self._normalize_seed_urls(start_url)
 
         action_count = 0
+        master_orchestrator = MasterOrchestrator()
 
         while action_count < self.config.max_actions:
             action_count += 1
@@ -747,6 +774,9 @@ class ExploratoryAgent:
 
             untested = [e for e in page_state.interactive_elements if not e.tested]
             self._log(f"   - 미테스트 요소: {len(untested)}개")
+            self._runtime_phase = self._infer_runtime_phase(page_state)
+            master_orchestrator.set_phase(self._runtime_phase)
+            self._log(f"   - phase: {self._runtime_phase}")
 
             # 로그인 페이지 감지 및 사용자 개입 요청
             if self._is_login_page_with_no_elements(page_state):
@@ -838,6 +868,32 @@ class ExploratoryAgent:
                 decision=decision,
                 page_state=page_state,
             )
+            progress = bool(success and not issues)
+            if progress:
+                self._progress_counter += 1
+                self._no_progress_counter = 0
+            else:
+                self._no_progress_counter += 1
+            master_orchestrator.record_progress(
+                changed=progress,
+                signal={
+                    "phase": self._runtime_phase,
+                    "step": action_count,
+                    "issues": len(issues or []),
+                },
+            )
+            master_directive = master_orchestrator.next_directive(auth_required=False)
+            if master_directive.kind == "handoff" and master_directive.reason == "no_progress":
+                should_continue = self._request_user_intervention(
+                    reason=(
+                        "상태 변화가 연속으로 감지되지 않았습니다. "
+                        "브라우저에서 수동 전환 후 계속할지 선택해 주세요."
+                    ),
+                    current_url=page_state.url,
+                )
+                if not should_continue:
+                    self._log("사용자 요청으로 탐색을 중단합니다.")
+                    break
             selector_for_memory = ""
             if decision.selected_action:
                 if decision.selected_action.action_type == "navigate":
@@ -2336,6 +2392,9 @@ JSON 응답:"""
             resolved_ref_id = self._selector_to_ref_id.get(selector)
 
         if is_element_action and not (resolved_ref_id and self._active_snapshot_id):
+            _ = self._analyze_dom()
+            if selector:
+                resolved_ref_id = self._selector_to_ref_id.get(selector)
             self._last_exec_meta = {
                 "reason_code": "ref_required",
                 "reason": "Ref-only policy: snapshot_id + ref_id required",
@@ -2343,7 +2402,8 @@ JSON 응답:"""
                 "state_change": {},
                 "attempt_logs": [],
             }
-            return False, "[ref_required] Ref-only policy: snapshot_id + ref_id required"
+            if not (resolved_ref_id and self._active_snapshot_id):
+                return False, "[ref_required] Ref-only policy: snapshot_id + ref_id required"
 
         if resolved_ref_id and is_element_action and self._active_snapshot_id:
             ref_params: Dict[str, object] = {
@@ -2379,6 +2439,43 @@ JSON 응답:"""
                     return True, None
                 reason_code = data.get("reason_code") or "unknown_error"
                 reason = data.get("reason") or data.get("message") or data.get("detail") or "Unknown error"
+                if str(reason_code) in {
+                    "snapshot_not_found",
+                    "stale_snapshot",
+                    "ref_required",
+                    "not_found",
+                    "ambiguous_ref_target",
+                    "no_state_change",
+                    "not_actionable",
+                }:
+                    _ = self._analyze_dom()
+                    refreshed_ref_id = self._selector_to_ref_id.get(selector) if selector else None
+                    if refreshed_ref_id and self._active_snapshot_id:
+                        retry_params: Dict[str, object] = dict(ref_params)
+                        retry_params["snapshot_id"] = self._active_snapshot_id
+                        retry_params["ref_id"] = refreshed_ref_id
+                        retry_response = requests.post(
+                            f"{self.mcp_host_url}/execute",
+                            json={"action": "browser_act", "params": retry_params},
+                            timeout=self.config.action_timeout,
+                        )
+                        retry_data = retry_response.json()
+                        retry_success = bool(retry_data.get("success"))
+                        retry_effective = bool(retry_data.get("effective", True))
+                        if retry_success and retry_effective:
+                            self._last_exec_meta = {
+                                "reason_code": "ok",
+                                "reason": "ok",
+                                "effective": True,
+                                "state_change": retry_data.get("state_change") if isinstance(retry_data.get("state_change"), dict) else {},
+                                "attempt_logs": retry_data.get("attempt_logs") if isinstance(retry_data.get("attempt_logs"), list) else [],
+                                "snapshot_id_used": str(retry_data.get("snapshot_id_used") or ""),
+                                "ref_id_used": str(retry_data.get("ref_id_used") or ""),
+                            }
+                            self._log("♻️ stale/ref 오류 복구: 최신 snapshot/ref 재매핑 후 재시도 성공")
+                            return True, None
+                        reason_code = retry_data.get("reason_code") or reason_code
+                        reason = retry_data.get("reason") or retry_data.get("message") or retry_data.get("detail") or reason
                 self._last_exec_meta = {
                     "reason_code": str(reason_code),
                     "reason": str(reason),
@@ -2404,13 +2501,17 @@ JSON 응답:"""
             "session_id": self.session_id,
             "action": action,
             "url": url or "",
-            "selector": selector or "",
         }
 
         if value is not None:
-            params["value"] = value
+            if action == "evaluate":
+                params["fn"] = value
+            else:
+                params["value"] = value
         if action == "goto" and url:
             params["value"] = url
+        if action == "wait" and selector:
+            params["selector"] = selector
 
         try:
             response = requests.post(
@@ -2461,17 +2562,30 @@ JSON 응답:"""
             return False, str(e)
 
     def _evaluate_selector(self, selector: str, script: str) -> Optional[str]:
+        wrapped_fn = (
+            "(() => {"
+            f"const __selector = {json.dumps(selector)};"
+            f"const __fnSource = {json.dumps(script)};"
+            "const __el = document.querySelector(__selector);"
+            "if (!__el) return null;"
+            "try {"
+            "  const __fn = eval('(' + __fnSource + ')');"
+            "  return __fn(__el);"
+            "} catch (_e) {"
+            "  return null;"
+            "}"
+            "})()"
+        )
         params: Dict[str, object] = {
             "session_id": self.session_id,
             "action": "evaluate",
             "url": "",
-            "selector": selector,
-            "value": script,
+            "fn": wrapped_fn,
         }
         try:
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
-                json={"action": "execute_action", "params": params},
+                json={"action": "browser_act", "params": params},
                 timeout=self.config.action_timeout,
             )
             data = response.json()

@@ -20,6 +20,7 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
+from gaia.src.phase4.session import WORKSPACE_DEFAULT
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
 from gaia.src.utils.models import TestScenario
@@ -458,12 +459,13 @@ def _print_llm_failure_help(reason: str) -> None:
 def _run_single_chat_goal(
     url: str,
     query: str,
+    session_id: str = WORKSPACE_DEFAULT,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     goal = _build_test_goal(url=url, query=query)
     agent = GoalDrivenAgent(
         mcp_host_url=CONFIG.mcp.host_url,
-        session_id=f"chat_{int(time.time())}",
+        session_id=session_id or WORKSPACE_DEFAULT,
         intervention_callback=intervention_callback,
     )
     print(f"목표 실행: {goal.description}")
@@ -506,9 +508,15 @@ def run_chat_terminal_once(
     *,
     url: str,
     query: str,
+    session_id: str = WORKSPACE_DEFAULT,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    return _run_single_chat_goal(url=url, query=query, intervention_callback=intervention_callback)
+    return _run_single_chat_goal(
+        url=url,
+        query=query,
+        session_id=session_id,
+        intervention_callback=intervention_callback,
+    )
 
 
 def run_chat_terminal(
@@ -516,6 +524,7 @@ def run_chat_terminal(
     url: str,
     initial_query: str | None = None,
     repl: bool = True,
+    session_id: str = WORKSPACE_DEFAULT,
 ) -> int:
     if not url:
         print("URL is required for terminal chat mode.", file=sys.stderr)
@@ -526,7 +535,7 @@ def run_chat_terminal(
             print("A query is required when repl=False.", file=sys.stderr)
             return 2
         try:
-            code, _ = _run_single_chat_goal(url, initial_query)
+            code, _ = _run_single_chat_goal(url, initial_query, session_id=session_id)
             return code
         except Exception as exc:
             print(f"Terminal chat failed: {exc}", file=sys.stderr)
@@ -571,14 +580,19 @@ def run_chat_terminal(
             continue
 
         try:
-            code, _ = _run_single_chat_goal(current_url, line)
+            code, _ = _run_single_chat_goal(current_url, line, session_id=session_id)
             if code != 0:
                 print(f"실행 종료 코드: {code}")
         except Exception as exc:
             print(f"Terminal chat failed: {exc}", file=sys.stderr)
 
 
-def run_ai_terminal(*, url: str, max_actions: int = 50) -> int:
+def run_ai_terminal(
+    *,
+    url: str,
+    max_actions: int = 50,
+    session_id: str = WORKSPACE_DEFAULT,
+) -> int:
     if not url:
         print("URL is required for terminal ai mode.", file=sys.stderr)
         return 2
@@ -587,7 +601,7 @@ def run_ai_terminal(*, url: str, max_actions: int = 50) -> int:
     try:
         agent = ExploratoryAgent(
             mcp_host_url=CONFIG.mcp.host_url,
-            session_id=f"ai_{int(time.time())}",
+            session_id=session_id or WORKSPACE_DEFAULT,
             config=ExplorationConfig(max_actions=actions),
         )
         print(f"AI 탐색 시작: {url} (max_actions={actions})")
