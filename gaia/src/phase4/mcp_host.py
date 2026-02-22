@@ -2711,10 +2711,10 @@ async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], _selec
         fallback_locator, fallback_frame_idx, fallback_selector, fallback_error = await _resolve_with_selector_hint()
         if fallback_locator is not None:
             return fallback_locator, fallback_frame_idx, fallback_selector, ""
-        return None, frame_index, selector_hint or "", "dom_ref_missing"
+        return None, frame_index, fallback_selector or selector_hint or "", fallback_error or "dom_ref_missing"
 
+    selector_to_use = f'[data-gaia-dom-ref="{dom_ref}"]'
     try:
-        selector_to_use = f'[data-gaia-dom-ref="{dom_ref}"]'
         locator_group = frame.locator(selector_to_use)
         match_count = await locator_group.count()
         if match_count <= 0:
@@ -2942,7 +2942,9 @@ async def _execute_action_on_locator(action: str, page: Page, locator, value: An
         target_selector = str(value.get("target_selector") if isinstance(value, dict) else value)
         if not target_selector:
             raise ValueError("dragAndDrop requires non-empty target_selector")
-        target = page.locator(target_selector).first
+        target, target_err = await _resolve_single_locator(page, target_selector)
+        if target_err:
+            raise ValueError(target_err)
         await _reveal_locator_in_scroll_context(locator)
         await _reveal_locator_in_scroll_context(target)
         await locator.drag_to(target, timeout=10000)
@@ -4125,12 +4127,18 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
                         raise ValueError(f"frame index out of range: {frame_idx}")
                     frame_obj = frames[frame_idx]
                     if selector:
-                        target_locator = frame_obj.locator(selector).first
+                        group = frame_obj.locator(selector)
+                        count = await group.count()
+                        if count != 1:
+                            raise ValueError(f"strict_selector_required: selector '{selector}' matched {count} elements")
+                        target_locator = group.nth(0)
                     else:
                         target_locator = frame_obj.locator(":root")
                 else:
                     if selector:
-                        target_locator = page.locator(selector).first
+                        target_locator, selector_err = await _resolve_single_locator(page, selector)
+                        if selector_err:
+                            raise ValueError(selector_err)
                     else:
                         target_locator = page.locator(":root")
                 aria_text = await target_locator.aria_snapshot(timeout=max(500, min(timeout_ms, 60000)))
@@ -4336,11 +4344,14 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
     if load_state:
         await page.wait_for_load_state(load_state, timeout=timeout_ms)
     if selector:
-        await page.locator(selector).first.wait_for(state=selector_state, timeout=timeout_ms)
+        target, selector_err = await _resolve_single_locator(page, selector, timeout_ms=timeout_ms)
+        if selector_err:
+            return build_error("not_found" if selector_err.startswith("not_found") else "ambiguous_selector", selector_err, timeout_ms=timeout_ms)
+        await target.wait_for(state=selector_state, timeout=timeout_ms)
     if text_contains:
-        await page.locator(f"text={text_contains}").first.wait_for(state="visible", timeout=timeout_ms)
+        await page.locator(f"text={text_contains}").nth(0).wait_for(state="visible", timeout=timeout_ms)
     if text_gone:
-        await page.locator(f"text={text_gone}").first.wait_for(state="hidden", timeout=timeout_ms)
+        await page.locator(f"text={text_gone}").nth(0).wait_for(state="hidden", timeout=timeout_ms)
     if js_expr:
         start = time.time()
         ok = False
@@ -4479,7 +4490,9 @@ async def _browser_highlight(params: Dict[str, Any]) -> Dict[str, Any]:
                         locator = loc
                         break
     if locator is None and selector:
-        locator = page.locator(selector).first
+        locator, selector_err = await _resolve_single_locator(page, selector)
+        if selector_err:
+            return build_error("not_found" if selector_err.startswith("not_found") else "ambiguous_selector", selector_err)
     if locator is None:
         return build_error("not_found", "target not found for highlight")
 
