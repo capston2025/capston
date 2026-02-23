@@ -3182,7 +3182,7 @@ async def _try_click_container_ancestor(locator) -> Dict[str, Any]:
               let current = el instanceof Element ? el : null;
               for (let depth = 0; current && depth < 8; depth++) {
                 for (const selector of candidates) {
-                  const node = current.matches(selector) ? current : current.closest(selector);
+                  const node = current.matches(selector) ? current : null;
                   if (!node || !(node instanceof HTMLElement) || node === el) continue;
 
                   const style = window.getComputedStyle(node);
@@ -3511,6 +3511,44 @@ async def execute_ref_action_with_snapshot(
         before_focus = await _read_focus_signature(page)
         before_target = await _safe_read_target_state(locator)
 
+        async def _collect_state_change_probe(
+            *,
+            probe_wait_ms: int,
+            probe_scroll: str,
+            ancestor_click_fallback: bool = False,
+            ancestor_click_selector: str = "",
+        ) -> Dict[str, Any]:
+            nonlocal last_live_texts
+            after_url = page.url
+            after_dom_hash = await _compute_runtime_dom_hash(page)
+            after_evidence = await evidence_collector(page)
+            after_focus = await _read_focus_signature(page)
+            after_target = await _safe_read_target_state(locator)
+            change = _state_change_flags(
+                action=action,
+                value=value,
+                before_url=before_url,
+                after_url=after_url,
+                before_dom_hash=before_dom_hash,
+                after_dom_hash=after_dom_hash,
+                before_evidence=before_evidence,
+                after_evidence=after_evidence,
+                before_target=before_target,
+                after_target=after_target,
+                before_focus=before_focus,
+                after_focus=after_focus,
+            )
+            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
+            if live_texts_after:
+                change["live_texts_after"] = live_texts_after
+                last_live_texts = live_texts_after
+            change["probe_wait_ms"] = probe_wait_ms
+            change["probe_scroll"] = probe_scroll
+            if ancestor_click_fallback:
+                change["ancestor_click_fallback"] = True
+                change["ancestor_click_selector"] = ancestor_click_selector
+            return change
+
         try:
             await _execute_action_on_locator(action, page, locator, value, options=options)
             interaction_success = True
@@ -3538,31 +3576,10 @@ async def execute_ref_action_with_snapshot(
                 reason_code = "action_timeout"
                 break
             await page.wait_for_timeout(probe_wait_ms)
-            after_url = page.url
-            after_dom_hash = await _compute_runtime_dom_hash(page)
-            after_evidence = await evidence_collector(page)
-            after_focus = await _read_focus_signature(page)
-            after_target = await _safe_read_target_state(locator)
-            state_change = _state_change_flags(
-                action=action,
-                value=value,
-                before_url=before_url,
-                after_url=after_url,
-                before_dom_hash=before_dom_hash,
-                after_dom_hash=after_dom_hash,
-                before_evidence=before_evidence,
-                after_evidence=after_evidence,
-                before_target=before_target,
-                after_target=after_target,
-                before_focus=before_focus,
-                after_focus=after_focus,
+            state_change = await _collect_state_change_probe(
+                probe_wait_ms=probe_wait_ms,
+                probe_scroll="none",
             )
-            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-            if live_texts_after:
-                state_change["live_texts_after"] = live_texts_after
-                last_live_texts = live_texts_after
-            state_change["probe_wait_ms"] = probe_wait_ms
-            state_change["probe_scroll"] = "none"
             effective = bool(state_change.get("effective", True)) if verify_for_action else True
             if effective:
                 break
@@ -3588,31 +3605,10 @@ async def execute_ref_action_with_snapshot(
                 except Exception:
                     pass
                 await page.wait_for_timeout(250)
-                after_url = page.url
-                after_dom_hash = await _compute_runtime_dom_hash(page)
-                after_evidence = await evidence_collector(page)
-                after_focus = await _read_focus_signature(page)
-                after_target = await _safe_read_target_state(locator)
-                state_change = _state_change_flags(
-                    action=action,
-                    value=value,
-                    before_url=before_url,
-                    after_url=after_url,
-                    before_dom_hash=before_dom_hash,
-                    after_dom_hash=after_dom_hash,
-                    before_evidence=before_evidence,
-                    after_evidence=after_evidence,
-                    before_target=before_target,
-                    after_target=after_target,
-                    before_focus=before_focus,
-                    after_focus=after_focus,
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=1500,
+                    probe_scroll=probe_name,
                 )
-                live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-                if live_texts_after:
-                    state_change["live_texts_after"] = live_texts_after
-                    last_live_texts = live_texts_after
-                state_change["probe_wait_ms"] = 1500
-                state_change["probe_scroll"] = probe_name
                 effective = bool(state_change.get("effective", True))
                 if effective:
                     break
@@ -3621,33 +3617,12 @@ async def execute_ref_action_with_snapshot(
             fallback_result = await _try_click_container_ancestor(locator)
             if bool(fallback_result.get("clicked")):
                 await page.wait_for_timeout(350)
-                after_url = page.url
-                after_dom_hash = await _compute_runtime_dom_hash(page)
-                after_evidence = await evidence_collector(page)
-                after_focus = await _read_focus_signature(page)
-                after_target = await _safe_read_target_state(locator)
-                state_change = _state_change_flags(
-                    action=action,
-                    value=value,
-                    before_url=before_url,
-                    after_url=after_url,
-                    before_dom_hash=before_dom_hash,
-                    after_dom_hash=after_dom_hash,
-                    before_evidence=before_evidence,
-                    after_evidence=after_evidence,
-                    before_target=before_target,
-                    after_target=after_target,
-                    before_focus=before_focus,
-                    after_focus=after_focus,
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=350,
+                    probe_scroll="container_fallback",
+                    ancestor_click_fallback=True,
+                    ancestor_click_selector=str(fallback_result.get("selector") or ""),
                 )
-                live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-                if live_texts_after:
-                    state_change["live_texts_after"] = live_texts_after
-                    last_live_texts = live_texts_after
-                state_change["probe_wait_ms"] = 350
-                state_change["probe_scroll"] = "container_fallback"
-                state_change["ancestor_click_fallback"] = True
-                state_change["ancestor_click_selector"] = str(fallback_result.get("selector") or "")
                 effective = bool(state_change.get("effective", True))
 
         if reason_code == "action_timeout":

@@ -1197,7 +1197,7 @@ class GoalDrivenAgent:
         if modal_auth_hits >= 2 and auth_hits >= 4 and has_password_field:
             return True
         if modal_auth_hits >= 4 and auth_hits >= 6:
-                return True
+            return True
         return False
 
     @classmethod

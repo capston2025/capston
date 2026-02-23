@@ -110,6 +110,18 @@ def _record_summary(
 ) -> None:
     if not memory_store or not memory_store.enabled:
         return
+    try:
+        memory_store.add_dialog_summary(
+            MemorySummaryRecord(
+                domain=_domain_from_url(context.url),
+                command=command,
+                summary=summary,
+                status=status,
+                metadata=metadata or {},
+            )
+        )
+    except Exception:
+        return
 
 
 def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
@@ -135,18 +147,6 @@ def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
     if isinstance(saved_path, str) and saved_path.strip():
         payload["path"] = saved_path
     return payload
-    try:
-        memory_store.add_dialog_summary(
-            MemorySummaryRecord(
-                domain=_domain_from_url(context.url),
-                command=command,
-                summary=summary,
-                status=status,
-                metadata=metadata or {},
-            )
-        )
-    except Exception:
-        return
 
 
 def _mcp_execute(action: str, params: dict) -> tuple[int, dict]:
