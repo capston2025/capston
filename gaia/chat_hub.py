@@ -40,6 +40,7 @@ class CommandResult:
     code: int = 0
     status: str = "ok"
     output: str = ""
+    attachments: list[dict] = field(default_factory=list)
 
 
 class HubSink(Protocol):
@@ -109,6 +110,31 @@ def _record_summary(
 ) -> None:
     if not memory_store or not memory_store.enabled:
         return
+
+
+def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
+    code, data = _mcp_execute(
+        "browser_screenshot",
+        {
+            "session_id": session_id,
+            "full_page": False,
+            "type": "png",
+        },
+    )
+    if code >= 400:
+        return None
+    screenshot = data.get("screenshot")
+    if not isinstance(screenshot, str) or not screenshot.strip():
+        return None
+    payload: dict[str, Any] = {
+        "kind": "image_base64",
+        "mime": "image/png",
+        "data": screenshot,
+    }
+    saved_path = data.get("path")
+    if isinstance(saved_path, str) and saved_path.strip():
+        payload["path"] = saved_path
+    return payload
     try:
         memory_store.add_dialog_summary(
             MemorySummaryRecord(
@@ -655,7 +681,12 @@ def dispatch_command(
             if auth.get("grade_year"):
                 lines.append(f"  grade_year: {auth.get('grade_year')}")
         lines.append(f"exit_code: {code}")
-        return CommandResult(code=code, output="\n".join(lines))
+        attachments: list[dict] = []
+        if context.control_channel == "telegram":
+            shot = _capture_session_screenshot_attachment(context.session_id)
+            if shot is not None:
+                attachments.append(shot)
+        return CommandResult(code=code, output="\n".join(lines), attachments=attachments)
 
     if line.startswith("/ai"):
         max_actions = 50

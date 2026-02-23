@@ -985,9 +985,17 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--spec")
     parser.add_argument("--mode", choices=("plan", "ai", "chat"))
     parser.add_argument("--feature-query")
+    parser.add_argument("--max-actions", type=int)
+    parser.add_argument("--session-key")
+    parser.add_argument("--mcp-session-id")
+    parser.add_argument("--mcp-host-url")
     args = parser.parse_args(list(argv or []))
 
     from gaia.main import main as launch_gui
+
+    session_key = args.session_key or os.getenv("GAIA_SESSION_KEY")
+    mcp_session_id = args.mcp_session_id or os.getenv("GAIA_MCP_SESSION_ID") or session_key
+    mcp_host_url = args.mcp_host_url or os.getenv("MCP_HOST_URL") or os.getenv("GAIA_MCP_HOST_URL")
 
     forwarded: list[str] = []
     if args.resume:
@@ -1002,6 +1010,14 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
         forwarded += ["--mode", str(args.mode)]
     if args.feature_query:
         forwarded += ["--feature-query", str(args.feature_query)]
+    if args.max_actions is not None:
+        forwarded += ["--max-actions", str(max(1, int(args.max_actions)))]
+    if session_key:
+        forwarded += ["--session-key", str(session_key)]
+    if mcp_session_id:
+        forwarded += ["--mcp-session-id", str(mcp_session_id)]
+    if mcp_host_url:
+        forwarded += ["--mcp-host-url", str(mcp_host_url)]
     return launch_gui(forwarded)
 
 
@@ -1031,14 +1047,20 @@ def _dispatch_chat(
 
 def _dispatch_ai(runtime: str, url: str, max_actions: int, *, session_id: str) -> int:
     if runtime == "gui":
-        return run_gui(["--mode", "ai", "--url", url])
+        return run_gui(["--mode", "ai", "--url", url, "--max-actions", str(max_actions)])
 
     from gaia.terminal import run_ai_terminal
 
     return run_ai_terminal(url=url, max_actions=max_actions, session_id=session_id)
 
 
-def _dispatch_plan(url: str | None, plan: str | None, spec: str | None, resume: str | None) -> int:
+def _dispatch_plan(
+    url: str | None,
+    plan: str | None,
+    spec: str | None,
+    resume: str | None,
+    feature_query: str | None = None,
+) -> int:
     forwarded = ["--mode", "plan"]
     if url:
         forwarded += ["--url", url]
@@ -1048,6 +1070,8 @@ def _dispatch_plan(url: str | None, plan: str | None, spec: str | None, resume: 
         forwarded += ["--spec", spec]
     if resume:
         forwarded += ["--resume", resume]
+    if feature_query:
+        forwarded += ["--feature-query", feature_query]
     return run_gui(forwarded)
 
 
@@ -1094,6 +1118,7 @@ def run_plan(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--plan")
     parser.add_argument("--spec")
     parser.add_argument("--resume")
+    parser.add_argument("--feature-query")
     args = parser.parse_args(list(argv or []))
 
     configured = _configure_session(args, require_url=False)
@@ -1102,7 +1127,7 @@ def run_plan(argv: Sequence[str] | None = None) -> int:
     _, _, _, url, runtime, _, _, _ = configured
     if runtime == "terminal":
         print("plan/spec 실행은 GUI를 사용합니다. GUI로 전환합니다.")
-    return _dispatch_plan(url, args.plan, args.spec, args.resume)
+    return _dispatch_plan(url, args.plan, args.spec, args.resume, args.feature_query)
 
 
 def run_launcher(argv: Sequence[str] | None = None) -> int:
@@ -1342,7 +1367,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             session_key=session_key,
             mcp_session_id=mcp_session_id,
         )
-        return _dispatch_plan(url, args.plan, args.spec, args.resume)
+        return _dispatch_plan(url, args.plan, args.spec, args.resume, args.feature_query)
 
     from gaia.chat_hub import HubContext, run_chat_hub
 
@@ -1414,6 +1439,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     gui.add_argument("--spec")
     gui.add_argument("--resume")
     gui.add_argument("--feature-query")
+    gui.add_argument("--max-actions", type=int, default=50)
     gui.add_argument("--llm-provider", choices=("openai", "gemini"))
     gui.add_argument("--llm-model")
     gui.add_argument("--auth", choices=AUTH_CHOICES)
@@ -1482,6 +1508,7 @@ def run_start(argv: Sequence[str] | None = None) -> int:
         if parsed.new_session:
             forwarded += ["--new-session"]
         if parsed.mode == "ai":
+            forwarded += ["--max-actions", str(parsed.max_actions)]
             return run_ai(forwarded)
         if parsed.mode == "plan":
             if parsed.plan:
@@ -1490,6 +1517,8 @@ def run_start(argv: Sequence[str] | None = None) -> int:
                 forwarded += ["--spec", parsed.spec]
             if parsed.resume:
                 forwarded += ["--resume", parsed.resume]
+            if parsed.feature_query:
+                forwarded += ["--feature-query", parsed.feature_query]
             return run_plan(forwarded)
         if parsed.feature_query:
             forwarded += ["--feature-query", parsed.feature_query]
@@ -1521,6 +1550,8 @@ def run_start(argv: Sequence[str] | None = None) -> int:
                 forwarded += ["--spec", parsed.spec]
             if parsed.resume:
                 forwarded += ["--resume", parsed.resume]
+            if parsed.feature_query:
+                forwarded += ["--feature-query", parsed.feature_query]
             return run_plan(forwarded)
         if parsed.feature_query:
             forwarded += ["--feature-query", parsed.feature_query]

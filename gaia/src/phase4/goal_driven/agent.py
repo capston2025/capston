@@ -215,6 +215,19 @@ class GoalDrivenAgent:
         text = (value or "").strip()
         return bool(re.fullmatch(r"\d{1,3}", text))
 
+    @staticmethod
+    def _is_navigational_href(value: Optional[str]) -> bool:
+        href = (value or "").strip().lower()
+        if not href:
+            return False
+        if href.startswith("#"):
+            return False
+        if href.startswith("javascript:"):
+            return False
+        if href.startswith("mailto:") or href.startswith("tel:"):
+            return False
+        return True
+
     @classmethod
     def _contains_wishlist_like_hint(cls, value: Optional[str]) -> bool:
         return False
@@ -273,6 +286,17 @@ class GoalDrivenAgent:
         if not text:
             return {}
 
+        no_navigation_hints = (
+            "페이지 이동 없이",
+            "url 변화 없이",
+            "url 변경 없이",
+            "같은 페이지",
+            "no navigation",
+            "without navigation",
+            "stay on page",
+            "same page",
+        )
+        require_no_navigation = any(hint in text for hint in no_navigation_hints)
         numeric_values: List[int] = []
         metric_terms: List[str] = []
         number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
@@ -284,6 +308,8 @@ class GoalDrivenAgent:
                 metric_terms.append(maybe_term)
 
         if not numeric_values:
+            if require_no_navigation:
+                return {"require_no_navigation": True}
             return {}
 
         collect_min: Optional[int] = None
@@ -313,6 +339,7 @@ class GoalDrivenAgent:
             "collect_min": collect_min,
             "apply_target": apply_target,
             "require_collect_before_progress": require_collect_before_progress,
+            "require_no_navigation": require_no_navigation,
         }
 
     @classmethod
@@ -519,24 +546,80 @@ class GoalDrivenAgent:
         _, element_id, reason, intent_key = candidates[0]
         return element_id, reason, intent_key
 
+    def _pick_no_navigation_click_candidate(
+        self,
+        dom_elements: List[DOMElement],
+        *,
+        excluded_ids: Optional[set[int]] = None,
+    ) -> Optional[tuple[int, str]]:
+        blocked = excluded_ids or set()
+        candidates: List[tuple[float, int, str]] = []
+        for el in dom_elements:
+            if el.id in blocked:
+                continue
+
+            ref_id = self._element_ref_ids.get(el.id)
+            if not ref_id or self._is_ref_temporarily_blocked(ref_id):
+                continue
+
+            if self._is_navigational_href(el.href):
+                continue
+
+            fields = self._fields_for_element(el)
+            field_blob = " ".join(fields).lower()
+            score = 2.5
+            score += 2.0 * self._goal_overlap_score(
+                el.text,
+                el.aria_label,
+                getattr(el, "title", None),
+            )
+            if any(h in field_blob for h in ("detail", "상세", "보기", "view", "open", "expand", "펼치")):
+                score += 2.5
+            if any(h in field_blob for h in ("modal", "dialog", "overlay", "panel", "sheet", "drawer", "popup")):
+                score += 2.0
+            if any(h in field_blob for h in ("row", "card", "listitem")):
+                score += 1.5
+            score += self._selector_bias_for_fields(fields)
+            score += self._adaptive_intent_bias(self._candidate_intent_key("click", fields))
+            score = self._clamp_score(score, low=-20.0, high=30.0)
+            if score <= 1.0:
+                continue
+
+            label = str(el.text or el.aria_label or getattr(el, "title", None) or f"element:{el.id}")
+            candidates.append((score, el.id, f"페이지 고정 제약 준수: 비내비게이션 요소 우선 ({label[:60]})"))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, element_id, reason = candidates[0]
+        return element_id, reason
+
     def _build_goal_constraint_prompt(self) -> str:
         collect_min = self._goal_constraints.get("collect_min")
         metric_label = str(self._goal_constraints.get("metric_label") or "단위")
-        if collect_min is None:
-            return ""
-        current = self._goal_metric_value
-        current_text = "unknown" if current is None else str(int(current))
-        apply_target = self._goal_constraints.get("apply_target")
-        target_line = ""
-        if apply_target is not None:
-            target_line = f"\n   - 최종 목표값: {int(apply_target)}{metric_label}"
-        return (
-            "\n9. **목표 제약(강제)**"
-            f"\n   - 현재 추정값: {current_text}{metric_label}"
-            f"\n   - 최소 수집 기준: {int(collect_min)}{metric_label}"
-            f"{target_line}"
-            "\n   - 최소 수집 기준 미만이면 단계 전환 CTA를 선택하지 말고 수집 액션만 선택하세요."
-        )
+        require_no_navigation = bool(self._goal_constraints.get("require_no_navigation"))
+        lines: List[str] = []
+        if collect_min is not None:
+            current = self._goal_metric_value
+            current_text = "unknown" if current is None else str(int(current))
+            apply_target = self._goal_constraints.get("apply_target")
+            target_line = ""
+            if apply_target is not None:
+                target_line = f"\n   - 최종 목표값: {int(apply_target)}{metric_label}"
+            lines.append(
+                "\n9. **목표 제약(강제)**"
+                f"\n   - 현재 추정값: {current_text}{metric_label}"
+                f"\n   - 최소 수집 기준: {int(collect_min)}{metric_label}"
+                f"{target_line}"
+                "\n   - 최소 수집 기준 미만이면 단계 전환 CTA를 선택하지 말고 수집 액션만 선택하세요."
+            )
+        if require_no_navigation:
+            lines.append(
+                "\n10. **페이지 고정 제약(강제)**"
+                "\n   - 목표가 '페이지 이동 없이' 검증이므로 URL이 바뀌는 내비게이션 액션은 금지합니다."
+                "\n   - 링크 이동보다 현재 페이지의 row/panel/modal/open/expand 계열 상호작용을 우선 선택하세요."
+            )
+        return "".join(lines)
 
     def _enforce_goal_constraints_on_decision(
         self,
@@ -553,6 +636,50 @@ class GoalDrivenAgent:
                 is_goal_achieved=False,
                 goal_achievement_reason=None,
             )
+
+        if bool(self._goal_constraints.get("require_no_navigation")) and decision.action == ActionType.NAVIGATE:
+            return ActionDecision(
+                action=ActionType.WAIT,
+                reasoning="페이지 이동 없이 검증해야 하므로 navigate 액션을 차단하고 DOM 재평가를 수행합니다.",
+                confidence=max(float(decision.confidence or 0.0) - 0.1, 0.0),
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        if (
+            bool(self._goal_constraints.get("require_no_navigation"))
+            and decision.action == ActionType.CLICK
+            and decision.element_id is not None
+        ):
+            selected = next((el for el in dom_elements if el.id == decision.element_id), None)
+            if selected and self._is_navigational_href(selected.href):
+                alternative = self._pick_no_navigation_click_candidate(
+                    dom_elements,
+                    excluded_ids={int(decision.element_id)},
+                )
+                if alternative is not None:
+                    alt_id, alt_reason = alternative
+                    return ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=alt_id,
+                        reasoning=(
+                            f"{alt_reason}. "
+                            "현재 선택 요소는 URL 이동 가능성이 있어 페이지 고정 제약에 맞지 않습니다."
+                        ),
+                        confidence=max(float(decision.confidence or 0.0) - 0.05, 0.0),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                return ActionDecision(
+                    action=ActionType.WAIT,
+                    reasoning=(
+                        "페이지 이동 없이 검증해야 하나 클릭 후보가 내비게이션 링크뿐이라 "
+                        "DOM 재수집 후 비내비게이션 요소를 다시 탐색합니다."
+                    ),
+                    confidence=max(float(decision.confidence or 0.0) - 0.1, 0.0),
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
 
         if not self._is_collect_constraint_unmet():
             return decision
@@ -772,11 +899,151 @@ class GoalDrivenAgent:
             "status_text_changed",
             "list_count_changed",
             "interactive_count_changed",
+            "modal_count_changed",
+            "backdrop_count_changed",
+            "dialog_count_changed",
+            "modal_state_changed",
             "auth_state_changed",
             "text_digest_changed",
             "evidence_changed",
         )
         return any(bool(state_change.get(key)) for key in progress_keys)
+
+    def _is_verification_style_goal(self, goal: TestGoal) -> bool:
+        text = self._normalize_text(
+            " ".join(
+                [
+                    str(goal.name or ""),
+                    str(goal.description or ""),
+                    " ".join(str(item or "") for item in (goal.success_criteria or [])),
+                ]
+            )
+        )
+        if not text:
+            return False
+
+        verify_hints = (
+            "검증",
+            "확인",
+            "작동",
+            "동작",
+            "되는지",
+            "정상",
+            "기능",
+            "verify",
+            "validation",
+            "check",
+            "works",
+            "working",
+        )
+        operation_hints = (
+            "회원가입",
+            "로그인",
+            "결제",
+            "구매",
+            "삭제",
+            "수정",
+            "추가",
+            "등록",
+            "signup",
+            "register",
+            "login",
+            "checkout",
+            "purchase",
+            "submit",
+        )
+        has_verify_hint = any(hint in text for hint in verify_hints)
+        has_operation_hint = any(hint in text for hint in operation_hints)
+        return bool(has_verify_hint and not has_operation_hint)
+
+    def _can_finish_by_verification_transition(
+        self,
+        *,
+        goal: TestGoal,
+        decision: ActionDecision,
+        success: bool,
+        changed: bool,
+        state_change: Optional[Dict[str, Any]],
+        before_dom_count: int,
+        after_dom_count: int,
+    ) -> bool:
+        if not (success and changed):
+            return False
+        if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.NAVIGATE}:
+            return False
+        if not self._is_verification_style_goal(goal):
+            return False
+        if self._is_collect_constraint_unmet():
+            return False
+
+        # Collect/apply constraints가 있으면 "전환만으로 완료" 판정을 막는다.
+        if self._goal_constraints.get("collect_min") is not None:
+            return False
+        if self._goal_constraints.get("apply_target") is not None:
+            return False
+
+        require_no_navigation = bool(self._goal_constraints.get("require_no_navigation"))
+
+        if not isinstance(state_change, dict):
+            if require_no_navigation:
+                return False
+            return after_dom_count != before_dom_count
+
+        if require_no_navigation and bool(state_change.get("url_changed")):
+            return False
+
+        transition_keys = (
+            "url_changed",
+            "dom_changed",
+            "modal_state_changed",
+            "modal_count_changed",
+            "backdrop_count_changed",
+            "dialog_count_changed",
+            "status_text_changed",
+            "auth_state_changed",
+            "text_digest_changed",
+            "interactive_count_changed",
+            "list_count_changed",
+        )
+        return any(bool(state_change.get(key)) for key in transition_keys) or (
+            after_dom_count != before_dom_count
+        )
+
+    def _build_verification_transition_reason(
+        self,
+        *,
+        state_change: Optional[Dict[str, Any]],
+        before_dom_count: int,
+        after_dom_count: int,
+    ) -> str:
+        if not isinstance(state_change, dict):
+            return (
+                "검증형 목표로 판단되어, 액션 후 화면 상태가 변화해 기능 동작을 확인했습니다."
+            )
+
+        signals: List[str] = []
+        if bool(state_change.get("modal_state_changed")) or bool(state_change.get("dialog_count_changed")):
+            signals.append("모달/상세 패널 상태 변화")
+        if bool(state_change.get("backdrop_count_changed")):
+            signals.append("오버레이(backdrop) 변화")
+        if bool(state_change.get("url_changed")):
+            signals.append("URL 변화")
+        if bool(state_change.get("dom_changed")) or bool(state_change.get("text_digest_changed")):
+            signals.append("DOM/본문 변화")
+        if bool(state_change.get("interactive_count_changed")) or bool(state_change.get("list_count_changed")):
+            signals.append("상호작용/목록 수 변화")
+        if not signals and after_dom_count != before_dom_count:
+            signals.append(f"DOM 규모 변화({before_dom_count}->{after_dom_count})")
+
+        if not signals:
+            return (
+                "검증형 목표로 판단되어, 액션 후 상태 변화가 감지되어 기능 동작을 확인했습니다."
+            )
+        return (
+            "검증형 목표로 판단되어, 액션 후 "
+            + ", ".join(signals[:3])
+            + "가 확인되어 기능 동작으로 판정했습니다."
+        )
 
     @classmethod
     def _build_click_intent_key(
@@ -896,19 +1163,40 @@ class GoalDrivenAgent:
 
     @classmethod
     def _is_login_gate(cls, dom_elements: List[DOMElement]) -> bool:
-        score = 0
+        auth_hits = 0
+        has_password_field = False
+        has_id_or_email_field = False
+        modal_auth_hits = 0
         for el in dom_elements:
-            if cls._contains_login_hint(el.text):
-                score += 1
-            if cls._contains_login_hint(el.placeholder):
-                score += 1
-            if cls._contains_login_hint(el.aria_label):
-                score += 1
-            if cls._contains_login_hint(el.role):
-                score += 1
-            if cls._normalize_text(el.type) in {"password", "email"}:
-                score += 1
-            if score >= 3:
+            text = cls._normalize_text(el.text)
+            placeholder = cls._normalize_text(el.placeholder)
+            aria = cls._normalize_text(el.aria_label)
+            role = cls._normalize_text(el.role)
+            typ = cls._normalize_text(el.type)
+
+            fields = [text, placeholder, aria, role]
+            if any(cls._contains_login_hint(v) for v in fields):
+                auth_hits += 1
+
+            if typ == "password" or "password" in placeholder or "비밀번호" in placeholder or "password" in aria:
+                has_password_field = True
+
+            if (
+                typ in {"email", "text"}
+                and any(k in (placeholder or text or aria) for k in ("email", "이메일", "아이디", "username", "user id"))
+            ):
+                has_id_or_email_field = True
+
+            if any(k in " ".join(fields) for k in ("modal", "dialog", "popup", "sheet", "drawer", "overlay", "로그인", "회원가입", "signin", "signup")):
+                modal_auth_hits += 1
+
+        if has_password_field and has_id_or_email_field:
+            return True
+        if has_password_field and auth_hits >= 2:
+            return True
+        if modal_auth_hits >= 2 and auth_hits >= 4 and has_password_field:
+            return True
+        if modal_auth_hits >= 4 and auth_hits >= 6:
                 return True
         return False
 
@@ -2223,7 +2511,7 @@ class GoalDrivenAgent:
                     self._log("🧭 컨텍스트 전환 후보를 찾지 못해 기본 LLM 흐름으로 계속 진행합니다.")
                     force_context_shift = False
 
-            # 3. LLM에게 다음 액션 결정 요청
+            # 3. LLM에게 다음 액션 결정 요청 (OpenClaw 철학 정렬: 계획은 LLM, 실행은 ref-only)
             memory_context = self._build_memory_context(goal)
             decision = self._decide_next_action(
                 dom_elements=dom_elements,
@@ -2231,7 +2519,6 @@ class GoalDrivenAgent:
                 screenshot=screenshot,
                 memory_context=memory_context,
             )
-
             self._log(f"🤖 LLM 결정: {decision.action.value} - {decision.reasoning}")
 
             if decision.action == ActionType.SCROLL:
@@ -2375,6 +2662,53 @@ class GoalDrivenAgent:
             changed_by_state = self._state_change_indicates_progress(state_change)
             changed_by_dom = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
             changed = bool(changed_by_state or changed_by_dom)
+
+            if bool(self._goal_constraints.get("require_no_navigation")) and isinstance(state_change, dict):
+                if bool(state_change.get("url_changed")):
+                    self._log("🧱 제약 가드: '페이지 이동 없이' 목표라 URL 변경 액션은 진행으로 인정하지 않습니다.")
+                    changed = False
+                    start_url = str(goal.start_url or "").strip()
+                    if start_url:
+                        self._log("↩️ 페이지 고정 제약 복구: 시작 URL로 복귀합니다.")
+                        _ = self._execute_action("goto", url=start_url)
+                        time.sleep(0.8)
+                        recovered_dom = self._analyze_dom()
+                        if recovered_dom:
+                            post_dom = recovered_dom
+
+            if self._can_finish_by_verification_transition(
+                goal=goal,
+                decision=decision,
+                success=success,
+                changed=changed,
+                state_change=state_change,
+                before_dom_count=len(dom_elements),
+                after_dom_count=len(post_dom or []),
+            ):
+                completion_reason = self._build_verification_transition_reason(
+                    state_change=state_change,
+                    before_dom_count=len(dom_elements),
+                    after_dom_count=len(post_dom or []),
+                )
+                self._log(f"✅ 목표 달성! 이유: {completion_reason}")
+                result = GoalResult(
+                    goal_id=goal.id,
+                    goal_name=goal.name,
+                    success=True,
+                    steps_taken=steps,
+                    total_steps=step_count,
+                    final_reason=completion_reason,
+                    duration_seconds=time.time() - start_time,
+                )
+                self._record_goal_summary(
+                    goal=goal,
+                    status="success",
+                    reason=result.final_reason,
+                    step_count=step_count,
+                    duration_seconds=result.duration_seconds,
+                )
+                return result
+
             if changed:
                 self._progress_counter += 1
                 self._no_progress_counter = 0

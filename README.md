@@ -238,6 +238,99 @@ gaia --control telegram \
 ```
 
 과거 플로우인 `python run_auto_test.py`는 스크립트가 제거되어 더 이상 사용되지 않습니다.
+
+## 5. 최신화 노트 (2026-02-22)
+
+- Ref-only 정책을 강화했습니다.
+- `click/fill/press/hover/scroll/select` 등 element 액션은 `snapshot_id + ref_id`가 없으면 실행하지 않습니다.
+- 제약 fallback에서 ref 없는 `scroll`을 발행하지 않도록 수정했습니다(ref 없으면 `wait` 경로로 전환).
+- 목표 수치 파싱을 개선했습니다.
+- 3자리 숫자 제한(`999`)을 제거하고 큰 수치/콤마 수치(`1,500`)를 처리합니다.
+- `collect_min/apply_target` 기반 동적 상한을 사용합니다(고정 `<=300` 제거).
+- session id 생성 충돌을 줄이기 위해 초 단위 대신 `time_ns` 기반으로 변경했습니다.
+- DOM 복구 시 중후반 phase(`AUTH/COMPOSE/APPLY/VERIFY`)에서는 시작 URL 강제 복귀를 피하도록 조정했습니다.
+- `focus` 액션은 현재 실행 경로와 정합성을 위해 내부적으로 `click`으로 정규화합니다.
+
+## 6. 빠른 실행 체크리스트 (팀 공통)
+
+```bash
+cd /path/to/capston
+python -m pip install -e .
+python -m playwright install chromium
+python -m gaia.cli
+```
+
+Telegram 제어를 쓸 경우:
+
+```bash
+python -m pip install "python-telegram-bot>=21"
+```
+
+## 7. 자주 발생한 오류와 해결
+
+`ModuleNotFoundError: No module named gaia.cli`
+- 원인: editable install 미적용 또는 프로젝트 루트 밖에서 실행.
+- 해결:
+```bash
+cd /path/to/capston
+python -m pip install -e .
+python -m gaia.cli
+```
+
+`ModuleNotFoundError: No module named fastapi`
+- 원인: 런타임 의존성 미설치.
+- 해결:
+```bash
+python -m pip install -e .
+```
+
+`MCP host 자동 시작에 실패했습니다`
+- 원인: 의존성 누락, 포트 충돌, 기존 프로세스 점유.
+- 해결:
+```bash
+lsof -ti tcp:8001 | xargs kill -9
+python -m gaia.cli
+```
+
+`DOM 분석 오류: HTTP 500` 또는 반복 `DOM Not found`
+- 원인: Chromium 미설치/브라우저 세션 비정상.
+- 해결:
+```bash
+python -m playwright install chromium
+```
+- 확인:
+```bash
+curl http://127.0.0.1:8001/health
+```
+
+Windows에서 `No module named termios`
+- 원인: Unix 전용 모듈 import 경로 사용.
+- 해결: 최신 코드로 업데이트 후 재설치.
+```bash
+python -m pip install -e .
+```
+
+`codex exec` 인자/UTF-8 관련 오류
+- 원인: Codex CLI 버전/입력 인코딩 편차.
+- 해결:
+- Codex CLI 업데이트
+- PowerShell/터미널 UTF-8 환경 확인
+- `fresh oauth`로 재로그인 후 재시도
+
+## 8. 검증용 1회 실행 예시 (터미널 자동 종료)
+
+```bash
+python -m gaia.cli chat \
+  --llm-provider openai \
+  --llm-model gpt-5.3-codex \
+  --auth reuse \
+  --auth-method oauth \
+  --url https://inuu-timetable.vercel.app/ \
+  --runtime terminal \
+  --session workspace_default \
+  --once \
+  --feature-query "15학점 정도 과목 담고 시간표 조합 버튼으로 조합 생성 후 시간표에 적용"
+```
 또한 과거에는 `./scripts/run_gui.sh`가 `python -m gaia.main`로 실행됐으나 이제 `gaia plan --gui`를 사용합니다.
 
 GUI에서 기존 플랜 재사용 시 “이전 테스트 불러오기”로 `artifacts/plans/*.json` 선택 시 즉시 실행할 수 있습니다.

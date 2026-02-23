@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -36,12 +37,24 @@ def _create_parser() -> argparse.ArgumentParser:
         help="GUI startup mode (plan/ai/chat)",
     )
     parser.add_argument("--feature-query", help="Feature query for chat mode")
+    parser.add_argument("--max-actions", type=int, help="Max exploratory actions for ai mode")
+    parser.add_argument("--session-key", help="CLI session key to reuse in GUI workers")
+    parser.add_argument("--mcp-session-id", help="MCP session id to reuse in GUI workers")
+    parser.add_argument("--mcp-host-url", help="MCP host URL to reuse in GUI workers")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _create_parser()
     parsed = parser.parse_args(list(argv or []))
+
+    if parsed.session_key:
+        os.environ["GAIA_SESSION_KEY"] = parsed.session_key
+    if parsed.mcp_session_id:
+        os.environ["GAIA_MCP_SESSION_ID"] = parsed.mcp_session_id
+    if parsed.mcp_host_url:
+        os.environ["MCP_HOST_URL"] = parsed.mcp_host_url
+        os.environ["GAIA_MCP_HOST_URL"] = parsed.mcp_host_url
 
     source_root = Path(__file__).parent.parent
     sys.path.insert(0, str(source_root))
@@ -85,8 +98,16 @@ def main(argv: list[str] | None = None) -> int:
             spec_path=parsed.spec,
             mode=parsed.mode,
             feature_query=parsed.feature_query,
+            max_actions=parsed.max_actions,
         )
-    elif parsed.url or parsed.plan or parsed.spec or parsed.mode or parsed.feature_query:
+    elif (
+        parsed.url
+        or parsed.plan
+        or parsed.spec
+        or parsed.mode
+        or parsed.feature_query
+        or parsed.max_actions is not None
+    ):
         controller.apply_run_context(
             context=None,
             url=parsed.url,
@@ -94,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             spec_path=parsed.spec,
             mode=parsed.mode,
             feature_query=parsed.feature_query,
+            max_actions=parsed.max_actions,
         )
 
     if parsed.mode:
