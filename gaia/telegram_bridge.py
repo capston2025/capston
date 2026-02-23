@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import re
 import threading
@@ -240,6 +242,38 @@ class _TelegramBridge:
                 kwargs["reply_to_message_id"] = reply_to_message_id
             await bot.send_message(**kwargs)
 
+    async def _send_attachments(
+        self,
+        bot,
+        chat_id: int,
+        attachments: list[dict],
+        reply_to_message_id: int | None,
+    ) -> None:
+        if not attachments:
+            return
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            kind = str(attachment.get("kind") or "").strip().lower()
+            if kind != "image_base64":
+                continue
+            encoded = attachment.get("data")
+            if not isinstance(encoded, str) or not encoded.strip():
+                continue
+            try:
+                binary = base64.b64decode(encoded)
+            except Exception:
+                continue
+            photo = io.BytesIO(binary)
+            photo.name = "gaia_result.png"
+            kwargs = {"chat_id": chat_id, "photo": photo}
+            if reply_to_message_id is not None:
+                kwargs["reply_to_message_id"] = reply_to_message_id
+            caption = str(attachment.get("caption") or "").strip()
+            if caption:
+                kwargs["caption"] = caption
+            await bot.send_photo(**kwargs)
+
     @staticmethod
     def _parse_kv(text: str) -> Dict[str, str]:
         aliases = {
@@ -429,6 +463,13 @@ class _TelegramBridge:
                 if not payload:
                     payload = "완료"
                 await self._send_text(application.bot, item.chat_id, payload, item.reply_to_message_id)
+                if result.attachments:
+                    await self._send_attachments(
+                        application.bot,
+                        item.chat_id,
+                        result.attachments,
+                        item.reply_to_message_id,
+                    )
             except Exception as exc:
                 await self._send_text(
                     application.bot,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Mapping, Sequence
@@ -13,11 +14,12 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase1.agent_client import AgentServiceClient
-from gaia.src.phase4.agent import AgentOrchestrator
+from gaia.src.phase4.agent import AgentOrchestrator, MCPClient
 from gaia.src.phase4.goal_driven import goals_from_scenarios, sort_goals_by_priority, TestGoal
 from gaia.src.phase4.intelligent_orchestrator import IntelligentOrchestrator
 from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.tracker.checklist import ChecklistTracker
+from gaia.src.utils.config import MCPConfig
 from gaia.src.utils.models import Assertion, TestScenario, TestStep
 from gaia.src.utils.plan_repository import PlanRepository
 
@@ -45,12 +47,41 @@ class AppController(QObject):
         self._analyzer = self._config.analyzer or SpecAnalyzer()
         self._agent_client = AgentServiceClient()
         self._tracker = ChecklistTracker()
-        self._orchestrator = self._config.orchestrator or AgentOrchestrator(
-            analyzer=self._analyzer,
-            tracker=self._tracker,
+        self._session_key = (os.getenv("GAIA_SESSION_KEY") or "").strip() or None
+        self._session_id = (
+            (os.getenv("GAIA_MCP_SESSION_ID") or "").strip()
+            or self._session_key
         )
-        self._intelligent_orchestrator = IntelligentOrchestrator(tracker=self._tracker)
-        self._master_orchestrator = MasterOrchestrator(tracker=self._tracker)
+        self._mcp_host_url = (
+            (os.getenv("MCP_HOST_URL") or os.getenv("GAIA_MCP_HOST_URL") or "").strip()
+            or None
+        )
+        self._max_actions = 50
+
+        mcp_config: MCPConfig | None = None
+        if self._mcp_host_url:
+            mcp_config = MCPConfig(host_url=self._mcp_host_url)
+
+        if self._config.orchestrator is not None:
+            self._orchestrator = self._config.orchestrator
+        else:
+            mcp_client = MCPClient(config=mcp_config) if mcp_config else None
+            self._orchestrator = AgentOrchestrator(
+                analyzer=self._analyzer,
+                tracker=self._tracker,
+                mcp_client=mcp_client,
+            )
+
+        self._intelligent_orchestrator = IntelligentOrchestrator(
+            tracker=self._tracker,
+            mcp_config=mcp_config,
+            session_id=self._session_id or "default",
+        )
+        self._master_orchestrator = MasterOrchestrator(
+            tracker=self._tracker,
+            mcp_config=mcp_config,
+            session_id=self._session_id or "default",
+        )
         self._plan_repository = PlanRepository()
 
         self._current_pdf_text: str | None = None
@@ -88,6 +119,7 @@ class AppController(QObject):
         spec_path: str | Path | None = None,
         mode: str | None = None,
         feature_query: str | None = None,
+        max_actions: int | None = None,
     ) -> None:
         """Load pre-populated state from CLI run context."""
         resolved_url = url or (
@@ -105,6 +137,16 @@ class AppController(QObject):
                 context.get("spec_path") if isinstance(context, Mapping) else None
             )
         )
+        resolved_max_actions: Any = max_actions
+        if resolved_max_actions is None and isinstance(context, RunContext):
+            summary = context.summary if isinstance(context.summary, Mapping) else {}
+            resolved_max_actions = summary.get("max_actions")
+        elif resolved_max_actions is None and isinstance(context, Mapping):
+            summary = context.get("summary")
+            if isinstance(summary, Mapping):
+                resolved_max_actions = summary.get("max_actions")
+            if resolved_max_actions is None:
+                resolved_max_actions = context.get("max_actions")
 
         if resolved_url:
             self._current_url = str(resolved_url)
@@ -119,6 +161,11 @@ class AppController(QObject):
         if feature_query:
             self._current_feature_query = feature_query
             self._window.set_feature_query(feature_query)
+        if resolved_max_actions is not None:
+            try:
+                self._max_actions = max(1, int(resolved_max_actions))
+            except (TypeError, ValueError):
+                pass
 
     def set_start_mode(self, mode: str | None) -> None:
         if mode in {"plan", "ai", "chat"}:
@@ -618,7 +665,7 @@ class AppController(QObject):
         if startup_mode == "ai":
             self._window.append_log("🧭 AI 모드로 즉시 탐색 실행합니다.")
             self._window.set_busy(True, message="AI가 웹 사이트를 탐색하는 중이에요…")
-            self._start_exploratory_worker(self._current_url)
+            self._start_exploratory_worker(self._current_url, max_actions=self._max_actions)
             return
 
         if startup_mode == "chat" and not candidate_goals and self._analysis_plan:
@@ -669,7 +716,13 @@ class AppController(QObject):
     def _start_goal_worker(self, url: str, goals: Sequence[TestGoal]) -> None:
         """Goal-Driven 에이전트를 백그라운드에서 시작합니다."""
         thread = QThread(self)
-        worker = GoalDrivenWorker(url, goals, tracker=self._tracker)
+        worker = GoalDrivenWorker(
+            url,
+            goals,
+            tracker=self._tracker,
+            session_id=self._session_id,
+            mcp_host_url=self._mcp_host_url,
+        )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)
@@ -686,10 +739,22 @@ class AppController(QObject):
         self._worker = worker
         thread.start()
 
-    def _start_exploratory_worker(self, url: str) -> None:
+    def _start_exploratory_worker(self, url: str, *, max_actions: int | None = None) -> None:
         """Exploratory 에이전트를 백그라운드에서 시작합니다."""
+        resolved_actions = self._max_actions
+        if max_actions is not None:
+            try:
+                resolved_actions = max(1, int(max_actions))
+            except (TypeError, ValueError):
+                resolved_actions = self._max_actions
+
         thread = QThread(self)
-        worker = ExploratoryWorker(url)
+        worker = ExploratoryWorker(
+            url,
+            max_actions=resolved_actions,
+            session_id=self._session_id,
+            mcp_host_url=self._mcp_host_url,
+        )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)

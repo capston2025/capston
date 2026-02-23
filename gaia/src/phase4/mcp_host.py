@@ -413,6 +413,52 @@ async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
 
                 const loginVisible = /(로그인|log in|sign in)/i.test(clipped);
                 const logoutVisible = /(로그아웃|log out|sign out)/i.test(clipped);
+                const modalNodes = Array.from(document.querySelectorAll(
+                  'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]'
+                ));
+                const visibleModalNodes = modalNodes.filter((el) => {
+                  if (!(el instanceof Element)) return false;
+                  const style = window.getComputedStyle(el);
+                  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                    return false;
+                  }
+                  if ((el.getAttribute('aria-hidden') || '').toLowerCase() === 'true') {
+                    return false;
+                  }
+                  const rect = el.getBoundingClientRect();
+                  if (rect.width < 24 || rect.height < 24) {
+                    return false;
+                  }
+                  const tag = (el.tagName || '').toLowerCase();
+                  const role = (el.getAttribute('role') || '').toLowerCase();
+                  const ariaModal = (el.getAttribute('aria-modal') || '').toLowerCase();
+                  const classes = String(el.getAttribute('class') || '').toLowerCase();
+                  const hasHint = /(modal|dialog|sheet|drawer|popup|overlay|backdrop)/i.test(classes);
+                  const zIndex = Number.parseInt(style.zIndex || '0', 10);
+                  const layered = style.position === 'fixed' || style.position === 'sticky' || style.position === 'absolute' || Number.isFinite(zIndex) && zIndex >= 40;
+                  const a11yDialog = tag === 'dialog' || role === 'dialog' || role === 'alertdialog' || ariaModal === 'true';
+                  return a11yDialog || (hasHint && layered);
+                });
+                const backdropCount = Array.from(document.querySelectorAll(
+                  '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
+                )).filter((el) => {
+                  if (!(el instanceof Element)) return false;
+                  const style = window.getComputedStyle(el);
+                  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                    return false;
+                  }
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 24 && rect.height >= 24;
+                }).length;
+                const dialogCount = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')).filter((el) => {
+                  if (!(el instanceof Element)) return false;
+                  const style = window.getComputedStyle(el);
+                  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                    return false;
+                  }
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 24 && rect.height >= 24;
+                }).length;
                 const scrollY = Number(window.scrollY || 0);
                 const docHeight = Number((document.documentElement && document.documentElement.scrollHeight) || 0);
 
@@ -425,6 +471,10 @@ async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
                   interactive_count: Number(interactiveCount || 0),
                   login_visible: Boolean(loginVisible),
                   logout_visible: Boolean(logoutVisible),
+                  modal_count: Number(visibleModalNodes.length || 0),
+                  backdrop_count: Number(backdropCount || 0),
+                  dialog_count: Number(dialogCount || 0),
+                  modal_open: Boolean(visibleModalNodes.length > 0 || backdropCount > 0 || dialogCount > 0),
                   scroll_y: scrollY,
                   doc_height: docHeight
                 };
@@ -444,6 +494,10 @@ async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
         "interactive_count": 0,
         "login_visible": False,
         "logout_visible": False,
+        "modal_count": 0,
+        "backdrop_count": 0,
+        "dialog_count": 0,
+        "modal_open": False,
         "scroll_y": 0,
         "doc_height": 0,
     }
@@ -471,6 +525,37 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
                 .map((t) => t.slice(0, 100));
               const loginVisible = /(로그인|log in|sign in)/i.test(bodyText);
               const logoutVisible = /(로그아웃|log out|sign out)/i.test(bodyText);
+              const modalCount = Array.from(document.querySelectorAll(
+                'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]'
+              )).filter((el) => {
+                if (!(el instanceof Element)) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                  return false;
+                }
+                const rect = el.getBoundingClientRect();
+                return rect.width >= 24 && rect.height >= 24;
+              }).length;
+              const backdropCount = Array.from(document.querySelectorAll(
+                '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
+              )).filter((el) => {
+                if (!(el instanceof Element)) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                  return false;
+                }
+                const rect = el.getBoundingClientRect();
+                return rect.width >= 24 && rect.height >= 24;
+              }).length;
+              const dialogCount = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')).filter((el) => {
+                if (!(el instanceof Element)) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                  return false;
+                }
+                const rect = el.getBoundingClientRect();
+                return rect.width >= 24 && rect.height >= 24;
+              }).length;
               const scrollY = Number(window.scrollY || 0);
               const docHeight = Number((document.documentElement && document.documentElement.scrollHeight) || 0);
               return {
@@ -482,6 +567,10 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
                 interactive_count: Number(interactiveCount || 0),
                 login_visible: Boolean(loginVisible),
                 logout_visible: Boolean(logoutVisible),
+                modal_count: Number(modalCount || 0),
+                backdrop_count: Number(backdropCount || 0),
+                dialog_count: Number(dialogCount || 0),
+                modal_open: Boolean(modalCount > 0 || backdropCount > 0 || dialogCount > 0),
                 scroll_y: scrollY,
                 doc_height: docHeight
               };
@@ -501,6 +590,10 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
         "interactive_count": 0,
         "login_visible": False,
         "logout_visible": False,
+        "modal_count": 0,
+        "backdrop_count": 0,
+        "dialog_count": 0,
+        "modal_open": False,
         "scroll_y": 0,
         "doc_height": 0,
     }
@@ -721,6 +814,10 @@ def _state_change_flags(
         "status_text_changed": _sorted_text_list(before_evidence.get("live_texts")) != _sorted_text_list(after_evidence.get("live_texts")),
         "list_count_changed": int(before_evidence.get("list_count", 0) or 0) != int(after_evidence.get("list_count", 0) or 0),
         "interactive_count_changed": int(before_evidence.get("interactive_count", 0) or 0) != int(after_evidence.get("interactive_count", 0) or 0),
+        "modal_count_changed": int(before_evidence.get("modal_count", 0) or 0) != int(after_evidence.get("modal_count", 0) or 0),
+        "backdrop_count_changed": int(before_evidence.get("backdrop_count", 0) or 0) != int(after_evidence.get("backdrop_count", 0) or 0),
+        "dialog_count_changed": int(before_evidence.get("dialog_count", 0) or 0) != int(after_evidence.get("dialog_count", 0) or 0),
+        "modal_state_changed": bool(before_evidence.get("modal_open")) != bool(after_evidence.get("modal_open")),
         "auth_state_changed": (
             bool(before_evidence.get("login_visible")) != bool(after_evidence.get("login_visible"))
             or bool(before_evidence.get("logout_visible")) != bool(after_evidence.get("logout_visible"))
@@ -733,6 +830,10 @@ def _state_change_flags(
         or flags["status_text_changed"]
         or flags["list_count_changed"]
         or flags["interactive_count_changed"]
+        or flags["modal_count_changed"]
+        or flags["backdrop_count_changed"]
+        or flags["dialog_count_changed"]
+        or flags["modal_state_changed"]
         or flags["auth_state_changed"]
         or flags["text_digest_changed"]
     )
@@ -1429,7 +1530,19 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     [data-qa],
                     [contenteditable="true"],
                     summary,
-                    details > summary
+                    details > summary,
+                    tr,
+                    td,
+                    li,
+                    article,
+                    [role="row"],
+                    [role="cell"],
+                    [role="gridcell"],
+                    [role="listitem"],
+                    [class*="row"],
+                    [class*="item"],
+                    [class*="card"],
+                    [class*="list"]
                 `.replace(/\s+/g, '')).forEach(el => {
                     if (!isVisible(el)) return;
                     if (!el || !el.tagName) return;
@@ -1447,6 +1560,17 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         (el.getAttribute('data-qa') || '').trim();
                     const style = window.getComputedStyle(el);
                     const pointerLike = style.cursor === 'pointer';
+                    const roleValue = (role || '').toLowerCase();
+                    const classBlob = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : '';
+                    const rowLike =
+                        roleValue === 'row' ||
+                        roleValue === 'cell' ||
+                        roleValue === 'gridcell' ||
+                        roleValue === 'listitem' ||
+                        ['tr', 'td', 'li', 'article'].includes(tag) ||
+                        /(?:^|\\s)(row|item|card|list)(?:-|_|\\s|$)/.test(classBlob);
+                    const hasClickableChild = !!el.querySelector('a,button,[role="button"],[role="link"],[onclick]');
+                    const textualCandidate = !!text && text.length >= 2 && text.length <= 320;
                     const box = getBoundingBox(el);
 
                     // 너무 의미 없는 wrapper 노드는 제외
@@ -1456,7 +1580,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         !!title ||
                         !!testid ||
                         pointerLike ||
-                        (text && text.length <= 180);
+                        (text && text.length <= 180) ||
+                        (rowLike && (pointerLike || hasClickableChild || textualCandidate));
                     if (!hasSignal) return;
                     if (box.width <= 0 || box.height <= 0) return;
 
@@ -1464,7 +1589,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         tag: tag,
                         dom_ref: assignDomRef(el),
                         selector: getUniqueSelector(el),
-                        text: text ? text.slice(0, 180) : '',
+                        text: text ? text.slice(0, 260) : '',
                         attributes: {
                             role: role,
                             'aria-label': ariaLabel,
@@ -3037,6 +3162,56 @@ async def _execute_action_on_locator(
     raise ValueError(f"Unsupported ref action: {action}")
 
 
+async def _try_click_container_ancestor(locator) -> Dict[str, Any]:
+    try:
+        payload = await locator.evaluate(
+            """
+            (el) => {
+              const candidates = [
+                '[role="row"]',
+                'tr',
+                'li',
+                '[role="listitem"]',
+                '[data-row]',
+                '[data-item]',
+                '[class*="row"]',
+                '[class*="item"]',
+                '[class*="card"]'
+              ];
+
+              let current = el instanceof Element ? el : null;
+              for (let depth = 0; current && depth < 8; depth++) {
+                for (const selector of candidates) {
+                  const node = current.matches(selector) ? current : null;
+                  if (!node || !(node instanceof HTMLElement) || node === el) continue;
+
+                  const style = window.getComputedStyle(node);
+                  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                    continue;
+                  }
+                  const rect = node.getBoundingClientRect();
+                  if (rect.width < 24 || rect.height < 20) continue;
+
+                  node.scrollIntoView({ block: 'center', inline: 'nearest' });
+                  node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window }));
+                  node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                  node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                  node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, button: 0 }));
+                  return { clicked: true, selector };
+                }
+                current = current.parentElement;
+              }
+              return { clicked: false, selector: '' };
+            }
+            """
+        )
+        if isinstance(payload, dict):
+            return payload
+        return {"clicked": False, "selector": ""}
+    except Exception as exc:
+        return {"clicked": False, "selector": "", "error": str(exc)}
+
+
 async def execute_ref_action_with_snapshot(
     *,
     session_id: str,
@@ -3251,6 +3426,10 @@ async def execute_ref_action_with_snapshot(
         "status_text_changed": False,
         "list_count_changed": False,
         "interactive_count_changed": False,
+        "modal_count_changed": False,
+        "backdrop_count_changed": False,
+        "dialog_count_changed": False,
+        "modal_state_changed": False,
         "auth_state_changed": False,
         "text_digest_changed": False,
         "evidence_changed": False,
@@ -3332,6 +3511,44 @@ async def execute_ref_action_with_snapshot(
         before_focus = await _read_focus_signature(page)
         before_target = await _safe_read_target_state(locator)
 
+        async def _collect_state_change_probe(
+            *,
+            probe_wait_ms: int,
+            probe_scroll: str,
+            ancestor_click_fallback: bool = False,
+            ancestor_click_selector: str = "",
+        ) -> Dict[str, Any]:
+            nonlocal last_live_texts
+            after_url = page.url
+            after_dom_hash = await _compute_runtime_dom_hash(page)
+            after_evidence = await evidence_collector(page)
+            after_focus = await _read_focus_signature(page)
+            after_target = await _safe_read_target_state(locator)
+            change = _state_change_flags(
+                action=action,
+                value=value,
+                before_url=before_url,
+                after_url=after_url,
+                before_dom_hash=before_dom_hash,
+                after_dom_hash=after_dom_hash,
+                before_evidence=before_evidence,
+                after_evidence=after_evidence,
+                before_target=before_target,
+                after_target=after_target,
+                before_focus=before_focus,
+                after_focus=after_focus,
+            )
+            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
+            if live_texts_after:
+                change["live_texts_after"] = live_texts_after
+                last_live_texts = live_texts_after
+            change["probe_wait_ms"] = probe_wait_ms
+            change["probe_scroll"] = probe_scroll
+            if ancestor_click_fallback:
+                change["ancestor_click_fallback"] = True
+                change["ancestor_click_selector"] = ancestor_click_selector
+            return change
+
         try:
             await _execute_action_on_locator(action, page, locator, value, options=options)
             interaction_success = True
@@ -3359,31 +3576,10 @@ async def execute_ref_action_with_snapshot(
                 reason_code = "action_timeout"
                 break
             await page.wait_for_timeout(probe_wait_ms)
-            after_url = page.url
-            after_dom_hash = await _compute_runtime_dom_hash(page)
-            after_evidence = await evidence_collector(page)
-            after_focus = await _read_focus_signature(page)
-            after_target = await _safe_read_target_state(locator)
-            state_change = _state_change_flags(
-                action=action,
-                value=value,
-                before_url=before_url,
-                after_url=after_url,
-                before_dom_hash=before_dom_hash,
-                after_dom_hash=after_dom_hash,
-                before_evidence=before_evidence,
-                after_evidence=after_evidence,
-                before_target=before_target,
-                after_target=after_target,
-                before_focus=before_focus,
-                after_focus=after_focus,
+            state_change = await _collect_state_change_probe(
+                probe_wait_ms=probe_wait_ms,
+                probe_scroll="none",
             )
-            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-            if live_texts_after:
-                state_change["live_texts_after"] = live_texts_after
-                last_live_texts = live_texts_after
-            state_change["probe_wait_ms"] = probe_wait_ms
-            state_change["probe_scroll"] = "none"
             effective = bool(state_change.get("effective", True)) if verify_for_action else True
             if effective:
                 break
@@ -3409,34 +3605,25 @@ async def execute_ref_action_with_snapshot(
                 except Exception:
                     pass
                 await page.wait_for_timeout(250)
-                after_url = page.url
-                after_dom_hash = await _compute_runtime_dom_hash(page)
-                after_evidence = await evidence_collector(page)
-                after_focus = await _read_focus_signature(page)
-                after_target = await _safe_read_target_state(locator)
-                state_change = _state_change_flags(
-                    action=action,
-                    value=value,
-                    before_url=before_url,
-                    after_url=after_url,
-                    before_dom_hash=before_dom_hash,
-                    after_dom_hash=after_dom_hash,
-                    before_evidence=before_evidence,
-                    after_evidence=after_evidence,
-                    before_target=before_target,
-                    after_target=after_target,
-                    before_focus=before_focus,
-                    after_focus=after_focus,
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=1500,
+                    probe_scroll=probe_name,
                 )
-                live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-                if live_texts_after:
-                    state_change["live_texts_after"] = live_texts_after
-                    last_live_texts = live_texts_after
-                state_change["probe_wait_ms"] = 1500
-                state_change["probe_scroll"] = probe_name
                 effective = bool(state_change.get("effective", True))
                 if effective:
                     break
+
+        if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
+            fallback_result = await _try_click_container_ancestor(locator)
+            if bool(fallback_result.get("clicked")):
+                await page.wait_for_timeout(350)
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=350,
+                    probe_scroll="container_fallback",
+                    ancestor_click_fallback=True,
+                    ancestor_click_selector=str(fallback_result.get("selector") or ""),
+                )
+                effective = bool(state_change.get("effective", True))
 
         if reason_code == "action_timeout":
             attempt_logs.append(
