@@ -1045,13 +1045,27 @@ def _dispatch_chat(
     )
 
 
-def _dispatch_ai(runtime: str, url: str, max_actions: int, *, session_id: str) -> int:
+def _dispatch_ai(
+    runtime: str,
+    url: str,
+    max_actions: int,
+    *,
+    session_id: str,
+    time_budget_seconds: int | None = None,
+) -> int:
+    if runtime == "gui" and time_budget_seconds and int(time_budget_seconds) > 0:
+        runtime = "terminal"
     if runtime == "gui":
         return run_gui(["--mode", "ai", "--url", url, "--max-actions", str(max_actions)])
 
     from gaia.terminal import run_ai_terminal
 
-    return run_ai_terminal(url=url, max_actions=max_actions, session_id=session_id)
+    return run_ai_terminal(
+        url=url,
+        max_actions=max_actions,
+        session_id=session_id,
+        time_budget_seconds=time_budget_seconds,
+    )
 
 
 def _dispatch_plan(
@@ -1098,6 +1112,7 @@ def run_chat(argv: Sequence[str] | None = None) -> int:
 def run_ai(argv: Sequence[str] | None = None) -> int:
     parser = _build_common_parser("gaia ai", "Run autonomous exploratory mode.")
     parser.add_argument("--max-actions", type=int, default=50)
+    parser.add_argument("--time-budget-seconds", type=int)
     args = parser.parse_args(list(argv or []))
 
     configured = _configure_session(args, require_url=True)
@@ -1105,11 +1120,46 @@ def run_ai(argv: Sequence[str] | None = None) -> int:
         return 1
     _, _, _, url, runtime, _, mcp_session_id, _ = configured
     assert url is not None
+    effective_runtime = runtime
+    if args.time_budget_seconds and int(args.time_budget_seconds) > 0 and runtime == "gui":
+        print("time-budget 자율 모드는 terminal runtime으로 실행합니다.")
+        effective_runtime = "terminal"
     return _dispatch_ai(
-        runtime,
+        effective_runtime,
         url,
         max(1, int(args.max_actions)),
         session_id=mcp_session_id,
+        time_budget_seconds=(
+            max(1, int(args.time_budget_seconds))
+            if args.time_budget_seconds and int(args.time_budget_seconds) > 0
+            else None
+        ),
+    )
+
+
+def run_autonomous(argv: Sequence[str] | None = None) -> int:
+    parser = _build_common_parser("gaia autonomous", "Run time-budget autonomous site validation.")
+    parser.add_argument("--time-budget-seconds", type=int, default=1800)
+    parser.add_argument("--max-actions", type=int, default=10_000_000)
+    args = parser.parse_args(list(argv or []))
+
+    configured = _configure_session(args, require_url=True)
+    if not configured:
+        return 1
+    _, _, _, url, runtime, _, mcp_session_id, _ = configured
+    assert url is not None
+
+    effective_runtime = runtime
+    if runtime == "gui":
+        print("autonomous(time-budget) 모드는 terminal runtime으로 실행합니다.")
+        effective_runtime = "terminal"
+
+    return _dispatch_ai(
+        effective_runtime,
+        url,
+        max(1, int(args.max_actions)),
+        session_id=mcp_session_id,
+        time_budget_seconds=max(1, int(args.time_budget_seconds)),
     )
 
 
@@ -1138,6 +1188,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--resume")
     parser.add_argument("--feature-query")
     parser.add_argument("--max-actions", type=int, default=50)
+    parser.add_argument("--time-budget-seconds", type=int)
     parser.add_argument("--control", choices=CONTROL_CHOICES)
     parser.add_argument("--tg-setup", choices=TELEGRAM_SETUP_CHOICES)
     parser.add_argument("--tg-mode", choices=TELEGRAM_MODE_CHOICES)
@@ -1347,11 +1398,20 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             session_key=session_key,
             mcp_session_id=mcp_session_id,
         )
+        effective_runtime = runtime
+        if args.time_budget_seconds and int(args.time_budget_seconds) > 0 and runtime == "gui":
+            print("time-budget 자율 모드는 terminal runtime으로 실행합니다.")
+            effective_runtime = "terminal"
         return _dispatch_ai(
-            runtime,
+            effective_runtime,
             url,
             max(1, int(args.max_actions)),
             session_id=mcp_session_id,
+            time_budget_seconds=(
+                max(1, int(args.time_budget_seconds))
+                if args.time_budget_seconds and int(args.time_budget_seconds) > 0
+                else None
+            ),
         )
     if args.mode == "plan":
         _persist_profile(
@@ -1368,6 +1428,84 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             mcp_session_id=mcp_session_id,
         )
         return _dispatch_plan(url, args.plan, args.spec, args.resume, args.feature_query)
+
+    if control == "local" and sys.stdin.isatty():
+        quick_mode_map = {
+            "specific": "특정 기능 테스트",
+            "autonomous": "완전 자율",
+        }
+        default_quick = quick_mode_map.get(
+            (profile.get("last_quick_mode") or "").strip().lower(),
+            "특정 기능 테스트",
+        )
+        quick_selected = _prompt_select(
+            "실행 방식을 선택하세요",
+            ("특정 기능 테스트", "완전 자율"),
+            default=default_quick,
+        )
+
+        if quick_selected == "특정 기능 테스트":
+            feature_query = (
+                str(args.feature_query).strip()
+                if args.feature_query
+                else _prompt_non_empty("테스트할 기능/목표")
+            )
+            profile["last_quick_mode"] = "specific"
+            _persist_profile(
+                profile,
+                provider=provider,
+                model=model,
+                auth_strategy=auth_strategy,
+                auth_method=getattr(args, "auth_method", None)
+                or profile.get("default_openai_auth_method", "oauth"),
+                url=url,
+                runtime=runtime,
+                control_channel="local",
+                workspace=session_key,
+                session_key=session_key,
+                mcp_session_id=mcp_session_id,
+            )
+            return _dispatch_chat(
+                "terminal",
+                url,
+                feature_query,
+                repl=False,
+                session_id=mcp_session_id,
+            )
+
+        profile["last_quick_mode"] = "autonomous"
+        if args.time_budget_seconds and int(args.time_budget_seconds) > 0:
+            time_budget_seconds = max(1, int(args.time_budget_seconds))
+        else:
+            default_minutes = (profile.get("last_autonomous_minutes") or "30").strip() or "30"
+            minutes_raw = _prompt("자율 검증 시간(분)", default=default_minutes).strip()
+            try:
+                minutes = max(1, int(minutes_raw))
+            except Exception:
+                minutes = max(1, int(default_minutes)) if default_minutes.isdigit() else 30
+            profile["last_autonomous_minutes"] = str(minutes)
+            time_budget_seconds = minutes * 60
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None)
+            or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel="local",
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
+        )
+        return _dispatch_ai(
+            runtime,
+            url,
+            max(1, int(args.max_actions)),
+            session_id=mcp_session_id,
+            time_budget_seconds=time_budget_seconds,
+        )
 
     from gaia.chat_hub import HubContext, run_chat_hub
 
@@ -1440,6 +1578,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     gui.add_argument("--resume")
     gui.add_argument("--feature-query")
     gui.add_argument("--max-actions", type=int, default=50)
+    gui.add_argument("--time-budget-seconds", type=int)
     gui.add_argument("--llm-provider", choices=("openai", "gemini"))
     gui.add_argument("--llm-model")
     gui.add_argument("--auth", choices=AUTH_CHOICES)
@@ -1454,6 +1593,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     terminal.add_argument("--resume")
     terminal.add_argument("--feature-query")
     terminal.add_argument("--max-actions", type=int, default=50)
+    terminal.add_argument("--time-budget-seconds", type=int)
     terminal.add_argument("--llm-provider", choices=("openai", "gemini"))
     terminal.add_argument("--llm-model")
     terminal.add_argument("--auth", choices=AUTH_CHOICES)
@@ -1480,6 +1620,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tg-allowlist")
     parser.add_argument("--tg-webhook-url")
     parser.add_argument("--tg-webhook-bind")
+    parser.add_argument("--time-budget-seconds", type=int)
     return parser
 
 
@@ -1509,6 +1650,8 @@ def run_start(argv: Sequence[str] | None = None) -> int:
             forwarded += ["--new-session"]
         if parsed.mode == "ai":
             forwarded += ["--max-actions", str(parsed.max_actions)]
+            if parsed.time_budget_seconds is not None:
+                forwarded += ["--time-budget-seconds", str(parsed.time_budget_seconds)]
             return run_ai(forwarded)
         if parsed.mode == "plan":
             if parsed.plan:
@@ -1580,6 +1723,8 @@ def run_start(argv: Sequence[str] | None = None) -> int:
         forwarded += ["--new-session"]
     if parsed.mode:
         forwarded += ["--mode", parsed.mode]
+    if parsed.time_budget_seconds is not None:
+        forwarded += ["--time-budget-seconds", str(parsed.time_budget_seconds)]
     if parsed.control:
         forwarded += ["--control", parsed.control]
     if parsed.tg_setup:
@@ -1613,6 +1758,7 @@ def _build_main_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("start", help="Legacy alias of gaia launcher")
     subparsers.add_parser("chat", help="Run chat mode")
     subparsers.add_parser("ai", help="Run autonomous exploratory mode")
+    subparsers.add_parser("autonomous", help="Run time-budget autonomous validation mode")
     subparsers.add_parser("plan", help="Run plan/spec/resume flow")
     subparsers.add_parser("gui", help="Legacy GUI alias")
     subparsers.add_parser("terminal", help="Legacy terminal alias")
@@ -1637,6 +1783,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_chat(args[1:])
         if args[0] == "ai":
             return run_ai(args[1:])
+        if args[0] == "autonomous":
+            return run_autonomous(args[1:])
         if args[0] == "plan":
             return run_plan(args[1:])
         if args[0] == "gui":

@@ -592,25 +592,45 @@ def run_ai_terminal(
     url: str,
     max_actions: int = 50,
     session_id: str = WORKSPACE_DEFAULT,
+    time_budget_seconds: int | None = None,
 ) -> int:
     if not url:
         print("URL is required for terminal ai mode.", file=sys.stderr)
         return 2
 
     actions = max(1, int(max_actions))
+    budget = int(time_budget_seconds or 0)
+    if budget < 0:
+        budget = 0
+    if budget > 0:
+        config = ExplorationConfig(
+            loop_mode="time",
+            time_budget_seconds=budget,
+            max_actions=max(actions, 1),
+            non_stop_mode=True,
+        )
+    else:
+        config = ExplorationConfig(max_actions=actions, non_stop_mode=True)
     try:
         agent = ExploratoryAgent(
             mcp_host_url=CONFIG.mcp.host_url,
             session_id=session_id or WORKSPACE_DEFAULT,
-            config=ExplorationConfig(max_actions=actions),
+            config=config,
         )
-        print(f"AI 탐색 시작: {url} (max_actions={actions})")
+        if budget > 0:
+            print(f"AI 자율 탐색 시작: {url} (time_budget={budget}s)")
+        else:
+            print(f"AI 탐색 시작: {url} (max_actions={actions})")
         result = agent.explore(url)
         print("\n탐색 결과")
         print(f"actions: {result.total_actions}")
         print(f"pages: {result.total_pages_visited}")
         print(f"issues: {len(result.issues_found)}")
         print(f"reason: {result.completion_reason}")
+        if result.screenshots_dir:
+            print(f"screenshots_dir: {result.screenshots_dir}")
+        if result.recording_gif_path:
+            print(f"gif: {result.recording_gif_path}")
         _print_llm_failure_help(result.completion_reason)
         if "insufficient_quota" in (result.completion_reason or "").lower():
             return 1

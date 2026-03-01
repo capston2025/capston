@@ -1,0 +1,15 @@
+{
+  "id": "SCN_002_FILTER_AND_LIST",
+  "url": "https://www.gamegoo.co.kr/",
+  "goal": "게시판 필터를 변경한 뒤 목록이 갱신되는지 확인한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "dom_changed",
+    "list_count_changed"
+  ],
+  "time_budget_sec": 300
+}

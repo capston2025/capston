@@ -1,0 +1,16 @@
+{
+  "id": "SCN_005_PAGINATION",
+  "url": "https://inuu-timetable.vercel.app/",
+  "goal": "페이지네이션 다음 버튼을 눌렀을 때 목록 컨텍스트가 바뀌는지 확인한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "dom_changed",
+    "interactive_count_changed"
+  ],
+  "time_budget_sec": 360
+}
+

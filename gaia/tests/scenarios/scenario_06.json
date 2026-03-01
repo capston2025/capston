@@ -1,0 +1,16 @@
+{
+  "id": "SCN_006_CONSOLE_ERRORS",
+  "url": "https://example.com",
+  "goal": "핵심 액션 수행 후 console/errors 로그 수집이 동작하는지 확인한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": false
+  },
+  "expected_signals": [
+    "browser_console_get",
+    "browser_errors_get"
+  ],
+  "time_budget_sec": 240
+}
+

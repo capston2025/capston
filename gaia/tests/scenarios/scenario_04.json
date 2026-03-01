@@ -1,0 +1,16 @@
+{
+  "id": "SCN_004_FORM_FILL_AND_SUBMIT",
+  "url": "https://inuu-timetable.vercel.app/",
+  "goal": "입력 필드 채우기와 제출 버튼 클릭 시 입력값 반영 상태를 검증한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "target_value_changed",
+    "status_text_changed"
+  ],
+  "time_budget_sec": 360
+}
+

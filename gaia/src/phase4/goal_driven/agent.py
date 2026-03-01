@@ -28,6 +28,7 @@ from .runtime import (
     FlowMasterOrchestrator,
     StepSubAgent,
 )
+from gaia.src.phase4.captcha_solver import CaptchaSolver
 from gaia.src.phase4.memory.models import (
     MemoryActionRecord,
     MemorySummaryRecord,
@@ -35,6 +36,7 @@ from gaia.src.phase4.memory.models import (
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.orchestrator import MasterOrchestrator
+from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 
 class GoalDrivenAgent:
     """
@@ -90,6 +92,7 @@ class GoalDrivenAgent:
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
+        self._last_snapshot_evidence: Dict[str, Any] = {}
         self._last_exec_result: Optional[ActionExecResult] = None
         self._active_goal_text: str = ""
         self._ineffective_ref_counts: Dict[str, int] = {}
@@ -193,10 +196,12 @@ class GoalDrivenAgent:
             "close",
             "취소",
             "cancel",
-            "x",
-            "×",
+            "dismiss",
         )
-        return any(h in text for h in hints)
+        if any(h in text for h in hints):
+            return True
+        tokens = [tok for tok in re.split(r"[^a-zA-Z0-9가-힣×]+", text) if tok]
+        return any(tok in {"x", "×"} for tok in tokens)
 
     @classmethod
     def _contains_progress_cta_hint(cls, value: Optional[str]) -> bool:
@@ -877,7 +882,7 @@ class GoalDrivenAgent:
         if success and changed:
             self._ineffective_ref_counts.pop(ref_id, None)
             return
-        if reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "ambiguous_selector"}:
+        if reason_code in {"no_state_change", "not_actionable", "modal_not_open", "ambiguous_ref_target", "ambiguous_selector"}:
             self._ineffective_ref_counts[ref_id] = int(self._ineffective_ref_counts.get(ref_id, 0)) + 1
 
     @staticmethod
@@ -1125,7 +1130,7 @@ class GoalDrivenAgent:
             if int(stat.get("hard_fail") or 0) > 0:
                 stat["hard_fail"] = int(stat["hard_fail"]) - 1
             return
-        if reason_code in {"no_state_change", "not_actionable", "blocked_ref_no_progress", "ambiguous_ref_target", "ambiguous_selector"}:
+        if reason_code in {"no_state_change", "not_actionable", "modal_not_open", "blocked_ref_no_progress", "ambiguous_ref_target", "ambiguous_selector"}:
             stat["soft_fail"] = min(200, int(stat.get("soft_fail") or 0) + 1)
         else:
             stat["hard_fail"] = min(200, int(stat.get("hard_fail") or 0) + 1)
@@ -1167,12 +1172,15 @@ class GoalDrivenAgent:
         has_password_field = False
         has_id_or_email_field = False
         modal_auth_hits = 0
+        modal_shell_hits = 0
         for el in dom_elements:
             text = cls._normalize_text(el.text)
             placeholder = cls._normalize_text(el.placeholder)
             aria = cls._normalize_text(el.aria_label)
             role = cls._normalize_text(el.role)
             typ = cls._normalize_text(el.type)
+            class_name = cls._normalize_text(el.class_name)
+            aria_modal = cls._normalize_text(el.aria_modal)
 
             fields = [text, placeholder, aria, role]
             if any(cls._contains_login_hint(v) for v in fields):
@@ -1187,18 +1195,47 @@ class GoalDrivenAgent:
             ):
                 has_id_or_email_field = True
 
-            if any(k in " ".join(fields) for k in ("modal", "dialog", "popup", "sheet", "drawer", "overlay", "로그인", "회원가입", "signin", "signup")):
+            modal_attr_blob = " ".join([role, class_name, aria_modal])
+            is_modal_shell = (
+                role in {"dialog", "alertdialog"}
+                or aria_modal == "true"
+                or any(k in modal_attr_blob for k in ("modal", "dialog", "popup", "sheet", "drawer", "overlay"))
+            )
+            if is_modal_shell:
+                modal_shell_hits += 1
+            if is_modal_shell and any(k in " ".join(fields) for k in ("로그인", "회원가입", "signin", "signup", "login", "register", "auth")):
                 modal_auth_hits += 1
 
-        if has_password_field and has_id_or_email_field:
+        # 기본: 아이디/이메일 + 비밀번호가 실제로 보이고, 모달/다이얼로그 셸이 동반될 때만 인증 게이트로 판정
+        if has_password_field and has_id_or_email_field and modal_shell_hits > 0:
             return True
-        if has_password_field and auth_hits >= 2:
+        # 예외: 모달이 없는 전용 로그인 페이지(요소 수가 적고 인증 힌트가 매우 높은 경우)
+        if has_password_field and has_id_or_email_field and auth_hits >= 8 and len(dom_elements) <= 120:
             return True
-        if modal_auth_hits >= 2 and auth_hits >= 4 and has_password_field:
-            return True
-        if modal_auth_hits >= 4 and auth_hits >= 6:
+        if modal_shell_hits >= 2 and modal_auth_hits >= 2 and auth_hits >= 4 and has_password_field and has_id_or_email_field:
             return True
         return False
+
+    @classmethod
+    def _is_compact_auth_page(cls, dom_elements: List[DOMElement]) -> bool:
+        auth_hits = 0
+        has_password_field = False
+        has_id_or_email_field = False
+        for el in dom_elements:
+            text = cls._normalize_text(el.text)
+            placeholder = cls._normalize_text(el.placeholder)
+            aria = cls._normalize_text(el.aria_label)
+            typ = cls._normalize_text(el.type)
+            if any(cls._contains_login_hint(v) for v in (text, placeholder, aria)):
+                auth_hits += 1
+            if typ == "password" or "password" in placeholder or "비밀번호" in placeholder or "password" in aria:
+                has_password_field = True
+            if (
+                typ in {"email", "text"}
+                and any(k in (placeholder or text or aria) for k in ("email", "이메일", "아이디", "username", "user id"))
+            ):
+                has_id_or_email_field = True
+        return bool(has_password_field and has_id_or_email_field and auth_hits >= 6 and len(dom_elements) <= 120)
 
     @classmethod
     def _goal_requires_login_interaction(cls, goal: TestGoal) -> bool:
@@ -2272,7 +2309,14 @@ class GoalDrivenAgent:
 
             self._log(f"📊 DOM 요소 {len(dom_elements)}개 발견")
             before_signature = self._dom_progress_signature(dom_elements)
-            login_gate_visible = self._is_login_gate(dom_elements)
+            heuristic_login_gate = self._is_login_gate(dom_elements)
+            modal_open_hint = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
+            compact_auth_page = self._is_compact_auth_page(dom_elements)
+            login_gate_visible = bool(
+                heuristic_login_gate and (modal_open_hint or compact_auth_page)
+            )
+            if heuristic_login_gate and not login_gate_visible:
+                self._log("ℹ️ 로그인 힌트는 감지됐지만 modal_open/compact_auth 조건이 없어 AUTH 분기를 보류합니다.")
             if login_gate_visible:
                 self._log("🔐 로그인/인증 화면이 감지되었습니다.")
                 if not login_intervention_asked:
@@ -2298,6 +2342,39 @@ class GoalDrivenAgent:
 
             # 2. 스크린샷 캡처
             screenshot = self._capture_screenshot()
+
+            # 2.5 CAPTCHA 감지 및 자동 해결
+            if screenshot and not getattr(self, "_captcha_solver_skip", False):
+                if not hasattr(self, "_captcha_solver"):
+                    self._captcha_solver = CaptchaSolver(
+                        vision_client=self.llm,
+                        execute_fn=self._execute_action,
+                        mcp_host_url=self.mcp_host_url,
+                        session_id=self.session_id,
+                        max_attempts=5,
+                        log_fn=self._log,
+                    )
+                captcha_result = self._captcha_solver.detect_and_handle(
+                    screenshot=screenshot,
+                    page_url=getattr(self, "_current_url", goal.start_url or ""),
+                    capture_fn=self._capture_screenshot,
+                )
+                if captcha_result.solved:
+                    self._log(f"🔓 CAPTCHA 해결 완료 ({captcha_result.attempts}회 시도)")
+                    self._action_history.append(
+                        f"Step {step_count}: captcha_solve - CAPTCHA 자동 해결 ({captcha_result.status})"
+                    )
+                    time.sleep(1)
+                    continue  # DOM 재수집 후 다음 스텝
+                elif captcha_result.status == "gave_up":
+                    self._log("🏳️ CAPTCHA 해결 포기 — 일반 LLM 흐름으로 계속")
+                    self._action_feedback.append(
+                        "CAPTCHA가 감지되었으나 자동 해결에 실패했습니다. "
+                        "가능하면 CAPTCHA를 우회하는 경로를 찾거나, 사용자 개입이 필요합니다."
+                    )
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+                # no_captcha 또는 unsupported → 일반 흐름 계속
 
             directive = orchestrator.next_directive(
                 login_gate_visible=login_gate_visible,
@@ -2623,6 +2700,23 @@ class GoalDrivenAgent:
                     self._element_full_selectors.get(selected_element.id),
                     self._element_selectors.get(selected_element.id),
                 ]
+            modal_open_now = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
+            selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
+            if not selected_close_signal and selected_element is not None:
+                selected_close_signal = self._normalize_text(selected_element.text) in {"x", "×", "닫기", "close"}
+            close_like_click_intent = bool(decision.action == ActionType.CLICK and selected_close_signal)
+            if close_like_click_intent and not modal_open_now:
+                self._log("🧭 모달이 열려있지 않아 close 클릭을 건너뛰고 재계획합니다.")
+                self._action_feedback.append(
+                    "현재 modal_open=false 상태입니다. 닫기 버튼 대신 현재 화면의 진행 가능 CTA를 선택하세요."
+                )
+                if len(self._action_feedback) > 10:
+                    self._action_feedback = self._action_feedback[-10:]
+                _ = self._analyze_dom()
+                ineffective_action_streak = 0
+                force_context_shift = False
+                time.sleep(0.2)
+                continue
             click_intent_key = self._build_click_intent_key(
                 element=selected_element,
                 full_selector=self._element_full_selectors.get(selected_element.id) if selected_element else None,
@@ -2818,6 +2912,19 @@ class GoalDrivenAgent:
                     force_context_shift = False
                     time.sleep(0.25)
                     continue
+                if reason_code == "modal_not_open":
+                    self._log("🧭 close 대상 모달이 현재 열려있지 않아 재계획합니다.")
+                    self._action_feedback.append(
+                        "닫기 액션 시점에 모달이 열려있지 않았습니다. 최신 화면 기준으로 후보를 다시 수집하고 "
+                        "닫기 대신 현재 활성 CTA를 선택하세요."
+                    )
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+                    _ = self._analyze_dom()
+                    ineffective_action_streak = 0
+                    force_context_shift = True
+                    time.sleep(0.2)
+                    continue
 
                 if self._no_progress_counter >= 2 and reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "ambiguous_selector", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
                     ActionType.CLICK,
@@ -2948,6 +3055,8 @@ class GoalDrivenAgent:
             self._active_snapshot_id = str(data.get("snapshot_id") or "")
             self._active_dom_hash = str(data.get("dom_hash") or "")
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
+            evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
+            self._last_snapshot_evidence = evidence
 
             # DOMElement로 변환 (ID 부여)
             elements = []
@@ -2981,9 +3090,13 @@ class GoalDrivenAgent:
                         type=attrs.get("type"),
                         placeholder=attrs.get("placeholder"),
                         aria_label=attrs.get("aria-label"),
+                        aria_modal=attrs.get("aria-modal"),
                         title=attrs.get("title"),
+                        class_name=attrs.get("class"),
                         href=attrs.get("href"),
                         bounding_box=el.get("bounding_box"),
+                        is_visible=bool(el.get("is_visible", True)),
+                        is_enabled=bool(el.get("is_enabled", True)),
                     )
                 )
 
@@ -3680,11 +3793,9 @@ JSON 응답:"""
                 status_family = "http_4xx" if 400 <= response.status_code < 500 else "http_5xx"
                 detail_raw = data.get("detail")
                 if isinstance(detail_raw, dict):
-                    reason_code = str(detail_raw.get("reason_code") or status_family)
-                    detail = str(
-                        detail_raw.get("message")
-                        or detail_raw.get("detail")
-                        or detail_raw
+                    reason_code, detail = extract_reason_fields(
+                        {"detail": detail_raw},
+                        response.status_code,
                     )
                 else:
                     reason_code = status_family
@@ -3728,8 +3839,7 @@ JSON 응답:"""
                     ref_id_used=str(data.get("ref_id_used") or ""),
                 )
 
-            reason_code = str(data.get("reason_code") or data.get("error") or "unknown_error")
-            reason = str(data.get("reason") or data.get("message") or data.get("detail") or "Unknown error")
+            reason_code, reason = extract_reason_fields(data, response.status_code)
             if reason_code in {"snapshot_not_found", "stale_snapshot", "ambiguous_ref_target", "ambiguous_selector"}:
                 reason = (
                     f"{reason} | 최신 snapshot/ref로 다시 시도해야 합니다."
@@ -3756,7 +3866,7 @@ JSON 응답:"""
                 success=False,
                 effective=False,
                 reason_code="request_exception",
-                reason=str(e),
+                reason=add_no_retry_hint(str(e)),
             )
 
     def _call_llm_text_only(self, prompt: str) -> str:

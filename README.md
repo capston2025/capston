@@ -301,6 +301,7 @@ python -m playwright install chromium
 - 확인:
 ```bash
 curl http://127.0.0.1:8001/health
+curl http://127.0.0.1:8001/metrics-lite
 ```
 
 Windows에서 `No module named termios`
@@ -334,6 +335,33 @@ python -m gaia.cli chat \
 또한 과거에는 `./scripts/run_gui.sh`가 `python -m gaia.main`로 실행됐으나 이제 `gaia plan --gui`를 사용합니다.
 
 GUI에서 기존 플랜 재사용 시 “이전 테스트 불러오기”로 `artifacts/plans/*.json` 선택 시 즉시 실행할 수 있습니다.
+
+## 9. 팀 분업/운영 자동화 문서
+- 오너십 맵: `gaia/docs/TEAM_OWNERSHIP.md`
+- 4주 실행 플레이북: `gaia/docs/TEAM_PLAYBOOK.md`
+- 설치 가이드(Windows/macOS): `gaia/docs/INSTALL_WINDOWS_MAC.md`
+- 팀원별 작업 가이드:
+  - `gaia/docs/team/01_core_lead_codex.md`
+  - `gaia/docs/team/02_platform_devops_codex.md`
+  - `gaia/docs/team/03_product_ui_claude.md`
+  - `gaia/docs/team/04_reliability_embedded_codex.md`
+
+## 10. 하드닝/리포트 스크립트
+```bash
+# 5분 하드닝 실행
+python scripts/run_hardening.py --minutes 5 --url https://inuu-timetable.vercel.app/
+
+# 30분 하드닝 실행
+python scripts/run_hardening.py --minutes 30 --url https://inuu-timetable.vercel.app/
+
+# reason_code 분포 리포트 생성
+python scripts/reason_code_report.py
+```
+
+## 11. 회귀 시나리오 팩
+- 경로: `gaia/tests/scenarios/*.json`
+- 필수 필드: `id`, `url`, `goal`, `constraints`, `expected_signals`, `time_budget_sec`
+- 포맷 상세: `gaia/tests/scenarios/README.md`
 
 ## 실행 기억(KB)
 - 저장 위치: `~/.gaia/memory/kb.sqlite3`

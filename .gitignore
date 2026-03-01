@@ -56,8 +56,22 @@ venv.pip_install_and_link Pathname.pwd
 /artifacts/*.log
 /artifacts/cache/
 /artifacts/exploration_results/
+/artifacts/gamegoo_check/
 /artifacts/plans/
+/artifacts/hardening/
+/artifacts/reports/
 /gaia/artifacts/
+/output/
+
+# Block image uploads (global)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.bmp
+*.ico
 
 # Editor/IDE settings
 .vscode/

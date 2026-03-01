@@ -83,6 +83,7 @@ class GoalDrivenWorker(QObject):
                 exploration_config = ExplorationConfig(
                     max_actions=self._fallback_actions,
                     max_depth=2,
+                    non_stop_mode=True,
                 )
                 exploratory_agent = ExploratoryAgent(
                     mcp_host_url=self._mcp_host_url,
@@ -149,7 +150,10 @@ class ExploratoryWorker(QObject):
         agent = ExploratoryAgent(
             mcp_host_url=self._mcp_host_url,
             session_id=self._session_id,
-            config=ExplorationConfig(max_actions=self._max_actions),
+            config=ExplorationConfig(
+                max_actions=self._max_actions,
+                non_stop_mode=True,
+            ),
             log_callback=self._on_progress,
             screenshot_callback=self._on_screenshot,
         )
