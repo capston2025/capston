@@ -5,7 +5,7 @@ Exploratory Testing Models
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 from pydantic import BaseModel, Field
 from enum import Enum
 from datetime import datetime
@@ -15,6 +15,7 @@ class ElementState(BaseModel):
     """UI 요소의 상태 스냅샷"""
 
     element_id: str = Field(..., description="요소 고유 ID (selector 기반)")
+    ref_id: Optional[str] = Field(default=None, description="MCP snapshot ref ID")
     tag: str = Field(..., description="HTML 태그")
     text: str = Field(default="", description="텍스트 내용")
     selector: str = Field(..., description="CSS Selector")
@@ -101,6 +102,12 @@ class ExplorationConfig(BaseModel):
     """탐색 설정"""
 
     max_actions: int = Field(default=100, description="최대 액션 수")
+    loop_mode: Literal["steps", "time"] = Field(
+        default="steps", description="탐색 루프 제어 방식(steps 또는 time)"
+    )
+    time_budget_seconds: int = Field(
+        default=0, description="loop_mode=time일 때 총 실행 시간(초)"
+    )
     max_depth: int = Field(default=5, description="최대 탐색 깊이 (페이지 이동)")
 
     # 탐색 전략
@@ -147,6 +154,10 @@ class ExplorationConfig(BaseModel):
     # 타임아웃
     action_timeout: int = Field(default=30, description="액션 타임아웃 (초)")
     page_load_timeout: int = Field(default=30, description="페이지 로드 타임아웃 (초)")
+    non_stop_mode: bool = Field(
+        default=False,
+        description="사용자 개입 요청 없이 자동 전략 전환으로 탐색을 계속 진행",
+    )
 
 
 class ExplorationDecision(BaseModel):

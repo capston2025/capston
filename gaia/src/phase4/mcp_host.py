@@ -11,7 +11,7 @@ import weakref
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from playwright.async_api import (
@@ -40,11 +40,87 @@ app = FastAPI(
 # 라이브 미리보기를 위한 전역 상태 (CDP 스크린캐스트용)
 screencast_subscribers: List[WebSocket] = []
 current_screencast_frame: Optional[str] = None
+MCP_HOST_VERSION = os.getenv("GAIA_MCP_VERSION", "0.1.0")
+MCP_STARTED_AT = time.time()
+MCP_REQUEST_COUNT = 0
+MCP_ERROR_COUNT = 0
+MCP_REASON_CODE_COUNTER: Dict[str, int] = defaultdict(int)
+
+
+def _record_reason_code(code: str) -> None:
+    key = str(code or "").strip()
+    if not key:
+        return
+    MCP_REASON_CODE_COUNTER[key] = int(MCP_REASON_CODE_COUNTER.get(key, 0)) + 1
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    global MCP_REQUEST_COUNT, MCP_ERROR_COUNT
+    MCP_REQUEST_COUNT += 1
+    try:
+        response = await call_next(request)
+    except Exception:
+        MCP_ERROR_COUNT += 1
+        _record_reason_code("http_5xx")
+        raise
+
+    if int(response.status_code) >= 400:
+        MCP_ERROR_COUNT += 1
+
+    if request.url.path == "/execute":
+        reason_code = ""
+        body = getattr(response, "body", None)
+        if isinstance(body, (bytes, bytearray)) and body:
+            try:
+                payload = json_module.loads(body.decode("utf-8"))
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                reason_code = str(payload.get("reason_code") or "").strip()
+                detail = payload.get("detail")
+                if not reason_code and isinstance(detail, dict):
+                    reason_code = str(detail.get("reason_code") or "").strip()
+        if not reason_code:
+            if 400 <= int(response.status_code) < 500:
+                reason_code = "http_4xx"
+            elif int(response.status_code) >= 500:
+                reason_code = "http_5xx"
+        if reason_code:
+            _record_reason_code(reason_code)
+
+    return response
 
 
 @app.get("/health")
-async def health() -> Dict[str, str]:
-    return {"status": "ok"}
+async def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "uptime_sec": round(max(0.0, time.time() - MCP_STARTED_AT), 3),
+        "active_sessions": len(active_sessions),
+        "version": MCP_HOST_VERSION,
+    }
+
+
+@app.get("/metrics-lite")
+async def metrics_lite() -> Dict[str, Any]:
+    top = sorted(
+        MCP_REASON_CODE_COUNTER.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:10]
+    return {
+        "status": "ok",
+        "request_count": int(MCP_REQUEST_COUNT),
+        "error_count": int(MCP_ERROR_COUNT),
+        "reason_code_top": [
+            {"reason_code": code, "count": int(count)}
+            for code, count in top
+        ],
+        "active_sessions": len(active_sessions),
+        "uptime_sec": round(max(0.0, time.time() - MCP_STARTED_AT), 3),
+        "version": MCP_HOST_VERSION,
+    }
 
 
 # 브라우저 세션 관리
@@ -1593,7 +1669,9 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         attributes: {
                             role: role,
                             'aria-label': ariaLabel,
+                            'aria-modal': el.getAttribute('aria-modal') || '',
                             title: title,
+                            class: el.className || '',
                             placeholder: el.getAttribute('placeholder') || '',
                             'aria-controls': el.getAttribute('aria-controls') || '',
                             'aria-expanded': el.getAttribute('aria-expanded') || '',
@@ -1780,6 +1858,10 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
     result["tab_index"] = tab_index
     result["captured_at"] = captured_at
     result["dom_elements"] = elements
+    try:
+        result["evidence"] = await _collect_page_evidence(page)
+    except Exception:
+        result["evidence"] = {}
     return result
 
 
@@ -3212,6 +3294,152 @@ async def _try_click_container_ancestor(locator) -> Dict[str, Any]:
         return {"clicked": False, "selector": "", "error": str(exc)}
 
 
+async def _try_click_hit_target_from_point(
+    page: Page,
+    locator,
+    ref_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    point_x: Optional[float] = None
+    point_y: Optional[float] = None
+    try:
+        box = await locator.bounding_box()
+        if isinstance(box, dict):
+            width = float(box.get("width", 0.0) or 0.0)
+            height = float(box.get("height", 0.0) or 0.0)
+            if width > 0.0 and height > 0.0:
+                point_x = float(box.get("x", 0.0) or 0.0) + width / 2.0
+                point_y = float(box.get("y", 0.0) or 0.0) + height / 2.0
+    except Exception:
+        point_x = None
+        point_y = None
+
+    if point_x is None or point_y is None:
+        bbox = ref_meta.get("bounding_box") if isinstance(ref_meta, dict) and isinstance(ref_meta.get("bounding_box"), dict) else {}
+        try:
+            x = float(bbox.get("x", 0.0) or 0.0)
+            y = float(bbox.get("y", 0.0) or 0.0)
+            width = float(bbox.get("width", 0.0) or 0.0)
+            height = float(bbox.get("height", 0.0) or 0.0)
+            if width > 0.0 and height > 0.0:
+                point_x = float(bbox.get("center_x", x + width / 2.0) or (x + width / 2.0))
+                point_y = float(bbox.get("center_y", y + height / 2.0) or (y + height / 2.0))
+        except Exception:
+            point_x = None
+            point_y = None
+
+    if point_x is None or point_y is None:
+        return {"clicked": False, "selector": "", "error": "point_not_available"}
+
+    try:
+        payload = await page.evaluate(
+            """
+            ({ pointX, pointY }) => {
+              const clickableSelectors = [
+                'button',
+                'a[href]',
+                '[role="button"]',
+                '[role="link"]',
+                '[onclick]',
+                'input[type="button"]',
+                'input[type="submit"]',
+                '[tabindex]:not([tabindex="-1"])'
+              ];
+
+              const isVisible = (node) => {
+                if (!(node instanceof HTMLElement)) return false;
+                const style = window.getComputedStyle(node);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                if (Number(style.opacity || '1') <= 0) return false;
+                if (style.pointerEvents === 'none') return false;
+                const rect = node.getBoundingClientRect();
+                return rect.width > 2 && rect.height > 2;
+              };
+
+              const pickClickable = (startNode) => {
+                let current = startNode instanceof Element ? startNode : null;
+                for (let depth = 0; current && depth < 10; depth++) {
+                  if (current instanceof HTMLElement && isVisible(current)) {
+                    if (clickableSelectors.some((selector) => current.matches(selector))) {
+                      return current;
+                    }
+                  }
+                  current = current.parentElement;
+                }
+                return null;
+              };
+
+              let rootNode = document.elementFromPoint(pointX, pointY);
+              if (!rootNode) {
+                return {
+                  clicked: false,
+                  selector: '',
+                  reason: 'elementFromPoint_null',
+                  clickX: pointX,
+                  clickY: pointY
+                };
+              }
+
+              // page.mouse.click는 뷰포트 좌표 기준이므로 iframe 내부여도 전역 좌표 클릭이 동작합니다.
+              // 따라서 iframe 내부 DOM 직접 접근/dispatch 대신 전역 좌표를 반환합니다.
+              if (rootNode instanceof HTMLIFrameElement) {
+                return {
+                  clicked: true,
+                  selector: 'iframe',
+                  reason: 'iframe_point_click',
+                  clickX: pointX,
+                  clickY: pointY
+                };
+              }
+
+              const picked = pickClickable(rootNode);
+              if (!picked) {
+                return {
+                  clicked: true,
+                  selector: rootNode instanceof HTMLElement ? rootNode.tagName.toLowerCase() : '',
+                  reason: 'raw_point_click',
+                  clickX: pointX,
+                  clickY: pointY
+                };
+              }
+              picked.scrollIntoView({ block: 'center', inline: 'nearest' });
+              const rect = picked.getBoundingClientRect();
+              const clickX = rect.left + rect.width / 2;
+              const clickY = rect.top + rect.height / 2;
+              return {
+                clicked: true,
+                selector: picked.tagName.toLowerCase(),
+                reason: 'hit_target_click',
+                clickX,
+                clickY
+              };
+            }
+            """,
+            {"pointX": point_x, "pointY": point_y},
+        )
+        if not isinstance(payload, dict):
+            return {"clicked": False, "selector": "", "error": "invalid_payload"}
+
+        if not bool(payload.get("clicked")):
+            return payload
+
+        try:
+            click_x = float(payload.get("clickX", point_x) or point_x)
+            click_y = float(payload.get("clickY", point_y) or point_y)
+        except Exception:
+            click_x = point_x
+            click_y = point_y
+
+        await page.mouse.move(click_x, click_y)
+        await page.mouse.down()
+        await page.mouse.up()
+        payload["clickX"] = click_x
+        payload["clickY"] = click_y
+        return payload
+    except Exception as exc:
+        return {"clicked": False, "selector": "", "error": str(exc)}
+
+
 async def execute_ref_action_with_snapshot(
     *,
     session_id: str,
@@ -3461,10 +3689,64 @@ async def execute_ref_action_with_snapshot(
             or "register" in ref_selector_text
         )
     )
+    modal_regions_for_requested = _collect_modal_regions_from_snapshot(
+        requested_snapshot if isinstance(requested_snapshot, dict) else None
+    )
+    close_like_click = bool(
+        action == "click"
+        and (
+            _is_close_intent_ref(requested_meta)
+            or _is_modal_corner_close_candidate(
+                requested_meta,
+                modal_regions_for_requested,
+            )
+        )
+    )
     probe_wait_schedule: Tuple[int, ...] = (250,) if submit_like_click else (350, 700, 1500)
     verify_for_action = verify and (not submit_like_click)
     if submit_like_click:
         max_action_seconds = min(max_action_seconds, 20.0)
+    if close_like_click:
+        close_gate_evidence: Dict[str, Any] = {}
+        try:
+            close_gate_evidence = await _collect_page_evidence(page)
+        except Exception:
+            close_gate_evidence = {}
+        if not bool(close_gate_evidence.get("modal_open")):
+            reason_code = "modal_not_open"
+            attempt_logs.append(
+                {
+                    "attempt": 0,
+                    "mode": "precheck",
+                    "reason_code": reason_code,
+                    "error": "close intent requested but modal_open=false",
+                    "state_change": {
+                        "modal_open": bool(close_gate_evidence.get("modal_open")),
+                        "modal_count": int(close_gate_evidence.get("modal_count") or 0),
+                        "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
+                        "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
+                    },
+                }
+            )
+            return {
+                "success": False,
+                "effective": False,
+                "reason_code": reason_code,
+                "reason": "닫기 대상 모달이 열려있지 않습니다. 최신 snapshot으로 재계획하세요.",
+                "snapshot_id_used": snapshot_id,
+                "ref_id_used": ref_id,
+                "retry_path": retry_path,
+                "attempt_count": 0,
+                "state_change": {
+                    "modal_open": bool(close_gate_evidence.get("modal_open")),
+                    "modal_count": int(close_gate_evidence.get("modal_count") or 0),
+                    "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
+                    "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
+                },
+                "attempt_logs": attempt_logs,
+                "current_url": page.url,
+                "stale_recovered": stale_recovered,
+            }
 
     for attempt_idx, (mode, candidate_selector) in enumerate(candidates, start=1):
         if _deadline_exceeded():
@@ -3549,10 +3831,494 @@ async def execute_ref_action_with_snapshot(
                 change["ancestor_click_selector"] = ancestor_click_selector
             return change
 
+        async def _capture_close_diagnostic(label: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
+            if not close_like_click:
+                return
+            point_x = None
+            point_y = None
+            bbox = requested_meta.get("bounding_box") if isinstance(requested_meta, dict) and isinstance(requested_meta.get("bounding_box"), dict) else {}
+            try:
+                bx = float(bbox.get("x", 0.0) or 0.0)
+                by = float(bbox.get("y", 0.0) or 0.0)
+                bw = float(bbox.get("width", 0.0) or 0.0)
+                bh = float(bbox.get("height", 0.0) or 0.0)
+                if bw > 0.0 and bh > 0.0:
+                    point_x = float(bbox.get("center_x", bx + bw / 2.0) or (bx + bw / 2.0))
+                    point_y = float(bbox.get("center_y", by + bh / 2.0) or (by + bh / 2.0))
+            except Exception:
+                point_x = None
+                point_y = None
+            if point_x is None or point_y is None:
+                try:
+                    box = await locator.bounding_box()
+                    if isinstance(box, dict):
+                        point_x = float(box.get("x", 0.0) or 0.0) + float(box.get("width", 0.0) or 0.0) / 2.0
+                        point_y = float(box.get("y", 0.0) or 0.0) + float(box.get("height", 0.0) or 0.0) / 2.0
+                except Exception:
+                    point_x = None
+                    point_y = None
+            if point_x is None:
+                point_x = 0.0
+            if point_y is None:
+                point_y = 0.0
+
+            diagnostic: Dict[str, Any]
+            try:
+                diagnostic_raw = await page.evaluate(
+                    """
+                    async ({ pointX, pointY }) => {
+                      const modalSelector = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]';
+                      const backdropSelector = '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]';
+                      const pathOf = (node) => {
+                        if (!(node instanceof Element)) return '';
+                        const parts = [];
+                        let current = node;
+                        for (let depth = 0; current && depth < 6; depth += 1) {
+                          const tag = current.tagName.toLowerCase();
+                          const id = current.id ? `#${current.id}` : '';
+                          const cls = (current.className && typeof current.className === 'string')
+                            ? `.${current.className.trim().split(/\\s+/).slice(0, 2).join('.')}`
+                            : '';
+                          parts.push(`${tag}${id}${cls}`);
+                          current = current.parentElement;
+                        }
+                        return parts.join(' <- ');
+                      };
+                      const isVisible = (el) => {
+                        if (!(el instanceof HTMLElement)) return false;
+                        const style = window.getComputedStyle(el);
+                        if (!style) return false;
+                        if (style.display === 'none' || style.visibility === 'hidden') return false;
+                        if (Number(style.opacity || '1') <= 0) return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 2 && rect.height > 2;
+                      };
+                      const sampleState = () => {
+                        const modalNodes = Array.from(document.querySelectorAll(modalSelector)).filter(isVisible);
+                        const backdropNodes = Array.from(document.querySelectorAll(backdropSelector)).filter(isVisible);
+                        const dialogNodes = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')).filter(isVisible);
+                        const modalOpen = modalNodes.length > 0 || backdropNodes.length > 0 || dialogNodes.length > 0;
+                        return {
+                          modal_open: modalOpen,
+                          modal_count: modalNodes.length,
+                          backdrop_count: backdropNodes.length,
+                          dialog_count: dialogNodes.length,
+                        };
+                      };
+                      const timeline = [];
+                      for (let i = 0; i < 8; i += 1) {
+                        timeline.push(sampleState().modal_open);
+                        await new Promise((resolve) => setTimeout(resolve, 80));
+                      }
+                      const state = sampleState();
+                      const hit = document.elementFromPoint(pointX, pointY);
+                      let clickable = hit instanceof Element ? hit : null;
+                      for (let d = 0; clickable && d < 8; d += 1) {
+                        if (
+                          clickable.matches('button, a[href], [role="button"], [role="link"], [onclick], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])')
+                        ) {
+                          break;
+                        }
+                        clickable = clickable.parentElement;
+                      }
+                      return {
+                        ...state,
+                        timeline,
+                        hit_path: pathOf(hit),
+                        clickable_path: pathOf(clickable),
+                        active_path: pathOf(document.activeElement),
+                        point_x: pointX,
+                        point_y: pointY,
+                      };
+                    }
+                    """,
+                    {"pointX": point_x, "pointY": point_y},
+                )
+                diagnostic = diagnostic_raw if isinstance(diagnostic_raw, dict) else {"raw": diagnostic_raw}
+            except Exception as diag_exc:
+                diagnostic = {"error": str(diag_exc)}
+
+            timeline = diagnostic.get("timeline") if isinstance(diagnostic, dict) else None
+            if isinstance(timeline, list) and timeline:
+                any_closed = any((v is False) for v in timeline)
+                end_open = bool(timeline[-1])
+                if any_closed and end_open:
+                    diagnostic["classification"] = "closed_then_reopened"
+                elif all(bool(v) for v in timeline):
+                    diagnostic["classification"] = "never_closed"
+                elif not end_open:
+                    diagnostic["classification"] = "closed_persisted"
+                else:
+                    diagnostic["classification"] = "unknown_transition"
+
+            record: Dict[str, Any] = {
+                "attempt": attempt_idx,
+                "mode": f"{mode}.close_diag",
+                "reason_code": "diagnostic",
+                "label": label,
+                "diagnostic": diagnostic,
+            }
+            if isinstance(extra, dict):
+                record.update(extra)
+            attempt_logs.append(record)
+            print(f"[close_diag] label={label} diag={json_module.dumps(diagnostic, ensure_ascii=False)}")
+
+        async def _attempt_close_ref_fallbacks() -> bool:
+            nonlocal state_change, ref_id, requested_meta
+            if not close_like_click:
+                return False
+            close_fallbacks = _collect_close_ref_candidates(
+                snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
+                requested_meta=requested_meta if isinstance(requested_meta, dict) else None,
+                exclude_ref_id=ref_id,
+                limit=5,
+            )
+            if close_fallbacks:
+                debug_candidates: List[Dict[str, Any]] = []
+                for cand_ref_id, cand_meta in close_fallbacks:
+                    cand_bbox = cand_meta.get("bounding_box") if isinstance(cand_meta.get("bounding_box"), dict) else {}
+                    debug_candidates.append(
+                        {
+                            "ref_id": cand_ref_id,
+                            "text": str(cand_meta.get("text") or "")[:40],
+                            "selector": str(cand_meta.get("selector") or "")[:80],
+                            "cx": cand_bbox.get("center_x"),
+                            "cy": cand_bbox.get("center_y"),
+                        }
+                    )
+                print(f"[close_diag] close_fallback_candidates={json_module.dumps(debug_candidates, ensure_ascii=False)}")
+            if not close_fallbacks:
+                return False
+            for fallback_rank, (fallback_ref_id, fallback_meta) in enumerate(close_fallbacks, start=1):
+                if _deadline_exceeded():
+                    return False
+                fallback_candidates = _build_ref_candidates(fallback_meta)
+                deduped_fallback: List[Tuple[str, str]] = []
+                seen_fallback_selectors = set()
+                for fallback_mode, fallback_selector in fallback_candidates:
+                    fallback_key = str(fallback_selector or "").strip()
+                    if not fallback_key or fallback_key in seen_fallback_selectors:
+                        continue
+                    seen_fallback_selectors.add(fallback_key)
+                    deduped_fallback.append((fallback_mode, fallback_selector))
+                for fallback_mode, fallback_selector in deduped_fallback[:2]:
+                    if _deadline_exceeded():
+                        return False
+                    fallback_locator, fallback_frame_index, fallback_resolved_selector, fallback_locator_error = await _resolve_locator_from_ref(
+                        page, fallback_meta, fallback_selector
+                    )
+                    if fallback_locator is None:
+                        attempt_logs.append(
+                            {
+                                "attempt": attempt_idx,
+                                "mode": f"{mode}.close_ref[{fallback_rank}]",
+                                "selector": str(fallback_resolved_selector or fallback_selector),
+                                "reason_code": "not_found",
+                                "error": str(fallback_locator_error or "fallback ref locator not found"),
+                                "fallback_ref_id": fallback_ref_id,
+                            }
+                        )
+                        continue
+                    try:
+                        await fallback_locator.click(timeout=1500, no_wait_after=True)
+                    except Exception as fallback_click_exc:
+                        attempt_logs.append(
+                            {
+                                "attempt": attempt_idx,
+                                "mode": f"{mode}.close_ref[{fallback_rank}]",
+                                "selector": fallback_resolved_selector,
+                                "frame_index": fallback_frame_index,
+                                "reason_code": "not_actionable",
+                                "error": str(fallback_click_exc),
+                                "fallback_ref_id": fallback_ref_id,
+                            }
+                        )
+                        continue
+                    await page.wait_for_timeout(250)
+                    fallback_change = await _collect_state_change_probe(
+                        probe_wait_ms=250,
+                        probe_scroll=f"alternate_close_ref:{fallback_ref_id}",
+                    )
+                    if bool(fallback_change.get("effective", True)):
+                        state_change = fallback_change
+                        ref_id = fallback_ref_id
+                        requested_meta = fallback_meta
+                        attempt_logs.append(
+                            {
+                                "attempt": attempt_idx,
+                                "mode": f"{mode}.close_ref[{fallback_rank}]",
+                                "selector": fallback_resolved_selector,
+                                "frame_index": fallback_frame_index,
+                                "reason_code": "ok",
+                                "fallback": "alternate_close_ref",
+                                "fallback_ref_id": fallback_ref_id,
+                                "state_change": fallback_change,
+                            }
+                        )
+                        return True
+                    attempt_logs.append(
+                        {
+                            "attempt": attempt_idx,
+                            "mode": f"{mode}.close_ref[{fallback_rank}]",
+                            "selector": fallback_resolved_selector,
+                            "frame_index": fallback_frame_index,
+                            "reason_code": "no_state_change",
+                            "fallback_ref_id": fallback_ref_id,
+                            "state_change": fallback_change,
+                        }
+                    )
+            return False
+
+        async def _attempt_backdrop_close() -> bool:
+            nonlocal state_change
+            if not close_like_click or _deadline_exceeded():
+                return False
+            try:
+                clicked = await page.evaluate(
+                    """
+                    () => {
+                      const nodes = Array.from(document.querySelectorAll(
+                        '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
+                      ));
+                      const visible = nodes.filter((el) => {
+                        if (!(el instanceof HTMLElement)) return false;
+                        const style = window.getComputedStyle(el);
+                        if (!style) return false;
+                        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 4 && rect.height > 4;
+                      });
+                      if (!visible.length) return false;
+                      const target = visible[0];
+                      const rect = target.getBoundingClientRect();
+                      const x = rect.left + rect.width / 2;
+                      const y = rect.top + rect.height / 2;
+                      const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+                      target.dispatchEvent(new MouseEvent('mousedown', opts));
+                      target.dispatchEvent(new MouseEvent('mouseup', opts));
+                      target.dispatchEvent(new MouseEvent('click', opts));
+                      return true;
+                    }
+                    """
+                )
+            except Exception as backdrop_exc:
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": f"{mode}.backdrop",
+                        "reason_code": "not_actionable",
+                        "error": str(backdrop_exc),
+                    }
+                )
+                return False
+            if not bool(clicked):
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": f"{mode}.backdrop",
+                        "reason_code": "not_found",
+                        "error": "no visible backdrop candidate",
+                    }
+                )
+                return False
+            await page.wait_for_timeout(250)
+            backdrop_change = await _collect_state_change_probe(
+                probe_wait_ms=250,
+                probe_scroll="backdrop_fallback",
+            )
+            if bool(backdrop_change.get("effective", True)):
+                state_change = backdrop_change
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": f"{mode}.backdrop",
+                        "reason_code": "ok",
+                        "fallback": "backdrop_click",
+                        "state_change": backdrop_change,
+                    }
+                )
+                return True
+            attempt_logs.append(
+                {
+                    "attempt": attempt_idx,
+                    "mode": f"{mode}.backdrop",
+                    "reason_code": "no_state_change",
+                    "state_change": backdrop_change,
+                }
+            )
+            return False
+
         try:
             await _execute_action_on_locator(action, page, locator, value, options=options)
             interaction_success = True
         except Exception as action_exc:
+            if close_like_click and not _deadline_exceeded():
+                alt_close_ok = await _attempt_close_ref_fallbacks()
+                if alt_close_ok:
+                    session.current_url = page.url
+                    screenshot_bytes = await page.screenshot(full_page=False)
+                    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                    return {
+                        "success": True,
+                        "effective": True,
+                        "reason_code": "ok",
+                        "reason": "close intent fallback via alternate close ref succeeded",
+                        "snapshot_id_used": snapshot_id,
+                        "ref_id_used": ref_id,
+                        "retry_path": retry_path,
+                        "attempt_count": attempt_idx,
+                        "state_change": state_change,
+                        "attempt_logs": attempt_logs,
+                        "current_url": page.url,
+                        "screenshot": screenshot_base64,
+                        "stale_recovered": stale_recovered,
+                    }
+                await _capture_close_diagnostic("alternate_ref_failed")
+                try:
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(250)
+                    state_change = await _collect_state_change_probe(
+                        probe_wait_ms=250,
+                        probe_scroll="escape_fallback",
+                    )
+                    escape_effective = bool(state_change.get("effective", True))
+                    if escape_effective:
+                        attempt_logs.append(
+                            {
+                                "attempt": attempt_idx,
+                                "mode": mode,
+                                "selector": resolved_selector,
+                                "frame_index": frame_index,
+                                "reason_code": "ok",
+                                "fallback": "escape",
+                                "state_change": state_change,
+                            }
+                        )
+                        session.current_url = page.url
+                        screenshot_bytes = await page.screenshot(full_page=False)
+                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                        return {
+                            "success": True,
+                            "effective": True,
+                            "reason_code": "ok",
+                            "reason": "close intent fallback via Escape succeeded",
+                            "snapshot_id_used": snapshot_id,
+                            "ref_id_used": ref_id,
+                            "retry_path": retry_path,
+                            "attempt_count": attempt_idx,
+                            "state_change": state_change,
+                            "attempt_logs": attempt_logs,
+                            "current_url": page.url,
+                            "screenshot": screenshot_base64,
+                            "stale_recovered": stale_recovered,
+                        }
+                    await _capture_close_diagnostic("escape_no_state_change")
+                except Exception:
+                    await _capture_close_diagnostic("escape_exception")
+                    pass
+                backdrop_ok = await _attempt_backdrop_close()
+                if backdrop_ok:
+                    session.current_url = page.url
+                    screenshot_bytes = await page.screenshot(full_page=False)
+                    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                    return {
+                        "success": True,
+                        "effective": True,
+                        "reason_code": "ok",
+                        "reason": "close intent fallback via backdrop click succeeded",
+                        "snapshot_id_used": snapshot_id,
+                        "ref_id_used": ref_id,
+                        "retry_path": retry_path,
+                        "attempt_count": attempt_idx,
+                        "state_change": state_change,
+                        "attempt_logs": attempt_logs,
+                        "current_url": page.url,
+                        "screenshot": screenshot_base64,
+                        "stale_recovered": stale_recovered,
+                    }
+                await _capture_close_diagnostic("backdrop_failed")
+            if action == "click" and not _deadline_exceeded():
+                hit_fallback = await _try_click_hit_target_from_point(
+                    page,
+                    locator,
+                    requested_meta if isinstance(requested_meta, dict) else None,
+                )
+                if bool(hit_fallback.get("clicked")):
+                    await page.wait_for_timeout(250)
+                    state_change = await _collect_state_change_probe(
+                        probe_wait_ms=250,
+                        probe_scroll="hit_target_fallback",
+                    )
+                    hit_effective = bool(state_change.get("effective", True)) if verify_for_action else True
+                    if hit_effective:
+                        attempt_logs.append(
+                            {
+                                "attempt": attempt_idx,
+                                "mode": mode,
+                                "selector": resolved_selector,
+                                "frame_index": frame_index,
+                                "reason_code": "ok",
+                                "fallback": "hit_target_click",
+                                "fallback_selector": str(hit_fallback.get("selector") or ""),
+                                "fallback_reason": str(hit_fallback.get("reason") or ""),
+                                "state_change": state_change,
+                            }
+                        )
+                        session.current_url = page.url
+                        screenshot_bytes = await page.screenshot(full_page=False)
+                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                        return {
+                            "success": True,
+                            "effective": True,
+                            "reason_code": "ok",
+                            "reason": "click fallback via hit-target mouse click succeeded",
+                            "snapshot_id_used": snapshot_id,
+                            "ref_id_used": ref_id,
+                            "retry_path": retry_path,
+                            "attempt_count": attempt_idx,
+                            "state_change": state_change,
+                            "attempt_logs": attempt_logs,
+                            "current_url": page.url,
+                            "screenshot": screenshot_base64,
+                            "stale_recovered": stale_recovered,
+                        }
+                    attempt_logs.append(
+                        {
+                            "attempt": attempt_idx,
+                            "mode": mode,
+                            "selector": resolved_selector,
+                            "frame_index": frame_index,
+                            "reason_code": "no_state_change",
+                            "fallback": "hit_target_click",
+                            "fallback_selector": str(hit_fallback.get("selector") or ""),
+                            "fallback_reason": str(hit_fallback.get("reason") or ""),
+                            "state_change": state_change,
+                        }
+                    )
+                    await _capture_close_diagnostic(
+                        "hit_target_no_state_change",
+                        extra={"fallback_reason": str(hit_fallback.get("reason") or "")},
+                    )
+                else:
+                    attempt_logs.append(
+                        {
+                            "attempt": attempt_idx,
+                            "mode": mode,
+                            "selector": resolved_selector,
+                            "frame_index": frame_index,
+                            "reason_code": "not_actionable",
+                            "fallback": "hit_target_click",
+                            "fallback_error": str(
+                                hit_fallback.get("error")
+                                or hit_fallback.get("reason")
+                                or "hit_target_not_clicked"
+                            ),
+                        }
+                    )
+                    await _capture_close_diagnostic(
+                        "hit_target_not_clicked",
+                        extra={"fallback_error": str(hit_fallback.get("error") or hit_fallback.get("reason") or "")},
+                    )
             reason_code = "not_actionable"
             attempt_logs.append(
                 {
@@ -3613,6 +4379,83 @@ async def execute_ref_action_with_snapshot(
                 if effective:
                     break
 
+        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
+            effective = await _attempt_close_ref_fallbacks()
+            if not effective:
+                await _capture_close_diagnostic("verify_alternate_ref_failed")
+
+        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(250)
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=250,
+                    probe_scroll="escape_fallback",
+                )
+                effective = bool(state_change.get("effective", True))
+            except Exception:
+                pass
+            if not effective:
+                await _capture_close_diagnostic("verify_escape_failed")
+
+        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
+            effective = await _attempt_backdrop_close()
+            if not effective:
+                await _capture_close_diagnostic("verify_backdrop_failed")
+
+        if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
+            hit_fallback = await _try_click_hit_target_from_point(
+                page,
+                locator,
+                requested_meta if isinstance(requested_meta, dict) else None,
+            )
+            if bool(hit_fallback.get("clicked")):
+                await page.wait_for_timeout(250)
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=250,
+                    probe_scroll="hit_target_fallback",
+                )
+                effective = bool(state_change.get("effective", True))
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": "ok" if effective else "no_state_change",
+                        "fallback": "hit_target_click",
+                        "fallback_selector": str(hit_fallback.get("selector") or ""),
+                        "fallback_reason": str(hit_fallback.get("reason") or ""),
+                        "state_change": state_change,
+                    }
+                )
+                if close_like_click and not effective:
+                    await _capture_close_diagnostic(
+                        "verify_hit_target_no_state_change",
+                        extra={"fallback_reason": str(hit_fallback.get("reason") or "")},
+                    )
+            else:
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": "not_actionable",
+                        "fallback": "hit_target_click",
+                        "fallback_error": str(
+                            hit_fallback.get("error")
+                            or hit_fallback.get("reason")
+                            or "hit_target_not_clicked"
+                        ),
+                    }
+                )
+                if close_like_click:
+                    await _capture_close_diagnostic(
+                        "verify_hit_target_not_clicked",
+                        extra={"fallback_error": str(hit_fallback.get("error") or hit_fallback.get("reason") or "")},
+                    )
+
         if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
             fallback_result = await _try_click_container_ancestor(locator)
             if bool(fallback_result.get("clicked")):
@@ -3624,6 +4467,8 @@ async def execute_ref_action_with_snapshot(
                     ancestor_click_selector=str(fallback_result.get("selector") or ""),
                 )
                 effective = bool(state_change.get("effective", True))
+                if close_like_click and not effective:
+                    await _capture_close_diagnostic("verify_container_fallback_failed")
 
         if reason_code == "action_timeout":
             attempt_logs.append(
@@ -4003,6 +4848,231 @@ def _element_is_interactive(item: Dict[str, Any]) -> bool:
     if str(attrs.get("onclick") or "").strip():
         return True
     return False
+
+
+def _is_close_intent_ref(meta: Dict[str, Any]) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+    text = " ".join(
+        [
+            str(meta.get("text") or ""),
+            str(meta.get("selector") or ""),
+            str(meta.get("full_selector") or ""),
+            str(attrs.get("aria-label") or ""),
+            str(attrs.get("title") or ""),
+            str(attrs.get("class") or ""),
+            str(attrs.get("role") or ""),
+            str(attrs.get("type") or ""),
+        ]
+    ).strip().lower()
+    if not text:
+        return False
+    close_tokens = [
+        "close",
+        "dismiss",
+        "cancel",
+        "modal-close",
+        "dialog-close",
+        "aria-label=\"close\"",
+        "aria-label='close'",
+        "닫기",
+        "취소",
+        "나가기",
+    ]
+    if any(token in text for token in close_tokens):
+        return True
+    visible = str(meta.get("text") or "").strip()
+    if visible in {"x", "X", "✕", "✖", "×"}:
+        return True
+    return False
+
+
+def _rank_close_ref_candidate(
+    meta: Dict[str, Any],
+    *,
+    requested_meta: Optional[Dict[str, Any]] = None,
+    modal_regions: Optional[List[Dict[str, float]]] = None,
+) -> int:
+    if not isinstance(meta, dict):
+        return -1
+    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+    text = str(meta.get("text") or "").strip().lower()
+    selector = str(meta.get("selector") or "").strip().lower()
+    full_selector = str(meta.get("full_selector") or "").strip().lower()
+    aria_label = str(attrs.get("aria-label") or "").strip().lower()
+    title = str(attrs.get("title") or "").strip().lower()
+    class_name = str(attrs.get("class") or "").strip().lower()
+    role = str(attrs.get("role") or "").strip().lower()
+    score = 0
+    if text in {"x", "✕", "✖", "×"}:
+        score += 6
+    if role == "button":
+        score += 3
+    if "close" in aria_label or "닫기" in aria_label:
+        score += 4
+    if "close" in title or "닫기" in title:
+        score += 3
+    if "close" in selector or "close" in full_selector:
+        score += 2
+    if "close" in class_name or "dismiss" in class_name or "modal" in class_name:
+        score += 1
+    if _is_modal_corner_close_candidate(meta, modal_regions or []):
+        score += 5
+    if requested_meta and isinstance(requested_meta, dict):
+        req_scope = (
+            requested_meta.get("scope")
+            if isinstance(requested_meta.get("scope"), dict)
+            else {}
+        )
+        cand_scope = meta.get("scope") if isinstance(meta.get("scope"), dict) else {}
+        if req_scope.get("frame_index") == cand_scope.get("frame_index"):
+            score += 2
+        if req_scope.get("tab_index") == cand_scope.get("tab_index"):
+            score += 2
+    return score
+
+
+def _normalize_bbox_dict(raw_bbox: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(raw_bbox, dict):
+        return None
+    try:
+        x = float(raw_bbox.get("x", 0.0) or 0.0)
+        y = float(raw_bbox.get("y", 0.0) or 0.0)
+        width = float(raw_bbox.get("width", 0.0) or 0.0)
+        height = float(raw_bbox.get("height", 0.0) or 0.0)
+    except Exception:
+        return None
+    if width <= 0.0 or height <= 0.0:
+        return None
+    center_x = float(raw_bbox.get("center_x", x + width / 2.0) or (x + width / 2.0))
+    center_y = float(raw_bbox.get("center_y", y + height / 2.0) or (y + height / 2.0))
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "center_x": center_x,
+        "center_y": center_y,
+        "right": x + width,
+        "bottom": y + height,
+    }
+
+
+def _collect_modal_regions_from_snapshot(snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, float]]:
+    if not isinstance(snapshot, dict):
+        return []
+    by_ref = snapshot.get("elements_by_ref")
+    if not isinstance(by_ref, dict):
+        return []
+    regions: List[Dict[str, float]] = []
+    for _, raw_meta in by_ref.items():
+        if not isinstance(raw_meta, dict):
+            continue
+        attrs = raw_meta.get("attributes") if isinstance(raw_meta.get("attributes"), dict) else {}
+        role = str(attrs.get("role") or "").strip().lower()
+        aria_modal = str(attrs.get("aria-modal") or "").strip().lower()
+        class_name = str(attrs.get("class") or "").strip().lower()
+        tag = str(raw_meta.get("tag") or "").strip().lower()
+        if not (
+            aria_modal == "true"
+            or role in {"dialog", "alertdialog"}
+            or tag == "dialog"
+            or any(token in class_name for token in ("modal", "dialog", "popup", "sheet", "drawer"))
+        ):
+            continue
+        bbox = _normalize_bbox_dict(raw_meta.get("bounding_box"))
+        if not bbox:
+            continue
+        if bbox["width"] < 120 or bbox["height"] < 120:
+            continue
+        regions.append(bbox)
+    regions.sort(key=lambda r: r["width"] * r["height"], reverse=True)
+    return regions[:6]
+
+
+def _is_modal_corner_close_candidate(
+    meta: Dict[str, Any],
+    modal_regions: List[Dict[str, float]],
+) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    if not modal_regions:
+        return False
+    if not _element_is_interactive(meta):
+        return False
+    bbox = _normalize_bbox_dict(meta.get("bounding_box"))
+    if not bbox:
+        return False
+    if bbox["width"] > 72 or bbox["height"] > 72:
+        return False
+    if (bbox["width"] * bbox["height"]) > 3600:
+        return False
+    cx = bbox["center_x"]
+    cy = bbox["center_y"]
+    for region in modal_regions:
+        if not (region["x"] <= cx <= region["right"] and region["y"] <= cy <= region["bottom"]):
+            continue
+        rel_x = (cx - region["x"]) / max(region["width"], 1.0)
+        rel_y = (cy - region["y"]) / max(region["height"], 1.0)
+        if rel_x >= 0.72 and rel_y <= 0.28:
+            return True
+    return False
+
+
+def _collect_close_ref_candidates(
+    *,
+    snapshot: Optional[Dict[str, Any]],
+    requested_meta: Optional[Dict[str, Any]],
+    exclude_ref_id: str,
+    limit: int = 5,
+) -> List[Tuple[str, Dict[str, Any]]]:
+    if not isinstance(snapshot, dict):
+        return []
+    by_ref = snapshot.get("elements_by_ref")
+    if not isinstance(by_ref, dict):
+        return []
+    req_scope = (
+        requested_meta.get("scope")
+        if isinstance(requested_meta, dict) and isinstance(requested_meta.get("scope"), dict)
+        else {}
+    )
+    modal_regions = _collect_modal_regions_from_snapshot(snapshot)
+    ranked: List[Tuple[int, str, Dict[str, Any]]] = []
+    for raw_ref_id, raw_meta in by_ref.items():
+        ref_key = str(raw_ref_id or "").strip()
+        if not ref_key or ref_key == exclude_ref_id:
+            continue
+        if not isinstance(raw_meta, dict):
+            continue
+        if not (
+            _is_close_intent_ref(raw_meta)
+            or _is_modal_corner_close_candidate(raw_meta, modal_regions)
+        ):
+            continue
+        cand_scope = raw_meta.get("scope") if isinstance(raw_meta.get("scope"), dict) else {}
+        try:
+            req_tab = req_scope.get("tab_index")
+            cand_tab = cand_scope.get("tab_index")
+            if req_tab is not None and cand_tab is not None and int(req_tab) != int(cand_tab):
+                continue
+        except Exception:
+            pass
+        try:
+            req_frame = req_scope.get("frame_index")
+            cand_frame = cand_scope.get("frame_index")
+            if req_frame is not None and cand_frame is not None and int(req_frame) != int(cand_frame):
+                continue
+        except Exception:
+            pass
+        score = _rank_close_ref_candidate(
+            raw_meta,
+            requested_meta=requested_meta,
+            modal_regions=modal_regions,
+        )
+        ranked.append((score, ref_key, raw_meta))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [(rid, meta) for _, rid, meta in ranked[: max(1, limit)]]
 
 
 _ROLE_INTERACTIVE = {

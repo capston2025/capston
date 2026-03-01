@@ -505,13 +505,23 @@ class StepReplayWidget(QFrame):
         if screenshots_dir:
             step_index = step_data.get("step_number", 0)
             if step_index:
-                screenshot_path = os.path.join(
-                    screenshots_dir, f"step_{step_index:03d}.png"
-                )
-                if os.path.exists(screenshot_path):
-                    pixmap = QPixmap(screenshot_path)
-                    if not pixmap.isNull():
-                        return pixmap
+                candidates = []
+                if which == "before":
+                    candidates = [
+                        f"step_{step_index:03d}_before.png",
+                        f"step_{step_index:03d}.png",
+                    ]
+                else:
+                    candidates = [
+                        f"step_{step_index:03d}_after.png",
+                        f"step_{step_index:03d}.png",
+                    ]
+                for name in candidates:
+                    screenshot_path = os.path.join(screenshots_dir, name)
+                    if os.path.exists(screenshot_path):
+                        pixmap = QPixmap(screenshot_path)
+                        if not pixmap.isNull():
+                            return pixmap
 
         screenshot_key = (
             "screenshot_before" if which == "before" else "screenshot_after"
@@ -1024,13 +1034,18 @@ class ExplorationDetailView(QWidget):
         if self._screenshots_dir:
             step_index = step_data.get("step_number", 0)
             if step_index:
-                screenshot_path = os.path.join(
-                    self._screenshots_dir, f"step_{step_index:03d}.png"
-                )
-                if os.path.exists(screenshot_path):
-                    with open(screenshot_path, "rb") as file:
-                        encoded = base64.b64encode(file.read()).decode("utf-8")
-                        frames.append(f"data:image/png;base64,{encoded}")
+                for name in [
+                    f"step_{step_index:03d}_before.png",
+                    f"step_{step_index:03d}_after.png",
+                    f"step_{step_index:03d}.png",
+                ]:
+                    screenshot_path = os.path.join(self._screenshots_dir, name)
+                    if os.path.exists(screenshot_path):
+                        with open(screenshot_path, "rb") as file:
+                            encoded = base64.b64encode(file.read()).decode("utf-8")
+                            data_uri = f"data:image/png;base64,{encoded}"
+                            if data_uri not in frames:
+                                frames.append(data_uri)
 
         for key in ["screenshot_before", "screenshot_after"]:
             screenshot_b64 = step_data.get(key)

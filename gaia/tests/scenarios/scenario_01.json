@@ -1,0 +1,15 @@
+{
+  "id": "SCN_001_LOGIN_MODAL_CLOSE",
+  "url": "https://inuu-timetable.vercel.app/",
+  "goal": "담기 버튼 클릭 후 로그인 모달이 나타나면 닫기 동작을 검증한다.",
+  "constraints": {
+    "allow_navigation": false,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "modal_open",
+    "modal_state_changed"
+  ],
+  "time_budget_sec": 300
+}

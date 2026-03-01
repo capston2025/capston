@@ -13,7 +13,7 @@ import os
 import re
 import base64
 import requests
-from typing import Any, Dict, List, Optional, Set, Callable
+from typing import Any, Dict, List, Optional, Set, Callable, Tuple
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -21,6 +21,8 @@ from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecor
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.orchestrator import MasterOrchestrator
+from gaia.src.phase4.tool_loop_detector import ToolLoopDetector
+from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 
 # GIF 생성을 위한 선택적 import
 try:
@@ -104,6 +106,7 @@ class ExploratoryAgent:
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
+        self._active_modal_region: Optional[Dict[str, float]] = None
         self._last_exec_meta: Dict[str, Any] = {}
         self._action_attempts: Dict[
             str, int
@@ -133,6 +136,12 @@ class ExploratoryAgent:
         self._runtime_phase: str = "COLLECT"
         self._progress_counter: int = 0
         self._no_progress_counter: int = 0
+        self._tool_loop_detector = ToolLoopDetector(
+            warning_threshold=2,
+            critical_threshold=3,
+            ping_pong_warning_threshold=3,
+            ping_pong_critical_threshold=4,
+        )
 
     def _log(self, message: str):
         """로그 출력"""
@@ -183,7 +192,11 @@ class ExploratoryAgent:
         return screenshots_dir
 
     def _save_screenshot_to_file(
-        self, screenshot_base64: str, screenshots_dir: Path, step_num: int
+        self,
+        screenshot_base64: str,
+        screenshots_dir: Path,
+        step_num: int,
+        suffix: str = "",
     ) -> str:
         """스크린샷을 파일로 저장"""
         if not screenshot_base64:
@@ -194,7 +207,10 @@ class ExploratoryAgent:
                 screenshot_base64 = screenshot_base64.split(",")[1]
 
             img_data = base64.b64decode(screenshot_base64)
-            filename = f"step_{step_num:03d}.png"
+            if suffix:
+                filename = f"step_{step_num:03d}_{suffix}.png"
+            else:
+                filename = f"step_{step_num:03d}.png"
             filepath = screenshots_dir / filename
 
             with open(filepath, "wb") as f:
@@ -205,6 +221,52 @@ class ExploratoryAgent:
             self._log(f"⚠️ 스크린샷 저장 실패: {e}")
             return ""
 
+    def _save_step_artifact_payload(
+        self,
+        screenshots_dir: Optional[Path],
+        step: ExplorationStep,
+        before_path: str = "",
+        after_path: str = "",
+    ) -> None:
+        if screenshots_dir is None:
+            return
+        try:
+            steps_dir = screenshots_dir.parent / "steps"
+            steps_dir.mkdir(parents=True, exist_ok=True)
+            payload = step.model_dump(mode="json")
+            payload["files"] = {
+                "before": before_path,
+                "after": after_path,
+            }
+            if self._last_exec_meta:
+                payload["exec_meta"] = dict(self._last_exec_meta)
+            out_path = steps_dir / f"step_{int(step.step_number):03d}.json"
+            with open(out_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._log(f"⚠️ 스텝 산출물 저장 실패: {exc}")
+
+    def _write_result_json(self, result: ExplorationResult) -> Optional[str]:
+        try:
+            repo_root = Path(__file__).resolve().parents[4]
+            results_root = repo_root / "artifacts" / "exploration_results"
+            results_root.mkdir(parents=True, exist_ok=True)
+            session_dir = results_root / str(result.session_id)
+            session_dir.mkdir(parents=True, exist_ok=True)
+            payload = result.model_dump(mode="json")
+
+            session_file = session_dir / "exploration_result.json"
+            with open(session_file, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+            top_level_file = results_root / f"{result.session_id}.json"
+            with open(top_level_file, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+            return str(top_level_file)
+        except Exception as exc:
+            self._log(f"⚠️ 결과 JSON 저장 실패: {exc}")
+            return None
+
     def _generate_gif(self, screenshots_dir: Path, output_path: Path) -> bool:
         """스크린샷들로 GIF 생성"""
         if not HAS_PIL:
@@ -212,7 +274,9 @@ class ExploratoryAgent:
             return False
 
         try:
-            png_files = sorted(screenshots_dir.glob("step_*.png"))
+            png_files = sorted(screenshots_dir.glob("step_*_before.png"))
+            if len(png_files) < 2:
+                png_files = sorted(screenshots_dir.glob("step_*.png"))
             if len(png_files) < 2:
                 self._log("⚠️ GIF 생성을 위한 스크린샷이 부족합니다")
                 return False
@@ -720,7 +784,14 @@ class ExploratoryAgent:
         self._log("=" * 60)
         self._log("🔍 완전 자율 탐색 모드 시작")
         self._log(f"   시작 URL: {start_url}")
-        self._log(f"   최대 액션: {self.config.max_actions}")
+        is_time_budget_mode = (
+            self.config.loop_mode == "time"
+            and int(self.config.time_budget_seconds or 0) > 0
+        )
+        if is_time_budget_mode:
+            self._log(f"   실행 모드: time_budget ({int(self.config.time_budget_seconds)}s)")
+        else:
+            self._log(f"   최대 액션: {self.config.max_actions}")
         self._log("=" * 60)
 
         self._memory_domain = self._extract_domain(start_url)
@@ -748,12 +819,26 @@ class ExploratoryAgent:
         action_count = 0
         master_orchestrator = MasterOrchestrator()
 
-        while action_count < self.config.max_actions:
+        while True:
+            elapsed = time.time() - start_time
+            if is_time_budget_mode:
+                if elapsed >= int(self.config.time_budget_seconds):
+                    self._log(
+                        f"⏱️ 시간 예산 도달 ({int(self.config.time_budget_seconds)}s), 탐색을 종료합니다."
+                    )
+                    break
+            elif action_count >= self.config.max_actions:
+                break
             action_count += 1
             step_start = time.time()
 
             self._log(f"\n{'=' * 60}")
-            self._log(f"📌 Step {action_count}/{self.config.max_actions}")
+            if is_time_budget_mode:
+                self._log(
+                    f"📌 Step {action_count} (elapsed {int(elapsed)}s / {int(self.config.time_budget_seconds)}s)"
+                )
+            else:
+                self._log(f"📌 Step {action_count}/{self.config.max_actions}")
             self._log(f"{'=' * 60}")
 
             # 1. 현재 페이지 상태 분석
@@ -783,6 +868,17 @@ class ExploratoryAgent:
                 self._log(
                     "🔐 로그인 페이지 감지됨 (요소 접근 불가 - cross-origin iframe 또는 특수 인증)"
                 )
+                if self.config.non_stop_mode:
+                    self._log(
+                        "🤖 무중단 모드: 사용자 개입 없이 계속 진행합니다 "
+                        "(로그인 게이트는 차단 이슈로 남기고 다음 스텝에서 전략 전환)."
+                    )
+                    if page_state.url and page_state.url != start_url:
+                        self._log("🧭 무중단 모드: 시작 URL로 재동기화합니다.")
+                        self._execute_action("goto", url=start_url)
+                        time.sleep(2)
+                        self._current_url = start_url
+                    continue
 
                 if not self._request_user_intervention(
                     reason="로그인이 필요합니다. 브라우저에서 수동으로 로그인해주세요.",
@@ -855,18 +951,85 @@ class ExploratoryAgent:
                 break
 
             # 7. 스크린샷 (액션 실행 직전) - GIF용으로 저장
-            screenshot_before = screenshot
-            if screenshots_dir and screenshot_before:
-                saved_path = self._save_screenshot_to_file(
-                    screenshot_before, screenshots_dir, action_count
+            action_for_step = decision.selected_action
+            selector_for_step = ""
+            if action_for_step and action_for_step.action_type != "navigate":
+                selector_for_step = (
+                    self._find_selector_by_element_id(
+                        action_for_step.element_id,
+                        page_state,
+                    )
+                    or ""
                 )
-                if saved_path:
-                    screenshot_paths.append(saved_path)
+            loop_tool = self._loop_guard_tool_name(action_for_step, page_state)
+            loop_params = {
+                "url_hash": page_state.url_hash,
+                "phase": self._runtime_phase,
+            }
+            loop_guard = self._tool_loop_detector.check(loop_tool, loop_params)
+            if loop_guard.stuck:
+                self._log(
+                    f"🛑 loop_guard({loop_guard.detector}/{loop_guard.level}): {loop_guard.message}"
+                )
+                if loop_guard.level == "critical":
+                    shifted = self._force_context_shift(page_state, start_url)
+                    self._tool_loop_detector.record(
+                        loop_tool,
+                        loop_params,
+                        progress=bool(shifted),
+                        result_hash="context_shift" if shifted else loop_guard.detector,
+                    )
+                    if shifted:
+                        continue
+                alt_action = self._select_loop_escape_action(
+                    page_state,
+                    action_for_step if action_for_step else TestableAction(
+                        element_id="",
+                        action_type="click",
+                        description="",
+                        priority=0.0,
+                    ),
+                )
+                if alt_action is not None:
+                    self._log(
+                        f"↪️ loop_guard 대체 액션: {alt_action.action_type} / {alt_action.description}"
+                    )
+                    decision.selected_action = alt_action
+                    action_for_step = alt_action
+                    selector_for_step = (
+                        self._find_selector_by_element_id(
+                            action_for_step.element_id,
+                            page_state,
+                        )
+                        or ""
+                    )
+                    loop_params = {
+                        "url_hash": page_state.url_hash,
+                        "phase": self._runtime_phase,
+                    }
+                    loop_tool = self._loop_guard_tool_name(action_for_step, page_state)
+
+            # 7. 스크린샷 (액션 실행 직전) - GIF용으로 저장
+            screenshot_before = screenshot
+            before_path = ""
+            if screenshots_dir and screenshot_before:
+                before_path = self._save_screenshot_to_file(
+                    screenshot_before,
+                    screenshots_dir,
+                    action_count,
+                    suffix="before",
+                )
+                if before_path:
+                    screenshot_paths.append(before_path)
 
             # 8. 액션 실행
             success, error, issues = self._execute_exploration_action(
                 decision=decision,
                 page_state=page_state,
+            )
+            reason_code = str(
+                self._last_exec_meta.get("reason_code")
+                or ("ok" if success else "unknown_error")
             )
             progress = bool(success and not issues)
             if progress:
@@ -874,6 +1037,14 @@ class ExploratoryAgent:
                 self._no_progress_counter = 0
             else:
                 self._no_progress_counter += 1
+            self._tool_loop_detector.record(
+                loop_tool,
+                loop_params,
+                progress=progress,
+                result_hash=str(
+                    reason_code if reason_code else ("ok" if progress else "no_progress")
+                ),
+            )
             master_orchestrator.record_progress(
                 changed=progress,
                 signal={
@@ -884,16 +1055,21 @@ class ExploratoryAgent:
             )
             master_directive = master_orchestrator.next_directive(auth_required=False)
             if master_directive.kind == "handoff" and master_directive.reason == "no_progress":
-                should_continue = self._request_user_intervention(
-                    reason=(
-                        "상태 변화가 연속으로 감지되지 않았습니다. "
-                        "브라우저에서 수동 전환 후 계속할지 선택해 주세요."
-                    ),
-                    current_url=page_state.url,
-                )
-                if not should_continue:
-                    self._log("사용자 요청으로 탐색을 중단합니다.")
-                    break
+                if self.config.non_stop_mode:
+                    self._log(
+                        "🧭 no_progress 감지: 무중단 모드로 사용자 개입 없이 전략 전환을 계속합니다."
+                    )
+                else:
+                    should_continue = self._request_user_intervention(
+                        reason=(
+                            "상태 변화가 연속으로 감지되지 않았습니다. "
+                            "브라우저에서 수동 전환 후 계속할지 선택해 주세요."
+                        ),
+                        current_url=page_state.url,
+                    )
+                    if not should_continue:
+                        self._log("사용자 요청으로 탐색을 중단합니다.")
+                        break
             selector_for_memory = ""
             if decision.selected_action:
                 if decision.selected_action.action_type == "navigate":
@@ -940,23 +1116,20 @@ class ExploratoryAgent:
 
             # 9-3. 상태별 액션 기록
             if self._current_state_key:
-                self._state_action_history.setdefault(
-                    self._current_state_key, set()
-                ).add(
-                    f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
+                transient_failure_codes = {
+                    "request_exception",
+                    "stale_snapshot",
+                    "snapshot_not_found",
+                }
+                should_mark_state_action = success or (
+                    reason_code not in transient_failure_codes
                 )
-
-            self._action_attempts[attempt_key] = (
-                self._action_attempts.get(attempt_key, 0) + 1
-            )
-
-            # 9-2. 상태별 액션 기록
-            if self._current_state_key:
-                self._state_action_history.setdefault(
-                    self._current_state_key, set()
-                ).add(
-                    f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
-                )
+                if should_mark_state_action:
+                    self._state_action_history.setdefault(
+                        self._current_state_key, set()
+                    ).add(
+                        f"{decision.selected_action.element_id}:{decision.selected_action.action_type}"
+                    )
 
             # 10. 요소를 테스트 완료로 마킹
             if decision.selected_action:
@@ -965,6 +1138,14 @@ class ExploratoryAgent:
             # 11. 스크린샷 (액션 실행 후) - 결과 확인용 (GIF에는 포함 안함)
             time.sleep(1)  # UI 변화 대기
             screenshot_after = self._capture_screenshot()
+            after_path = ""
+            if screenshots_dir and screenshot_after:
+                after_path = self._save_screenshot_to_file(
+                    screenshot_after,
+                    screenshots_dir,
+                    action_count,
+                    suffix="after",
+                )
 
             # 12. 새로운 페이지 발견 확인
             new_url = self._get_current_url()
@@ -1035,6 +1216,12 @@ class ExploratoryAgent:
                 duration_ms=int((time.time() - step_start) * 1000),
             )
             steps.append(step)
+            self._save_step_artifact_payload(
+                screenshots_dir,
+                step,
+                before_path=before_path,
+                after_path=after_path,
+            )
 
             # 14. 발견된 이슈 추가
             self._found_issues.extend(issues)
@@ -1063,7 +1250,11 @@ class ExploratoryAgent:
 
         # 탐색 완료
         duration = time.time() - start_time
-        completion_reason = self._determine_completion_reason(action_count, steps)
+        completion_reason = self._determine_completion_reason(
+            action_count,
+            steps,
+            duration_seconds=duration,
+        )
 
         # GIF 생성 (녹화가 활성화된 경우)
         gif_path = None
@@ -1093,6 +1284,9 @@ class ExploratoryAgent:
             duration_seconds=duration,
         )
         self._record_exploration_summary(result=result)
+        result_json_path = self._write_result_json(result)
+        if result_json_path:
+            self._log(f"🧾 결과 JSON 저장: {result_json_path}")
 
         # 결과 요약 출력
         self._print_summary(result)
@@ -1111,10 +1305,18 @@ class ExploratoryAgent:
             # 요소가 0개라도 PageState를 반환 (사용자 개입 감지를 위해)
             if not dom_elements:
                 dom_elements = []
+            self._active_modal_region = self._detect_active_modal_region(dom_elements)
+            if self._active_modal_region:
+                self._log("🪟 모달 컨텍스트 감지: 모달 영역 내부 요소만 후보화")
 
             # AutoCrawler 방식: 중요 요소만 필터링 (광고/푸터 제외)
             interactive_elements = []
             for idx, el in enumerate(dom_elements):
+                if not bool(getattr(el, "is_visible", True)):
+                    continue
+                if not bool(getattr(el, "is_enabled", True)):
+                    continue
+
                 # 클릭 가능하거나 입력 가능한 요소만
                 is_interactive = el.tag in [
                     "button",
@@ -1125,6 +1327,11 @@ class ExploratoryAgent:
                 ] or el.role in ["button", "link", "tab", "menuitem"]
 
                 if not is_interactive:
+                    continue
+
+                if self._active_modal_region and not self._is_bbox_inside_region(
+                    el.bounding_box, self._active_modal_region
+                ):
                     continue
 
                 # 광고/푸터/불필요한 요소 제외
@@ -1159,6 +1366,10 @@ class ExploratoryAgent:
                 if should_exclude:
                     continue
 
+                ref_id = str(self._element_ref_ids.get(idx) or "").strip()
+                if not ref_id:
+                    continue
+
                 selector = self._element_full_selectors.get(
                     idx
                 ) or self._element_selectors.get(idx, "")
@@ -1168,6 +1379,7 @@ class ExploratoryAgent:
                 interactive_elements.append(
                     ElementState(
                         element_id=element_id,
+                        ref_id=ref_id,
                         tag=el.tag,
                         text=el.text,
                         selector=selector,
@@ -1244,6 +1456,7 @@ class ExploratoryAgent:
                 return []
 
             raw_elements = data.get("elements", []) or data.get("dom_elements", [])
+            raw_elements_by_ref = data.get("elements_by_ref")
 
             # 셀렉터 맵 초기화
             self._element_selectors = {}
@@ -1254,6 +1467,18 @@ class ExploratoryAgent:
             self._active_dom_hash = str(data.get("dom_hash") or "")
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
 
+            if isinstance(raw_elements_by_ref, dict):
+                for rid, meta in raw_elements_by_ref.items():
+                    ref_key = str(rid or "").strip()
+                    if not ref_key or not isinstance(meta, dict):
+                        continue
+                    selector = str(meta.get("selector") or "").strip()
+                    full_selector = str(meta.get("full_selector") or "").strip()
+                    if selector:
+                        self._selector_to_ref_id.setdefault(selector, ref_key)
+                    if full_selector:
+                        self._selector_to_ref_id.setdefault(full_selector, ref_key)
+
             # DOMElement로 변환
             elements = []
             for idx, el in enumerate(raw_elements):
@@ -1262,7 +1487,7 @@ class ExploratoryAgent:
                 # 셀렉터 저장
                 selector = el.get("selector", "")
                 full_selector = el.get("full_selector") or selector
-                ref_id = el.get("ref_id") or ""
+                ref_id = el.get("ref_id") or el.get("ref") or ""
                 if selector:
                     self._element_selectors[idx] = selector
                 if full_selector:
@@ -1283,8 +1508,21 @@ class ExploratoryAgent:
                         type=attrs.get("type"),
                         placeholder=attrs.get("placeholder"),
                         aria_label=attrs.get("aria-label"),
+                        aria_modal=attrs.get("aria-modal"),
+                        title=attrs.get("title"),
+                        class_name=attrs.get("class"),
                         href=attrs.get("href"),
                         bounding_box=el.get("bounding_box"),
+                        is_visible=bool(el.get("is_visible", True)),
+                        is_enabled=not (
+                            (
+                                attrs.get("disabled") is not None
+                                and str(attrs.get("disabled")).strip().lower()
+                                not in {"false", "0", "none"}
+                            )
+                            or str(attrs.get("aria-disabled") or "").strip().lower()
+                            == "true"
+                        ),
                     )
                 )
 
@@ -1293,6 +1531,112 @@ class ExploratoryAgent:
         except Exception as e:
             self._log(f"DOM 분석 실패: {e}")
             return []
+
+    def _normalize_bbox(self, bbox: Optional[dict]) -> Optional[Tuple[float, float, float, float]]:
+        if not isinstance(bbox, dict):
+            return None
+        try:
+            x = float(bbox.get("x"))
+            y = float(bbox.get("y"))
+            w = float(bbox.get("width"))
+            h = float(bbox.get("height"))
+        except Exception:
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+
+    def _detect_active_modal_region(
+        self, dom_elements: List[DOMElement]
+    ) -> Optional[Dict[str, float]]:
+        normalized_boxes: List[Tuple[float, float, float, float]] = []
+        for el in dom_elements:
+            box = self._normalize_bbox(el.bounding_box)
+            if box:
+                normalized_boxes.append(box)
+        if not normalized_boxes:
+            return None
+
+        viewport_w = max((x + w) for x, _, w, _ in normalized_boxes)
+        viewport_h = max((y + h) for _, y, _, h in normalized_boxes)
+        viewport_area = max(1.0, viewport_w * viewport_h)
+
+        candidates: List[Tuple[float, Dict[str, float], float]] = []
+        for el in dom_elements:
+            box = self._normalize_bbox(el.bounding_box)
+            if not box:
+                continue
+            x, y, w, h = box
+            area = w * h
+            frac = area / viewport_area
+            if frac < 0.03:
+                continue
+
+            role = str(el.role or "").strip().lower()
+            aria_modal = str(el.aria_modal or "").strip().lower()
+            class_blob = str(el.class_name or "").strip().lower()
+            tag = str(el.tag or "").strip().lower()
+            looks_modal = (
+                role in {"dialog", "alertdialog"}
+                or aria_modal == "true"
+                or any(
+                    token in class_blob
+                    for token in ("modal", "dialog", "drawer", "sheet", "popup")
+                )
+                or (tag == "dialog")
+            )
+            if not looks_modal:
+                continue
+
+            score = 0.0
+            if role in {"dialog", "alertdialog"}:
+                score += 6.0
+            if aria_modal == "true":
+                score += 5.0
+            if tag == "dialog":
+                score += 2.0
+            if frac < 0.98:
+                score += 1.0
+            if frac > 0.995:
+                score -= 2.0
+            if 0.05 <= frac <= 0.9:
+                score += 1.0
+            candidates.append(
+                (
+                    score,
+                    {"x": x, "y": y, "width": w, "height": h},
+                    frac,
+                )
+            )
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        selected = candidates[0][1]
+        for _, region, frac in candidates:
+            if frac < 0.95:
+                selected = region
+                break
+        return selected
+
+    def _is_bbox_inside_region(
+        self,
+        bbox: Optional[dict],
+        region: Dict[str, float],
+    ) -> bool:
+        normalized = self._normalize_bbox(bbox)
+        if not normalized:
+            return True
+        x, y, w, h = normalized
+        cx = x + (w / 2.0)
+        cy = y + (h / 2.0)
+        margin = 8.0
+        left = float(region.get("x", 0.0)) - margin
+        top = float(region.get("y", 0.0)) - margin
+        right = float(region.get("x", 0.0) + region.get("width", 0.0)) + margin
+        bottom = float(region.get("y", 0.0) + region.get("height", 0.0)) + margin
+        return left <= cx <= right and top <= cy <= bottom
 
     def _capture_screenshot(self) -> Optional[str]:
         """스크린샷 캡처"""
@@ -1330,7 +1674,18 @@ class ExploratoryAgent:
             )
             data = response.json()
             logs = data.get("logs", [])
-            return logs
+            if not isinstance(logs, list):
+                return []
+            normalized: List[str] = []
+            for item in logs:
+                if isinstance(item, str):
+                    normalized.append(item)
+                else:
+                    try:
+                        normalized.append(json.dumps(item, ensure_ascii=False))
+                    except Exception:
+                        normalized.append(str(item))
+            return normalized
 
         except Exception as e:
             self._log(f"콘솔 로그 확인 실패: {e}")
@@ -1408,17 +1763,25 @@ class ExploratoryAgent:
                         reasoning="미입력 필드 우선 입력",
                         confidence=0.75,
                     )
-            non_fill = [action for action in unvisited if action.action_type != "fill"]
-            if non_fill:
-                non_fill.sort(key=lambda x: x.priority, reverse=True)
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=non_fill[0],
-                    reasoning="상태 기반 탐색: 미실행 액션 우선",
-                    confidence=0.7,
-                )
+            unvisited_keys = {
+                f"{action.element_id}:{action.action_type}" for action in unvisited
+            }
+            testable_actions = sorted(
+                testable_actions,
+                key=lambda action: (
+                    1
+                    if f"{action.element_id}:{action.action_type}" in unvisited_keys
+                    else 0,
+                    float(action.priority),
+                ),
+                reverse=True,
+            )
 
-        if self.config.test_navigation and not self._has_pending_inputs(page_state):
+        if (
+            self.config.test_navigation
+            and not self._has_pending_inputs(page_state)
+            and not unvisited
+        ):
             frontier_action = self._select_frontier_action(page_state, testable_actions)
             if frontier_action:
                 return ExplorationDecision(
@@ -1524,6 +1887,7 @@ class ExploratoryAgent:
 
         pending_inputs = self._has_pending_inputs(page_state)
         has_tested_inputs = self._has_tested_inputs(page_state)
+        auth_form_active = self._has_login_form(page_state)
         actions_with_status: List[tuple[TestableAction, bool]] = []
 
         for element in page_state.interactive_elements:
@@ -1576,6 +1940,47 @@ class ExploratoryAgent:
             else:
                 action_type = "click"
                 description = f"{element.tag}: {element_label or element.role}"
+
+            if auth_form_active:
+                desc_lower = description.lower()
+                auth_keywords = [
+                    "login",
+                    "log in",
+                    "sign in",
+                    "sign up",
+                    "signup",
+                    "auth",
+                    "password",
+                    "email",
+                    "username",
+                    "아이디",
+                    "비밀번호",
+                    "로그인",
+                    "회원가입",
+                    "인증",
+                    "captcha",
+                    "otp",
+                    "verify",
+                    "continue",
+                    "다음",
+                    "확인",
+                    "완료",
+                    "close",
+                    "dismiss",
+                    "cancel",
+                    "취소",
+                    "닫기",
+                    "x",
+                ]
+                is_auth_form_control = element.tag in {"input", "textarea"}
+                is_auth_cta = action_type == "click" and any(
+                    keyword in desc_lower for keyword in auth_keywords
+                )
+                if not (is_auth_form_control or is_auth_cta):
+                    continue
+
+            if action_type == "select" and not str(element_label or "").strip():
+                priority *= 0.25
             # 최근 액션과 동일한 타입이면 우선순위 낮춤
             recent_count = recent_action_counts.get(action_type, 0)
             if recent_count >= 2:
@@ -1651,6 +2056,9 @@ class ExploratoryAgent:
                 max_attempts = 4
             if attempt_count >= max_attempts:
                 continue
+            if action_type == "select" and not str(element_label or "").strip():
+                if attempt_count >= 1:
+                    continue
             if attempt_count >= 1:
                 priority *= 0.5
 
@@ -1997,8 +2405,13 @@ class ExploratoryAgent:
         )
 
     def _state_key(self, page_state: PageState, actions: List[TestableAction]) -> str:
-        action_signature = self._action_signature(actions)
-        return f"{page_state.url_hash}:{action_signature}"
+        dom_marker = (
+            self._active_dom_hash
+            or self._active_snapshot_id
+            or self._action_signature(actions)
+        )
+        epoch_marker = str(int(self._active_snapshot_epoch or 0))
+        return f"{page_state.url_hash}:{dom_marker}:{epoch_marker}"
 
     def _is_toggle_action(self, action: TestableAction) -> bool:
         label = action.description.lower()
@@ -2200,6 +2613,7 @@ JSON 응답:"""
 
         action = decision.selected_action
         issues = []
+        element_state = self._find_element_by_id(action.element_id, page_state)
 
         if action.action_type == "navigate":
             target_url = self._resolve_navigation_target(
@@ -2218,9 +2632,14 @@ JSON 응답:"""
             return success, error, issues
 
         # 셀렉터 찾기
-        selector = self._find_selector_by_element_id(action.element_id, page_state)
-        if not selector:
-            return False, f"셀렉터를 찾을 수 없음: {action.element_id}", []
+        selector = self._find_selector_by_element_id(action.element_id, page_state) or ""
+        resolved_ref_id = (
+            str(getattr(element_state, "ref_id", "") or "").strip()
+            if element_state
+            else ""
+        )
+        if not resolved_ref_id and not selector:
+            return False, f"대상 ref/selector를 찾을 수 없음: {action.element_id}", []
 
         self._log(f"🎯 실행: {action.action_type} on {action.description}")
 
@@ -2238,8 +2657,16 @@ JSON 응답:"""
                         self._execute_action("click", selector=menu_selector)
                         time.sleep(0.5)
                         did_open_menu = True
-                self._execute_action("scrollIntoView", selector=selector)
-                success, error = self._execute_action("click", selector=selector)
+                self._execute_action(
+                    "scrollIntoView",
+                    selector=selector or None,
+                    ref_id=resolved_ref_id or None,
+                )
+                success, error = self._execute_action(
+                    "click",
+                    selector=selector or None,
+                    ref_id=resolved_ref_id or None,
+                )
                 if did_open_menu:
                     close_selector = self._find_close_menu_selector(page_state)
                     if close_selector:
@@ -2248,14 +2675,14 @@ JSON 응답:"""
                 # 입력값 결정
                 value = self._determine_input_value(action, decision.input_values)
                 success, error = self._execute_action(
-                    "fill", selector=selector, value=value
+                    "fill",
+                    selector=selector or None,
+                    ref_id=resolved_ref_id or None,
+                    value=value,
                 )
 
                 # 셀렉터 실패 시 좌표 기반 입력 fallback
                 if not success:
-                    element_state = self._find_element_by_id(
-                        action.element_id, page_state
-                    )
                     bounding_box = element_state.bounding_box if element_state else None
                     if bounding_box:
                         center_x = bounding_box.get("center_x")
@@ -2281,10 +2708,17 @@ JSON 응답:"""
                             )
             elif action.action_type == "select":
                 success, error = self._execute_action(
-                    "select", selector=selector, value="1"
+                    "select",
+                    selector=selector or None,
+                    ref_id=resolved_ref_id or None,
+                    value="1",
                 )
             elif action.action_type == "hover":
-                success, error = self._execute_action("hover", selector=selector)
+                success, error = self._execute_action(
+                    "hover",
+                    selector=selector or None,
+                    ref_id=resolved_ref_id or None,
+                )
             else:
                 success, error = False, f"지원하지 않는 액션: {action.action_type}"
 
@@ -2379,6 +2813,7 @@ JSON 응답:"""
             "press",
             "hover",
             "scroll",
+            "scrollIntoView",
             "select",
             "dragAndDrop",
             "dragSlider",
@@ -2437,8 +2872,7 @@ JSON 응답:"""
                         "ref_id_used": str(data.get("ref_id_used") or ""),
                     }
                     return True, None
-                reason_code = data.get("reason_code") or "unknown_error"
-                reason = data.get("reason") or data.get("message") or data.get("detail") or "Unknown error"
+                reason_code, reason = extract_reason_fields(data, response.status_code)
                 if str(reason_code) in {
                     "snapshot_not_found",
                     "stale_snapshot",
@@ -2447,10 +2881,31 @@ JSON 응답:"""
                     "ambiguous_ref_target",
                     "no_state_change",
                     "not_actionable",
+                    "http_400",
                 }:
                     _ = self._analyze_dom()
-                    refreshed_ref_id = self._selector_to_ref_id.get(selector) if selector else None
-                    if refreshed_ref_id and self._active_snapshot_id:
+                    refreshed_ref_id = resolved_ref_id
+                    if selector:
+                        refreshed_ref_id = (
+                            self._selector_to_ref_id.get(selector) or refreshed_ref_id
+                        )
+                    should_retry = (
+                        bool(refreshed_ref_id and self._active_snapshot_id)
+                        and (
+                            str(reason_code)
+                            in {
+                                "snapshot_not_found",
+                                "stale_snapshot",
+                                "ref_required",
+                                "not_found",
+                                "ambiguous_ref_target",
+                                "http_400",
+                            }
+                            or str(refreshed_ref_id)
+                            != str(ref_params.get("ref_id") or "")
+                        )
+                    )
+                    if should_retry:
                         retry_params: Dict[str, object] = dict(ref_params)
                         retry_params["snapshot_id"] = self._active_snapshot_id
                         retry_params["ref_id"] = refreshed_ref_id
@@ -2474,8 +2929,12 @@ JSON 응답:"""
                             }
                             self._log("♻️ stale/ref 오류 복구: 최신 snapshot/ref 재매핑 후 재시도 성공")
                             return True, None
-                        reason_code = retry_data.get("reason_code") or reason_code
-                        reason = retry_data.get("reason") or retry_data.get("message") or retry_data.get("detail") or reason
+                        retry_reason_code, retry_reason = extract_reason_fields(
+                            retry_data,
+                            retry_response.status_code,
+                        )
+                        reason_code = retry_reason_code or reason_code
+                        reason = retry_reason or reason
                 self._last_exec_meta = {
                     "reason_code": str(reason_code),
                     "reason": str(reason),
@@ -2490,12 +2949,12 @@ JSON 응답:"""
             except Exception as exc:
                 self._last_exec_meta = {
                     "reason_code": "request_exception",
-                    "reason": str(exc),
+                    "reason": add_no_retry_hint(str(exc)),
                     "effective": False,
                     "state_change": {},
                     "attempt_logs": [],
                 }
-                return False, str(exc)
+                return False, add_no_retry_hint(str(exc))
 
         params: Dict[str, object] = {
             "session_id": self.session_id,
@@ -2554,12 +3013,105 @@ JSON 응답:"""
         except Exception as e:
             self._last_exec_meta = {
                 "reason_code": "request_exception",
-                "reason": str(e),
+                "reason": add_no_retry_hint(str(e)),
                 "effective": False,
                 "state_change": {},
                 "attempt_logs": [],
             }
-            return False, str(e)
+            return False, add_no_retry_hint(str(e))
+
+    def _select_loop_escape_action(
+        self,
+        page_state: PageState,
+        blocked_action: Optional[TestableAction],
+    ) -> Optional[TestableAction]:
+        candidates = self._generate_testable_actions(page_state)
+        if not candidates:
+            return None
+        blocked_element = str(blocked_action.element_id or "") if blocked_action else ""
+        blocked_type = str(blocked_action.action_type or "") if blocked_action else ""
+
+        ranked = sorted(candidates, key=lambda item: float(item.priority), reverse=True)
+        for candidate in ranked:
+            if str(candidate.element_id or "") == blocked_element:
+                continue
+            if str(candidate.action_type or "") == blocked_type:
+                continue
+            if str(candidate.action_type or "") == "select":
+                desc = str(candidate.description or "").strip()
+                if not desc or desc.endswith(":") or desc.endswith("："):
+                    continue
+            return candidate
+        return None
+
+    def _loop_guard_tool_name(
+        self,
+        action: Optional[TestableAction],
+        page_state: PageState,
+    ) -> str:
+        if action is None:
+            return "none"
+        element = self._find_element_by_id(str(action.element_id), page_state)
+        tag = (element.tag or "").strip().lower() if element else ""
+        role = (element.role or "").strip().lower() if element else ""
+        bucket = tag or role or "generic"
+        return f"{str(action.action_type or 'unknown').strip().lower()}:{bucket}"
+
+    def _force_context_shift(self, page_state: PageState, start_url: str) -> bool:
+        self._log("🧭 loop_guard 임계치: 컨텍스트 강제 전환(재스냅샷 + phase shift)")
+        _ = self._analyze_dom()
+
+        nav_candidates = self._build_navigation_actions(page_state)
+        nav_candidates.sort(key=lambda item: float(item.priority), reverse=True)
+        for nav_action in nav_candidates[:2]:
+            target_url = self._resolve_navigation_target(nav_action.element_id, page_state.url)
+            if not target_url:
+                continue
+            ok, err = self._execute_action("goto", url=target_url)
+            if not ok:
+                self._log(f"⚠️ context shift navigate 실패: {err}")
+                continue
+            time.sleep(1.0)
+            shifted_state = self._analyze_current_page()
+            if shifted_state:
+                previous_phase = self._runtime_phase
+                self._runtime_phase = self._infer_runtime_phase(shifted_state)
+                self._no_progress_counter = 0
+                self._current_state_key = None
+                self._log(
+                    f"🔄 phase shift: {previous_phase} -> {self._runtime_phase} "
+                    f"(url={shifted_state.url})"
+                )
+                return True
+
+        fallback_urls = []
+        if page_state.url:
+            fallback_urls.append(page_state.url)
+        if start_url and start_url not in fallback_urls:
+            fallback_urls.append(start_url)
+        if self._current_url and self._current_url not in fallback_urls:
+            fallback_urls.append(self._current_url)
+
+        for fallback_url in fallback_urls:
+            ok, err = self._execute_action("goto", url=fallback_url)
+            if not ok:
+                self._log(f"⚠️ context shift re-sync 실패: {err}")
+                continue
+            time.sleep(1.0)
+            shifted_state = self._analyze_current_page()
+            if shifted_state:
+                previous_phase = self._runtime_phase
+                self._runtime_phase = self._infer_runtime_phase(shifted_state)
+                self._no_progress_counter = 0
+                self._current_state_key = None
+                self._log(
+                    f"🔄 phase shift(resync): {previous_phase} -> {self._runtime_phase} "
+                    f"(url={shifted_state.url})"
+                )
+                return True
+
+        self._log("⚠️ 컨텍스트 전환 실패: 기존 전략으로 계속 진행합니다.")
+        return False
 
     def _evaluate_selector(self, selector: str, script: str) -> Optional[str]:
         wrapped_fn = (
@@ -2795,11 +3347,12 @@ JSON 응답:"""
     def _create_error_issue(
         self,
         action: TestableAction,
-        error_logs: List[str],
+        error_logs: List[Any],
         url: str,
     ) -> FoundIssue:
         """콘솔 에러 이슈 생성"""
         issue_id = f"ERR_{int(time.time())}_{len(self._found_issues)}"
+        normalized_logs = [str(item) for item in error_logs]
 
         return FoundIssue(
             issue_id=issue_id,
@@ -2807,14 +3360,14 @@ JSON 응답:"""
             severity="high",
             title=f"JavaScript 에러 발생: {action.description}",
             description=f"액션 실행 후 콘솔 에러가 발생했습니다.\n\n에러 로그:\n"
-            + "\n".join(error_logs[:5]),
+            + "\n".join(normalized_logs[:5]),
             url=url,
             steps_to_reproduce=[
                 f"1. {url}로 이동",
                 f"2. {action.description}를 {action.action_type}",
             ],
-            error_message=error_logs[0] if error_logs else None,
-            console_logs=error_logs,
+            error_message=normalized_logs[0] if normalized_logs else None,
+            console_logs=normalized_logs,
         )
 
     def _create_action_failure_issue(
@@ -3054,8 +3607,15 @@ JSON 응답:"""
         self,
         action_count: int,
         steps: List[ExplorationStep],
+        duration_seconds: float = 0.0,
     ) -> str:
         """탐색 종료 이유 결정"""
+        if (
+            self.config.loop_mode == "time"
+            and int(self.config.time_budget_seconds or 0) > 0
+            and duration_seconds >= int(self.config.time_budget_seconds)
+        ):
+            return f"시간 예산 도달 ({int(self.config.time_budget_seconds)}s)"
         if action_count >= self.config.max_actions:
             return f"최대 액션 수 도달 ({self.config.max_actions})"
         elif steps and not steps[-1].decision.should_continue:

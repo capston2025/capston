@@ -41,6 +41,7 @@ class CommandResult:
     status: str = "ok"
     output: str = ""
     attachments: list[dict] = field(default_factory=list)
+    data: dict[str, Any] = field(default_factory=dict)
 
 
 class HubSink(Protocol):
@@ -65,6 +66,7 @@ def _help_text() -> str:
         "/help                           도움말\n"
         "/test <자연어 목표>              목표 기반 테스트 1회 실행\n"
         "/ai [max_actions]                자율 탐색 실행\n"
+        "/autonomous [minutes]            시간 예산 기반 자율 사이트 검증\n"
         "/plan                            GUI plan 모드 열기\n"
         "/plan spec <pdf-path>            GUI plan + spec 주입\n"
         "/plan plan <json-path>           GUI plan + plan 주입\n"
@@ -176,6 +178,80 @@ def _parse_value(text: str):
         except Exception:
             return raw
     return raw
+
+
+def _normalize_result_status(result: CommandResult) -> str:
+    status = str(result.status or "").strip().lower()
+    if status in {"exit", "empty"}:
+        return status
+    if status in {"error", "failed", "success"}:
+        return status
+    return "success" if int(result.code or 0) == 0 else "failed"
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _build_reason_code_summary(detail: Dict[str, Any]) -> Dict[str, int]:
+    summary = detail.get("reason_code_summary")
+    if isinstance(summary, dict):
+        out: Dict[str, int] = {}
+        for k, v in summary.items():
+            key = str(k or "").strip()
+            if not key:
+                continue
+            out[key] = _as_int(v)
+        if out:
+            return out
+    reason_code = str(detail.get("reason_code") or "").strip()
+    if reason_code:
+        return {reason_code: 1}
+    return {}
+
+
+def build_command_payload(
+    context: HubContext,
+    raw_command: str,
+    result: CommandResult,
+) -> Dict[str, Any]:
+    data = result.data if isinstance(result.data, dict) else {}
+    command = str(raw_command or "").strip()
+    status = _normalize_result_status(result)
+
+    payload: Dict[str, Any] = {
+        "command": command,
+        "status": str(data.get("status") or status),
+        "goal": str(data.get("goal") or ""),
+        "steps": _as_int(data.get("steps")),
+        "reason": str(data.get("reason") or ""),
+        "duration": _as_float(data.get("duration")),
+        "reason_code_summary": (
+            data.get("reason_code_summary")
+            if isinstance(data.get("reason_code_summary"), dict)
+            else {}
+        ),
+        "attachments": list(result.attachments or []),
+        "exit_code": _as_int(result.code),
+        "runtime": context.runtime,
+        "url": context.url,
+        "session_id": context.session_id,
+    }
+    if result.output:
+        payload["output"] = result.output
+    if not payload["goal"] and command.startswith("/test "):
+        payload["goal"] = command[6:].strip()
+    return payload
 
 
 def _notify_session_update(context: HubContext) -> None:
@@ -363,10 +439,18 @@ def _run_test(
     return code, summary
 
 
-def _run_ai(context: HubContext, max_actions: int = 50) -> int:
+def _run_ai(
+    context: HubContext,
+    max_actions: int = 50,
+    *,
+    time_budget_seconds: int | None = None,
+) -> int:
     runtime = "terminal" if context.control_channel == "telegram" else context.runtime
     if runtime == "gui":
-        return _run_gui("--mode", "ai", "--url", context.url)
+        if time_budget_seconds and int(time_budget_seconds) > 0:
+            runtime = "terminal"
+        else:
+            return _run_gui("--mode", "ai", "--url", context.url, "--max-actions", str(max_actions))
 
     from gaia.terminal import run_ai_terminal
 
@@ -374,6 +458,7 @@ def _run_ai(context: HubContext, max_actions: int = 50) -> int:
         url=context.url,
         max_actions=max_actions,
         session_id=context.session_id,
+        time_budget_seconds=time_budget_seconds,
     )
 
 
@@ -646,6 +731,9 @@ def dispatch_command(
             return CommandResult(code=2, status="error", output="테스트 목표를 입력해주세요.")
         t0 = time.time()
         code, detail = _run_test(context, query, sink, intervention_callback=intervention_callback)
+        status_text = str(detail.get("status") or ("success" if code == 0 else "failed"))
+        duration_value = _as_float(detail.get("duration_seconds"))
+        reason_summary = _build_reason_code_summary(detail)
         _record_summary(
             memory_store,
             context=context,
@@ -686,24 +774,103 @@ def dispatch_command(
             shot = _capture_session_screenshot_attachment(context.session_id)
             if shot is not None:
                 attachments.append(shot)
-        return CommandResult(code=code, output="\n".join(lines), attachments=attachments)
+        return CommandResult(
+            code=code,
+            output="\n".join(lines),
+            attachments=attachments,
+            data={
+                "goal": detail.get("goal") or query,
+                "status": status_text,
+                "steps": detail.get("steps"),
+                "reason": detail.get("reason") or "",
+                "duration": duration_value,
+                "reason_code_summary": reason_summary,
+            },
+        )
 
     if line.startswith("/ai"):
+        time_budget_seconds: int | None = None
         max_actions = 50
-        parts = line.split(maxsplit=1)
+        parts = line.split()
         if len(parts) == 2 and parts[1].strip().isdigit():
             max_actions = max(1, int(parts[1].strip()))
+        elif len(parts) >= 3 and parts[1].strip().lower() in {"time", "auto", "autonomous"} and parts[2].strip().isdigit():
+            time_budget_seconds = max(60, int(parts[2].strip()))
         t0 = time.time()
-        code = _run_ai(context, max_actions=max_actions)
+        code = _run_ai(
+            context,
+            max_actions=max_actions,
+            time_budget_seconds=time_budget_seconds,
+        )
         _record_summary(
             memory_store,
             context=context,
             command="/ai",
             status="success" if code == 0 else "failed",
-            summary=f"max_actions={max_actions}, exit_code={code}, duration={time.time() - t0:.2f}s",
-            metadata={"max_actions": max_actions, "exit_code": code},
+            summary=(
+                f"max_actions={max_actions}, time_budget_seconds={time_budget_seconds}, "
+                f"exit_code={code}, duration={time.time() - t0:.2f}s"
+            ),
+            metadata={
+                "max_actions": max_actions,
+                "time_budget_seconds": time_budget_seconds,
+                "exit_code": code,
+            },
         )
-        return CommandResult(code=code, output=f"실행 종료 코드: {code}")
+        return CommandResult(
+            code=code,
+            output=f"실행 종료 코드: {code}",
+            data={
+                "goal": "autonomous_exploration",
+                "status": "success" if code == 0 else "failed",
+                "steps": 0,
+                "reason": "",
+                "duration": time.time() - t0,
+                "reason_code_summary": {},
+            },
+        )
+
+    if line.startswith("/autonomous"):
+        minutes = 30
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and parts[1].strip().isdigit():
+            minutes = max(1, int(parts[1].strip()))
+        time_budget_seconds = max(60, minutes * 60)
+        t0 = time.time()
+        code = _run_ai(
+            context,
+            max_actions=10_000_000,
+            time_budget_seconds=time_budget_seconds,
+        )
+        _record_summary(
+            memory_store,
+            context=context,
+            command="/autonomous",
+            status="success" if code == 0 else "failed",
+            summary=(
+                f"time_budget_seconds={time_budget_seconds}, exit_code={code}, "
+                f"duration={time.time() - t0:.2f}s"
+            ),
+            metadata={
+                "time_budget_seconds": time_budget_seconds,
+                "exit_code": code,
+            },
+        )
+        return CommandResult(
+            code=code,
+            output=(
+                f"자율 사이트 검증 실행 종료 코드: {code}\n"
+                f"time_budget_seconds: {time_budget_seconds}"
+            ),
+            data={
+                "goal": "time_budget_autonomous_validation",
+                "status": "success" if code == 0 else "failed",
+                "steps": 0,
+                "reason": "",
+                "duration": time.time() - t0,
+                "reason_code_summary": {},
+            },
+        )
 
     if line.startswith("/plan"):
         raw = line[5:].strip()
@@ -718,7 +885,18 @@ def dispatch_command(
             summary=f"args={raw or '(none)'}, exit_code={code}",
             metadata={"args": raw, "exit_code": code},
         )
-        return CommandResult(code=code, output=f"실행 종료 코드: {code}")
+        return CommandResult(
+            code=code,
+            output=f"실행 종료 코드: {code}",
+            data={
+                "goal": "plan_mode",
+                "status": "success" if code == 0 else "failed",
+                "steps": 0,
+                "reason": "",
+                "duration": 0.0,
+                "reason_code_summary": {},
+            },
+        )
 
     return CommandResult(code=2, status="error", output="알 수 없는 명령입니다. /help를 확인하세요.")
 

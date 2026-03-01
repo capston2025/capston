@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gaia.chat_hub import HubContext, dispatch_command
+from gaia.chat_hub import HubContext, build_command_payload, dispatch_command
 from gaia.src.phase4.memory.store import MemoryStore
 
 
@@ -453,15 +453,10 @@ class _TelegramBridge:
                     self.memory_store,
                     intervention_cb,
                 )
-                lines = [f"command: {item.raw_command[:120]}", f"status: {result.status}"]
-                lines.extend(sink.lines)
-                if result.output:
-                    lines.append(result.output)
-                if not any("exit_code" in line for line in lines):
-                    lines.append(f"exit_code={result.code}")
-                payload = "\n".join(line for line in lines if line).strip()
-                if not payload:
-                    payload = "완료"
+                payload_obj = build_command_payload(self.hub_context, item.raw_command, result)
+                if sink.lines:
+                    payload_obj["logs"] = sink.lines
+                payload = json.dumps(payload_obj, ensure_ascii=False, indent=2)
                 await self._send_text(application.bot, item.chat_id, payload, item.reply_to_message_id)
                 if result.attachments:
                     await self._send_attachments(

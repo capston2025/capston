@@ -1,0 +1,16 @@
+{
+  "id": "SCN_008_STALE_RECOVERY",
+  "url": "https://inuu-timetable.vercel.app/",
+  "goal": "stale snapshot 상황에서 재스냅샷/재매핑으로 실행이 복구되는지 확인한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "stale_snapshot",
+    "stale_ref_recovered"
+  ],
+  "time_budget_sec": 420
+}
+

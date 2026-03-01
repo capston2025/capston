@@ -1,0 +1,16 @@
+{
+  "id": "SCN_009_SESSION_REUSE",
+  "url": "https://example.com",
+  "goal": "동일 session_key 재실행 시 상태/탭 컨텍스트가 재사용되는지 확인한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": false
+  },
+  "expected_signals": [
+    "session_reused",
+    "active_sessions"
+  ],
+  "time_budget_sec": 180
+}
+

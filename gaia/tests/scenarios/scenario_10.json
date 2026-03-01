@@ -1,0 +1,15 @@
+{
+  "id": "SCN_010_HUMAN_HANDOFF",
+  "url": "https://inuu-timetable.vercel.app/",
+  "goal": "사용자 개입이 필요한 상황에서 질문-응답-재개 흐름이 유지되는지 확인한다.",
+  "constraints": {
+    "allow_navigation": true,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "handoff_requested",
+    "handoff_resumed"
+  ],
+  "time_budget_sec": 480
+}

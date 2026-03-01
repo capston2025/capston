@@ -1,0 +1,16 @@
+{
+  "id": "SCN_003_DETAIL_OVERLAY",
+  "url": "https://www.gamegoo.co.kr/",
+  "goal": "게시글 행 클릭 시 상세 오버레이가 열리고 핵심 텍스트가 보이는지 확인한다.",
+  "constraints": {
+    "allow_navigation": false,
+    "require_ref_only": true,
+    "require_state_change": true
+  },
+  "expected_signals": [
+    "modal_open",
+    "new_panel_visible"
+  ],
+  "time_budget_sec": 420
+}
+

@@ -71,6 +71,7 @@ REASON_CODES = {
     "stale_ref_recovered",
     "not_found",
     "not_actionable",
+    "modal_not_open",
     "no_state_change",
     "ambiguous_target_id",
     "action_timeout",
