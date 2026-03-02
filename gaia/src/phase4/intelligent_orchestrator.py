@@ -14,6 +14,28 @@ from typing import Any, Dict, List, Optional, Sequence
 import requests
 
 from gaia.src.phase4.llm_vision_client import LLMVisionClient, get_vision_client
+from gaia.src.phase4.orchestrator_healed_cache import (
+    get_healed_selector as get_healed_selector_from_cache,
+    load_healed_selector_cache as load_healed_selector_cache_from_disk,
+    save_healed_selectors as save_healed_selectors_to_disk,
+)
+from gaia.src.phase4.orchestrator_matching import (
+    detect_aria_roles as detect_aria_roles_impl,
+    disambiguate_aria_matches as disambiguate_aria_matches_impl,
+    offline_fuzzy_semantic_match as offline_fuzzy_semantic_match_impl,
+    try_aria_matching as try_aria_matching_impl,
+    try_pure_semantic_matching as try_pure_semantic_matching_impl,
+    try_semantic_matching as try_semantic_matching_impl,
+    verify_semantic_match_with_llm as verify_semantic_match_with_llm_impl,
+)
+from gaia.src.phase4.orchestrator_utils import (
+    build_cache_key,
+    load_json_file,
+    local_embedding,
+    normalize_text,
+    save_json_file,
+    token_overlap,
+)
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG, MCPConfig
 from gaia.src.utils.models import DomElement, TestScenario, TestStep
@@ -1870,7 +1892,7 @@ Return JSON (no markdown):
             try:
                 exception_screenshot = self._capture_screenshot(None, send_to_gui=False) if 'after_scenario_screenshot' not in locals() else after_scenario_screenshot
                 exception_url = current_url if 'current_url' in locals() else ""
-            except:
+            except Exception:
                 exception_screenshot = ""
                 exception_url = ""
 
@@ -2660,9 +2682,8 @@ Respond with JSON only:
     def _load_cache(self) -> None:
         """Load selector cache from disk."""
         try:
-            if os.path.exists(self.cache_file):
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    self.selector_cache = json.load(f)
+            self.selector_cache = load_json_file(self.cache_file)
+            if self.selector_cache:
                 # Clean old entries (older than 7 days)
                 current_time = time.time()
                 self.selector_cache = {
@@ -2677,9 +2698,7 @@ Respond with JSON only:
     def _save_cache(self) -> None:
         """Save selector cache to disk."""
         try:
-            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self.selector_cache, f, indent=2, ensure_ascii=False)
+            save_json_file(self.cache_file, self.selector_cache, ensure_ascii=False)
         except Exception as e:
             print(f"[Cache] Failed to save cache: {e}")
 
@@ -2699,49 +2718,25 @@ Respond with JSON only:
         if not healed:
             return
 
-        # Load existing healed selector cache
-        healed_cache_file = os.path.join(
-            os.path.dirname(self.cache_file), "healed_selector_cache.json"
-        )
-
         try:
-            if os.path.exists(healed_cache_file):
-                with open(healed_cache_file, 'r', encoding='utf-8') as f:
-                    healed_cache = json.load(f)
-            else:
-                healed_cache = {}
-
-            # Add/update healed selectors for this scenario
-            if scenario_id not in healed_cache:
-                healed_cache[scenario_id] = {}
-
-            for original, healed_selector in healed.items():
-                healed_cache[scenario_id][original] = {
-                    "healed_selector": healed_selector,
-                    "timestamp": time.time(),
-                    "success_count": healed_cache.get(scenario_id, {}).get(original, {}).get("success_count", 0) + 1
-                }
-
-            # Save to file
-            os.makedirs(os.path.dirname(healed_cache_file), exist_ok=True)
-            with open(healed_cache_file, 'w', encoding='utf-8') as f:
-                json.dump(healed_cache, f, indent=2, ensure_ascii=False)
-
-            self._log(f"  💾 Saved {len(healed)} healed selector(s) to cache", progress_callback)
-            print(f"[Healed Cache] Saved {len(healed)} healed selectors for {scenario_id}")
+            saved_count, healed_cache = save_healed_selectors_to_disk(
+                self.cache_file,
+                scenario_id,
+                healed,
+            )
+            if healed_cache:
+                self.healed_selector_cache = healed_cache
+            self._log(f"  💾 Saved {saved_count} healed selector(s) to cache", progress_callback)
+            print(f"[Healed Cache] Saved {saved_count} healed selectors for {scenario_id}")
 
         except Exception as e:
             print(f"[Healed Cache] Failed to save: {e}")
 
     def _load_healed_selector_cache(self) -> None:
         """Load healed selector cache from disk."""
-        healed_cache_file = os.path.join(
-            os.path.dirname(self.cache_file), "healed_selector_cache.json"
-        )
         try:
-            if os.path.exists(healed_cache_file):
-                with open(healed_cache_file, 'r', encoding='utf-8') as f:
-                    self.healed_selector_cache = json.load(f)
+            self.healed_selector_cache = load_healed_selector_cache_from_disk(self.cache_file)
+            if self.healed_selector_cache:
                 total_selectors = sum(len(v) for v in self.healed_selector_cache.values())
                 print(f"[Healed Cache] Loaded {total_selectors} healed selectors for {len(self.healed_selector_cache)} scenarios")
         except Exception as e:
@@ -2759,14 +2754,11 @@ Respond with JSON only:
         Returns:
             Healed selector if found in cache, None otherwise
         """
-        if scenario_id not in self.healed_selector_cache:
-            return None
-
-        if original_selector not in self.healed_selector_cache[scenario_id]:
-            return None
-
-        cached = self.healed_selector_cache[scenario_id][original_selector]
-        return cached.get("healed_selector")
+        return get_healed_selector_from_cache(
+            self.healed_selector_cache,
+            scenario_id,
+            original_selector,
+        )
 
     def _get_cache_key(self, step_description: str, action: str, page_url: str, dom_context: str = "") -> str:
         """
@@ -2781,14 +2773,7 @@ Respond with JSON only:
         Returns:
             MD5 hash of the cache key
         """
-        # Normalize URL (keep hash for SPA, just remove trailing slash)
-        # SPA에서 해시가 다르면 완전히 다른 페이지이므로 해시 유지 필요!
-        normalized_url = page_url.rstrip('/')
-
-        # Include DOM context in cache key to differentiate between different UI states
-        # e.g., login tab vs signup tab on the same page
-        key_string = f"{step_description}|{action}|{normalized_url}|{dom_context}"
-        return hashlib.md5(key_string.encode('utf-8')).hexdigest()
+        return build_cache_key(step_description, action, page_url, dom_context)
 
     def _detect_dom_context(self, dom_elements: List[DomElement]) -> str:
         """
@@ -2832,298 +2817,34 @@ Respond with JSON only:
         return "|".join(context_parts)
 
     def _detect_aria_roles(self, step_description: str, dom_elements: List[DomElement]) -> Dict[str, List[DomElement]]:
-        """
-        Detect ALL elements matching ARIA roles mentioned in step description.
-        Returns ALL matches, not just the first one (for disambiguation).
-
-        Args:
-            step_description: Natural language step description
-            dom_elements: Available DOM elements
-
-        Returns:
-            Dict mapping role names to lists of matching elements
-        """
-        desc_lower = step_description.lower()
-        matches = {}
-
-        # Define ARIA role keywords and their corresponding roles
-        role_keywords = {
-            'switch': (['toggle', 'switch', '스위치', '토글'], 'switch'),
-            'slider': (['slider', 'range', '슬라이더'], 'slider'),
-            'dialog': (['dialog', 'modal', '다이얼로그', '모달', 'popup', '팝업'], 'dialog'),
-            'checkbox': (['checkbox', '체크박스', 'check'], 'checkbox'),
-            'radio': (['radio', '라디오'], 'radio'),
-            'tab': (['tab', '탭'], 'tab'),
-            'menu': (['menu', '메뉴', 'dropdown', '드롭다운'], 'menu'),
-            'combobox': (['combobox', 'autocomplete', 'select', '선택', '자동완성'], 'combobox'),
-            'searchbox': (['search', '검색'], 'searchbox'),
-        }
-
-        # Check each role type
-        for role_name, (keywords, aria_role) in role_keywords.items():
-            if any(keyword in desc_lower for keyword in keywords):
-                # Find ALL elements with this ARIA role
-                matching_elements = [
-                    elem for elem in dom_elements
-                    if elem.attributes and elem.attributes.get('role') == aria_role
-                ]
-                if matching_elements:
-                    matches[role_name] = matching_elements
-
-        return matches
+        return detect_aria_roles_impl(step_description, dom_elements)
 
     def _disambiguate_aria_matches(self, role_name: str, matches: List[DomElement],
                                    step_description: str, action: str) -> Dict[str, Any] | None:
-        """
-        Disambiguate when multiple elements match the same ARIA role.
-        Uses text matching → semantic matching → returns candidates for LLM.
-
-        Args:
-            role_name: ARIA role type (e.g., 'switch', 'slider')
-            matches: List of elements with this ARIA role
-            step_description: Step description
-            action: Action type
-
-        Returns:
-            Dict with selector/confidence/reasoning if disambiguated, None if needs LLM
-        """
-        import numpy as np
-
-        # Single match - check if navigation is needed
-        if len(matches) == 1:
-            # Check if step mentions navigation keywords
-            nav_keywords = ['navigate', 'go to', 'open', '이동', '가기', '열기']
-            needs_navigation = any(kw in step_description.lower() for kw in nav_keywords)
-
-            # If navigation mentioned, let LLM handle the full context
-            if needs_navigation:
-                return None
-
-            # Otherwise, safe to use the single match
-            selector = f'[role="{matches[0].attributes.get("role")}"]'
-            return {
-                "selector": selector,
-                "action": "click" if action != "fill" else "fill",
-                "reasoning": f"ARIA role match: Single {role_name} found (role='{matches[0].attributes.get('role')}')",
-                "confidence": 95
-            }
-
-        # Multiple matches - try text-based disambiguation
-        print(f"[ARIA Disambiguate] Found {len(matches)} {role_name} elements")
-
-        # Stage 1: Exact text match
-        # PRIORITY: Handle elements without text FIRST (e.g., switch with sibling label)
-        import re
-        text_keywords = re.findall(r'[가-힣]{2,}|[A-Za-z]{3,}', step_description)
-
-        # First pass: Check for elements WITHOUT text (need sibling traversal)
-        for elem in matches:
-            if not elem.text or not elem.text.strip():
-                # Try to find label text in description
-                for keyword in sorted(text_keywords, key=len, reverse=True):
-                    if len(keyword) >= 2:  # Min 2 chars
-                        # Use Playwright's sibling traversal: text >> .. >> .. >> [role="switch"]
-                        selector = f'text="{keyword}" >> .. >> .. >> [role="{elem.attributes.get("role")}"]'
-                        print(f"[ARIA Disambiguate] Using sibling traversal for {role_name}: {selector}")
-                        return {
-                            "selector": selector,
-                            "action": "click" if action != "fill" else "fill",
-                            "reasoning": f"ARIA + sibling label match: {role_name} with label '{keyword}'",
-                            "confidence": 85
-                        }
-
-        # Second pass: Check for elements WITH text
-        for elem in matches:
-            if elem.text and elem.text.strip() in step_description:
-                selector = f'[role="{elem.attributes.get("role")}"]:has-text("{elem.text}")'
-                print(f"[ARIA Disambiguate] Using text match for {role_name}: {selector}")
-                return {
-                    "selector": selector,
-                    "action": "click" if action != "fill" else "fill",
-                    "reasoning": f"ARIA + text match: {role_name} with text '{elem.text}'",
-                    "confidence": 90
-                }
-
-        # Stage 2: Semantic matching on elements with text
-        elements_with_text = [elem for elem in matches if elem.text and elem.text.strip()]
-
-        if elements_with_text:
-            desc_embedding = self._get_embedding(step_description)
-            if desc_embedding is not None:
-                best_match = None
-                best_similarity = 0.0
-
-                for elem in elements_with_text:
-                    elem_embedding = self._get_embedding(elem.text)
-                    if elem_embedding is None:
-                        continue
-
-                    similarity = np.dot(desc_embedding, elem_embedding) / (
-                        np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
-                    )
-
-                    if similarity > best_similarity:
-                        best_similarity = similarity
-                        best_match = elem
-
-                # If high similarity, use it
-                if best_match and best_similarity >= 0.80:
-                    selector = f'[role="{best_match.attributes.get("role")}"]:has-text("{best_match.text}")'
-                    return {
-                        "selector": selector,
-                        "action": "click" if action != "fill" else "fill",
-                        "reasoning": f"ARIA + semantic match: {role_name} '{best_match.text}' (similarity: {best_similarity:.2f})",
-                        "confidence": int(best_similarity * 100)
-                    }
-
-        # Stage 3: Unable to disambiguate - return None to fall back to LLM
-        # LLM will receive the filtered list via vision + DOM analysis
-        print(f"[ARIA Disambiguate] Unable to disambiguate {len(matches)} {role_name} elements, falling back to LLM")
-        return None
+        return disambiguate_aria_matches_impl(
+            self,
+            role_name,
+            matches,
+            step_description,
+            action,
+        )
 
     def _try_aria_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
-        """
-        ARIA role-based matching (병렬 실행용 분리 함수).
-        """
-        try:
-            aria_matches = self._detect_aria_roles(step_description, dom_elements)
-
-            if aria_matches:
-                for role_name, elements in aria_matches.items():
-                    result = self._disambiguate_aria_matches(role_name, elements, step_description, action)
-                    if result:
-                        return result
-            return None
-        except Exception as e:
-            print(f"[ARIA Match] Error: {e}")
-            return None
+        return try_aria_matching_impl(self, step_description, dom_elements, action)
 
     def _try_pure_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str) -> Dict[str, Any] | None:
-        """
-        Embedding-based semantic matching (병렬 실행용 분리 함수).
-        """
-        try:
-            try:
-                import numpy as np
-            except ImportError:
-                print("[Semantic Match] Warning: numpy not available, skipping semantic matching")
-                return None
-
-            desc_embedding = self._get_embedding(step_description)
-            if desc_embedding is None:
-                return self._offline_fuzzy_semantic_match(step_description, dom_elements, action)
-
-            best_match = None
-            best_similarity = 0.0
-            SIMILARITY_THRESHOLD = 0.82
-
-            for elem in dom_elements:
-                elem_text = elem.text.strip()
-                if not elem_text or len(elem_text) < 2:
-                    continue
-
-                elem_embedding = self._get_embedding(elem_text)
-                if elem_embedding is None:
-                    continue
-
-                similarity = np.dot(desc_embedding, elem_embedding) / (
-                    np.linalg.norm(desc_embedding) * np.linalg.norm(elem_embedding)
-                )
-
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_match = elem
-
-            if best_match and best_similarity >= SIMILARITY_THRESHOLD:
-                element_type = best_match.tag if best_match.tag in ['button', 'a', 'input', 'select', 'textarea'] else 'button'
-                selector = f'{element_type}:has-text("{best_match.text}")'
-                confidence = int(best_similarity * 100)
-
-                return {
-                    "selector": selector,
-                    "action": action,
-                    "reasoning": f"Semantic match: '{step_description[:50]}' → '{best_match.text}' (similarity: {best_similarity:.2f})",
-                    "confidence": confidence
-                }
-
-            return self._offline_fuzzy_semantic_match(step_description, dom_elements, action)
-
-        except Exception as e:
-            print(f"[Semantic Match] Error: {e}")
-            return None
+        return try_pure_semantic_matching_impl(self, step_description, dom_elements, action)
 
     def _try_semantic_matching(self, step_description: str, dom_elements: List[DomElement], action: str,
                                 current_url: str = "", screenshot: str = "") -> Dict[str, Any] | None:
-        """
-        병렬 매칭 시스템: ARIA + Semantic을 동시 실행 후, 둘 다 성공하면 LLM이 결과 통합.
-
-        병렬 실행 흐름:
-        1. ARIA detection (빠름, 무료)
-        2. Semantic matching (빠름, 저렴) - TEMPORARILY DISABLED due to dimension mismatch
-        3. 둘 다 성공하면 → LLM Aggregator가 최종 판단 (교차 검증)
-        4. 하나만 성공하면 → 그 결과 사용
-        5. 둘 다 실패하면 → None (메인 로직이 LLM Vision 호출)
-
-        Returns:
-            최종 선택된 셀렉터 결과 또는 None
-        """
-        print("[Parallel Match] ARIA matching only (Semantic DISABLED due to embedding dimension mismatch)")
-
-        # TEMPORARILY DISABLED semantic matching due to dimension mismatch errors (128 vs 1536)
-        # Only using ARIA matching for now
-        aria_result = self._try_aria_matching(step_description, dom_elements, action)
-        semantic_result = None  # Disabled
-
-        print(f"[Parallel Match] ARIA: {aria_result is not None}, Semantic: DISABLED")
-
-        # Case 1: 둘 다 성공 → LLM Aggregator가 최종 판단
-        if aria_result and semantic_result:
-            print(f"[Parallel Match] Both succeeded! ARIA conf={aria_result['confidence']}, Semantic conf={semantic_result['confidence']}")
-
-            # 셀렉터가 같으면 LLM 호출 생략 (확실함)
-            if aria_result['selector'] == semantic_result['selector']:
-                print(f"[Parallel Match] ✅ Both agree on same selector! Using it with high confidence.")
-                aria_result['confidence'] = min(95, aria_result['confidence'] + 10)  # Boost confidence
-                return aria_result
-
-            # 셀렉터가 다르면 LLM에게 물어보기 (교차 검증 필요)
-            print(f"[Parallel Match] ⚠️ Disagreement detected! Calling LLM Aggregator...")
-            print(f"  ARIA: {aria_result['selector']}")
-            print(f"  Semantic: {semantic_result['selector']}")
-
-            # LLM Vision도 실행해서 3-way 교차 검증
-            vision_result = self.llm_client.select_element_for_step(
-                step_description=step_description,
-                dom_elements=dom_elements,
-                screenshot_base64=screenshot,
-                url=current_url
-            )
-
-            # LLM Aggregator 호출
-            final_decision = self.llm_client.aggregate_matching_results(
-                step_description=step_description,
-                aria_result=aria_result,
-                semantic_result=semantic_result,
-                vision_result=vision_result,
-                url=current_url
-            )
-
-            print(f"[Parallel Match] LLM Aggregator decision: {final_decision['selector']} (conf: {final_decision['confidence']})")
-            return final_decision
-
-        # Case 2: ARIA만 성공
-        elif aria_result:
-            print(f"[Parallel Match] Using ARIA only (conf: {aria_result['confidence']})")
-            return aria_result
-
-        # Case 3: Semantic만 성공
-        elif semantic_result:
-            print(f"[Parallel Match] Using Semantic only (conf: {semantic_result['confidence']})")
-            return semantic_result
-
-        # Case 4: 둘 다 실패 → None 리턴 (메인 로직이 LLM Vision 호출)
-        print("[Parallel Match] Both ARIA and Semantic failed, will use LLM Vision")
-        return None
+        return try_semantic_matching_impl(
+            self,
+            step_description,
+            dom_elements,
+            action,
+            current_url=current_url,
+            screenshot=screenshot,
+        )
 
     def _offline_fuzzy_semantic_match(
         self,
@@ -3131,125 +2852,7 @@ Respond with JSON only:
         dom_elements: List[DomElement],
         action: str
     ) -> Dict[str, Any] | None:
-        """
-        Lightweight semantic fallback using text similarity when embeddings are unavailable.
-
-        Enhanced with:
-        - Minimum text length filtering (very short texts penalized)
-        - Position-aware matching (first, second, last)
-        - Interactive element filtering for click/select actions
-        - Stricter confidence thresholds
-        """
-        from difflib import SequenceMatcher
-
-        normalized_desc = self._normalize_text(step_description)
-        if not normalized_desc:
-            return None
-
-        # Extract position keywords
-        position_keywords = ["first", "second", "third", "last"]
-        has_position = any(kw in normalized_desc for kw in position_keywords)
-
-        # Check if action is interactive
-        is_interactive_action = action.lower() in ["click", "select", "choose", "pick"]
-
-        best_match = None
-        best_score = 0.0
-        candidates = []
-
-        for idx, elem in enumerate(dom_elements):
-            elem_text = (elem.text or "").strip()
-
-            # Skip elements with very short text (likely not semantic targets)
-            if len(elem_text) < 3:
-                continue
-
-            normalized_elem = self._normalize_text(elem_text)
-            if not normalized_elem:
-                continue
-
-            # For interactive actions, prefer interactive elements
-            if is_interactive_action:
-                if elem.tag not in ["button", "a", "input", "select", "textarea"]:
-                    continue
-
-            # Sequence similarity baseline
-            score = SequenceMatcher(None, normalized_desc, normalized_elem).ratio()
-
-            # Token overlap bonus
-            overlap = self._token_overlap(normalized_desc, normalized_elem)
-            if overlap:
-                score = max(score, min(0.95, 0.6 + 0.35 * overlap))
-
-            # Boost if text appears verbatim inside the description
-            # But only if element text is substantial (5+ chars)
-            if len(elem_text) >= 5:
-                if normalized_elem in normalized_desc or normalized_desc in normalized_elem:
-                    score = max(score, 0.85)
-
-            # Penalize very short text matches (3-4 chars)
-            if len(elem_text) <= 4:
-                score *= 0.7  # 30% penalty
-
-            if score > best_score:
-                best_score = score
-                best_match = elem
-                candidates.append((score, idx, elem))
-
-        # If position keyword detected, try to respect it
-        if has_position and candidates:
-            candidates.sort(key=lambda x: (-x[0], x[1]))  # Sort by score desc, then by DOM order
-
-            if "first" in normalized_desc and len(candidates) > 0:
-                # Pick first occurrence with decent score (>0.7)
-                for score, idx, elem in candidates:
-                    if score >= 0.7:
-                        best_match = elem
-                        best_score = score
-                        break
-            elif "last" in normalized_desc and len(candidates) > 0:
-                # Pick last occurrence
-                best_match = candidates[-1][2]
-                best_score = candidates[-1][0]
-
-        # Only return if score meets minimum threshold
-        # Balanced threshold (0.70) - strict enough to avoid false positives, flexible enough for valid matches
-        if best_match and best_score >= 0.70:
-            element_type = (
-                best_match.tag
-                if best_match.tag in ["button", "a", "input", "select", "textarea"]
-                else "button"
-            )
-            selector = f'{element_type}:has-text("{best_match.text}")'
-            confidence = max(50, int(best_score * 100))
-
-            print(f"[Semantic Match] Using offline fuzzy fallback (score: {best_score:.2f}, text: '{best_match.text[:30]}')")
-
-            # NEW: LLM verification for ambiguous matches (score < 0.85)
-            # This prevents cases like "필터 버튼" matching "전체 선택"
-            if best_score < 0.85:
-                print(f"[Semantic Match] Score below 0.85, requesting LLM verification...")
-                is_valid = self._verify_semantic_match_with_llm(
-                    step_description=step_description,
-                    matched_text=best_match.text,
-                    matched_element=best_match
-                )
-
-                if not is_valid:
-                    print(f"[Semantic Match] LLM rejected match: '{step_description}' != '{best_match.text}'")
-                    return None
-                else:
-                    print(f"[Semantic Match] LLM confirmed match is valid")
-
-            return {
-                "selector": selector,
-                "action": action,
-                "reasoning": f"Offline fuzzy match: '{step_description[:50]}' → '{best_match.text}'",
-                "confidence": confidence
-            }
-
-        print(f"[Semantic Match] No reliable offline match (best score: {best_score:.2f})")
-        return None
+        return offline_fuzzy_semantic_match_impl(self, step_description, dom_elements, action)
 
     def _verify_semantic_match_with_llm(
         self,
@@ -3257,123 +2860,29 @@ Respond with JSON only:
         matched_text: str,
         matched_element
     ) -> bool:
-        """
-        Use LLM to verify if a semantic match is valid.
-
-        Args:
-            step_description: What the user requested (e.g., "필터 버튼을 클릭해 특정 카테고리를 선택")
-            matched_text: The text of the element that was matched (e.g., "전체 선택")
-            matched_element: The DOM element that was matched
-
-        Returns:
-            True if match is valid, False otherwise
-        """
-        prompt = f"""Verify if this semantic match is correct.
-
-User requested: "{step_description}"
-Matched element text: "{matched_text}"
-Element type: {matched_element.tag}
-
-Is this a valid match? Consider:
-- Does the matched element actually help accomplish the requested task?
-- Are they semantically related?
-- Would clicking this element be the right action?
-
-Examples of INVALID matches:
-- User: "필터 버튼 클릭" → Matched: "전체 선택" (WRONG - completely different)
-- User: "검색 입력" → Matched: "로그인" (WRONG - different purpose)
-
-Examples of VALID matches:
-- User: "이름 입력" → Matched: "이름" label + input (CORRECT - same field)
-- User: "필터 선택" → Matched: "필터" (CORRECT - exact match)
-
-Respond with JSON only:
-{{
-  "is_valid": true/false,
-  "reasoning": "brief explanation"
-}}"""
-
-        try:
-            import openai
-            import json
-            import os
-
-            api_key = os.getenv("OPENAI_API_KEY")
-            client = openai.OpenAI(api_key=api_key)
-            response = client.chat.completions.create(
-                model="gpt-5.1",  # For demo
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=150
-            )
-
-            result_text = response.choices[0].message.content.strip()
-
-            # Remove markdown if present
-            if result_text.startswith("```"):
-                result_text = result_text.split("```")[1]
-                if result_text.startswith("json"):
-                    result_text = result_text[4:]
-
-            result = json.loads(result_text.strip())
-            return result.get("is_valid", False)
-
-        except Exception as e:
-            print(f"[Semantic Match] LLM verification failed: {e}, assuming valid")
-            return True  # Default to valid if verification fails
+        return verify_semantic_match_with_llm_impl(
+            self,
+            step_description,
+            matched_text,
+            matched_element,
+        )
 
     @staticmethod
     def _normalize_text(value: str) -> str:
         """Normalize text for similarity matching."""
-        import re
-
-        value = value.strip().lower()
-        # Replace punctuation with spaces to keep token boundaries
-        value = re.sub(r"[^\w\s\u3131-\u318E\uAC00-\uD7A3]", " ", value)
-        # Collapse consecutive whitespace
-        return " ".join(value.split())
+        return normalize_text(value)
 
     @staticmethod
     def _token_overlap(desc: str, elem: str) -> float:
         """Compute token overlap between description and element text."""
-        desc_tokens = set(desc.split())
-        elem_tokens = set(elem.split())
-        if not desc_tokens or not elem_tokens:
-            return 0.0
-        return len(desc_tokens & elem_tokens) / len(elem_tokens)
+        return token_overlap(desc, elem)
 
     @staticmethod
     def _local_embedding(text: str) -> List[float] | None:
         """
         Deterministic local embedding fallback using token hashing.
         """
-        if not text or not text.strip():
-            return [0.0] * 128
-
-        try:
-            import numpy as np
-        except ImportError:
-            return None
-
-        normalized = IntelligentOrchestrator._normalize_text(text)
-        tokens = normalized.split()
-        if not tokens:
-            return [0.0] * 128
-
-        dim = 128
-        vector = np.zeros(dim, dtype=float)
-
-        for token in tokens:
-            for i in range(4):  # spread token across multiple dimensions
-                digest = hashlib.sha256(f"{token}:{i}".encode("utf-8")).digest()
-                index = int.from_bytes(digest[i:i+4], "big") % dim
-                vector[index] += 1.0
-
-        norm = np.linalg.norm(vector)
-        if norm > 0:
-            vector /= norm
-
-        return vector.tolist()
+        return local_embedding(text)
 
     def _get_cached_selector(self, step_description: str, action: str, page_url: str, dom_context: str = "") -> str | None:
         """
@@ -3508,9 +3017,8 @@ Respond with JSON only:
     def _load_embedding_cache(self) -> None:
         """Load embedding cache from disk."""
         try:
-            if os.path.exists(self.embedding_cache_file):
-                with open(self.embedding_cache_file, 'r', encoding='utf-8') as f:
-                    self.embedding_cache = json.load(f)
+            self.embedding_cache = load_json_file(self.embedding_cache_file)
+            if self.embedding_cache:
                 print(f"[Embedding Cache] Loaded {len(self.embedding_cache)} cached embeddings")
         except Exception as e:
             print(f"[Embedding Cache] Failed to load cache: {e}")
@@ -3519,9 +3027,7 @@ Respond with JSON only:
     def _save_embedding_cache(self) -> None:
         """Save embedding cache to disk."""
         try:
-            os.makedirs(os.path.dirname(self.embedding_cache_file), exist_ok=True)
-            with open(self.embedding_cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self.embedding_cache, f, indent=2)
+            save_json_file(self.embedding_cache_file, self.embedding_cache, ensure_ascii=False)
         except Exception as e:
             print(f"[Embedding Cache] Failed to save cache: {e}")
 

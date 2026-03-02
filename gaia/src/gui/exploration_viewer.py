@@ -233,7 +233,7 @@ class StepDetailDialog(QDialog):
                         )
                         self._screenshot_label.setPixmap(scaled)
                         screenshot_loaded = True
-                except:
+                except Exception:
                     pass
 
         if not screenshot_loaded:
