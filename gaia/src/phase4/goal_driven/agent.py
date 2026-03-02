@@ -147,6 +147,16 @@ class GoalDrivenAgent:
         self._goal_constraints: Dict[str, Any] = {}
         self._goal_metric_value: Optional[float] = None
         self._goal_tokens: set[str] = set()
+        self._loop_policy: Dict[str, int] = {
+            "ref_soft_fail_limit": self._env_int("GAIA_LOOP_REF_SOFT_FAIL_LIMIT", 2, low=1, high=20),
+            "scroll_streak_limit": self._env_int("GAIA_LOOP_SCROLL_STREAK_LIMIT", 3, low=1, high=20),
+            "same_intent_soft_fail_limit": self._env_int("GAIA_LOOP_SAME_INTENT_SOFT_FAIL_LIMIT", 3, low=1, high=20),
+            "no_progress_context_shift_min": self._env_int("GAIA_LOOP_NO_PROGRESS_CONTEXT_SHIFT_MIN", 2, low=0, high=50),
+            "ineffective_action_shift_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_SHIFT_LIMIT", 3, low=1, high=30),
+            "ineffective_action_stop_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_STOP_LIMIT", 8, low=2, high=80),
+            "context_shift_fail_limit": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_FAIL_LIMIT", 3, low=1, high=20),
+            "context_shift_cooldown_steps": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_COOLDOWN_STEPS", 4, low=0, high=60),
+        }
 
         # 실행 기억(KB)
         self._memory_store = MemoryStore(enabled=True)
@@ -159,6 +169,26 @@ class GoalDrivenAgent:
         print(f"[GoalAgent] {message}")
         if self._log_callback:
             self._log_callback(message)
+
+    @staticmethod
+    def _env_int(name: str, default: int, *, low: int = 0, high: int = 100) -> int:
+        try:
+            value = int(str(os.getenv(name, str(default))).strip())
+        except Exception:
+            value = int(default)
+        if value < low:
+            return low
+        if value > high:
+            return high
+        return value
+
+    def _loop_policy_value(self, key: str, default: int) -> int:
+        cfg = self._loop_policy if isinstance(self._loop_policy, dict) else {}
+        try:
+            value = int(cfg.get(key, default))
+        except Exception:
+            value = int(default)
+        return max(0, value)
 
     @staticmethod
     def _normalize_text(value: Optional[str]) -> str:
@@ -672,7 +702,8 @@ class GoalDrivenAgent:
     def _is_ref_temporarily_blocked(self, ref_id: Optional[str]) -> bool:
         if not ref_id:
             return False
-        return int(self._ineffective_ref_counts.get(ref_id, 0)) >= 2
+        limit = self._loop_policy_value("ref_soft_fail_limit", 2)
+        return int(self._ineffective_ref_counts.get(ref_id, 0)) >= max(1, limit)
 
     def _track_ref_outcome(
         self,

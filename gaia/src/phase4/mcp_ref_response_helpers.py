@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+
+def build_fallback_success_response(
+    *,
+    reason: str,
+    snapshot_id: str,
+    ref_id: str,
+    retry_path: List[str],
+    attempt_count: int,
+    state_change: Dict[str, Any],
+    attempt_logs: List[Dict[str, Any]],
+    current_url: str,
+    screenshot_base64: str,
+    stale_recovered: bool,
+) -> Dict[str, Any]:
+    return {
+        "success": True,
+        "effective": True,
+        "reason_code": "ok",
+        "reason": reason,
+        "snapshot_id_used": snapshot_id,
+        "ref_id_used": ref_id,
+        "retry_path": retry_path,
+        "attempt_count": attempt_count,
+        "state_change": state_change,
+        "attempt_logs": attempt_logs,
+        "current_url": current_url,
+        "screenshot": screenshot_base64,
+        "stale_recovered": stale_recovered,
+    }
+
+
+def build_full_success_response(
+    *,
+    reason: str,
+    snapshot_id: str,
+    ref_id: str,
+    stale_recovered: bool,
+    transport_success: bool,
+    locator_found: bool,
+    interaction_success: bool,
+    state_change: Dict[str, Any],
+    live_texts: List[str],
+    retry_path: List[str],
+    attempt_logs: List[Dict[str, Any]],
+    screenshot_base64: str,
+    current_url: str,
+    tab_id: int,
+) -> Dict[str, Any]:
+    return {
+        "success": True,
+        "effective": True,
+        "reason_code": "ok",
+        "reason": reason,
+        "snapshot_id_used": snapshot_id,
+        "ref_id_used": ref_id,
+        "stale_recovered": stale_recovered,
+        "transport_success": transport_success,
+        "locator_found": locator_found,
+        "interaction_success": interaction_success,
+        "state_change": state_change,
+        "live_texts": live_texts,
+        "retry_path": retry_path,
+        "attempt_count": len(attempt_logs),
+        "attempt_logs": attempt_logs,
+        "screenshot": screenshot_base64,
+        "current_url": current_url,
+        "tab_id": tab_id,
+        "targetId": tab_id,
+    }
+
+
+def build_full_failure_response(
+    *,
+    reason_code: str,
+    snapshot_id: str,
+    ref_id: str,
+    stale_recovered: bool,
+    transport_success: bool,
+    locator_found: bool,
+    interaction_success: bool,
+    state_change: Dict[str, Any],
+    live_texts: List[str],
+    retry_path: List[str],
+    attempt_logs: List[Dict[str, Any]],
+    screenshot_base64: Optional[str],
+    current_url: str,
+    tab_id: int,
+) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "effective": False,
+        "reason_code": reason_code if reason_code != "unknown_error" else "failed",
+        "reason": "ref action failed or no state change",
+        "snapshot_id_used": snapshot_id,
+        "ref_id_used": ref_id,
+        "stale_recovered": stale_recovered,
+        "transport_success": transport_success,
+        "locator_found": locator_found,
+        "interaction_success": interaction_success,
+        "state_change": state_change,
+        "live_texts": live_texts,
+        "retry_path": retry_path,
+        "attempt_count": len(attempt_logs),
+        "attempt_logs": attempt_logs,
+        "screenshot": screenshot_base64,
+        "current_url": current_url,
+        "tab_id": tab_id,
+        "targetId": tab_id,
+    }

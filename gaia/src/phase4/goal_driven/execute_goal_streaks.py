@@ -6,6 +6,16 @@ from typing import Any, Dict, List
 from .models import ActionDecision, ActionType, GoalResult, StepResult, TestGoal
 
 
+def _policy_int(agent: Any, key: str, default: int) -> int:
+    cfg = getattr(agent, "_loop_policy", {})
+    if isinstance(cfg, dict):
+        try:
+            return max(0, int(cfg.get(key, default)))
+        except Exception:
+            return max(0, int(default))
+    return max(0, int(default))
+
+
 def update_action_streaks_and_loops(
     *,
     agent: Any,
@@ -24,6 +34,11 @@ def update_action_streaks_and_loops(
     start_time: float,
 ) -> Dict[str, Any]:
     terminal_result: GoalResult | None = None
+    scroll_streak_limit = max(1, _policy_int(agent, "scroll_streak_limit", 3))
+    same_intent_soft_fail_limit = max(1, _policy_int(agent, "same_intent_soft_fail_limit", 3))
+    no_progress_context_shift_min = _policy_int(agent, "no_progress_context_shift_min", 2)
+    ineffective_action_shift_limit = max(1, _policy_int(agent, "ineffective_action_shift_limit", 3))
+    ineffective_action_stop_limit = max(2, _policy_int(agent, "ineffective_action_stop_limit", 8))
 
     if decision.action in {
         ActionType.CLICK,
@@ -41,7 +56,7 @@ def update_action_streaks_and_loops(
     else:
         ineffective_action_streak = 0
 
-    if scroll_streak >= 3:
+    if scroll_streak >= scroll_streak_limit:
         agent._log("🧭 스크롤이 연속 선택되어 컨텍스트 전환을 강제합니다.")
         force_context_shift = True
         scroll_streak = 0
@@ -67,14 +82,20 @@ def update_action_streaks_and_loops(
         agent._last_success_click_intent = ""
         agent._success_click_intent_streak = 0
 
-    if agent._success_click_intent_streak >= 3 and agent._no_progress_counter >= 2:
+    if (
+        agent._success_click_intent_streak >= same_intent_soft_fail_limit
+        and agent._no_progress_counter >= no_progress_context_shift_min
+    ):
         agent._log("🧭 동일 클릭 의도 반복 감지: 단계 전환 CTA 탐색으로 전환합니다.")
         force_context_shift = True
 
-    if ineffective_action_streak >= 3 and agent._no_progress_counter >= 2:
+    if (
+        ineffective_action_streak >= ineffective_action_shift_limit
+        and agent._no_progress_counter >= no_progress_context_shift_min
+    ):
         force_context_shift = True
 
-    if ineffective_action_streak >= 8:
+    if ineffective_action_streak >= ineffective_action_stop_limit:
         terminal_result = agent._build_failure_result(
             goal=goal,
             steps=steps,

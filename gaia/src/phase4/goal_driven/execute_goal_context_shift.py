@@ -6,6 +6,16 @@ from typing import Any, Dict, List, Optional, Set
 from .models import ActionDecision, ActionType, DOMElement, StepResult, TestGoal
 
 
+def _policy_int(agent: Any, key: str, default: int) -> int:
+    cfg = getattr(agent, "_loop_policy", {})
+    if isinstance(cfg, dict):
+        try:
+            return max(0, int(cfg.get(key, default)))
+        except Exception:
+            return max(0, int(default))
+    return max(0, int(default))
+
+
 def handle_forced_context_shift(
     *,
     agent: Any,
@@ -24,6 +34,8 @@ def handle_forced_context_shift(
     context_shift_cooldown: int,
     ineffective_action_streak: int,
 ) -> Dict[str, Any]:
+    context_shift_fail_limit = max(1, _policy_int(agent, "context_shift_fail_limit", 3))
+    context_shift_cooldown_steps = _policy_int(agent, "context_shift_cooldown_steps", 4)
     if not force_context_shift:
         return {
             "continue_loop": False,
@@ -99,14 +111,14 @@ def handle_forced_context_shift(
             context_shift_fail_streak += 1
             if len(context_shift_used_elements) > 20:
                 context_shift_used_elements.clear()
-            if context_shift_fail_streak >= 3:
+            if context_shift_fail_streak >= context_shift_fail_limit:
                 agent._log(
                     "🧭 컨텍스트 전환이 연속 실패해 일반 액션 전략으로 복귀합니다."
                 )
                 force_context_shift = False
                 context_shift_used_elements.clear()
                 agent._last_context_shift_intent = ""
-                context_shift_cooldown = 4
+                context_shift_cooldown = context_shift_cooldown_steps
             else:
                 force_context_shift = True
         time.sleep(0.4)
@@ -159,9 +171,9 @@ def handle_forced_context_shift(
             context_shift_cooldown = 0
         else:
             context_shift_fail_streak += 1
-            force_context_shift = context_shift_fail_streak < 3
-            if context_shift_fail_streak >= 3:
-                context_shift_cooldown = 4
+            force_context_shift = context_shift_fail_streak < context_shift_fail_limit
+            if context_shift_fail_streak >= context_shift_fail_limit:
+                context_shift_cooldown = context_shift_cooldown_steps
         time.sleep(0.3)
         return {
             "continue_loop": True,

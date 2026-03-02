@@ -215,6 +215,122 @@ def _get_tab_index(page: Page) -> int:
         return 0
 
 
+def _tab_payload(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
+    active = bool(session.page is page)
+    title = ""
+    try:
+        title = page.url or ""
+    except Exception:
+        title = ""
+    return {
+        "tab_id": idx,
+        "index": idx,
+        "targetId": idx,
+        "url": str(page.url or ""),
+        "title": str(title),
+        "active": active,
+    }
+
+
+async def _get_page_target_id(page: Page) -> str:
+    cached = _page_target_id_cache.get(page)
+    if isinstance(cached, str) and cached.strip():
+        return cached
+
+    cdp_session: Optional[CDPSession] = None
+    try:
+        cdp_session = await page.context.new_cdp_session(page)
+        info = await cdp_session.send("Target.getTargetInfo")
+        target_info = info.get("targetInfo") if isinstance(info, dict) else {}
+        target_id = str((target_info or {}).get("targetId") or "").strip()
+        if target_id:
+            _page_target_id_cache[page] = target_id
+        return target_id
+    except Exception:
+        return ""
+    finally:
+        if cdp_session is not None:
+            try:
+                await cdp_session.detach()
+            except Exception:
+                pass
+
+
+async def _list_browser_targets(browser: Optional[Browser]) -> List[Dict[str, str]]:
+    if browser is None:
+        return []
+    browser_cdp: Optional[CDPSession] = None
+    try:
+        browser_cdp = await browser.new_browser_cdp_session()
+        payload = await browser_cdp.send("Target.getTargets")
+        infos = payload.get("targetInfos") if isinstance(payload, dict) else []
+        out: List[Dict[str, str]] = []
+        if isinstance(infos, list):
+            for info in infos:
+                if not isinstance(info, dict):
+                    continue
+                target_id = str(info.get("targetId") or "").strip()
+                target_url = str(info.get("url") or "").strip()
+                if target_id:
+                    out.append({"targetId": target_id, "url": target_url})
+        return out
+    except Exception:
+        return []
+    finally:
+        if browser_cdp is not None:
+            try:
+                await browser_cdp.detach()
+            except Exception:
+                pass
+
+
+async def _resolve_page_from_tab_identifier(
+    pages: List[Page],
+    tab_identifier: Any,
+    browser: Optional[Browser] = None,
+) -> Tuple[str, Optional[int], Optional[Page], List[str]]:
+    return await _resolve_page_from_tab_identifier_impl(
+        pages=pages,
+        tab_identifier=tab_identifier,
+        browser=browser,
+        get_page_target_id_fn=_get_page_target_id,
+        list_browser_targets_fn=_list_browser_targets,
+    )
+
+
+async def _tab_payload_async(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
+    payload = _tab_payload(session, page, idx)
+    target_id = await _get_page_target_id(page)
+    if target_id:
+        payload["cdp_target_id"] = target_id
+    return payload
+
+
+async def _tabs_payload_async(session: BrowserSession, pages: List[Page]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, candidate in enumerate(pages):
+        out.append(await _tab_payload_async(session, candidate, idx))
+    return out
+
+
+def _coerce_tab_id(tab_id: Any) -> Optional[int]:
+    return coerce_tab_id_impl(tab_id)
+
+
+async def _resolve_session_page(session_id: str, tab_id: Optional[Any] = None) -> Tuple[BrowserSession, Page]:
+    return await _resolve_session_page_impl(
+        session_id=session_id,
+        tab_id=tab_id,
+        active_sessions=active_sessions,
+        ensure_session_fn=ensure_session,
+        playwright_getter_fn=_get_playwright_instance,
+        screencast_subscribers=screencast_subscribers,
+        frame_setter=_set_current_screencast_frame,
+        logger=logger,
+        resolve_page_from_tab_identifier_fn=_resolve_page_from_tab_identifier,
+    )
+
+
 def _split_full_selector(full_selector: str) -> Tuple[str, str]:
     if " >>> " not in full_selector:
         return "", full_selector
@@ -519,7 +635,17 @@ async def _read_focus_signature(page: Page) -> str:
 
 
 async def _safe_read_target_state(locator) -> Dict[str, Any]:
-    state: Dict[str, Any] = {"visible": None, "value": None, "focused": None}
+    state: Dict[str, Any] = {
+        "visible": None,
+        "value": None,
+        "focused": None,
+        "checked": None,
+        "aria_expanded": None,
+        "aria_pressed": None,
+        "aria_selected": None,
+        "disabled": None,
+        "aria_disabled": None,
+    }
     try:
         state["visible"] = await locator.is_visible()
     except Exception:
@@ -533,6 +659,38 @@ async def _safe_read_target_state(locator) -> Dict[str, Any]:
             pass
     try:
         state["focused"] = await locator.evaluate("el => document.activeElement === el")
+    except Exception:
+        pass
+    try:
+        semantic_state = await locator.evaluate(
+            """
+            el => {
+                const readAria = (name) => {
+                    const raw = el.getAttribute(name);
+                    if (raw === null || raw === undefined) return null;
+                    return String(raw).trim().toLowerCase();
+                };
+                const checked =
+                    typeof el.checked === 'boolean'
+                        ? !!el.checked
+                        : null;
+                const disabled =
+                    typeof el.disabled === 'boolean'
+                        ? !!el.disabled
+                        : null;
+                return {
+                    checked,
+                    aria_expanded: readAria('aria-expanded'),
+                    aria_pressed: readAria('aria-pressed'),
+                    aria_selected: readAria('aria-selected'),
+                    disabled,
+                    aria_disabled: readAria('aria-disabled'),
+                };
+            }
+            """
+        )
+        if isinstance(semantic_state, dict):
+            state.update(semantic_state)
     except Exception:
         pass
     return state
@@ -682,6 +840,14 @@ def _state_change_flags(
         "target_value_matches": expected_value is not None and after_value is not None and str(after_value) == expected_value,
         "target_focus_changed": before_target.get("focused") != after_target.get("focused"),
         "focus_changed": before_focus != after_focus,
+        "target_checked_changed": before_target.get("checked") != after_target.get("checked"),
+        "target_aria_expanded_changed": before_target.get("aria_expanded") != after_target.get("aria_expanded"),
+        "target_aria_pressed_changed": before_target.get("aria_pressed") != after_target.get("aria_pressed"),
+        "target_aria_selected_changed": before_target.get("aria_selected") != after_target.get("aria_selected"),
+        "target_disabled_changed": (
+            before_target.get("disabled") != after_target.get("disabled")
+            or before_target.get("aria_disabled") != after_target.get("aria_disabled")
+        ),
         "counter_changed": _sorted_text_list(before_evidence.get("counters")) != _sorted_text_list(after_evidence.get("counters")),
         "number_tokens_changed": _sorted_text_list(before_evidence.get("number_tokens")) != _sorted_text_list(after_evidence.get("number_tokens")),
         "status_text_changed": _sorted_text_list(before_evidence.get("live_texts")) != _sorted_text_list(after_evidence.get("live_texts")),
@@ -720,6 +886,13 @@ def _state_change_flags(
             flags["url_changed"]
             or flags["dom_changed"]
             or flags["target_visibility_changed"]
+            or flags["focus_changed"]
+            or flags["target_focus_changed"]
+            or flags["target_checked_changed"]
+            or flags["target_aria_expanded_changed"]
+            or flags["target_aria_pressed_changed"]
+            or flags["target_aria_selected_changed"]
+            or flags["target_disabled_changed"]
             or flags["evidence_changed"]
         )
     elif action == "press":
@@ -1156,11 +1329,34 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     return out;
                 }
 
-                function isVisible(el) {
+                function getActionability(el) {
                     const style = window.getComputedStyle(el);
-                    // 매우 완화된 표시 여부 검사 - iframe 내부 요소도 감지
-                    // display:none과 visibility:hidden만 제외
-                    return style.display !== 'none' && style.visibility !== 'hidden';
+                    const rect = el.getBoundingClientRect();
+                    const displayVisible = style.display !== 'none' && style.visibility !== 'hidden';
+                    const opacity = Number(style.opacity || '1');
+                    const pointerEvents = (style.pointerEvents || '').toLowerCase();
+                    const hasRect = rect.width > 1 && rect.height > 1;
+                    const onViewport =
+                        rect.bottom >= -2 &&
+                        rect.right >= -2 &&
+                        rect.top <= (window.innerHeight + 2) &&
+                        rect.left <= (window.innerWidth + 2);
+                    const disabled =
+                        el.disabled === true ||
+                        String(el.getAttribute('disabled') || '').toLowerCase() === 'true' ||
+                        String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                    const visible = displayVisible && opacity > 0.02 && pointerEvents !== 'none' && hasRect && onViewport;
+                    return {
+                        visible,
+                        actionable: visible && !disabled,
+                        disabled,
+                        opacity,
+                        pointerEvents: style.pointerEvents || '',
+                    };
+                }
+
+                function isVisible(el) {
+                    return getActionability(el).visible;
                 }
 
                 function assignDomRef(el) {
@@ -1236,7 +1432,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 }
 
                 queryAll('input, textarea, select').forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
 
                     elements.push({
                         tag: el.tagName.toLowerCase(),
@@ -1249,10 +1446,17 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             name: el.name || null,
                             placeholder: el.placeholder || '',
                             'aria-label': el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || ''
+                            title: el.getAttribute('title') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'input'
+                        element_type: 'input',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
@@ -1274,7 +1478,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     [type="submit"],
                     input[type="button"]
                 `.replace(/\s+/g, '')).forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
 
                     let text = el.innerText?.trim() || el.value || '';
                     if (!text) {
@@ -1311,15 +1516,23 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             type: el.type || 'button',
                             'aria-label': el.getAttribute('aria-label') || '',
                             title: el.getAttribute('title') || '',
-                            role: el.getAttribute('role') || ''
+                            role: el.getAttribute('role') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'button'
+                        element_type: 'button',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
                 queryAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
                     if (el.tagName === 'BUTTON') return;
                     if (el.tagName === 'A' && el.hasAttribute('href')) return;
 
@@ -1335,17 +1548,25 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                                 attributes: {
                             class: el.className,
                             'aria-label': el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || ''
+                            title: el.getAttribute('title') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'clickable'
+                        element_type: 'clickable',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                         }
                     }
                 });
 
                 queryAll('a[href]').forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
 
                     const href = el.href;
                     let text = el.innerText?.trim() || '';
@@ -1367,10 +1588,17 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             href: href,
                             target: el.target || '',
                             'aria-label': el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || ''
+                            title: el.getAttribute('title') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'link'
+                        element_type: 'link',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
@@ -1399,7 +1627,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     [class*="card"],
                     [class*="list"]
                 `.replace(/\s+/g, '')).forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
                     if (!el || !el.tagName) return;
 
                     const tag = el.tagName.toLowerCase();
@@ -1457,9 +1686,16 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'aria-haspopup': el.getAttribute('aria-haspopup') || '',
                             tabindex: el.getAttribute('tabindex') || '',
                             'data-testid': testid,
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: box,
-                        element_type: 'semantic'
+                        element_type: 'semantic',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
@@ -2294,1915 +2530,42 @@ async def execute_ref_action_with_snapshot(
     verify: bool = True,
     tab_id: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    if not playwright_instance:
-        raise HTTPException(status_code=503, detail="Playwright is not initialized.")
+    from gaia.src.phase4.mcp_ref_action_executor import execute_ref_action_with_snapshot_impl
 
-    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
-
-    if url:
-        current_normalized = normalize_url(page.url)
-        requested_normalized = normalize_url(url)
-        if current_normalized != requested_normalized:
-            await page.goto(url, timeout=60000)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(1000)
-
-    try:
-        max_action_seconds = float(os.getenv("GAIA_REF_ACTION_MAX_SECONDS", "45"))
-    except Exception:
-        max_action_seconds = 45.0
-    max_action_seconds = max(10.0, min(120.0, max_action_seconds))
-    action_started_at = time.monotonic()
-
-    def _deadline_exceeded() -> bool:
-        return (time.monotonic() - action_started_at) >= max_action_seconds
-
-    attempt_logs: List[Dict[str, Any]] = []
-    retry_path: List[str] = []
-    stale_recovered = False
-    reason_code = "unknown_error"
-    last_live_texts: List[str] = []
-
-    requested_snapshot = session.snapshots.get(snapshot_id)
-    requested_meta = (
-        _resolve_ref_meta_from_snapshot(requested_snapshot, ref_id)
-        if requested_snapshot
-        else None
-    )
-    initial_ref_state: Optional[str] = None
-    if isinstance(requested_snapshot, dict):
-        snap_epoch = int(requested_snapshot.get("epoch") or 0)
-        snap_dom_hash = str(requested_snapshot.get("dom_hash") or "")
-        snap_tab_index = int(requested_snapshot.get("tab_index") or 0)
-        parsed_epoch = 0
-        parsed_hash_short = ""
-        try:
-            parts = str(snapshot_id).split(":")
-            if len(parts) >= 3:
-                parsed_epoch = int(parts[-2] or 0)
-                parsed_hash_short = str(parts[-1] or "")
-        except Exception:
-            parsed_epoch = 0
-            parsed_hash_short = ""
-        if parsed_epoch and parsed_epoch != snap_epoch:
-            initial_ref_state = "stale_snapshot"
-        if parsed_hash_short and snap_dom_hash and not snap_dom_hash.startswith(parsed_hash_short):
-            initial_ref_state = "stale_snapshot"
-        if snap_tab_index != _get_tab_index(page):
-            initial_ref_state = "stale_snapshot"
-    if not requested_snapshot:
-        initial_ref_state = "snapshot_not_found"
-    elif requested_meta is None:
-        initial_ref_state = "not_found"
-    elif not str(requested_meta.get("dom_ref") or "").strip():
-        initial_ref_state = "stale_snapshot"
-
-    if initial_ref_state:
-        retry_path.append(f"recover:{initial_ref_state}")
-        try:
-            fresh_snapshot_result = await snapshot_page(
-                url=(page.url or None), session_id=session_id
-            )
-            fresh_snapshot_id = str(fresh_snapshot_result.get("snapshot_id") or "")
-            fresh_snapshot = (
-                session.snapshots.get(fresh_snapshot_id)
-                if fresh_snapshot_id
-                else None
-            )
-            recovered_meta: Optional[Dict[str, Any]] = None
-            recovered_ref_id = ref_id
-
-            if isinstance(fresh_snapshot, dict):
-                recovered_meta = _resolve_ref_meta_from_snapshot(fresh_snapshot, ref_id)
-                if recovered_meta is None:
-                    recovered_meta = _resolve_stale_ref(requested_meta, fresh_snapshot)
-                    if isinstance(recovered_meta, dict):
-                        recovered_ref_id = str(
-                            recovered_meta.get("ref_id") or recovered_ref_id
-                        )
-                if isinstance(recovered_meta, dict):
-                    requested_snapshot = fresh_snapshot
-                    requested_meta = recovered_meta
-                    snapshot_id = fresh_snapshot_id or snapshot_id
-                    ref_id = recovered_ref_id
-                    stale_recovered = True
-                    reason_code = "stale_ref_recovered"
-                    retry_path.append("recover:ok")
-        except Exception as recover_exc:
-            retry_path.append(f"recover:error:{recover_exc}")
-
-    if (
-        not isinstance(requested_snapshot, dict)
-        or not isinstance(requested_meta, dict)
-        or not str(requested_meta.get("dom_ref") or "").strip()
-    ):
-        if initial_ref_state == "snapshot_not_found":
-            fail_message = "snapshot을 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "snapshot_not_found"
-        elif initial_ref_state == "not_found":
-            fail_message = "snapshot 내 ref를 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "not_found"
-        else:
-            fail_message = "snapshot/ref가 stale 상태입니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "stale_snapshot"
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": fail_code,
-            "reason": fail_message,
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-
-    if not isinstance(requested_meta, dict):
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": "not_found",
-            "reason": "유효한 ref metadata가 없습니다.",
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-
-    scope = requested_meta.get("scope", {}) if isinstance(requested_meta.get("scope"), dict) else {}
-    current_tab_index = _get_tab_index(page)
-    ref_tab_index = scope.get("tab_index")
-    if ref_tab_index is not None:
-        try:
-            if int(ref_tab_index) != current_tab_index:
-                return {
-                    "success": False,
-                    "effective": False,
-                    "reason_code": "tab_scope_mismatch",
-                    "reason": f"ref tab scope mismatch: ref={ref_tab_index}, current={current_tab_index}",
-                    "stale_recovered": stale_recovered,
-                    "retry_path": retry_path,
-                    "attempt_logs": attempt_logs,
-                }
-        except Exception:
-            pass
-
-    ref_frame_index = int(scope.get("frame_index", requested_meta.get("frame_index", 0)) or 0)
-    if ref_frame_index < 0 or ref_frame_index >= len(page.frames):
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": "frame_scope_mismatch",
-            "reason": f"ref frame scope mismatch: ref={ref_frame_index}, frame_count={len(page.frames)}",
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-
-    candidates = _build_ref_candidates(requested_meta)
-    deduped: List[Tuple[str, str]] = []
-    seen_selectors = set()
-    for mode, cand in candidates:
-        key = cand.strip()
-        if not key or key in seen_selectors:
-            continue
-        seen_selectors.add(key)
-        deduped.append((mode, cand))
-    candidates = deduped[:3]
-    if not candidates:
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": "not_found",
-            "reason": "ref metadata에 dom_ref가 없어 요소를 찾을 수 없습니다. 최신 snapshot이 필요합니다.",
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-    transport_success = True
-    locator_found = False
-    interaction_success = False
-    state_change = {
-        "url_changed": False,
-        "dom_changed": False,
-        "target_visibility_changed": False,
-        "target_value_changed": False,
-        "target_value_matches": False,
-        "target_focus_changed": False,
-        "focus_changed": False,
-        "counter_changed": False,
-        "number_tokens_changed": False,
-        "status_text_changed": False,
-        "list_count_changed": False,
-        "interactive_count_changed": False,
-        "modal_count_changed": False,
-        "backdrop_count_changed": False,
-        "dialog_count_changed": False,
-        "modal_state_changed": False,
-        "auth_state_changed": False,
-        "text_digest_changed": False,
-        "evidence_changed": False,
-        "probe_wait_ms": 0,
-        "probe_scroll": "none",
-        "live_texts_after": [],
-    }
-    ref_attrs = requested_meta.get("attributes") if isinstance(requested_meta.get("attributes"), dict) else {}
-    ref_selector_text = " ".join(
-        [
-            str(requested_meta.get("selector") or ""),
-            str(requested_meta.get("full_selector") or ""),
-            str(requested_meta.get("text") or ""),
-            str((ref_attrs or {}).get("type") or ""),
-            str((ref_attrs or {}).get("role") or ""),
-            str((ref_attrs or {}).get("aria-label") or ""),
-        ]
-    ).lower()
-    submit_like_click = bool(
-        action == "click"
-        and (
-            str((ref_attrs or {}).get("type") or "").lower() == "submit"
-            or "submit" in ref_selector_text
-            or "로그인" in ref_selector_text
-            or "회원가입" in ref_selector_text
-            or "sign in" in ref_selector_text
-            or "log in" in ref_selector_text
-            or "sign up" in ref_selector_text
-            or "register" in ref_selector_text
-        )
-    )
-    modal_regions_for_requested = _collect_modal_regions_from_snapshot(
-        requested_snapshot if isinstance(requested_snapshot, dict) else None
-    )
-    close_like_click = bool(
-        action == "click"
-        and (
-            _is_close_intent_ref(requested_meta)
-            or _is_modal_corner_close_candidate(
-                requested_meta,
-                modal_regions_for_requested,
-            )
-        )
-    )
-    probe_wait_schedule: Tuple[int, ...] = (250,) if submit_like_click else (350, 700, 1500)
-    verify_for_action = verify and (not submit_like_click)
-    if submit_like_click:
-        max_action_seconds = min(max_action_seconds, 20.0)
-    if close_like_click:
-        close_gate_evidence: Dict[str, Any] = {}
-        try:
-            close_gate_evidence = await _collect_page_evidence(page)
-        except Exception:
-            close_gate_evidence = {}
-        if not bool(close_gate_evidence.get("modal_open")):
-            reason_code = "modal_not_open"
-            attempt_logs.append(
-                {
-                    "attempt": 0,
-                    "mode": "precheck",
-                    "reason_code": reason_code,
-                    "error": "close intent requested but modal_open=false",
-                    "state_change": {
-                        "modal_open": bool(close_gate_evidence.get("modal_open")),
-                        "modal_count": int(close_gate_evidence.get("modal_count") or 0),
-                        "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
-                        "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
-                    },
-                }
-            )
-            return {
-                "success": False,
-                "effective": False,
-                "reason_code": reason_code,
-                "reason": "닫기 대상 모달이 열려있지 않습니다. 최신 snapshot으로 재계획하세요.",
-                "snapshot_id_used": snapshot_id,
-                "ref_id_used": ref_id,
-                "retry_path": retry_path,
-                "attempt_count": 0,
-                "state_change": {
-                    "modal_open": bool(close_gate_evidence.get("modal_open")),
-                    "modal_count": int(close_gate_evidence.get("modal_count") or 0),
-                    "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
-                    "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
-                },
-                "attempt_logs": attempt_logs,
-                "current_url": page.url,
-                "stale_recovered": stale_recovered,
-            }
-
-    for attempt_idx, (mode, candidate_selector) in enumerate(candidates, start=1):
-        if _deadline_exceeded():
-            reason_code = "action_timeout"
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": candidate_selector,
-                    "reason_code": reason_code,
-                    "error": f"action budget exceeded ({max_action_seconds:.1f}s)",
-                }
-            )
-            break
-        retry_path.append(f"{attempt_idx}:{mode}")
-        locator, frame_index, resolved_selector, locator_error = await _resolve_locator_from_ref(
-            page, requested_meta, candidate_selector
-        )
-        if locator is None:
-            locator_error_text = str(locator_error or "")
-            if locator_error_text.startswith("ambiguous_selector_matches"):
-                reason_code = "ambiguous_ref_target"
-            elif locator_error_text in {"dom_ref_missing"}:
-                reason_code = "stale_snapshot"
-            else:
-                reason_code = "not_found"
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": resolved_selector,
-                    "reason_code": reason_code,
-                    "error": locator_error,
-                }
-            )
-            print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
-            continue
-
-        locator_found = True
-        before_url = page.url
-        before_dom_hash = await _compute_runtime_dom_hash(page)
-        evidence_collector = _collect_page_evidence_light if submit_like_click else _collect_page_evidence
-        before_evidence = await evidence_collector(page)
-        before_focus = await _read_focus_signature(page)
-        before_target = await _safe_read_target_state(locator)
-
-        async def _collect_state_change_probe(
-            *,
-            probe_wait_ms: int,
-            probe_scroll: str,
-            ancestor_click_fallback: bool = False,
-            ancestor_click_selector: str = "",
-        ) -> Dict[str, Any]:
-            nonlocal last_live_texts
-            after_url = page.url
-            after_dom_hash = await _compute_runtime_dom_hash(page)
-            after_evidence = await evidence_collector(page)
-            after_focus = await _read_focus_signature(page)
-            after_target = await _safe_read_target_state(locator)
-            change = _state_change_flags(
-                action=action,
-                value=value,
-                before_url=before_url,
-                after_url=after_url,
-                before_dom_hash=before_dom_hash,
-                after_dom_hash=after_dom_hash,
-                before_evidence=before_evidence,
-                after_evidence=after_evidence,
-                before_target=before_target,
-                after_target=after_target,
-                before_focus=before_focus,
-                after_focus=after_focus,
-            )
-            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-            if live_texts_after:
-                change["live_texts_after"] = live_texts_after
-                last_live_texts = live_texts_after
-            change["probe_wait_ms"] = probe_wait_ms
-            change["probe_scroll"] = probe_scroll
-            if ancestor_click_fallback:
-                change["ancestor_click_fallback"] = True
-                change["ancestor_click_selector"] = ancestor_click_selector
-            return change
-
-        async def _capture_close_diagnostic(label: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
-            if not close_like_click:
-                return
-            point_x = None
-            point_y = None
-            bbox = requested_meta.get("bounding_box") if isinstance(requested_meta, dict) and isinstance(requested_meta.get("bounding_box"), dict) else {}
-            try:
-                bx = float(bbox.get("x", 0.0) or 0.0)
-                by = float(bbox.get("y", 0.0) or 0.0)
-                bw = float(bbox.get("width", 0.0) or 0.0)
-                bh = float(bbox.get("height", 0.0) or 0.0)
-                if bw > 0.0 and bh > 0.0:
-                    point_x = float(bbox.get("center_x", bx + bw / 2.0) or (bx + bw / 2.0))
-                    point_y = float(bbox.get("center_y", by + bh / 2.0) or (by + bh / 2.0))
-            except Exception:
-                point_x = None
-                point_y = None
-            if point_x is None or point_y is None:
-                try:
-                    box = await locator.bounding_box()
-                    if isinstance(box, dict):
-                        point_x = float(box.get("x", 0.0) or 0.0) + float(box.get("width", 0.0) or 0.0) / 2.0
-                        point_y = float(box.get("y", 0.0) or 0.0) + float(box.get("height", 0.0) or 0.0) / 2.0
-                except Exception:
-                    point_x = None
-                    point_y = None
-            if point_x is None:
-                point_x = 0.0
-            if point_y is None:
-                point_y = 0.0
-
-            diagnostic: Dict[str, Any]
-            try:
-                diagnostic_raw = await page.evaluate(
-                    """
-                    async ({ pointX, pointY }) => {
-                      const modalSelector = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]';
-                      const backdropSelector = '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]';
-                      const pathOf = (node) => {
-                        if (!(node instanceof Element)) return '';
-                        const parts = [];
-                        let current = node;
-                        for (let depth = 0; current && depth < 6; depth += 1) {
-                          const tag = current.tagName.toLowerCase();
-                          const id = current.id ? `#${current.id}` : '';
-                          const cls = (current.className && typeof current.className === 'string')
-                            ? `.${current.className.trim().split(/\\s+/).slice(0, 2).join('.')}`
-                            : '';
-                          parts.push(`${tag}${id}${cls}`);
-                          current = current.parentElement;
-                        }
-                        return parts.join(' <- ');
-                      };
-                      const isVisible = (el) => {
-                        if (!(el instanceof HTMLElement)) return false;
-                        const style = window.getComputedStyle(el);
-                        if (!style) return false;
-                        if (style.display === 'none' || style.visibility === 'hidden') return false;
-                        if (Number(style.opacity || '1') <= 0) return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 2 && rect.height > 2;
-                      };
-                      const sampleState = () => {
-                        const modalNodes = Array.from(document.querySelectorAll(modalSelector)).filter(isVisible);
-                        const backdropNodes = Array.from(document.querySelectorAll(backdropSelector)).filter(isVisible);
-                        const dialogNodes = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')).filter(isVisible);
-                        const modalOpen = modalNodes.length > 0 || backdropNodes.length > 0 || dialogNodes.length > 0;
-                        return {
-                          modal_open: modalOpen,
-                          modal_count: modalNodes.length,
-                          backdrop_count: backdropNodes.length,
-                          dialog_count: dialogNodes.length,
-                        };
-                      };
-                      const timeline = [];
-                      for (let i = 0; i < 8; i += 1) {
-                        timeline.push(sampleState().modal_open);
-                        await new Promise((resolve) => setTimeout(resolve, 80));
-                      }
-                      const state = sampleState();
-                      const hit = document.elementFromPoint(pointX, pointY);
-                      let clickable = hit instanceof Element ? hit : null;
-                      for (let d = 0; clickable && d < 8; d += 1) {
-                        if (
-                          clickable.matches('button, a[href], [role="button"], [role="link"], [onclick], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])')
-                        ) {
-                          break;
-                        }
-                        clickable = clickable.parentElement;
-                      }
-                      return {
-                        ...state,
-                        timeline,
-                        hit_path: pathOf(hit),
-                        clickable_path: pathOf(clickable),
-                        active_path: pathOf(document.activeElement),
-                        point_x: pointX,
-                        point_y: pointY,
-                      };
-                    }
-                    """,
-                    {"pointX": point_x, "pointY": point_y},
-                )
-                diagnostic = diagnostic_raw if isinstance(diagnostic_raw, dict) else {"raw": diagnostic_raw}
-            except Exception as diag_exc:
-                diagnostic = {"error": str(diag_exc)}
-
-            timeline = diagnostic.get("timeline") if isinstance(diagnostic, dict) else None
-            if isinstance(timeline, list) and timeline:
-                any_closed = any((v is False) for v in timeline)
-                end_open = bool(timeline[-1])
-                if any_closed and end_open:
-                    diagnostic["classification"] = "closed_then_reopened"
-                elif all(bool(v) for v in timeline):
-                    diagnostic["classification"] = "never_closed"
-                elif not end_open:
-                    diagnostic["classification"] = "closed_persisted"
-                else:
-                    diagnostic["classification"] = "unknown_transition"
-
-            record: Dict[str, Any] = {
-                "attempt": attempt_idx,
-                "mode": f"{mode}.close_diag",
-                "reason_code": "diagnostic",
-                "label": label,
-                "diagnostic": diagnostic,
-            }
-            if isinstance(extra, dict):
-                record.update(extra)
-            attempt_logs.append(record)
-            print(f"[close_diag] label={label} diag={json_module.dumps(diagnostic, ensure_ascii=False)}")
-
-        async def _attempt_close_ref_fallbacks() -> bool:
-            nonlocal state_change, ref_id, requested_meta
-            if not close_like_click:
-                return False
-            close_fallbacks = _collect_close_ref_candidates(
-                snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
-                requested_meta=requested_meta if isinstance(requested_meta, dict) else None,
-                exclude_ref_id=ref_id,
-                limit=5,
-            )
-            if close_fallbacks:
-                debug_candidates: List[Dict[str, Any]] = []
-                for cand_ref_id, cand_meta in close_fallbacks:
-                    cand_bbox = cand_meta.get("bounding_box") if isinstance(cand_meta.get("bounding_box"), dict) else {}
-                    debug_candidates.append(
-                        {
-                            "ref_id": cand_ref_id,
-                            "text": str(cand_meta.get("text") or "")[:40],
-                            "selector": str(cand_meta.get("selector") or "")[:80],
-                            "cx": cand_bbox.get("center_x"),
-                            "cy": cand_bbox.get("center_y"),
-                        }
-                    )
-                print(f"[close_diag] close_fallback_candidates={json_module.dumps(debug_candidates, ensure_ascii=False)}")
-            if not close_fallbacks:
-                return False
-            for fallback_rank, (fallback_ref_id, fallback_meta) in enumerate(close_fallbacks, start=1):
-                if _deadline_exceeded():
-                    return False
-                fallback_candidates = _build_ref_candidates(fallback_meta)
-                deduped_fallback: List[Tuple[str, str]] = []
-                seen_fallback_selectors = set()
-                for fallback_mode, fallback_selector in fallback_candidates:
-                    fallback_key = str(fallback_selector or "").strip()
-                    if not fallback_key or fallback_key in seen_fallback_selectors:
-                        continue
-                    seen_fallback_selectors.add(fallback_key)
-                    deduped_fallback.append((fallback_mode, fallback_selector))
-                for fallback_mode, fallback_selector in deduped_fallback[:2]:
-                    if _deadline_exceeded():
-                        return False
-                    fallback_locator, fallback_frame_index, fallback_resolved_selector, fallback_locator_error = await _resolve_locator_from_ref(
-                        page, fallback_meta, fallback_selector
-                    )
-                    if fallback_locator is None:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": f"{mode}.close_ref[{fallback_rank}]",
-                                "selector": str(fallback_resolved_selector or fallback_selector),
-                                "reason_code": "not_found",
-                                "error": str(fallback_locator_error or "fallback ref locator not found"),
-                                "fallback_ref_id": fallback_ref_id,
-                            }
-                        )
-                        continue
-                    try:
-                        await fallback_locator.click(timeout=1500, no_wait_after=True)
-                    except Exception as fallback_click_exc:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": f"{mode}.close_ref[{fallback_rank}]",
-                                "selector": fallback_resolved_selector,
-                                "frame_index": fallback_frame_index,
-                                "reason_code": "not_actionable",
-                                "error": str(fallback_click_exc),
-                                "fallback_ref_id": fallback_ref_id,
-                            }
-                        )
-                        continue
-                    await page.wait_for_timeout(250)
-                    fallback_change = await _collect_state_change_probe(
-                        probe_wait_ms=250,
-                        probe_scroll=f"alternate_close_ref:{fallback_ref_id}",
-                    )
-                    if bool(fallback_change.get("effective", True)):
-                        state_change = fallback_change
-                        ref_id = fallback_ref_id
-                        requested_meta = fallback_meta
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": f"{mode}.close_ref[{fallback_rank}]",
-                                "selector": fallback_resolved_selector,
-                                "frame_index": fallback_frame_index,
-                                "reason_code": "ok",
-                                "fallback": "alternate_close_ref",
-                                "fallback_ref_id": fallback_ref_id,
-                                "state_change": fallback_change,
-                            }
-                        )
-                        return True
-                    attempt_logs.append(
-                        {
-                            "attempt": attempt_idx,
-                            "mode": f"{mode}.close_ref[{fallback_rank}]",
-                            "selector": fallback_resolved_selector,
-                            "frame_index": fallback_frame_index,
-                            "reason_code": "no_state_change",
-                            "fallback_ref_id": fallback_ref_id,
-                            "state_change": fallback_change,
-                        }
-                    )
-            return False
-
-        async def _attempt_backdrop_close() -> bool:
-            nonlocal state_change
-            if not close_like_click or _deadline_exceeded():
-                return False
-            try:
-                clicked = await page.evaluate(
-                    """
-                    () => {
-                      const nodes = Array.from(document.querySelectorAll(
-                        '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
-                      ));
-                      const visible = nodes.filter((el) => {
-                        if (!(el instanceof HTMLElement)) return false;
-                        const style = window.getComputedStyle(el);
-                        if (!style) return false;
-                        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 4 && rect.height > 4;
-                      });
-                      if (!visible.length) return false;
-                      const target = visible[0];
-                      const rect = target.getBoundingClientRect();
-                      const x = rect.left + rect.width / 2;
-                      const y = rect.top + rect.height / 2;
-                      const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
-                      target.dispatchEvent(new MouseEvent('mousedown', opts));
-                      target.dispatchEvent(new MouseEvent('mouseup', opts));
-                      target.dispatchEvent(new MouseEvent('click', opts));
-                      return true;
-                    }
-                    """
-                )
-            except Exception as backdrop_exc:
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": f"{mode}.backdrop",
-                        "reason_code": "not_actionable",
-                        "error": str(backdrop_exc),
-                    }
-                )
-                return False
-            if not bool(clicked):
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": f"{mode}.backdrop",
-                        "reason_code": "not_found",
-                        "error": "no visible backdrop candidate",
-                    }
-                )
-                return False
-            await page.wait_for_timeout(250)
-            backdrop_change = await _collect_state_change_probe(
-                probe_wait_ms=250,
-                probe_scroll="backdrop_fallback",
-            )
-            if bool(backdrop_change.get("effective", True)):
-                state_change = backdrop_change
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": f"{mode}.backdrop",
-                        "reason_code": "ok",
-                        "fallback": "backdrop_click",
-                        "state_change": backdrop_change,
-                    }
-                )
-                return True
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": f"{mode}.backdrop",
-                    "reason_code": "no_state_change",
-                    "state_change": backdrop_change,
-                }
-            )
-            return False
-
-        try:
-            await _execute_action_on_locator(action, page, locator, value, options=options)
-            interaction_success = True
-        except Exception as action_exc:
-            if close_like_click and not _deadline_exceeded():
-                alt_close_ok = await _attempt_close_ref_fallbacks()
-                if alt_close_ok:
-                    session.current_url = page.url
-                    screenshot_bytes = await page.screenshot(full_page=False)
-                    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                    return {
-                        "success": True,
-                        "effective": True,
-                        "reason_code": "ok",
-                        "reason": "close intent fallback via alternate close ref succeeded",
-                        "snapshot_id_used": snapshot_id,
-                        "ref_id_used": ref_id,
-                        "retry_path": retry_path,
-                        "attempt_count": attempt_idx,
-                        "state_change": state_change,
-                        "attempt_logs": attempt_logs,
-                        "current_url": page.url,
-                        "screenshot": screenshot_base64,
-                        "stale_recovered": stale_recovered,
-                    }
-                await _capture_close_diagnostic("alternate_ref_failed")
-                try:
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(250)
-                    state_change = await _collect_state_change_probe(
-                        probe_wait_ms=250,
-                        probe_scroll="escape_fallback",
-                    )
-                    escape_effective = bool(state_change.get("effective", True))
-                    if escape_effective:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": mode,
-                                "selector": resolved_selector,
-                                "frame_index": frame_index,
-                                "reason_code": "ok",
-                                "fallback": "escape",
-                                "state_change": state_change,
-                            }
-                        )
-                        session.current_url = page.url
-                        screenshot_bytes = await page.screenshot(full_page=False)
-                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                        return {
-                            "success": True,
-                            "effective": True,
-                            "reason_code": "ok",
-                            "reason": "close intent fallback via Escape succeeded",
-                            "snapshot_id_used": snapshot_id,
-                            "ref_id_used": ref_id,
-                            "retry_path": retry_path,
-                            "attempt_count": attempt_idx,
-                            "state_change": state_change,
-                            "attempt_logs": attempt_logs,
-                            "current_url": page.url,
-                            "screenshot": screenshot_base64,
-                            "stale_recovered": stale_recovered,
-                        }
-                    await _capture_close_diagnostic("escape_no_state_change")
-                except Exception:
-                    await _capture_close_diagnostic("escape_exception")
-                    pass
-                backdrop_ok = await _attempt_backdrop_close()
-                if backdrop_ok:
-                    session.current_url = page.url
-                    screenshot_bytes = await page.screenshot(full_page=False)
-                    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                    return {
-                        "success": True,
-                        "effective": True,
-                        "reason_code": "ok",
-                        "reason": "close intent fallback via backdrop click succeeded",
-                        "snapshot_id_used": snapshot_id,
-                        "ref_id_used": ref_id,
-                        "retry_path": retry_path,
-                        "attempt_count": attempt_idx,
-                        "state_change": state_change,
-                        "attempt_logs": attempt_logs,
-                        "current_url": page.url,
-                        "screenshot": screenshot_base64,
-                        "stale_recovered": stale_recovered,
-                    }
-                await _capture_close_diagnostic("backdrop_failed")
-            if action == "click" and not _deadline_exceeded():
-                hit_fallback = await _try_click_hit_target_from_point(
-                    page,
-                    locator,
-                    requested_meta if isinstance(requested_meta, dict) else None,
-                )
-                if bool(hit_fallback.get("clicked")):
-                    await page.wait_for_timeout(250)
-                    state_change = await _collect_state_change_probe(
-                        probe_wait_ms=250,
-                        probe_scroll="hit_target_fallback",
-                    )
-                    hit_effective = bool(state_change.get("effective", True)) if verify_for_action else True
-                    if hit_effective:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": mode,
-                                "selector": resolved_selector,
-                                "frame_index": frame_index,
-                                "reason_code": "ok",
-                                "fallback": "hit_target_click",
-                                "fallback_selector": str(hit_fallback.get("selector") or ""),
-                                "fallback_reason": str(hit_fallback.get("reason") or ""),
-                                "state_change": state_change,
-                            }
-                        )
-                        session.current_url = page.url
-                        screenshot_bytes = await page.screenshot(full_page=False)
-                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                        return {
-                            "success": True,
-                            "effective": True,
-                            "reason_code": "ok",
-                            "reason": "click fallback via hit-target mouse click succeeded",
-                            "snapshot_id_used": snapshot_id,
-                            "ref_id_used": ref_id,
-                            "retry_path": retry_path,
-                            "attempt_count": attempt_idx,
-                            "state_change": state_change,
-                            "attempt_logs": attempt_logs,
-                            "current_url": page.url,
-                            "screenshot": screenshot_base64,
-                            "stale_recovered": stale_recovered,
-                        }
-                    attempt_logs.append(
-                        {
-                            "attempt": attempt_idx,
-                            "mode": mode,
-                            "selector": resolved_selector,
-                            "frame_index": frame_index,
-                            "reason_code": "no_state_change",
-                            "fallback": "hit_target_click",
-                            "fallback_selector": str(hit_fallback.get("selector") or ""),
-                            "fallback_reason": str(hit_fallback.get("reason") or ""),
-                            "state_change": state_change,
-                        }
-                    )
-                    await _capture_close_diagnostic(
-                        "hit_target_no_state_change",
-                        extra={"fallback_reason": str(hit_fallback.get("reason") or "")},
-                    )
-                else:
-                    attempt_logs.append(
-                        {
-                            "attempt": attempt_idx,
-                            "mode": mode,
-                            "selector": resolved_selector,
-                            "frame_index": frame_index,
-                            "reason_code": "not_actionable",
-                            "fallback": "hit_target_click",
-                            "fallback_error": str(
-                                hit_fallback.get("error")
-                                or hit_fallback.get("reason")
-                                or "hit_target_not_clicked"
-                            ),
-                        }
-                    )
-                    await _capture_close_diagnostic(
-                        "hit_target_not_clicked",
-                        extra={"fallback_error": str(hit_fallback.get("error") or hit_fallback.get("reason") or "")},
-                    )
-            reason_code = "not_actionable"
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": resolved_selector,
-                    "frame_index": frame_index,
-                    "reason_code": reason_code,
-                    "error": str(action_exc),
-                }
-            )
-            print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
-            continue
-
-        if submit_like_click:
-            await page.wait_for_timeout(250)
-
-        effective = False
-        for probe_wait_ms in probe_wait_schedule:
-            if _deadline_exceeded():
-                reason_code = "action_timeout"
-                break
-            await page.wait_for_timeout(probe_wait_ms)
-            state_change = await _collect_state_change_probe(
-                probe_wait_ms=probe_wait_ms,
-                probe_scroll="none",
-            )
-            effective = bool(state_change.get("effective", True)) if verify_for_action else True
-            if effective:
-                break
-
-        if verify_for_action and not effective and action in {"click", "press"}:
-            scroll_probes: List[Tuple[str, str]] = [
-                ("top", "window.scrollTo(0, 0)"),
-                (
-                    "mid",
-                    "window.scrollTo(0, Math.max(0, Math.floor(((document.documentElement && document.documentElement.scrollHeight) || 0) * 0.5)))",
-                ),
-                (
-                    "bottom",
-                    "window.scrollTo(0, Math.max(0, ((document.documentElement && document.documentElement.scrollHeight) || 0)))",
-                ),
-            ]
-            for probe_name, probe_script in scroll_probes:
-                if _deadline_exceeded():
-                    reason_code = "action_timeout"
-                    break
-                try:
-                    await page.evaluate(probe_script)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(250)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=1500,
-                    probe_scroll=probe_name,
-                )
-                effective = bool(state_change.get("effective", True))
-                if effective:
-                    break
-
-        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
-            effective = await _attempt_close_ref_fallbacks()
-            if not effective:
-                await _capture_close_diagnostic("verify_alternate_ref_failed")
-
-        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
-            try:
-                await page.keyboard.press("Escape")
-                await page.wait_for_timeout(250)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=250,
-                    probe_scroll="escape_fallback",
-                )
-                effective = bool(state_change.get("effective", True))
-            except Exception:
-                pass
-            if not effective:
-                await _capture_close_diagnostic("verify_escape_failed")
-
-        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
-            effective = await _attempt_backdrop_close()
-            if not effective:
-                await _capture_close_diagnostic("verify_backdrop_failed")
-
-        if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
-            hit_fallback = await _try_click_hit_target_from_point(
-                page,
-                locator,
-                requested_meta if isinstance(requested_meta, dict) else None,
-            )
-            if bool(hit_fallback.get("clicked")):
-                await page.wait_for_timeout(250)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=250,
-                    probe_scroll="hit_target_fallback",
-                )
-                effective = bool(state_change.get("effective", True))
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": mode,
-                        "selector": resolved_selector,
-                        "frame_index": frame_index,
-                        "reason_code": "ok" if effective else "no_state_change",
-                        "fallback": "hit_target_click",
-                        "fallback_selector": str(hit_fallback.get("selector") or ""),
-                        "fallback_reason": str(hit_fallback.get("reason") or ""),
-                        "state_change": state_change,
-                    }
-                )
-                if close_like_click and not effective:
-                    await _capture_close_diagnostic(
-                        "verify_hit_target_no_state_change",
-                        extra={"fallback_reason": str(hit_fallback.get("reason") or "")},
-                    )
-            else:
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": mode,
-                        "selector": resolved_selector,
-                        "frame_index": frame_index,
-                        "reason_code": "not_actionable",
-                        "fallback": "hit_target_click",
-                        "fallback_error": str(
-                            hit_fallback.get("error")
-                            or hit_fallback.get("reason")
-                            or "hit_target_not_clicked"
-                        ),
-                    }
-                )
-                if close_like_click:
-                    await _capture_close_diagnostic(
-                        "verify_hit_target_not_clicked",
-                        extra={"fallback_error": str(hit_fallback.get("error") or hit_fallback.get("reason") or "")},
-                    )
-
-        if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
-            fallback_result = await _try_click_container_ancestor(locator)
-            if bool(fallback_result.get("clicked")):
-                await page.wait_for_timeout(350)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=350,
-                    probe_scroll="container_fallback",
-                    ancestor_click_fallback=True,
-                    ancestor_click_selector=str(fallback_result.get("selector") or ""),
-                )
-                effective = bool(state_change.get("effective", True))
-                if close_like_click and not effective:
-                    await _capture_close_diagnostic("verify_container_fallback_failed")
-
-        if reason_code == "action_timeout":
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": resolved_selector,
-                    "frame_index": frame_index,
-                    "reason_code": reason_code,
-                    "error": f"action budget exceeded ({max_action_seconds:.1f}s)",
-                }
-            )
-            break
-
-        reason_code = "ok" if effective else "no_state_change"
-        attempt_logs.append(
-            {
-                "attempt": attempt_idx,
-                "mode": mode,
-                "selector": resolved_selector,
-                "frame_index": frame_index,
-                "reason_code": reason_code,
-                "state_change": state_change,
-            }
-        )
-        print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
-        if effective:
-            session.current_url = page.url
-            screenshot_bytes = await page.screenshot(full_page=False)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-            return {
-                "success": True,
-                "effective": True,
-                "reason_code": "ok",
-                "reason": "ref action executed and state changed",
-                "snapshot_id_used": snapshot_id,
-                "ref_id_used": ref_id,
-                "stale_recovered": stale_recovered,
-                "transport_success": transport_success,
-                "locator_found": locator_found,
-                "interaction_success": interaction_success,
-                "state_change": state_change,
-                "live_texts": last_live_texts,
-                "retry_path": retry_path,
-                "attempt_count": len(attempt_logs),
-                "attempt_logs": attempt_logs,
-                "screenshot": screenshot_base64,
-                "current_url": session.current_url,
-                "tab_id": _get_tab_index(page),
-                "targetId": _get_tab_index(page),
-            }
-
-    screenshot = None
-    try:
-        screenshot_bytes = await page.screenshot(full_page=False)
-        screenshot = base64.b64encode(screenshot_bytes).decode("utf-8")
-    except Exception:
-        screenshot = None
-
-    session.current_url = page.url
-    return {
-        "success": False,
-        "effective": False,
-        "reason_code": reason_code if reason_code != "unknown_error" else "failed",
-        "reason": "ref action failed or no state change",
-        "snapshot_id_used": snapshot_id,
-        "ref_id_used": ref_id,
-        "stale_recovered": stale_recovered,
-        "transport_success": transport_success,
-        "locator_found": locator_found,
-        "interaction_success": interaction_success,
-        "state_change": state_change,
-        "live_texts": last_live_texts,
-        "retry_path": retry_path,
-        "attempt_count": len(attempt_logs),
-        "attempt_logs": attempt_logs,
-        "screenshot": screenshot,
-        "current_url": session.current_url,
-        "tab_id": _get_tab_index(page),
-        "targetId": _get_tab_index(page),
-    }
-
-
-def _tab_payload(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
-    current = session.page is page
-    title = ""
-    try:
-        title = page.url
-    except Exception:
-        title = ""
-    return {
-        "tab_id": idx,
-        "targetId": idx,
-        "active": current,
-        "url": page.url,
-        "title": title,
-    }
-
-
-async def _get_page_target_id(page: Page) -> str:
-    cached = _page_target_id_cache.get(page)
-    if cached:
-        return cached
-
-    cdp_session: Optional[CDPSession] = None
-    try:
-        cdp_session = await page.context.new_cdp_session(page)
-        info = await cdp_session.send("Target.getTargetInfo")
-        target_info = info.get("targetInfo") if isinstance(info, dict) else {}
-        target_id = str((target_info or {}).get("targetId") or "").strip()
-        if target_id:
-            _page_target_id_cache[page] = target_id
-        return target_id
-    except Exception:
-        return ""
-    finally:
-        if cdp_session is not None:
-            try:
-                await cdp_session.detach()
-            except Exception:
-                pass
-
-
-async def _list_browser_targets(browser: Optional[Browser]) -> List[Dict[str, str]]:
-    if browser is None:
-        return []
-    browser_cdp: Optional[CDPSession] = None
-    try:
-        browser_cdp = await browser.new_browser_cdp_session()
-        payload = await browser_cdp.send("Target.getTargets")
-        infos = payload.get("targetInfos") if isinstance(payload, dict) else []
-        out: List[Dict[str, str]] = []
-        if isinstance(infos, list):
-            for info in infos:
-                if not isinstance(info, dict):
-                    continue
-                target_id = str(info.get("targetId") or "").strip()
-                target_url = str(info.get("url") or "").strip()
-                if target_id:
-                    out.append({"targetId": target_id, "url": target_url})
-        return out
-    except Exception:
-        return []
-    finally:
-        if browser_cdp is not None:
-            try:
-                await browser_cdp.detach()
-            except Exception:
-                pass
-
-
-async def _resolve_page_from_tab_identifier(
-    pages: List[Page],
-    tab_identifier: Any,
-    browser: Optional[Browser] = None,
-) -> Tuple[str, Optional[int], Optional[Page], List[str]]:
-    return await _resolve_page_from_tab_identifier_impl(
-        pages=pages,
-        tab_identifier=tab_identifier,
-        browser=browser,
-        get_page_target_id_fn=_get_page_target_id,
-        list_browser_targets_fn=_list_browser_targets,
-    )
-
-
-async def _tab_payload_async(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
-    payload = _tab_payload(session, page, idx)
-    target_id = await _get_page_target_id(page)
-    if target_id:
-        payload["cdp_target_id"] = target_id
-    return payload
-
-
-async def _tabs_payload_async(session: BrowserSession, pages: List[Page]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for idx, candidate in enumerate(pages):
-        out.append(await _tab_payload_async(session, candidate, idx))
-    return out
-
-
-def _coerce_tab_id(tab_id: Any) -> Optional[int]:
-    return coerce_tab_id_impl(tab_id)
-
-
-async def _resolve_session_page(session_id: str, tab_id: Optional[Any] = None) -> Tuple[BrowserSession, Page]:
-    return await _resolve_session_page_impl(
+    return await execute_ref_action_with_snapshot_impl(
         session_id=session_id,
+        snapshot_id=snapshot_id,
+        ref_id=ref_id,
+        action=action,
+        value=value,
+        options=options,
+        url=url,
+        selector_hint=selector_hint,
+        verify=verify,
         tab_id=tab_id,
-        active_sessions=active_sessions,
-        ensure_session_fn=ensure_session,
-        playwright_getter_fn=_get_playwright_instance,
-        screencast_subscribers=screencast_subscribers,
-        frame_setter=_set_current_screencast_frame,
-        logger=logger,
-        resolve_page_from_tab_identifier_fn=_resolve_page_from_tab_identifier,
-    )
-
-
-def _extract_elements_by_ref(snapshot_result: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    raw = snapshot_result.get("dom_elements") or snapshot_result.get("elements") or []
-    out: Dict[str, Dict[str, Any]] = {}
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict):
-                ref_id = str(item.get("ref_id") or "")
-                if ref_id:
-                    out[ref_id] = item
-    return out
-
-
-def _element_signal_score(item: Dict[str, Any]) -> int:
-    score = 0
-    text = str(item.get("text") or "").strip()
-    if text:
-        score += min(12, len(text))
-    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-    for key in ("aria-label", "title", "placeholder", "href"):
-        if str(attrs.get(key) or "").strip():
-            score += 2
-    if str(item.get("element_type") or "").strip():
-        score += 1
-    return score
-
-
-def _dedupe_elements_by_dom_ref(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    deduped: List[Dict[str, Any]] = []
-    index_by_dom_ref: Dict[str, int] = {}
-    for raw in elements:
-        if not isinstance(raw, dict):
-            continue
-        dom_ref = str(raw.get("dom_ref") or "").strip()
-        if not dom_ref:
-            deduped.append(raw)
-            continue
-        prev_idx = index_by_dom_ref.get(dom_ref)
-        if prev_idx is None:
-            index_by_dom_ref[dom_ref] = len(deduped)
-            deduped.append(raw)
-            continue
-        prev = deduped[prev_idx]
-        if _element_signal_score(raw) > _element_signal_score(prev):
-            deduped[prev_idx] = raw
-    return deduped
-
-
-def _element_is_interactive(item: Dict[str, Any]) -> bool:
-    if not isinstance(item, dict):
-        return False
-    tag = str(item.get("tag") or "").strip().lower()
-    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-    role = str(attrs.get("role") or "").strip().lower()
-    element_type = str(item.get("element_type") or "").strip().lower()
-    interactive_tags = {"button", "a", "input", "select", "textarea", "option", "summary"}
-    interactive_roles = {
-        "button",
-        "link",
-        "tab",
-        "menuitem",
-        "checkbox",
-        "radio",
-        "switch",
-        "combobox",
-        "textbox",
-        "option",
-        "slider",
-    }
-    if tag in interactive_tags:
-        return True
-    if role in interactive_roles:
-        return True
-    if element_type in {"button", "link", "input", "checkbox", "radio", "select", "textarea", "semantic"}:
-        return True
-    if str(attrs.get("onclick") or "").strip():
-        return True
-    return False
-
-
-def _is_close_intent_ref(meta: Dict[str, Any]) -> bool:
-    if not isinstance(meta, dict):
-        return False
-    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
-    text = " ".join(
-        [
-            str(meta.get("text") or ""),
-            str(meta.get("selector") or ""),
-            str(meta.get("full_selector") or ""),
-            str(attrs.get("aria-label") or ""),
-            str(attrs.get("title") or ""),
-            str(attrs.get("class") or ""),
-            str(attrs.get("role") or ""),
-            str(attrs.get("type") or ""),
-        ]
-    ).strip().lower()
-    if not text:
-        return False
-    close_tokens = [
-        "close",
-        "dismiss",
-        "cancel",
-        "modal-close",
-        "dialog-close",
-        "aria-label=\"close\"",
-        "aria-label='close'",
-        "닫기",
-        "취소",
-        "나가기",
-    ]
-    if any(token in text for token in close_tokens):
-        return True
-    visible = str(meta.get("text") or "").strip()
-    if visible in {"x", "X", "✕", "✖", "×"}:
-        return True
-    return False
-
-
-def _rank_close_ref_candidate(
-    meta: Dict[str, Any],
-    *,
-    requested_meta: Optional[Dict[str, Any]] = None,
-    modal_regions: Optional[List[Dict[str, float]]] = None,
-) -> int:
-    if not isinstance(meta, dict):
-        return -1
-    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
-    text = str(meta.get("text") or "").strip().lower()
-    selector = str(meta.get("selector") or "").strip().lower()
-    full_selector = str(meta.get("full_selector") or "").strip().lower()
-    aria_label = str(attrs.get("aria-label") or "").strip().lower()
-    title = str(attrs.get("title") or "").strip().lower()
-    class_name = str(attrs.get("class") or "").strip().lower()
-    role = str(attrs.get("role") or "").strip().lower()
-    score = 0
-    if text in {"x", "✕", "✖", "×"}:
-        score += 6
-    if role == "button":
-        score += 3
-    if "close" in aria_label or "닫기" in aria_label:
-        score += 4
-    if "close" in title or "닫기" in title:
-        score += 3
-    if "close" in selector or "close" in full_selector:
-        score += 2
-    if "close" in class_name or "dismiss" in class_name or "modal" in class_name:
-        score += 1
-    if _is_modal_corner_close_candidate(meta, modal_regions or []):
-        score += 5
-    if requested_meta and isinstance(requested_meta, dict):
-        req_scope = (
-            requested_meta.get("scope")
-            if isinstance(requested_meta.get("scope"), dict)
-            else {}
-        )
-        cand_scope = meta.get("scope") if isinstance(meta.get("scope"), dict) else {}
-        if req_scope.get("frame_index") == cand_scope.get("frame_index"):
-            score += 2
-        if req_scope.get("tab_index") == cand_scope.get("tab_index"):
-            score += 2
-    return score
-
-
-def _normalize_bbox_dict(raw_bbox: Any) -> Optional[Dict[str, float]]:
-    if not isinstance(raw_bbox, dict):
-        return None
-    try:
-        x = float(raw_bbox.get("x", 0.0) or 0.0)
-        y = float(raw_bbox.get("y", 0.0) or 0.0)
-        width = float(raw_bbox.get("width", 0.0) or 0.0)
-        height = float(raw_bbox.get("height", 0.0) or 0.0)
-    except Exception:
-        return None
-    if width <= 0.0 or height <= 0.0:
-        return None
-    center_x = float(raw_bbox.get("center_x", x + width / 2.0) or (x + width / 2.0))
-    center_y = float(raw_bbox.get("center_y", y + height / 2.0) or (y + height / 2.0))
-    return {
-        "x": x,
-        "y": y,
-        "width": width,
-        "height": height,
-        "center_x": center_x,
-        "center_y": center_y,
-        "right": x + width,
-        "bottom": y + height,
-    }
-
-
-def _collect_modal_regions_from_snapshot(snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, float]]:
-    if not isinstance(snapshot, dict):
-        return []
-    by_ref = snapshot.get("elements_by_ref")
-    if not isinstance(by_ref, dict):
-        return []
-    regions: List[Dict[str, float]] = []
-    for _, raw_meta in by_ref.items():
-        if not isinstance(raw_meta, dict):
-            continue
-        attrs = raw_meta.get("attributes") if isinstance(raw_meta.get("attributes"), dict) else {}
-        role = str(attrs.get("role") or "").strip().lower()
-        aria_modal = str(attrs.get("aria-modal") or "").strip().lower()
-        class_name = str(attrs.get("class") or "").strip().lower()
-        tag = str(raw_meta.get("tag") or "").strip().lower()
-        if not (
-            aria_modal == "true"
-            or role in {"dialog", "alertdialog"}
-            or tag == "dialog"
-            or any(token in class_name for token in ("modal", "dialog", "popup", "sheet", "drawer"))
-        ):
-            continue
-        bbox = _normalize_bbox_dict(raw_meta.get("bounding_box"))
-        if not bbox:
-            continue
-        if bbox["width"] < 120 or bbox["height"] < 120:
-            continue
-        regions.append(bbox)
-    regions.sort(key=lambda r: r["width"] * r["height"], reverse=True)
-    return regions[:6]
-
-
-def _is_modal_corner_close_candidate(
-    meta: Dict[str, Any],
-    modal_regions: List[Dict[str, float]],
-) -> bool:
-    if not isinstance(meta, dict):
-        return False
-    if not modal_regions:
-        return False
-    if not _element_is_interactive(meta):
-        return False
-    bbox = _normalize_bbox_dict(meta.get("bounding_box"))
-    if not bbox:
-        return False
-    if bbox["width"] > 72 or bbox["height"] > 72:
-        return False
-    if (bbox["width"] * bbox["height"]) > 3600:
-        return False
-    cx = bbox["center_x"]
-    cy = bbox["center_y"]
-    for region in modal_regions:
-        if not (region["x"] <= cx <= region["right"] and region["y"] <= cy <= region["bottom"]):
-            continue
-        rel_x = (cx - region["x"]) / max(region["width"], 1.0)
-        rel_y = (cy - region["y"]) / max(region["height"], 1.0)
-        if rel_x >= 0.72 and rel_y <= 0.28:
-            return True
-    return False
-
-
-def _collect_close_ref_candidates(
-    *,
-    snapshot: Optional[Dict[str, Any]],
-    requested_meta: Optional[Dict[str, Any]],
-    exclude_ref_id: str,
-    limit: int = 5,
-) -> List[Tuple[str, Dict[str, Any]]]:
-    if not isinstance(snapshot, dict):
-        return []
-    by_ref = snapshot.get("elements_by_ref")
-    if not isinstance(by_ref, dict):
-        return []
-    req_scope = (
-        requested_meta.get("scope")
-        if isinstance(requested_meta, dict) and isinstance(requested_meta.get("scope"), dict)
-        else {}
-    )
-    modal_regions = _collect_modal_regions_from_snapshot(snapshot)
-    ranked: List[Tuple[int, str, Dict[str, Any]]] = []
-    for raw_ref_id, raw_meta in by_ref.items():
-        ref_key = str(raw_ref_id or "").strip()
-        if not ref_key or ref_key == exclude_ref_id:
-            continue
-        if not isinstance(raw_meta, dict):
-            continue
-        if not (
-            _is_close_intent_ref(raw_meta)
-            or _is_modal_corner_close_candidate(raw_meta, modal_regions)
-        ):
-            continue
-        cand_scope = raw_meta.get("scope") if isinstance(raw_meta.get("scope"), dict) else {}
-        try:
-            req_tab = req_scope.get("tab_index")
-            cand_tab = cand_scope.get("tab_index")
-            if req_tab is not None and cand_tab is not None and int(req_tab) != int(cand_tab):
-                continue
-        except Exception:
-            pass
-        try:
-            req_frame = req_scope.get("frame_index")
-            cand_frame = cand_scope.get("frame_index")
-            if req_frame is not None and cand_frame is not None and int(req_frame) != int(cand_frame):
-                continue
-        except Exception:
-            pass
-        score = _rank_close_ref_candidate(
-            raw_meta,
-            requested_meta=requested_meta,
-            modal_regions=modal_regions,
-        )
-        ranked.append((score, ref_key, raw_meta))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [(rid, meta) for _, rid, meta in ranked[: max(1, limit)]]
-
-
-_ROLE_INTERACTIVE = {
-    "button",
-    "link",
-    "textbox",
-    "checkbox",
-    "radio",
-    "combobox",
-    "listbox",
-    "menuitem",
-    "menuitemcheckbox",
-    "menuitemradio",
-    "option",
-    "searchbox",
-    "slider",
-    "spinbutton",
-    "switch",
-    "tab",
-    "treeitem",
-}
-
-_ROLE_CONTENT = {
-    "heading",
-    "cell",
-    "gridcell",
-    "columnheader",
-    "rowheader",
-    "listitem",
-    "article",
-    "region",
-    "main",
-    "navigation",
-}
-
-_ROLE_STRUCTURAL = {
-    "generic",
-    "group",
-    "list",
-    "table",
-    "row",
-    "rowgroup",
-    "grid",
-    "treegrid",
-    "menu",
-    "menubar",
-    "toolbar",
-    "tablist",
-    "tree",
-    "directory",
-    "document",
-    "application",
-    "presentation",
-    "none",
-}
-
-
-def _snapshot_line_depth(line: str) -> int:
-    indent = len(line) - len(line.lstrip(" "))
-    return max(0, indent // 2)
-
-
-def _compact_role_tree(snapshot: str) -> str:
-    lines = snapshot.split("\n")
-    out: List[str] = []
-    for i, line in enumerate(lines):
-        if "[ref=" in line:
-            out.append(line)
-            continue
-        if ":" in line and not line.rstrip().endswith(":"):
-            out.append(line)
-            continue
-        current_depth = _snapshot_line_depth(line)
-        has_ref_child = False
-        for j in range(i + 1, len(lines)):
-            child_depth = _snapshot_line_depth(lines[j])
-            if child_depth <= current_depth:
-                break
-            if "[ref=" in lines[j]:
-                has_ref_child = True
-                break
-        if has_ref_child:
-            out.append(line)
-    return "\n".join(out)
-
-
-def _limit_snapshot_text(snapshot: str, max_chars: int) -> tuple[str, bool]:
-    limit = max(200, min(int(max_chars or 24000), 120000))
-    if len(snapshot) <= limit:
-        return snapshot, False
-    return f"{snapshot[:limit]}\n\n[...TRUNCATED - page too large]", True
-
-
-def _parse_ai_ref(suffix: str) -> Optional[str]:
-    m = re.search(r"\[ref=(e\d+)\]", suffix or "", flags=re.IGNORECASE)
-    if not m:
-        return None
-    return m.group(1)
-
-
-def _role_snapshot_stats(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
-    interactive = 0
-    for item in refs.values():
-        role = str((item or {}).get("role") or "").strip().lower()
-        if role in _ROLE_INTERACTIVE:
-            interactive += 1
-    return {
-        "lines": len(snapshot.split("\n")) if snapshot else 0,
-        "chars": len(snapshot),
-        "refs": len(refs),
-        "interactive": interactive,
-    }
-
-
-def _build_role_snapshot_from_aria_text(
-    aria_snapshot: str,
-    *,
-    interactive: bool,
-    compact: bool,
-    max_depth: Optional[int] = None,
-    line_limit: int = 500,
-    max_chars: int = 64000,
-) -> Dict[str, Any]:
-    lines = str(aria_snapshot or "").split("\n")
-    refs: Dict[str, Dict[str, Any]] = {}
-    refs_by_key: Dict[str, List[str]] = defaultdict(list)
-    counts_by_key: Dict[str, int] = defaultdict(int)
-    out: List[str] = []
-    ref_counter = 0
-
-    def _next_ref() -> str:
-        nonlocal ref_counter
-        ref_counter += 1
-        return f"e{ref_counter}"
-
-    for line in lines:
-        depth = _snapshot_line_depth(line)
-        if max_depth is not None and depth > max_depth:
-            continue
-
-        m = re.match(r'^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$', line)
-        if not m:
-            if not interactive:
-                out.append(line)
-            continue
-
-        prefix, role_raw, name, suffix = m.group(1), m.group(2), m.group(3), m.group(4)
-        if role_raw.startswith("/"):
-            if not interactive:
-                out.append(line)
-            continue
-
-        role = (role_raw or "").lower()
-        if interactive and role not in _ROLE_INTERACTIVE:
-            continue
-        if compact and role in _ROLE_STRUCTURAL and not name:
-            continue
-
-        should_have_ref = role in _ROLE_INTERACTIVE or (role in _ROLE_CONTENT and bool(name))
-        if not should_have_ref:
-            out.append(line)
-            continue
-
-        ref = _next_ref()
-        key = f"{role}:{name or ''}"
-        nth = counts_by_key[key]
-        counts_by_key[key] += 1
-        refs_by_key[key].append(ref)
-
-        ref_payload: Dict[str, Any] = {"role": role}
-        if name:
-            ref_payload["name"] = name
-        if nth > 0:
-            ref_payload["nth"] = nth
-        refs[ref] = ref_payload
-
-        enhanced = f"{prefix}{role_raw}"
-        if name:
-            enhanced += f' "{name}"'
-        enhanced += f" [ref={ref}]"
-        if nth > 0:
-            enhanced += f" [nth={nth}]"
-        if suffix:
-            enhanced += suffix
-        out.append(enhanced)
-
-    duplicate_keys = {k for k, v in refs_by_key.items() if len(v) > 1}
-    for ref, data in refs.items():
-        key = f"{data.get('role', '')}:{data.get('name', '')}"
-        if key not in duplicate_keys:
-            data.pop("nth", None)
-
-    snapshot = "\n".join(out) or "(empty)"
-    if compact:
-        snapshot = _compact_role_tree(snapshot)
-    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
-    snapshot = "\n".join(trimmed_lines)
-    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
-    return {
-        "snapshot": snapshot,
-        "refs": refs,
-        "truncated": truncated,
-        "stats": _role_snapshot_stats(snapshot, refs),
-    }
-
-
-def _build_role_snapshot_from_ai_text(
-    ai_snapshot: str,
-    *,
-    interactive: bool,
-    compact: bool,
-    max_depth: Optional[int] = None,
-    line_limit: int = 500,
-    max_chars: int = 64000,
-) -> Dict[str, Any]:
-    lines = str(ai_snapshot or "").split("\n")
-    refs: Dict[str, Dict[str, Any]] = {}
-    out: List[str] = []
-
-    for line in lines:
-        depth = _snapshot_line_depth(line)
-        if max_depth is not None and depth > max_depth:
-            continue
-
-        m = re.match(r'^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$', line)
-        if not m:
-            out.append(line)
-            continue
-
-        _, role_raw, name, suffix = m.group(1), m.group(2), m.group(3), m.group(4)
-        if role_raw.startswith("/"):
-            out.append(line)
-            continue
-
-        role = (role_raw or "").lower()
-        if interactive and role not in _ROLE_INTERACTIVE:
-            continue
-        if compact and role in _ROLE_STRUCTURAL and not name:
-            continue
-
-        ref = _parse_ai_ref(suffix or "")
-        if ref:
-            refs[ref] = {"role": role, **({"name": name} if name else {})}
-        out.append(line)
-
-    snapshot = "\n".join(out) or "(empty)"
-    if compact:
-        snapshot = _compact_role_tree(snapshot)
-    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
-    snapshot = "\n".join(trimmed_lines)
-    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
-    return {
-        "snapshot": snapshot,
-        "refs": refs,
-        "truncated": truncated,
-        "stats": _role_snapshot_stats(snapshot, refs),
-    }
-
-
-def _build_role_refs_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    refs: Dict[str, Dict[str, Any]] = {}
-    counts_by_key: Dict[str, int] = defaultdict(int)
-    refs_by_key: Dict[str, List[str]] = defaultdict(list)
-
-    for item in elements:
-        if not isinstance(item, dict):
-            continue
-        ref = str(item.get("ref_id") or "").strip()
-        if not ref:
-            continue
-        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-        role = str(attrs.get("role") or "").strip().lower()
-        if not role:
-            tag = str(item.get("tag") or "").strip().lower()
-            if tag == "a":
-                role = "link"
-            elif tag in {"input", "textarea"}:
-                role = "textbox"
-            elif tag == "select":
-                role = "combobox"
-            elif tag == "button":
-                role = "button"
-            else:
-                role = "generic"
-
-        name = str(item.get("text") or attrs.get("aria-label") or "").strip() or None
-        key = f"{role}:{name or ''}"
-        nth = counts_by_key[key]
-        counts_by_key[key] += 1
-        refs_by_key[key].append(ref)
-
-        payload: Dict[str, Any] = {"role": role}
-        if name:
-            payload["name"] = name
-        if nth > 0:
-            payload["nth"] = nth
-        refs[ref] = payload
-
-    duplicate_keys = {k for k, v in refs_by_key.items() if len(v) > 1}
-    for ref, data in refs.items():
-        key = f"{data.get('role', '')}:{data.get('name', '')}"
-        if key not in duplicate_keys:
-            data.pop("nth", None)
-    return refs
-
-
-async def _try_snapshot_for_ai(page: Page, timeout_ms: int = 5000) -> Optional[str]:
-    timeout_ms = max(500, min(int(timeout_ms or 5000), 60000))
-
-    # Playwright 내부 채널 snapshotForAI 시도 (OpenClaw parity)
-    try:
-        impl = getattr(page, "_impl_obj", None)
-        channel = getattr(impl, "_channel", None)
-        send = getattr(channel, "send", None)
-        if callable(send):
-            res = await send("snapshotForAI", {"timeout": timeout_ms, "track": "response"})
-            if isinstance(res, dict):
-                text = str(res.get("full") or "")
-                if text.strip():
-                    return text
-    except Exception:
-        pass
-
-    # fallback: 접근성 스냅샷 문자열
-    try:
-        locator = page.locator(":root")
-        aria_text = await locator.aria_snapshot(timeout=timeout_ms)
-        if isinstance(aria_text, str) and aria_text.strip():
-            return aria_text
-    except Exception:
-        pass
-    return None
-
-
-def _build_snapshot_text(
-    elements: List[Dict[str, Any]],
-    *,
-    interactive_only: bool,
-    compact: bool,
-    limit: int,
-    max_chars: int,
-) -> Dict[str, Any]:
-    lines: List[str] = []
-    char_count = 0
-    max_items = max(1, min(int(limit or 200), 5000))
-    max_chars = max(200, min(int(max_chars or 24000), 120000))
-    for idx, item in enumerate(elements):
-        if not isinstance(item, dict):
-            continue
-        if interactive_only and not _element_is_interactive(item):
-            continue
-        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-        tag = str(item.get("tag") or "").strip().lower() or "node"
-        role = str(attrs.get("role") or "").strip().lower()
-        ref = str(item.get("ref_id") or "").strip() or f"e{idx}"
-        text = str(item.get("text") or "").strip()
-        aria_label = str(attrs.get("aria-label") or "").strip()
-        placeholder = str(attrs.get("placeholder") or "").strip()
-        title = str(attrs.get("title") or "").strip()
-        label = text or aria_label or placeholder or title
-        label = re.sub(r"\s+", " ", label).strip()
-        if len(label) > 140:
-            label = label[:140]
-        kind = role or tag
-        if compact:
-            if label:
-                line = f"- {kind} \"{label}\" [ref={ref}]"
-            else:
-                line = f"- {kind} [ref={ref}]"
-        else:
-            line = f"- tag={tag} role={role or '-'} ref={ref}"
-            if label:
-                line += f" text=\"{label}\""
-            if placeholder:
-                line += f" placeholder=\"{placeholder[:80]}\""
-        if char_count + len(line) + 1 > max_chars:
-            break
-        lines.append(line)
-        char_count += len(line) + 1
-        if len(lines) >= max_items:
-            break
-    return {
-        "lines": lines,
-        "text": "\n".join(lines),
-        "stats": {
-            "line_count": len(lines),
-            "char_count": char_count,
-            "interactive_only": bool(interactive_only),
-            "compact": bool(compact),
-            "limit": max_items,
-            "max_chars": max_chars,
+        ctx={
+            "playwright_instance": playwright_instance,
+            "HTTPException": HTTPException,
+            "normalize_url": normalize_url,
+            "snapshot_page": snapshot_page,
+            "_resolve_session_page": _resolve_session_page,
+            "_get_tab_index": _get_tab_index,
+            "_resolve_ref_meta_from_snapshot": _resolve_ref_meta_from_snapshot,
+            "_resolve_stale_ref": _resolve_stale_ref,
+            "_build_ref_candidates": _build_ref_candidates,
+            "_resolve_locator_from_ref": _resolve_locator_from_ref,
+            "_execute_action_on_locator": _execute_action_on_locator,
+            "_try_click_hit_target_from_point": _try_click_hit_target_from_point,
+            "_try_click_container_ancestor": _try_click_container_ancestor,
+            "_extract_live_texts": _extract_live_texts,
+            "_collect_page_evidence": _collect_page_evidence,
+            "_collect_page_evidence_light": _collect_page_evidence_light,
+            "_compute_runtime_dom_hash": _compute_runtime_dom_hash,
+            "_state_change_flags": _state_change_flags,
+            "_safe_read_target_state": _safe_read_target_state,
+            "_read_focus_signature": _read_focus_signature,
         },
-    }
+    )
 
 
 async def _browser_start(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -5722,31 +4085,38 @@ async def _browser_highlight(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-_INTERACTION_HANDLERS = build_interaction_handlers(
-    resolve_session_page_fn=_resolve_session_page,
-    get_tab_index_fn=_get_tab_index,
-    build_error_fn=build_error,
-    browser_state_store_cls=BrowserStateStore,
-)
+_INTERACTION_HANDLERS: Optional[Dict[str, Any]] = None
+
+
+def _get_interaction_handlers() -> Dict[str, Any]:
+    global _INTERACTION_HANDLERS
+    if _INTERACTION_HANDLERS is None:
+        _INTERACTION_HANDLERS = build_interaction_handlers(
+            resolve_session_page_fn=_resolve_session_page,
+            get_tab_index_fn=_get_tab_index,
+            build_error_fn=build_error,
+            browser_state_store_cls=BrowserStateStore,
+        )
+    return _INTERACTION_HANDLERS
 
 async def _browser_dialog_arm(params: Dict[str, Any]) -> Dict[str, Any]:
-    return await _INTERACTION_HANDLERS["dialog_arm"](params)
+    return await _get_interaction_handlers()["dialog_arm"](params)
 
 
 async def _browser_file_chooser_arm(params: Dict[str, Any]) -> Dict[str, Any]:
-    return await _INTERACTION_HANDLERS["file_chooser_arm"](params)
+    return await _get_interaction_handlers()["file_chooser_arm"](params)
 
 
 async def _browser_download_wait(params: Dict[str, Any]) -> Dict[str, Any]:
-    return await _INTERACTION_HANDLERS["download_wait"](params)
+    return await _get_interaction_handlers()["download_wait"](params)
 
 
 async def _browser_state(params: Dict[str, Any]) -> Dict[str, Any]:
-    return await _INTERACTION_HANDLERS["state"](params)
+    return await _get_interaction_handlers()["state"](params)
 
 
 async def _browser_env(params: Dict[str, Any]) -> Dict[str, Any]:
-    return await _INTERACTION_HANDLERS["env"](params)
+    return await _get_interaction_handlers()["env"](params)
 
 async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
     """Executes a full test scenario using Playwright."""
