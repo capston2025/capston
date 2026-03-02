@@ -22,6 +22,42 @@ from .models import (
     StepResult,
     DOMElement,
 )
+from .constraints import (
+    derive_goal_constraints as derive_goal_constraints_impl,
+    extract_metric_values_from_text as extract_metric_values_from_text_impl,
+    estimate_goal_metric_from_dom as estimate_goal_metric_from_dom_impl,
+)
+from .auth_hints import (
+    contains_close_hint as contains_close_hint_impl,
+    contains_login_hint as contains_login_hint_impl,
+    contains_next_pagination_hint as contains_next_pagination_hint_impl,
+    goal_requires_login_interaction as goal_requires_login_interaction_impl,
+    infer_runtime_phase as infer_runtime_phase_impl,
+    is_compact_auth_page as is_compact_auth_page_impl,
+    is_login_gate as is_login_gate_impl,
+    is_navigational_href as is_navigational_href_impl,
+    is_numeric_page_label as is_numeric_page_label_impl,
+    recover_dom_after_empty as recover_dom_after_empty_impl,
+)
+from .account_signals import (
+    contains_duplicate_account_hint as contains_duplicate_account_hint_impl,
+    contains_logout_hint as contains_logout_hint_impl,
+    goal_allows_logout as goal_allows_logout_impl,
+    has_duplicate_account_signal as has_duplicate_account_signal_impl,
+    next_username as next_username_impl,
+    rotate_signup_identity as rotate_signup_identity_impl,
+)
+from .phase_constraints import (
+    apply_phase_constraints as apply_phase_constraints_impl,
+    build_constraint_failure_reason as build_constraint_failure_reason_impl,
+    is_collect_constraint_unmet as is_collect_constraint_unmet_impl,
+)
+from .execute_goal_context_shift import handle_forced_context_shift
+from .execute_goal_handoff import handle_master_handoff
+from .execute_goal_intervention import handle_login_intervention
+from .execute_goal_progress import evaluate_post_action_progress
+from .execute_goal_recovery import handle_action_recovery
+from .execute_goal_streaks import update_action_streaks_and_loops
 from .parsing import parse_multi_values, parse_wait_payload
 from .runtime import (
     ActionExecResult,
@@ -111,6 +147,16 @@ class GoalDrivenAgent:
         self._goal_constraints: Dict[str, Any] = {}
         self._goal_metric_value: Optional[float] = None
         self._goal_tokens: set[str] = set()
+        self._loop_policy: Dict[str, int] = {
+            "ref_soft_fail_limit": self._env_int("GAIA_LOOP_REF_SOFT_FAIL_LIMIT", 2, low=1, high=20),
+            "scroll_streak_limit": self._env_int("GAIA_LOOP_SCROLL_STREAK_LIMIT", 3, low=1, high=20),
+            "same_intent_soft_fail_limit": self._env_int("GAIA_LOOP_SAME_INTENT_SOFT_FAIL_LIMIT", 3, low=1, high=20),
+            "no_progress_context_shift_min": self._env_int("GAIA_LOOP_NO_PROGRESS_CONTEXT_SHIFT_MIN", 2, low=0, high=50),
+            "ineffective_action_shift_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_SHIFT_LIMIT", 3, low=1, high=30),
+            "ineffective_action_stop_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_STOP_LIMIT", 8, low=2, high=80),
+            "context_shift_fail_limit": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_FAIL_LIMIT", 3, low=1, high=20),
+            "context_shift_cooldown_steps": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_COOLDOWN_STEPS", 4, low=0, high=60),
+        }
 
         # 실행 기억(KB)
         self._memory_store = MemoryStore(enabled=True)
@@ -123,6 +169,26 @@ class GoalDrivenAgent:
         print(f"[GoalAgent] {message}")
         if self._log_callback:
             self._log_callback(message)
+
+    @staticmethod
+    def _env_int(name: str, default: int, *, low: int = 0, high: int = 100) -> int:
+        try:
+            value = int(str(os.getenv(name, str(default))).strip())
+        except Exception:
+            value = int(default)
+        if value < low:
+            return low
+        if value > high:
+            return high
+        return value
+
+    def _loop_policy_value(self, key: str, default: int) -> int:
+        cfg = self._loop_policy if isinstance(self._loop_policy, dict) else {}
+        try:
+            value = int(cfg.get(key, default))
+        except Exception:
+            value = int(default)
+        return max(0, value)
 
     @staticmethod
     def _normalize_text(value: Optional[str]) -> str:
@@ -167,41 +233,11 @@ class GoalDrivenAgent:
 
     @classmethod
     def _contains_login_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "로그인",
-            "sign in",
-            "log in",
-            "login",
-            "이메일",
-            "email",
-            "비밀번호",
-            "password",
-            "아이디",
-            "username",
-            "인증",
-            "auth",
-        )
-        return any(h in text for h in hints)
+        return contains_login_hint_impl(value, cls._normalize_text)
 
     @classmethod
     def _contains_close_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "닫",
-            "close",
-            "취소",
-            "cancel",
-            "dismiss",
-        )
-        if any(h in text for h in hints):
-            return True
-        tokens = [tok for tok in re.split(r"[^a-zA-Z0-9가-힣×]+", text) if tok]
-        return any(tok in {"x", "×"} for tok in tokens)
+        return contains_close_hint_impl(value, cls._normalize_text)
 
     @classmethod
     def _contains_progress_cta_hint(cls, value: Optional[str]) -> bool:
@@ -217,21 +253,11 @@ class GoalDrivenAgent:
 
     @staticmethod
     def _is_numeric_page_label(value: Optional[str]) -> bool:
-        text = (value or "").strip()
-        return bool(re.fullmatch(r"\d{1,3}", text))
+        return is_numeric_page_label_impl(value)
 
     @staticmethod
     def _is_navigational_href(value: Optional[str]) -> bool:
-        href = (value or "").strip().lower()
-        if not href:
-            return False
-        if href.startswith("#"):
-            return False
-        if href.startswith("javascript:"):
-            return False
-        if href.startswith("mailto:") or href.startswith("tel:"):
-            return False
-        return True
+        return is_navigational_href_impl(value)
 
     @classmethod
     def _contains_wishlist_like_hint(cls, value: Optional[str]) -> bool:
@@ -246,24 +272,14 @@ class GoalDrivenAgent:
         return False
 
     def _recover_dom_after_empty(self, goal: "TestGoal") -> List["DOMElement"]:
-        for attempt in range(2):
-            time.sleep(0.8 + (0.4 * attempt))
-            dom = self._analyze_dom()
-            if dom:
-                return dom
-        # 이미 진행된 실행 컨텍스트를 잃지 않기 위해, 중후반 phase에서는 시작 URL 강제 복귀를 피합니다.
-        if (self._runtime_phase or "").upper() in {"AUTH", "COMPOSE", "APPLY", "VERIFY"} or self._no_progress_counter > 0:
-            self._log("🛠️ DOM 복구: 현재 컨텍스트 유지(시작 URL 강제 복귀 생략)")
-            return []
-        start_url = str(getattr(goal, "start_url", "") or "").strip()
-        if start_url:
-            self._log("🛠️ DOM 복구: 시작 URL로 재동기화 시도")
-            _ = self._execute_action("goto", url=start_url)
-            time.sleep(1.2)
-            dom = self._analyze_dom()
-            if dom:
-                return dom
-        return []
+        return recover_dom_after_empty_impl(
+            runtime_phase=self._runtime_phase,
+            no_progress_counter=self._no_progress_counter,
+            goal_start_url=str(getattr(goal, "start_url", "") or ""),
+            analyze_dom_fn=self._analyze_dom,
+            log_fn=self._log,
+            execute_action_fn=lambda start_url: self._execute_action("goto", url=start_url),
+        )
 
     @classmethod
     def _contains_apply_hint(cls, value: Optional[str]) -> bool:
@@ -279,168 +295,42 @@ class GoalDrivenAgent:
 
     @classmethod
     def _contains_next_pagination_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        return any(ch in text for ch in ("›", "»", ">"))
+        return contains_next_pagination_hint_impl(value, cls._normalize_text)
 
     @classmethod
     def _derive_goal_constraints(cls, goal: TestGoal) -> Dict[str, Any]:
-        blob = cls._goal_text_blob(goal)
-        text = cls._normalize_text(blob)
-        if not text:
-            return {}
-
-        no_navigation_hints = (
-            "페이지 이동 없이",
-            "url 변화 없이",
-            "url 변경 없이",
-            "같은 페이지",
-            "no navigation",
-            "without navigation",
-            "stay on page",
-            "same page",
+        return derive_goal_constraints_impl(
+            cls._goal_text_blob(goal),
+            cls._normalize_text,
         )
-        require_no_navigation = any(hint in text for hint in no_navigation_hints)
-        numeric_values: List[int] = []
-        metric_terms: List[str] = []
-        number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
-        for match in re.finditer(rf"(?<!\d){number_pattern}(?!\d)\s*([^\d\s,.;:()]{1,12})?", text):
-            value = int(str(match.group(1)).replace(",", ""))
-            numeric_values.append(value)
-            maybe_term = (match.group(2) or "").strip()
-            if maybe_term:
-                metric_terms.append(maybe_term)
-
-        if not numeric_values:
-            if require_no_navigation:
-                return {"require_no_navigation": True}
-            return {}
-
-        collect_min: Optional[int] = None
-        apply_target: Optional[int] = None
-
-        if len(numeric_values) >= 2:
-            collect_min = max(numeric_values)
-            apply_target = min(numeric_values)
-        else:
-            collect_min = numeric_values[0]
-
-        if apply_target is not None and collect_min is not None and apply_target >= collect_min:
-            apply_target = None
-
-        term_freq: Dict[str, int] = {}
-        for term in metric_terms:
-            term_freq[term] = int(term_freq.get(term, 0)) + 1
-        sorted_terms = sorted(term_freq.items(), key=lambda kv: kv[1], reverse=True)
-        top_terms = [t for t, _ in sorted_terms[:4]]
-        metric_label = top_terms[0] if top_terms else "count"
-        require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
-
-        return {
-            "metric": "numeric",
-            "metric_label": metric_label,
-            "metric_terms": top_terms,
-            "collect_min": collect_min,
-            "apply_target": apply_target,
-            "require_collect_before_progress": require_collect_before_progress,
-            "require_no_navigation": require_no_navigation,
-        }
 
     @classmethod
     def _extract_metric_values_from_text(cls, value: str, metric_terms: List[str]) -> List[int]:
-        text = cls._normalize_text(value)
-        if not text:
-            return []
-
-        number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
-
-        def _to_int(raw: str) -> int:
-            return int(str(raw).replace(",", ""))
-
-        numbers: List[int] = []
-        term_matches = 0
-        for term in metric_terms or []:
-            safe_term = re.escape(str(term))
-            for m in re.finditer(rf"{number_pattern}\s*{safe_term}", text):
-                numbers.append(_to_int(m.group(1)))
-                term_matches += 1
-            for m in re.finditer(rf"{safe_term}\s*{number_pattern}", text):
-                numbers.append(_to_int(m.group(1)))
-                term_matches += 1
-        if term_matches > 0:
-            numbers.extend(_to_int(m.group(1)) for m in re.finditer(rf"\({number_pattern}\)", text))
-            return numbers
-
-        # metric_terms가 있는데 매칭이 없으면 잡음 가능성이 높으므로 보수적으로 무시합니다.
-        if metric_terms:
-            return []
-
-        contextual_numbers: List[int] = []
-        context_patterns = [
-            rf"(?:총|합계|count|counts|items?|item|total|현재|수량|개수|학점)\s*[:=]?\s*{number_pattern}",
-            rf"{number_pattern}\s*(?:개|건|명|점|학점|items?|item|count)",
-        ]
-        for pattern in context_patterns:
-            for m in re.finditer(pattern, text):
-                contextual_numbers.append(_to_int(m.group(1)))
-        if contextual_numbers:
-            return contextual_numbers
-
-        # 마지막 fallback은 괄호형 수치만 허용해 일반 DOM 숫자 노이즈를 줄입니다.
-        return [_to_int(m.group(1)) for m in re.finditer(rf"\({number_pattern}\)", text)]
+        return extract_metric_values_from_text_impl(
+            value,
+            metric_terms,
+            cls._normalize_text,
+        )
 
     def _estimate_goal_metric_from_dom(self, dom_elements: List[DOMElement]) -> Optional[float]:
-        metric_kind = str(self._goal_constraints.get("metric") or "").strip().lower()
-        if metric_kind != "numeric":
-            return None
-        metric_terms = [str(x) for x in (self._goal_constraints.get("metric_terms") or []) if str(x).strip()]
-
-        values: List[int] = []
-        for el in dom_elements:
-            fields = [
-                el.text,
-                el.aria_label,
-                el.placeholder,
-                getattr(el, "title", None),
-            ]
-            for field in fields:
-                if not field:
-                    continue
-                values.extend(self._extract_metric_values_from_text(str(field), metric_terms))
-
-        collect_min = self._goal_constraints.get("collect_min")
-        apply_target = self._goal_constraints.get("apply_target")
-        dynamic_upper = 10000
-        try:
-            if collect_min is not None:
-                dynamic_upper = max(dynamic_upper, int(collect_min) * 4)
-            if apply_target is not None:
-                dynamic_upper = max(dynamic_upper, int(apply_target) * 4)
-        except Exception:
-            pass
-        dynamic_upper = min(dynamic_upper, 1_000_000)
-
-        filtered = [v for v in values if 0 <= int(v) <= dynamic_upper]
-        if not filtered:
-            return None
-        return float(max(filtered))
+        return estimate_goal_metric_from_dom_impl(
+            dom_elements,
+            self._goal_constraints,
+            self._normalize_text,
+        )
 
     def _is_collect_constraint_unmet(self) -> bool:
-        collect_min = self._goal_constraints.get("collect_min")
-        if collect_min is None:
-            return False
-        current = self._goal_metric_value
-        if current is None:
-            return True
-        return float(current) + 1e-9 < float(collect_min)
+        return is_collect_constraint_unmet_impl(
+            self._goal_constraints,
+            self._goal_metric_value,
+        )
 
     def _apply_phase_constraints(self, detected_phase: str) -> str:
-        if not self._is_collect_constraint_unmet():
-            return detected_phase
-        if detected_phase in {"COMPOSE", "APPLY", "VERIFY"}:
-            return "COLLECT"
-        return detected_phase
+        return apply_phase_constraints_impl(
+            detected_phase,
+            self._goal_constraints,
+            self._goal_metric_value,
+        )
 
     def _is_progress_transition_element(self, el: Optional[DOMElement]) -> bool:
         if el is None:
@@ -774,72 +664,25 @@ class GoalDrivenAgent:
         )
 
     def _constraint_failure_reason(self) -> Optional[str]:
-        if not self._is_collect_constraint_unmet():
-            return None
-        collect_min = int(self._goal_constraints.get("collect_min") or 0)
-        metric_label = str(self._goal_constraints.get("metric_label") or "")
-        current = self._goal_metric_value
-        current_text = "unknown" if current is None else str(int(current))
-        return (
-            f"목표 제약 미충족: 최소 {collect_min}{metric_label} 수집 전에는 완료로 판정할 수 없습니다. "
-            f"(현재 추정값: {current_text}{metric_label})"
+        return build_constraint_failure_reason_impl(
+            self._goal_constraints,
+            self._goal_metric_value,
         )
 
     @classmethod
     def _contains_logout_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "로그아웃",
-            "log out",
-            "logout",
-            "sign out",
-            "signout",
-        )
-        return any(h in text for h in hints)
+        return contains_logout_hint_impl(value, cls._normalize_text)
 
     @classmethod
     def _contains_duplicate_account_hint(cls, value: Optional[str]) -> bool:
-        text = cls._normalize_text(value)
-        if not text:
-            return False
-        hints = (
-            "이미 사용 중인 아이디",
-            "이미 사용중인 아이디",
-            "이미 사용 중",
-            "아이디 중복",
-            "중복된 아이디",
-            "already in use",
-            "already exists",
-            "duplicate",
-        )
-        return any(h in text for h in hints)
+        return contains_duplicate_account_hint_impl(value, cls._normalize_text)
 
     @staticmethod
     def _next_username(base: str) -> str:
-        seed = re.sub(r"[^a-zA-Z0-9_]", "", (base or "").strip())
-        if not seed:
-            seed = "gaiauser"
-        seed = seed[:20]
-        suffix = int(time.time() * 1000) % 1000000
-        return f"{seed}_{suffix}"
+        return next_username_impl(base)
 
     def _rotate_signup_identity(self, goal: TestGoal) -> Optional[str]:
-        if not isinstance(goal.test_data, dict):
-            goal.test_data = {}
-        current_username = str(goal.test_data.get("username") or "").strip()
-        base = current_username.split("@", 1)[0] if current_username else "gaiauser"
-        new_username = self._next_username(base)
-        if current_username and new_username == current_username:
-            new_username = self._next_username(f"{base}x")
-        goal.test_data["username"] = new_username
-        goal.test_data.setdefault("auth_mode", "signup")
-        email = str(goal.test_data.get("email") or "").strip()
-        if email:
-            domain = email.split("@", 1)[1] if "@" in email else "example.com"
-            goal.test_data["email"] = f"{new_username}@{domain}"
-        return new_username
+        return rotate_signup_identity_impl(goal, self._next_username)
 
     def _has_duplicate_account_signal(
         self,
@@ -847,27 +690,20 @@ class GoalDrivenAgent:
         state_change: Optional[Dict[str, Any]],
         dom_elements: List[DOMElement],
     ) -> bool:
-        if isinstance(state_change, dict):
-            live_texts = state_change.get("live_texts_after")
-            if isinstance(live_texts, list):
-                for text in live_texts:
-                    if self._contains_duplicate_account_hint(str(text)):
-                        return True
-        for el in dom_elements:
-            if self._contains_duplicate_account_hint(el.text) or self._contains_duplicate_account_hint(el.aria_label):
-                return True
-        return False
+        return has_duplicate_account_signal_impl(
+            state_change=state_change,
+            dom_elements=dom_elements,
+            contains_duplicate_account_hint_fn=self._contains_duplicate_account_hint,
+        )
 
     def _goal_allows_logout(self) -> bool:
-        text = self._active_goal_text or ""
-        if not text:
-            return False
-        return self._contains_logout_hint(text)
+        return goal_allows_logout_impl(self._active_goal_text or "", self._contains_logout_hint)
 
     def _is_ref_temporarily_blocked(self, ref_id: Optional[str]) -> bool:
         if not ref_id:
             return False
-        return int(self._ineffective_ref_counts.get(ref_id, 0)) >= 2
+        limit = self._loop_policy_value("ref_soft_fail_limit", 2)
+        return int(self._ineffective_ref_counts.get(ref_id, 0)) >= max(1, limit)
 
     def _track_ref_outcome(
         self,
@@ -1155,96 +991,36 @@ class GoalDrivenAgent:
         return self._clamp_score(bias, low=-10.0, high=10.0)
 
     def _infer_runtime_phase(self, dom_elements: List[DOMElement]) -> str:
-        if self._is_login_gate(dom_elements):
-            return "AUTH"
-        if self._is_collect_constraint_unmet():
-            return "COLLECT"
-        if self._progress_counter > 0:
-            if self._runtime_phase in {"COLLECT", "COMPOSE"}:
-                return "APPLY"
-            if self._runtime_phase:
-                return self._runtime_phase
-        return self._runtime_phase or "COLLECT"
+        return infer_runtime_phase_impl(
+            dom_elements=dom_elements,
+            is_login_gate_fn=self._is_login_gate,
+            is_collect_constraint_unmet=self._is_collect_constraint_unmet(),
+            progress_counter=self._progress_counter,
+            runtime_phase=self._runtime_phase,
+        )
 
     @classmethod
     def _is_login_gate(cls, dom_elements: List[DOMElement]) -> bool:
-        auth_hits = 0
-        has_password_field = False
-        has_id_or_email_field = False
-        modal_auth_hits = 0
-        modal_shell_hits = 0
-        for el in dom_elements:
-            text = cls._normalize_text(el.text)
-            placeholder = cls._normalize_text(el.placeholder)
-            aria = cls._normalize_text(el.aria_label)
-            role = cls._normalize_text(el.role)
-            typ = cls._normalize_text(el.type)
-            class_name = cls._normalize_text(el.class_name)
-            aria_modal = cls._normalize_text(el.aria_modal)
-
-            fields = [text, placeholder, aria, role]
-            if any(cls._contains_login_hint(v) for v in fields):
-                auth_hits += 1
-
-            if typ == "password" or "password" in placeholder or "비밀번호" in placeholder or "password" in aria:
-                has_password_field = True
-
-            if (
-                typ in {"email", "text"}
-                and any(k in (placeholder or text or aria) for k in ("email", "이메일", "아이디", "username", "user id"))
-            ):
-                has_id_or_email_field = True
-
-            modal_attr_blob = " ".join([role, class_name, aria_modal])
-            is_modal_shell = (
-                role in {"dialog", "alertdialog"}
-                or aria_modal == "true"
-                or any(k in modal_attr_blob for k in ("modal", "dialog", "popup", "sheet", "drawer", "overlay"))
-            )
-            if is_modal_shell:
-                modal_shell_hits += 1
-            if is_modal_shell and any(k in " ".join(fields) for k in ("로그인", "회원가입", "signin", "signup", "login", "register", "auth")):
-                modal_auth_hits += 1
-
-        # 기본: 아이디/이메일 + 비밀번호가 실제로 보이고, 모달/다이얼로그 셸이 동반될 때만 인증 게이트로 판정
-        if has_password_field and has_id_or_email_field and modal_shell_hits > 0:
-            return True
-        # 예외: 모달이 없는 전용 로그인 페이지(요소 수가 적고 인증 힌트가 매우 높은 경우)
-        if has_password_field and has_id_or_email_field and auth_hits >= 8 and len(dom_elements) <= 120:
-            return True
-        if modal_shell_hits >= 2 and modal_auth_hits >= 2 and auth_hits >= 4 and has_password_field and has_id_or_email_field:
-            return True
-        return False
+        return is_login_gate_impl(
+            dom_elements,
+            normalize_text=cls._normalize_text,
+            contains_login_hint_fn=lambda value: cls._contains_login_hint(value),
+        )
 
     @classmethod
     def _is_compact_auth_page(cls, dom_elements: List[DOMElement]) -> bool:
-        auth_hits = 0
-        has_password_field = False
-        has_id_or_email_field = False
-        for el in dom_elements:
-            text = cls._normalize_text(el.text)
-            placeholder = cls._normalize_text(el.placeholder)
-            aria = cls._normalize_text(el.aria_label)
-            typ = cls._normalize_text(el.type)
-            if any(cls._contains_login_hint(v) for v in (text, placeholder, aria)):
-                auth_hits += 1
-            if typ == "password" or "password" in placeholder or "비밀번호" in placeholder or "password" in aria:
-                has_password_field = True
-            if (
-                typ in {"email", "text"}
-                and any(k in (placeholder or text or aria) for k in ("email", "이메일", "아이디", "username", "user id"))
-            ):
-                has_id_or_email_field = True
-        return bool(has_password_field and has_id_or_email_field and auth_hits >= 6 and len(dom_elements) <= 120)
+        return is_compact_auth_page_impl(
+            dom_elements,
+            normalize_text=cls._normalize_text,
+            contains_login_hint_fn=lambda value: cls._contains_login_hint(value),
+        )
 
     @classmethod
     def _goal_requires_login_interaction(cls, goal: TestGoal) -> bool:
-        if cls._contains_login_hint(goal.name) or cls._contains_login_hint(goal.description):
-            return True
-        for criterion in goal.success_criteria:
-            if cls._contains_login_hint(str(criterion)):
-                return True
-        return False
+        return goal_requires_login_interaction_impl(
+            goal,
+            lambda value: cls._contains_login_hint(value),
+        )
 
     @classmethod
     def _pick_login_modal_close_element(
@@ -2317,28 +2093,25 @@ class GoalDrivenAgent:
             )
             if heuristic_login_gate and not login_gate_visible:
                 self._log("ℹ️ 로그인 힌트는 감지됐지만 modal_open/compact_auth 조건이 없어 AUTH 분기를 보류합니다.")
-            if login_gate_visible:
-                self._log("🔐 로그인/인증 화면이 감지되었습니다.")
-                if not login_intervention_asked:
-                    has_login_test_data = self._has_login_test_data(goal)
-                    if not has_login_test_data:
-                        if not self._request_login_intervention(goal):
-                            return self._build_failure_result(
-                                goal=goal,
-                                steps=steps,
-                                step_count=step_count,
-                                start_time=start_time,
-                                reason=(
-                                    "로그인 화면에서 사용자 개입이 필요하지만 입력이 제공되지 않아 중단했습니다. "
-                                    "다시 실행 후 로그인 진행 여부/계정 정보를 입력해 주세요."
-                                ),
-                            )
-                        has_login_test_data = self._has_login_test_data(goal)
-                    else:
-                        self._log("🔁 기존 로그인/회원가입 입력 데이터를 재사용합니다.")
-                    login_intervention_asked = True
-            else:
-                login_intervention_asked = False
+            login_intervention = handle_login_intervention(
+                agent=self,
+                goal=goal,
+                login_gate_visible=login_gate_visible,
+                has_login_test_data=has_login_test_data,
+                login_intervention_asked=login_intervention_asked,
+            )
+            has_login_test_data = bool(login_intervention.get("has_login_test_data", has_login_test_data))
+            login_intervention_asked = bool(
+                login_intervention.get("login_intervention_asked", login_intervention_asked)
+            )
+            if bool(login_intervention.get("aborted")):
+                return self._build_failure_result(
+                    goal=goal,
+                    steps=steps,
+                    step_count=step_count,
+                    start_time=start_time,
+                    reason=str(login_intervention.get("reason") or "로그인 개입 요청이 거부되어 중단했습니다."),
+                )
 
             # 2. 스크린샷 캡처
             screenshot = self._capture_screenshot()
@@ -2395,62 +2168,23 @@ class GoalDrivenAgent:
                     reason=directive.reason or "마스터 오케스트레이터가 실행을 중단했습니다.",
                 )
 
-            if master_directive.kind == "handoff" and master_directive.reason == "auth_required":
-                self._handoff_state = {
-                    "kind": "auth_required",
-                    "phase": self._runtime_phase,
-                    "url": goal.start_url,
-                }
-
-            if master_directive.kind == "handoff" and master_directive.reason == "no_progress":
-                no_progress_count = int(
-                    (master_directive.handoff_payload or {}).get("count")
-                    or self._no_progress_counter
-                    or 0
+            handoff_result = handle_master_handoff(
+                agent=self,
+                goal=goal,
+                master_directive=master_directive,
+                context_shift_fail_streak=context_shift_fail_streak,
+                context_shift_cooldown=context_shift_cooldown,
+                force_context_shift=force_context_shift,
+            )
+            force_context_shift = bool(handoff_result.get("force_context_shift", force_context_shift))
+            if bool(handoff_result.get("aborted")):
+                return self._build_failure_result(
+                    goal=goal,
+                    steps=steps,
+                    step_count=step_count,
+                    start_time=start_time,
+                    reason=str(handoff_result.get("abort_reason") or "사용자 요청으로 실행을 중단했습니다."),
                 )
-                self._handoff_state = {
-                    "kind": "no_progress",
-                    "phase": self._runtime_phase,
-                    "url": goal.start_url,
-                    "count": no_progress_count,
-                }
-                callback_resp = self._request_user_intervention(
-                    {
-                        "kind": "no_progress",
-                        "goal_name": goal.name,
-                        "goal_description": goal.description,
-                        "phase": self._runtime_phase,
-                        "question": (
-                            f"상태 변화가 {no_progress_count}회 연속으로 감지되지 않았습니다. "
-                            "추가 지시(예: 우선할 버튼/필터/입력값)를 제공하거나 proceed=true로 계속하세요."
-                        ),
-                        "fields": ["instruction", "proceed"],
-                    }
-                )
-                if isinstance(callback_resp, dict):
-                    proceed = self._to_bool(callback_resp.get("proceed"), default=True)
-                    instruction = str(callback_resp.get("instruction") or "").strip()
-                    if instruction:
-                        self._action_feedback.append(f"사용자 추가 지시: {instruction}")
-                        if len(self._action_feedback) > 10:
-                            self._action_feedback = self._action_feedback[-10:]
-                    if not proceed:
-                        return self._build_failure_result(
-                            goal=goal,
-                            steps=steps,
-                            step_count=step_count,
-                            start_time=start_time,
-                            reason="사용자 요청으로 실행을 중단했습니다.",
-                        )
-                if context_shift_fail_streak >= 3 or context_shift_cooldown > 0:
-                    force_context_shift = False
-                    self._action_feedback.append(
-                        "컨텍스트 전환이 연속 실패해 일반 LLM 액션으로 복귀합니다."
-                    )
-                    if len(self._action_feedback) > 10:
-                        self._action_feedback = self._action_feedback[-10:]
-                else:
-                    force_context_shift = True
 
             if collect_unmet and collect_metric_stall_count >= 2 and context_shift_cooldown <= 0:
                 force_context_shift = True
@@ -2460,133 +2194,35 @@ class GoalDrivenAgent:
                 if len(self._action_feedback) > 10:
                     self._action_feedback = self._action_feedback[-10:]
 
-            if force_context_shift:
-                picked = (
-                    self._pick_collect_context_shift_element(dom_elements, context_shift_used_elements)
-                    if collect_unmet
-                    else None
-                )
-                if picked is None:
-                    picked = self._pick_context_shift_element(dom_elements, context_shift_used_elements)
-                if picked is not None:
-                    picked_id, picked_reason, picked_intent_key = picked
-                    context_shift_used_elements.add(picked_id)
-                    self._last_context_shift_intent = picked_intent_key
-                    shift_decision = ActionDecision(
-                        action=ActionType.CLICK,
-                        element_id=picked_id,
-                        reasoning=picked_reason,
-                        confidence=0.9,
-                    )
-                    self._log("🧭 무효 반복 감지: 페이지/섹션 전환을 우선 시도합니다.")
-                    step_result, success, error = sub_agent.run_step(
-                        step_number=step_count,
-                        step_start=step_start,
-                        decision=shift_decision,
-                        dom_elements=dom_elements,
-                    )
-                    steps.append(step_result)
-                    if success:
-                        self._action_history.append(
-                            f"Step {step_count}: {shift_decision.action.value} - {shift_decision.reasoning}"
-                        )
-                    else:
-                        self._log(f"⚠️ 컨텍스트 전환 실패: {error}")
-
-                    post_dom = self._analyze_dom()
-                    changed = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
-                    self._record_action_feedback(
-                        step_number=step_count,
-                        decision=shift_decision,
-                        success=success,
-                        changed=changed,
-                        error=error,
-                        reason_code=self._last_exec_result.reason_code if self._last_exec_result else None,
-                        state_change=self._last_exec_result.state_change if self._last_exec_result else None,
-                        intent_key=picked_intent_key,
-                    )
-                    self._record_action_memory(
-                        goal=goal,
-                        step_number=step_count,
-                        decision=shift_decision,
-                        success=success,
-                        changed=changed,
-                        error=error,
-                    )
-
-                    if success and changed:
-                        ineffective_action_streak = 0
-                        force_context_shift = False
-                        context_shift_used_elements.clear()
-                        self._last_context_shift_intent = ""
-                        orchestrator.same_dom_count = 0
-                        context_shift_fail_streak = 0
-                        context_shift_cooldown = 0
-                    else:
-                        context_shift_fail_streak += 1
-                        if len(context_shift_used_elements) > 20:
-                            context_shift_used_elements.clear()
-                        if context_shift_fail_streak >= 3:
-                            self._log(
-                                "🧭 컨텍스트 전환이 연속 실패해 일반 액션 전략으로 복귀합니다."
-                            )
-                            force_context_shift = False
-                            context_shift_used_elements.clear()
-                            self._last_context_shift_intent = ""
-                            context_shift_cooldown = 4
-                        else:
-                            force_context_shift = True
-                    time.sleep(0.4)
-                    continue
-                else:
-                    if collect_unmet:
-                        self._log("🧭 전환 후보 부족: 수집 CTA 노출을 위해 스크롤 전환을 시도합니다.")
-                        scroll_target_id: Optional[int] = None
-                        shift_pick = self._pick_collect_context_shift_element(dom_elements, set())
-                        if shift_pick is not None:
-                            scroll_target_id = shift_pick[0]
-                        elif dom_elements:
-                            for el in dom_elements:
-                                ref_id = self._element_ref_ids.get(el.id)
-                                if ref_id and not self._is_ref_temporarily_blocked(ref_id):
-                                    scroll_target_id = el.id
-                                    break
-                        if scroll_target_id is None:
-                            self._log("🧭 스크롤 전환 대상(ref)을 찾지 못해 이번 스텝은 대기로 전환합니다.")
-                            shift_decision = ActionDecision(
-                                action=ActionType.WAIT,
-                                reasoning="컨텍스트 전환 대상(ref) 부재로 DOM 재수집 대기",
-                                confidence=0.45,
-                            )
-                        else:
-                            shift_decision = ActionDecision(
-                                action=ActionType.SCROLL,
-                                element_id=scroll_target_id,
-                                reasoning="수집 목표 미달 상태에서 새 수집 요소 탐색을 위한 스크롤 전환",
-                                confidence=0.6,
-                            )
-                        step_result, success, error = sub_agent.run_step(
-                            step_number=step_count,
-                            step_start=step_start,
-                            decision=shift_decision,
-                            dom_elements=dom_elements,
-                        )
-                        steps.append(step_result)
-                        post_dom = self._analyze_dom()
-                        changed = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
-                        if success and changed:
-                            context_shift_fail_streak = 0
-                            force_context_shift = False
-                            context_shift_cooldown = 0
-                        else:
-                            context_shift_fail_streak += 1
-                            force_context_shift = context_shift_fail_streak < 3
-                            if context_shift_fail_streak >= 3:
-                                context_shift_cooldown = 4
-                        time.sleep(0.3)
-                        continue
-                    self._log("🧭 컨텍스트 전환 후보를 찾지 못해 기본 LLM 흐름으로 계속 진행합니다.")
-                    force_context_shift = False
+            context_shift_result = handle_forced_context_shift(
+                agent=self,
+                goal=goal,
+                orchestrator=orchestrator,
+                step_count=step_count,
+                step_start=step_start,
+                dom_elements=dom_elements,
+                before_signature=before_signature,
+                collect_unmet=collect_unmet,
+                sub_agent=sub_agent,
+                steps=steps,
+                context_shift_used_elements=context_shift_used_elements,
+                context_shift_fail_streak=context_shift_fail_streak,
+                force_context_shift=force_context_shift,
+                context_shift_cooldown=context_shift_cooldown,
+                ineffective_action_streak=ineffective_action_streak,
+            )
+            force_context_shift = bool(context_shift_result.get("force_context_shift", force_context_shift))
+            context_shift_fail_streak = int(
+                context_shift_result.get("context_shift_fail_streak", context_shift_fail_streak)
+            )
+            context_shift_cooldown = int(
+                context_shift_result.get("context_shift_cooldown", context_shift_cooldown)
+            )
+            ineffective_action_streak = int(
+                context_shift_result.get("ineffective_action_streak", ineffective_action_streak)
+            )
+            if bool(context_shift_result.get("continue_loop")):
+                continue
 
             # 3. LLM에게 다음 액션 결정 요청 (OpenClaw 철학 정렬: 계획은 LLM, 실행은 ref-only)
             memory_context = self._build_memory_context(goal)
@@ -2748,60 +2384,23 @@ class GoalDrivenAgent:
                 if len(self._recent_click_element_ids) > 24:
                     self._recent_click_element_ids = self._recent_click_element_ids[-24:]
 
-            post_dom = self._analyze_dom()
-            refreshed_metric = self._estimate_goal_metric_from_dom(post_dom) if post_dom else None
-            if refreshed_metric is not None:
-                self._goal_metric_value = refreshed_metric
-            state_change = self._last_exec_result.state_change if self._last_exec_result else None
-            changed_by_state = self._state_change_indicates_progress(state_change)
-            changed_by_dom = bool(post_dom) and self._dom_progress_signature(post_dom) != before_signature
-            changed = bool(changed_by_state or changed_by_dom)
-
-            if bool(self._goal_constraints.get("require_no_navigation")) and isinstance(state_change, dict):
-                if bool(state_change.get("url_changed")):
-                    self._log("🧱 제약 가드: '페이지 이동 없이' 목표라 URL 변경 액션은 진행으로 인정하지 않습니다.")
-                    changed = False
-                    start_url = str(goal.start_url or "").strip()
-                    if start_url:
-                        self._log("↩️ 페이지 고정 제약 복구: 시작 URL로 복귀합니다.")
-                        _ = self._execute_action("goto", url=start_url)
-                        time.sleep(0.8)
-                        recovered_dom = self._analyze_dom()
-                        if recovered_dom:
-                            post_dom = recovered_dom
-
-            if self._can_finish_by_verification_transition(
+            progress_eval = evaluate_post_action_progress(
+                agent=self,
                 goal=goal,
                 decision=decision,
                 success=success,
-                changed=changed,
-                state_change=state_change,
-                before_dom_count=len(dom_elements),
-                after_dom_count=len(post_dom or []),
-            ):
-                completion_reason = self._build_verification_transition_reason(
-                    state_change=state_change,
-                    before_dom_count=len(dom_elements),
-                    after_dom_count=len(post_dom or []),
-                )
-                self._log(f"✅ 목표 달성! 이유: {completion_reason}")
-                result = GoalResult(
-                    goal_id=goal.id,
-                    goal_name=goal.name,
-                    success=True,
-                    steps_taken=steps,
-                    total_steps=step_count,
-                    final_reason=completion_reason,
-                    duration_seconds=time.time() - start_time,
-                )
-                self._record_goal_summary(
-                    goal=goal,
-                    status="success",
-                    reason=result.final_reason,
-                    step_count=step_count,
-                    duration_seconds=result.duration_seconds,
-                )
-                return result
+                before_signature=before_signature,
+                dom_elements=dom_elements,
+                step_count=step_count,
+                steps=steps,
+                start_time=start_time,
+            )
+            post_dom = progress_eval.get("post_dom") or []
+            state_change = progress_eval.get("state_change")
+            changed = bool(progress_eval.get("changed"))
+            terminal_result = progress_eval.get("terminal_result")
+            if terminal_result is not None:
+                return terminal_result
 
             if changed:
                 self._progress_counter += 1
@@ -2887,121 +2486,56 @@ class GoalDrivenAgent:
                     force_context_shift = False
                     time.sleep(0.2)
                     continue
-            if not success or not changed:
-                self._record_recovery_hints(goal, reason_code)
-                auth_mode = ""
-                if isinstance(goal.test_data, dict):
-                    auth_mode = str(goal.test_data.get("auth_mode") or "").strip().lower()
-                is_auth_flow = login_gate_visible and (
-                    auth_mode in {"signup", "register", "login", "signin"}
-                    or has_login_test_data
-                )
+            recovery_result = handle_action_recovery(
+                agent=self,
+                goal=goal,
+                decision=decision,
+                success=success,
+                changed=changed,
+                reason_code=reason_code,
+                login_gate_visible=login_gate_visible,
+                has_login_test_data=has_login_test_data,
+                post_dom=post_dom,
+                force_context_shift=force_context_shift,
+                ineffective_action_streak=ineffective_action_streak,
+            )
+            force_context_shift = bool(recovery_result.get("force_context_shift", force_context_shift))
+            ineffective_action_streak = int(
+                recovery_result.get("ineffective_action_streak", ineffective_action_streak)
+            )
+            if bool(recovery_result.get("continue_loop")):
+                continue
 
-                if (
-                    is_auth_flow
-                    and decision.action == ActionType.CLICK
-                    and reason_code in {"no_state_change", "not_actionable"}
-                ):
-                    self._action_feedback.append(
-                        "인증 모달 제출이 반영되지 않았습니다. 모달 내부 오류/필수 입력값을 확인하고 "
-                        "같은 모달 안에서 재시도하세요. 페이지/섹션 전환은 금지합니다."
-                    )
-                    if len(self._action_feedback) > 10:
-                        self._action_feedback = self._action_feedback[-10:]
-                    ineffective_action_streak = 0
-                    force_context_shift = False
-                    time.sleep(0.25)
-                    continue
-                if reason_code == "modal_not_open":
-                    self._log("🧭 close 대상 모달이 현재 열려있지 않아 재계획합니다.")
-                    self._action_feedback.append(
-                        "닫기 액션 시점에 모달이 열려있지 않았습니다. 최신 화면 기준으로 후보를 다시 수집하고 "
-                        "닫기 대신 현재 활성 CTA를 선택하세요."
-                    )
-                    if len(self._action_feedback) > 10:
-                        self._action_feedback = self._action_feedback[-10:]
-                    _ = self._analyze_dom()
-                    ineffective_action_streak = 0
-                    force_context_shift = True
-                    time.sleep(0.2)
-                    continue
-
-                if self._no_progress_counter >= 2 and reason_code in {"no_state_change", "not_actionable", "ambiguous_ref_target", "ambiguous_selector", "blocked_ref_no_progress", "blocked_logout_action"} and decision.action in {
-                    ActionType.CLICK,
-                    ActionType.FILL,
-                    ActionType.PRESS,
-                }:
-                    force_context_shift = True
-                if reason_code in {"snapshot_not_found", "stale_snapshot", "ref_required", "ambiguous_ref_target", "ambiguous_selector", "not_found"}:
-                    self._log("♻️ snapshot/ref 갱신이 필요해 DOM을 재수집합니다.")
-                    _ = self._analyze_dom()
-                    ineffective_action_streak = 0
-                    force_context_shift = False
-                    time.sleep(0.25)
-                    continue
-                if reason_code in {"request_exception", "http_5xx"}:
-                    attempt_count = self._last_exec_result.attempt_count if self._last_exec_result else 0
-                    backoff = min(2.5, 0.6 + (0.25 * max(0, attempt_count)))
-                    self._log(
-                        f"🌐 일시적 통신 오류({reason_code}) 감지: {backoff:.2f}s 대기 후 재시도합니다."
-                    )
-                    _ = self._analyze_dom()
-                    ineffective_action_streak = 0
-                    force_context_shift = False
-                    time.sleep(backoff)
-                    continue
-
-            if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS, ActionType.NAVIGATE, ActionType.SCROLL}:
-                if success and changed:
-                    ineffective_action_streak = 0
-                    context_shift_fail_streak = 0
-                    context_shift_cooldown = 0
-                else:
-                    ineffective_action_streak += 1
-            else:
-                ineffective_action_streak = 0
-
-            if scroll_streak >= 3:
-                self._log("🧭 스크롤이 연속 선택되어 컨텍스트 전환을 강제합니다.")
-                force_context_shift = True
-                scroll_streak = 0
-
-            if decision.action == ActionType.CLICK:
-                if click_intent_key and (not success or not changed):
-                    if click_intent_key == self._last_success_click_intent:
-                        self._success_click_intent_streak += 1
-                    else:
-                        self._last_success_click_intent = click_intent_key
-                        self._success_click_intent_streak = 1
-                elif click_intent_key and success and changed:
-                    self._last_success_click_intent = click_intent_key
-                    self._success_click_intent_streak = 0
-                else:
-                    self._success_click_intent_streak = 0
-            elif decision.action in {ActionType.CLICK, ActionType.SCROLL, ActionType.NAVIGATE, ActionType.PRESS}:
-                self._last_success_click_intent = ""
-                self._success_click_intent_streak = 0
-
-            if self._success_click_intent_streak >= 3 and self._no_progress_counter >= 2:
-                self._log("🧭 동일 클릭 의도 반복 감지: 단계 전환 CTA 탐색으로 전환합니다.")
-                force_context_shift = True
-
-            if ineffective_action_streak >= 3 and self._no_progress_counter >= 2:
-                force_context_shift = True
-            if ineffective_action_streak >= 8:
-                return self._build_failure_result(
-                    goal=goal,
-                    steps=steps,
-                    step_count=step_count,
-                    start_time=start_time,
-                    reason=(
-                        "무효 액션이 장시간 반복되어 중단했습니다. "
-                        "컨텍스트 전환(페이지/탭/필터) 시도 후에도 상태 변화가 없습니다."
-                    ),
-                )
-
-            # 다음 스텝 전 잠시 대기
-            time.sleep(0.5)
+            streak_result = update_action_streaks_and_loops(
+                agent=self,
+                goal=goal,
+                decision=decision,
+                success=success,
+                changed=changed,
+                click_intent_key=click_intent_key,
+                scroll_streak=scroll_streak,
+                ineffective_action_streak=ineffective_action_streak,
+                force_context_shift=force_context_shift,
+                context_shift_fail_streak=context_shift_fail_streak,
+                context_shift_cooldown=context_shift_cooldown,
+                steps=steps,
+                step_count=step_count,
+                start_time=start_time,
+            )
+            scroll_streak = int(streak_result.get("scroll_streak", scroll_streak))
+            ineffective_action_streak = int(
+                streak_result.get("ineffective_action_streak", ineffective_action_streak)
+            )
+            force_context_shift = bool(streak_result.get("force_context_shift", force_context_shift))
+            context_shift_fail_streak = int(
+                streak_result.get("context_shift_fail_streak", context_shift_fail_streak)
+            )
+            context_shift_cooldown = int(
+                streak_result.get("context_shift_cooldown", context_shift_cooldown)
+            )
+            terminal_result = streak_result.get("terminal_result")
+            if terminal_result is not None:
+                return terminal_result
 
         final_reason = (
             orchestrator.stop_reason

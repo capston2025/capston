@@ -107,6 +107,6 @@ class ScreencastClient(QThread):
             # asyncio 태스크로 종료 처리
             try:
                 asyncio.create_task(self._websocket.close())
-            except:
+            except Exception:
                 pass
         self.wait()  # 스레드 종료 대기

@@ -8,33 +8,73 @@ import json as json_module
 import traceback
 import re
 import weakref
+import logging
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from playwright.async_api import (
     async_playwright,
     Playwright,
-    expect,
     Browser,
     Page,
     CDPSession,
 )
 from typing import Dict, Any, Optional, List, Tuple
 
-from gaia.src.phase4.observability import SessionObservability
+from gaia.src.phase4.mcp_browser_session import BrowserSession, ensure_session
 from gaia.src.phase4.openclaw_protocol import (
     ELEMENT_ACTIONS,
     build_error,
     is_element_action,
     legacy_selector_forbidden,
 )
+from gaia.src.phase4.mcp_legacy_dispatch import handle_legacy_action
+from gaia.src.phase4.mcp_route_helpers import (
+    build_root_payload,
+    close_session_impl,
+    websocket_screencast_loop,
+)
+from gaia.src.phase4.mcp_route_dispatch import dispatch_execute_action_route
+from gaia.src.phase4.mcp_interaction_handlers import build_interaction_handlers
+from gaia.src.phase4.scenario_runner import run_test_scenario_with_playwright
 from gaia.src.phase4.state_store import BrowserStateStore
+from gaia.src.phase4.mcp_bootstrap import resolve_bind_host_port
+from gaia.src.phase4.mcp_tab_resolution import (
+    coerce_tab_id as coerce_tab_id_impl,
+    resolve_page_from_tab_identifier as _resolve_page_from_tab_identifier_impl,
+    resolve_session_page as _resolve_session_page_impl,
+)
+from gaia.src.phase4.mcp_simple_action_utils import (
+    normalize_timeout_ms as _normalize_timeout_ms,
+    evaluate_js_with_timeout as _evaluate_js_with_timeout,
+)
+
+logger = logging.getLogger("gaia.mcp_host")
+
+
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    """FastAPI lifespan handler for Playwright startup/shutdown."""
+    global playwright_instance
+    logger.info("Initializing Playwright...")
+    playwright_instance = await async_playwright().start()
+    logger.info("Playwright initialized.")
+    try:
+        yield
+    finally:
+        if playwright_instance:
+            logger.info("Stopping Playwright...")
+            await playwright_instance.stop()
+            logger.info("Playwright stopped.")
+
 
 app = FastAPI(
-    title="MCP Host", description="Model Context Protocol Host for Browser Automation"
+    title="MCP Host",
+    description="Model Context Protocol Host for Browser Automation",
+    lifespan=app_lifespan,
 )
 
 # 라이브 미리보기를 위한 전역 상태 (CDP 스크린캐스트용)
@@ -45,6 +85,15 @@ MCP_STARTED_AT = time.time()
 MCP_REQUEST_COUNT = 0
 MCP_ERROR_COUNT = 0
 MCP_REASON_CODE_COUNTER: Dict[str, int] = defaultdict(int)
+
+
+def _get_playwright_instance() -> Optional[Playwright]:
+    return playwright_instance
+
+
+def _set_current_screencast_frame(frame_data: str) -> None:
+    global current_screencast_frame
+    current_screencast_frame = frame_data
 
 
 def _record_reason_code(code: str) -> None:
@@ -123,258 +172,6 @@ async def metrics_lite() -> Dict[str, Any]:
     }
 
 
-# 브라우저 세션 관리
-class BrowserSession:
-    """상태 기반 테스트를 위해 지속적인 브라우저 세션을 유지합니다"""
-
-    def __init__(self, session_id: str):
-        self.session_id = session_id
-        self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
-        self.current_url: str = ""
-        self.cdp_session: Optional[CDPSession] = None
-        self.screencast_active: bool = False
-        self.stored_css_values: Dict[
-            str, str
-        ] = {}  # CSS 값 저장소 (storeCSSValue/expectCSSChanged용)
-        self.snapshot_epoch: int = 0
-        self.current_snapshot_id: str = ""
-        self.current_dom_hash: str = ""
-        self.snapshots: Dict[str, Dict[str, Any]] = {}
-        self.observability = SessionObservability()
-        self.trace_active: bool = False
-        self.trace_path: str = ""
-        self.dialog_listener_armed: bool = False
-        self.dialog_mode: str = "dismiss"
-        self.dialog_prompt_text: str = ""
-        self.file_chooser_listener_armed: bool = False
-        self.file_chooser_files: List[str] = []
-        self.env_overrides: Dict[str, Any] = {}
-
-    async def get_or_create_page(self) -> Page:
-        """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다"""
-        if not self.browser:
-            if not playwright_instance:
-                raise HTTPException(
-                    status_code=503, detail="Playwright not initialized"
-                )
-
-            # 자동화 감지 우회 설정
-            try:
-                self.browser = await playwright_instance.chromium.launch(
-                    headless=False,  # 사용자 개입(로그인 등)을 위해 브라우저 표시
-                    args=[
-                        "--disable-blink-features=AutomationControlled",  # 자동화 감지 비활성화
-                        "--disable-dev-shm-usage",
-                        "--disable-web-security",
-                        "--disable-features=IsolateOrigins,site-per-process",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                    ],
-                )
-            except Exception as exc:
-                msg = str(exc)
-                if "Executable doesn't exist" in msg or "browserType.launch" in msg:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "Chromium executable not found. "
-                            "Run: python -m playwright install chromium"
-                        ),
-                    ) from exc
-                raise
-
-            # 페이지 생성 및 자동화 감지 우회 스크립트 주입
-            self.page = await self.browser.new_page()
-
-            # navigator.webdriver 속성 제거 및 기타 자동화 감지 우회
-            await self.page.add_init_script("""
-                // navigator.webdriver 제거
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => false,
-                });
-
-                // Chrome 객체 추가 (자동화 도구는 보통 없음)
-                window.chrome = {
-                    runtime: {},
-                };
-
-                // Permissions API 오버라이드
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
-
-                // Plugin 배열 추가
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-
-                // Languages 설정
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['ko-KR', 'ko', 'en-US', 'en'],
-                });
-            """)
-
-            # 페이지 생성 후 바로 CDP 스크린캐스트 시작
-            await self.start_screencast()
-        if self.page:
-            self.observability.attach_page(self.page)
-            self._ensure_dialog_listener()
-            self._ensure_file_chooser_listener()
-        return self.page
-
-    def _ensure_dialog_listener(self) -> None:
-        if not self.page or self.dialog_listener_armed:
-            return
-
-        async def _handle_dialog(dialog):
-            payload = {
-                "type": dialog.type,
-                "message": dialog.message,
-                "default_value": dialog.default_value,
-                "mode": self.dialog_mode,
-            }
-            self.observability.add_dialog_event(payload)
-            try:
-                if self.dialog_mode == "accept":
-                    await dialog.accept(self.dialog_prompt_text or "")
-                else:
-                    await dialog.dismiss()
-            except Exception as exc:
-                self.observability.add_dialog_event(
-                    {
-                        "type": dialog.type,
-                        "mode": self.dialog_mode,
-                        "error": str(exc),
-                    }
-                )
-
-        def _on_dialog(dialog):
-            asyncio.create_task(_handle_dialog(dialog))
-
-        self.page.on("dialog", _on_dialog)
-        self.dialog_listener_armed = True
-
-    def _ensure_file_chooser_listener(self) -> None:
-        if not self.page or self.file_chooser_listener_armed:
-            return
-
-        async def _handle_file_chooser(file_chooser):
-            files = [p for p in self.file_chooser_files if p]
-            if not files:
-                return
-            try:
-                await file_chooser.set_files(files)
-            except Exception as exc:
-                self.observability.add_dialog_event(
-                    {"type": "file_chooser", "error": str(exc), "files": files}
-                )
-
-        def _on_file_chooser(file_chooser):
-            asyncio.create_task(_handle_file_chooser(file_chooser))
-
-        self.page.on("filechooser", _on_file_chooser)
-        self.file_chooser_listener_armed = True
-
-    async def start_screencast(self):
-        """CDP 스크린캐스트를 시작합니다 - 브라우저 변경사항을 실시간 스트리밍"""
-        if self.page and not self.cdp_session:
-            try:
-                # CDP 세션 생성
-                self.cdp_session = await self.page.context.new_cdp_session(self.page)
-
-                # 스크린캐스트 프레임 이벤트 리스너 등록
-                self.cdp_session.on(
-                    "Page.screencastFrame", self._handle_screencast_frame
-                )
-
-                # 스크린캐스트 시작
-                await self.cdp_session.send(
-                    "Page.startScreencast",
-                    {
-                        "format": "jpeg",
-                        "quality": 80,
-                        "maxWidth": 1280,
-                        "maxHeight": 720,
-                        "everyNthFrame": 3,  # 3프레임마다 1번 전송 (깜빡임 감소, 부하 감소)
-                    },
-                )
-
-                self.screencast_active = True
-                print(f"[CDP Screencast] Started for session {self.session_id}")
-            except Exception as e:
-                print(f"[CDP Screencast] Failed to start: {e}")
-
-    async def _handle_screencast_frame(self, payload: Dict[str, Any]):
-        """스크린캐스트 프레임을 처리하고 구독자에게 전송합니다"""
-        global current_screencast_frame
-
-        # 프레임 데이터 추출 (이미 base64 인코딩됨)
-        frame_data = payload.get("data")
-        session_id = payload.get("sessionId")
-
-        if frame_data:
-            # 전역 상태 업데이트
-            current_screencast_frame = frame_data
-
-            # 모든 WebSocket 구독자에게 프레임 전송
-            disconnected_clients = []
-            for ws in screencast_subscribers:
-                try:
-                    await ws.send_json(
-                        {
-                            "type": "screencast_frame",
-                            "session_id": self.session_id,
-                            "frame": frame_data,
-                            "timestamp": asyncio.get_event_loop().time(),
-                        }
-                    )
-                except Exception as e:
-                    print(f"[CDP Screencast] Failed to send to subscriber: {e}")
-                    disconnected_clients.append(ws)
-
-            # 연결이 끊어진 클라이언트 제거
-            for ws in disconnected_clients:
-                if ws in screencast_subscribers:
-                    screencast_subscribers.remove(ws)
-
-        # CDP에 프레임 수신 확인 (다음 프레임 요청)
-        if self.cdp_session and session_id:
-            try:
-                await self.cdp_session.send(
-                    "Page.screencastFrameAck", {"sessionId": session_id}
-                )
-            except Exception as e:
-                print(f"[CDP Screencast] Failed to ack frame: {e}")
-
-    async def stop_screencast(self):
-        """CDP 스크린캐스트를 중지합니다"""
-        if self.cdp_session and self.screencast_active:
-            try:
-                await self.cdp_session.send("Page.stopScreencast")
-                self.screencast_active = False
-                print(f"[CDP Screencast] Stopped for session {self.session_id}")
-            except Exception as e:
-                print(f"[CDP Screencast] Failed to stop: {e}")
-
-    async def close(self):
-        """브라우저 세션을 종료합니다"""
-        if self.screencast_active:
-            await self.stop_screencast()
-
-        if self.cdp_session:
-            await self.cdp_session.detach()
-            self.cdp_session = None
-
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-            self.page = None
-
-
 # 활성 세션 저장소
 active_sessions: Dict[str, BrowserSession] = {}
 _page_target_id_cache: "weakref.WeakKeyDictionary[Page, str]" = weakref.WeakKeyDictionary()
@@ -416,6 +213,122 @@ def _get_tab_index(page: Page) -> int:
         return page.context.pages.index(page)
     except Exception:
         return 0
+
+
+def _tab_payload(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
+    active = bool(session.page is page)
+    title = ""
+    try:
+        title = page.url or ""
+    except Exception:
+        title = ""
+    return {
+        "tab_id": idx,
+        "index": idx,
+        "targetId": idx,
+        "url": str(page.url or ""),
+        "title": str(title),
+        "active": active,
+    }
+
+
+async def _get_page_target_id(page: Page) -> str:
+    cached = _page_target_id_cache.get(page)
+    if isinstance(cached, str) and cached.strip():
+        return cached
+
+    cdp_session: Optional[CDPSession] = None
+    try:
+        cdp_session = await page.context.new_cdp_session(page)
+        info = await cdp_session.send("Target.getTargetInfo")
+        target_info = info.get("targetInfo") if isinstance(info, dict) else {}
+        target_id = str((target_info or {}).get("targetId") or "").strip()
+        if target_id:
+            _page_target_id_cache[page] = target_id
+        return target_id
+    except Exception:
+        return ""
+    finally:
+        if cdp_session is not None:
+            try:
+                await cdp_session.detach()
+            except Exception:
+                pass
+
+
+async def _list_browser_targets(browser: Optional[Browser]) -> List[Dict[str, str]]:
+    if browser is None:
+        return []
+    browser_cdp: Optional[CDPSession] = None
+    try:
+        browser_cdp = await browser.new_browser_cdp_session()
+        payload = await browser_cdp.send("Target.getTargets")
+        infos = payload.get("targetInfos") if isinstance(payload, dict) else []
+        out: List[Dict[str, str]] = []
+        if isinstance(infos, list):
+            for info in infos:
+                if not isinstance(info, dict):
+                    continue
+                target_id = str(info.get("targetId") or "").strip()
+                target_url = str(info.get("url") or "").strip()
+                if target_id:
+                    out.append({"targetId": target_id, "url": target_url})
+        return out
+    except Exception:
+        return []
+    finally:
+        if browser_cdp is not None:
+            try:
+                await browser_cdp.detach()
+            except Exception:
+                pass
+
+
+async def _resolve_page_from_tab_identifier(
+    pages: List[Page],
+    tab_identifier: Any,
+    browser: Optional[Browser] = None,
+) -> Tuple[str, Optional[int], Optional[Page], List[str]]:
+    return await _resolve_page_from_tab_identifier_impl(
+        pages=pages,
+        tab_identifier=tab_identifier,
+        browser=browser,
+        get_page_target_id_fn=_get_page_target_id,
+        list_browser_targets_fn=_list_browser_targets,
+    )
+
+
+async def _tab_payload_async(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
+    payload = _tab_payload(session, page, idx)
+    target_id = await _get_page_target_id(page)
+    if target_id:
+        payload["cdp_target_id"] = target_id
+    return payload
+
+
+async def _tabs_payload_async(session: BrowserSession, pages: List[Page]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, candidate in enumerate(pages):
+        out.append(await _tab_payload_async(session, candidate, idx))
+    return out
+
+
+def _coerce_tab_id(tab_id: Any) -> Optional[int]:
+    return coerce_tab_id_impl(tab_id)
+
+
+async def _resolve_session_page(session_id: str, tab_id: Optional[Any] = None) -> Tuple[BrowserSession, Page]:
+    return await _resolve_session_page_impl(
+        session_id=session_id,
+        tab_id=tab_id,
+        active_sessions=active_sessions,
+        ensure_session_fn=ensure_session,
+        playwright_getter_fn=_get_playwright_instance,
+        screencast_subscribers=screencast_subscribers,
+        frame_setter=_set_current_screencast_frame,
+        logger=logger,
+        resolve_page_from_tab_identifier_fn=_resolve_page_from_tab_identifier,
+    )
 
 
 def _split_full_selector(full_selector: str) -> Tuple[str, str]:
@@ -722,7 +635,17 @@ async def _read_focus_signature(page: Page) -> str:
 
 
 async def _safe_read_target_state(locator) -> Dict[str, Any]:
-    state: Dict[str, Any] = {"visible": None, "value": None, "focused": None}
+    state: Dict[str, Any] = {
+        "visible": None,
+        "value": None,
+        "focused": None,
+        "checked": None,
+        "aria_expanded": None,
+        "aria_pressed": None,
+        "aria_selected": None,
+        "disabled": None,
+        "aria_disabled": None,
+    }
     try:
         state["visible"] = await locator.is_visible()
     except Exception:
@@ -736,6 +659,38 @@ async def _safe_read_target_state(locator) -> Dict[str, Any]:
             pass
     try:
         state["focused"] = await locator.evaluate("el => document.activeElement === el")
+    except Exception:
+        pass
+    try:
+        semantic_state = await locator.evaluate(
+            """
+            el => {
+                const readAria = (name) => {
+                    const raw = el.getAttribute(name);
+                    if (raw === null || raw === undefined) return null;
+                    return String(raw).trim().toLowerCase();
+                };
+                const checked =
+                    typeof el.checked === 'boolean'
+                        ? !!el.checked
+                        : null;
+                const disabled =
+                    typeof el.disabled === 'boolean'
+                        ? !!el.disabled
+                        : null;
+                return {
+                    checked,
+                    aria_expanded: readAria('aria-expanded'),
+                    aria_pressed: readAria('aria-pressed'),
+                    aria_selected: readAria('aria-selected'),
+                    disabled,
+                    aria_disabled: readAria('aria-disabled'),
+                };
+            }
+            """
+        )
+        if isinstance(semantic_state, dict):
+            state.update(semantic_state)
     except Exception:
         pass
     return state
@@ -885,6 +840,14 @@ def _state_change_flags(
         "target_value_matches": expected_value is not None and after_value is not None and str(after_value) == expected_value,
         "target_focus_changed": before_target.get("focused") != after_target.get("focused"),
         "focus_changed": before_focus != after_focus,
+        "target_checked_changed": before_target.get("checked") != after_target.get("checked"),
+        "target_aria_expanded_changed": before_target.get("aria_expanded") != after_target.get("aria_expanded"),
+        "target_aria_pressed_changed": before_target.get("aria_pressed") != after_target.get("aria_pressed"),
+        "target_aria_selected_changed": before_target.get("aria_selected") != after_target.get("aria_selected"),
+        "target_disabled_changed": (
+            before_target.get("disabled") != after_target.get("disabled")
+            or before_target.get("aria_disabled") != after_target.get("aria_disabled")
+        ),
         "counter_changed": _sorted_text_list(before_evidence.get("counters")) != _sorted_text_list(after_evidence.get("counters")),
         "number_tokens_changed": _sorted_text_list(before_evidence.get("number_tokens")) != _sorted_text_list(after_evidence.get("number_tokens")),
         "status_text_changed": _sorted_text_list(before_evidence.get("live_texts")) != _sorted_text_list(after_evidence.get("live_texts")),
@@ -923,6 +886,13 @@ def _state_change_flags(
             flags["url_changed"]
             or flags["dom_changed"]
             or flags["target_visibility_changed"]
+            or flags["focus_changed"]
+            or flags["target_focus_changed"]
+            or flags["target_checked_changed"]
+            or flags["target_aria_expanded_changed"]
+            or flags["target_aria_pressed_changed"]
+            or flags["target_aria_selected_changed"]
+            or flags["target_disabled_changed"]
             or flags["evidence_changed"]
         )
     elif action == "press":
@@ -1295,24 +1265,6 @@ class McpRequest(BaseModel):
 playwright_instance: Optional[Playwright] = None
 
 
-@app.on_event("startup")
-async def startup_event():
-    """서버가 시작될 때 Playwright 인스턴스를 초기화합니다."""
-    global playwright_instance
-    print("Initializing Playwright...")
-    playwright_instance = await async_playwright().start()
-    print("Playwright initialized.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """서버가 종료될 때 Playwright 인스턴스를 중지합니다."""
-    if playwright_instance:
-        print("Stopping Playwright...")
-        await playwright_instance.stop()
-        print("Playwright stopped.")
-
-
 async def analyze_page_elements(page) -> Dict[str, Any]:
     """현재 페이지에서 상호작용 가능한 요소를 추출합니다 (iframe 포함)."""
     try:
@@ -1377,11 +1329,34 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     return out;
                 }
 
-                function isVisible(el) {
+                function getActionability(el) {
                     const style = window.getComputedStyle(el);
-                    // 매우 완화된 표시 여부 검사 - iframe 내부 요소도 감지
-                    // display:none과 visibility:hidden만 제외
-                    return style.display !== 'none' && style.visibility !== 'hidden';
+                    const rect = el.getBoundingClientRect();
+                    const displayVisible = style.display !== 'none' && style.visibility !== 'hidden';
+                    const opacity = Number(style.opacity || '1');
+                    const pointerEvents = (style.pointerEvents || '').toLowerCase();
+                    const hasRect = rect.width > 1 && rect.height > 1;
+                    const onViewport =
+                        rect.bottom >= -2 &&
+                        rect.right >= -2 &&
+                        rect.top <= (window.innerHeight + 2) &&
+                        rect.left <= (window.innerWidth + 2);
+                    const disabled =
+                        el.disabled === true ||
+                        String(el.getAttribute('disabled') || '').toLowerCase() === 'true' ||
+                        String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                    const visible = displayVisible && opacity > 0.02 && pointerEvents !== 'none' && hasRect && onViewport;
+                    return {
+                        visible,
+                        actionable: visible && !disabled,
+                        disabled,
+                        opacity,
+                        pointerEvents: style.pointerEvents || '',
+                    };
+                }
+
+                function isVisible(el) {
+                    return getActionability(el).visible;
                 }
 
                 function assignDomRef(el) {
@@ -1457,7 +1432,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                 }
 
                 queryAll('input, textarea, select').forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
 
                     elements.push({
                         tag: el.tagName.toLowerCase(),
@@ -1470,10 +1446,17 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             name: el.name || null,
                             placeholder: el.placeholder || '',
                             'aria-label': el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || ''
+                            title: el.getAttribute('title') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'input'
+                        element_type: 'input',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
@@ -1495,7 +1478,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     [type="submit"],
                     input[type="button"]
                 `.replace(/\s+/g, '')).forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
 
                     let text = el.innerText?.trim() || el.value || '';
                     if (!text) {
@@ -1532,15 +1516,23 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             type: el.type || 'button',
                             'aria-label': el.getAttribute('aria-label') || '',
                             title: el.getAttribute('title') || '',
-                            role: el.getAttribute('role') || ''
+                            role: el.getAttribute('role') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'button'
+                        element_type: 'button',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
                 queryAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
                     if (el.tagName === 'BUTTON') return;
                     if (el.tagName === 'A' && el.hasAttribute('href')) return;
 
@@ -1556,17 +1548,25 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                                 attributes: {
                             class: el.className,
                             'aria-label': el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || ''
+                            title: el.getAttribute('title') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'clickable'
+                        element_type: 'clickable',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                         }
                     }
                 });
 
                 queryAll('a[href]').forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
 
                     const href = el.href;
                     let text = el.innerText?.trim() || '';
@@ -1588,10 +1588,17 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             href: href,
                             target: el.target || '',
                             'aria-label': el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || ''
+                            title: el.getAttribute('title') || '',
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
-                        element_type: 'link'
+                        element_type: 'link',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
@@ -1620,7 +1627,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     [class*="card"],
                     [class*="list"]
                 `.replace(/\s+/g, '')).forEach(el => {
-                    if (!isVisible(el)) return;
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
                     if (!el || !el.tagName) return;
 
                     const tag = el.tagName.toLowerCase();
@@ -1678,9 +1686,16 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'aria-haspopup': el.getAttribute('aria-haspopup') || '',
                             tabindex: el.getAttribute('tabindex') || '',
                             'data-testid': testid,
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: box,
-                        element_type: 'semantic'
+                        element_type: 'semantic',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
                     });
                 });
 
@@ -1770,10 +1785,14 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
     # 세션을 가져오거나 생성합니다
-    if session_id not in active_sessions:
-        active_sessions[session_id] = BrowserSession(session_id)
-
-    session = active_sessions[session_id]
+    session = ensure_session(
+        active_sessions=active_sessions,
+        session_id=session_id,
+        playwright_getter=_get_playwright_instance,
+        screencast_subscribers=screencast_subscribers,
+        frame_setter=_set_current_screencast_frame,
+        logger=logger,
+    )
     page = await session.get_or_create_page()
 
     # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
@@ -1878,10 +1897,14 @@ async def capture_screenshot(
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
 
     # 세션을 가져오거나 생성합니다
-    if session_id not in active_sessions:
-        active_sessions[session_id] = BrowserSession(session_id)
-
-    session = active_sessions[session_id]
+    session = ensure_session(
+        active_sessions=active_sessions,
+        session_id=session_id,
+        playwright_getter=_get_playwright_instance,
+        screencast_subscribers=screencast_subscribers,
+        frame_setter=_set_current_screencast_frame,
+        logger=logger,
+    )
     page = await session.get_or_create_page()
 
     # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
@@ -1909,14 +1932,6 @@ async def capture_screenshot(
         "url": page.url,
         "title": await page.title(),
     }
-
-
-def _normalize_timeout_ms(raw: Any, default_ms: int, min_ms: int = 500, max_ms: int = 120000) -> int:
-    try:
-        value = int(raw)
-    except Exception:
-        value = int(default_ms)
-    return max(min_ms, min(max_ms, value))
 
 
 async def _reset_session_connection(session: BrowserSession, reason: str = "") -> None:
@@ -1948,68 +1963,6 @@ async def _reset_session_connection(session: BrowserSession, reason: str = "") -
         print(f"[session-reset] {session.session_id}: {reason}")
 
 
-async def _evaluate_js_with_timeout(
-    page: Page,
-    script: str,
-    *,
-    selector: str = "",
-    timeout_ms: int = 20000,
-) -> Any:
-    fn_text = str(script or "").strip()
-    if not fn_text:
-        raise ValueError("Value (script) is required for 'evaluate' action")
-    timeout_ms = _normalize_timeout_ms(timeout_ms, 20000)
-
-    if selector:
-        element = page.locator(selector).first
-        return await element.evaluate(
-            """
-            (el, payload) => {
-              const { fnBody, timeoutMs } = payload || {};
-              try {
-                const candidate = eval("(" + fnBody + ")");
-                const result = (typeof candidate === "function") ? candidate(el) : candidate;
-                if (result && typeof result.then === "function") {
-                  return Promise.race([
-                    result,
-                    new Promise((_, reject) =>
-                      setTimeout(() => reject(new Error("evaluate timed out after " + timeoutMs + "ms")), timeoutMs)
-                    )
-                  ]);
-                }
-                return result;
-              } catch (err) {
-                throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
-              }
-            }
-            """,
-            {"fnBody": fn_text, "timeoutMs": timeout_ms},
-        )
-
-    return await page.evaluate(
-        """
-        ({ fnBody, timeoutMs }) => {
-          try {
-            const candidate = eval("(" + fnBody + ")");
-            const result = (typeof candidate === "function") ? candidate() : candidate;
-            if (result && typeof result.then === "function") {
-              return Promise.race([
-                result,
-                new Promise((_, reject) =>
-                  setTimeout(() => reject(new Error("evaluate timed out after " + timeoutMs + "ms")), timeoutMs)
-                )
-              ]);
-            }
-            return result;
-          } catch (err) {
-            throw new Error("Invalid evaluate function: " + (err && err.message ? err.message : String(err)));
-          }
-        }
-        """,
-        {"fnBody": fn_text, "timeoutMs": timeout_ms},
-    )
-
-
 async def execute_simple_action(
     url: str,
     selector: str,
@@ -2019,909 +1972,33 @@ async def execute_simple_action(
     before_screenshot: str = None,
     action_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Execute a simple action (click, fill, press, scroll, tab) using persistent session.
-
-    Args:
-        url: Page URL
-        selector: CSS selector (not used for 'tab' action)
-        action: Action type (click, fill, press, scroll, tab)
-        value: Value for fill/press actions, or scroll amount for scroll action
-        session_id: Browser session ID (default: "default")
-        before_screenshot: Base64 screenshot before action (for Vision AI fallback)
-
-    Returns:
-        Dict with success status and screenshot
-    """
-    if not playwright_instance:
-        raise HTTPException(status_code=503, detail="Playwright is not initialized.")
-
-    # 세션을 가져오거나 생성합니다
-    if session_id not in active_sessions:
-        active_sessions[session_id] = BrowserSession(session_id)
-
-    session = active_sessions[session_id]
-    page = await session.get_or_create_page()
-
-    if is_element_action(action):
-        return {
-            "success": False,
-            "reason_code": "legacy_selector_forbidden",
-            "message": (
-                "legacy selector element actions are disabled. "
-                "use browser_snapshot + browser_act(snapshot_id, ref_id)."
-            ),
-        }
-
-    if legacy_selector_forbidden(action, selector):
-        return {
-            "success": False,
-            "reason_code": "legacy_selector_forbidden",
-            "message": (
-                "legacy selector element actions are disabled. "
-                "use browser_snapshot + browser_act(snapshot_id, ref_id)."
-            ),
-        }
-
-    try:
-        # URL이 변경되었고 비어 있지 않을 때에만 이동합니다
-        # 캐시된 세션 URL이 아닌 실제 브라우저 URL과 비교합니다
-        current_page_url = page.url
-        current_normalized = normalize_url(current_page_url)
-        requested_normalized = normalize_url(url) if url else None
-
-        print(
-            f"[execute_simple_action] Current page URL: {current_page_url} (normalized: {current_normalized})"
-        )
-        print(
-            f"[execute_simple_action] Requested URL: {url} (normalized: {requested_normalized})"
-        )
-
-        if requested_normalized and current_normalized != requested_normalized:
-            print(f"[execute_simple_action] URLs differ, navigating to: {url}")
-            await page.goto(url, timeout=60000)  # 30초에서 60초로 증가시켰습니다
-            session.current_url = url
-            try:
-                # 네트워크가 유휴 상태가 될 때까지 대기합니다(요청 없음)
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                pass  # networkidle이 타임아웃되어도 계속 진행합니다
-
-            # React SPA가 하이드레이션/렌더링되도록 추가로 대기합니다
-            # 분석 전에 DOM이 완전히 채워지도록 보장합니다
-            # Figma 사이트는 해시 내비게이션에 추가 시간이 필요합니다
-            await page.wait_for_timeout(
-                5000
-            )  # React/Figma가 렌더링되도록 5초 동안 대기합니다(해시 내비게이션을 고려해 증가)
-
-        # 동작 전에 요소 위치를 기록합니다(클릭 애니메이션용)
-        click_position = None
-
-        # 선택자가 필요 없는 동작을 처리합니다
-        if action == "tab":
-            # 페이지에서 Tab 키를 누릅니다(keyboard.press는 타임아웃을 지원하지 않음)
-            await page.keyboard.press("Tab")
-
-        elif action == "scroll":
-            # 페이지나 요소를 스크롤합니다
-            if selector and selector != "body":
-                # 특정 요소 기준으로 가장 가까운 스크롤 컨테이너를 우선 스크롤합니다.
-                element = page.locator(selector).first
-                try:
-                    bounding_box = await element.bounding_box()
-                    if bounding_box:
-                        click_position = {
-                            "x": bounding_box["x"] + bounding_box["width"] / 2,
-                                "y": bounding_box["y"] + bounding_box["height"] / 2,
-                        }
-                except Exception:
-                    pass
-                try:
-                    await _scroll_locator_container(element, value)
-                except Exception:
-                    # 컨테이너 스크롤이 실패하면 기존 동작으로 fallback
-                    await element.scroll_into_view_if_needed(timeout=10000)
-            else:
-                # 지정한 양이나 방향으로 페이지를 스크롤합니다
-                if value in ["down", "up", "bottom", "top"]:
-                    # 방향 기반 스크롤링
-                    if value == "down":
-                        scroll_amount = 800  # 800px만큼 아래로 스크롤합니다
-                    elif value == "up":
-                        scroll_amount = -800  # 800px만큼 위로 스크롤합니다
-                    elif value == "bottom":
-                        scroll_amount = 999999  # 맨 아래로 스크롤합니다
-                    elif value == "top":
-                        scroll_amount = -999999  # 맨 위로 스크롤합니다
-                    await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
-                else:
-                    # 수치 기반 스크롤링
-                    scroll_amount = int(value) if value else 500
-                    await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
-
-        elif action == "goto":
-            # 값에 포함된 URL로 이동합니다
-            if value is None:
-                raise ValueError("Value (URL) is required for 'goto' action")
-            await page.goto(value, timeout=60000, wait_until="networkidle")
-
-        elif action == "setViewport":
-            # 뷰포트 크기를 변경합니다(값은 [width, height] 또는 [[width, height]] 형식의 JSON 배열)
-            if value is None:
-                raise ValueError(
-                    "Value [width, height] is required for 'setViewport' action"
-                )
-            import json
-
-            if isinstance(value, str):
-                width, height = json.loads(value)
-            else:
-                # [width, height]와 [[width, height]] 두 형식을 모두 처리합니다
-                if isinstance(value, list) and len(value) > 0:
-                    if isinstance(value[0], list):
-                        # 이중 중첩 형식: [[width, height]]
-                        width, height = value[0][0], value[0][1]
-                    else:
-                        # 단일 배열 형식: [width, height]
-                        width, height = value[0], value[1]
-                else:
-                    raise ValueError(f"Invalid viewport value format: {value}")
-            await page.set_viewport_size({"width": int(width), "height": int(height)})
-
-        elif action == "wait" or action == "waitForTimeout":
-            # 지정된 시간(밀리초) 동안 대기합니다(값에 대기 시간이 포함)
-            import asyncio
-
-            if value is None:
-                raise ValueError("Value (milliseconds) is required for 'wait' action")
-            wait_time_ms = (
-                int(value) if isinstance(value, (int, str)) else int(value[0])
-            )
-            await asyncio.sleep(wait_time_ms / 1000.0)
-
-        elif action == "clickAt" or action == "click_at_coordinates":
-            # 지정한 좌표를 클릭합니다(값은 [x, y])
-            if value is None:
-                raise ValueError("Value [x, y] is required for 'clickAt' action")
-
-            # 좌표를 파싱합니다
-            if isinstance(value, str):
-                import json
-
-                coords = json.loads(value)
-            elif isinstance(value, list):
-                coords = value if len(value) == 2 else [value[0], value[1]]
-            else:
-                raise ValueError(f"Invalid coordinates format: {value}")
-
-            x, y = int(coords[0]), int(coords[1])
-
-            # 애니메이션을 위해 클릭 위치를 저장합니다
-            click_position = {"x": x, "y": y}
-
-            # React 이벤트가 정확히 발생하도록 자바스크립트로 좌표를 클릭합니다
-            # 해당 좌표의 요소를 찾아 프로그래밍 방식으로 클릭합니다
-            try:
-                await page.evaluate(f"""
-                    (async () => {{
-                        const element = document.elementFromPoint({x}, {y});
-                        if (element) {{
-                            element.click();
-                            return true;
-                        }}
-                        return false;
-                    }})();
-                """)
-            except Exception as e:
-                # 자바스크립트 클릭이 실패하면 마우스 클릭으로 대체합니다
-                print(
-                    f"JS click failed at ({x}, {y}), falling back to mouse.click: {e}"
-                )
-                await page.mouse.click(x, y)
-
-        elif action == "fillAt" or action == "fill_at_coordinates":
-            # 좌표 기반 입력 (값은 {x, y, text} 또는 [x, y, text])
-            if value is None:
-                raise ValueError("Value {x, y, text} is required for 'fillAt' action")
-
-            if isinstance(value, str):
-                import json
-
-                coords = json.loads(value)
-            else:
-                coords = value
-
-            if isinstance(coords, dict):
-                x = coords.get("x")
-                y = coords.get("y")
-                text = coords.get("text") or coords.get("value")
-            elif isinstance(coords, list) and len(coords) >= 3:
-                x, y, text = coords[0], coords[1], coords[2]
-            else:
-                raise ValueError(f"Invalid fillAt value format: {value}")
-
-            if x is None or y is None or text is None:
-                raise ValueError("fillAt requires x, y, and text")
-
-            x, y = int(x), int(y)
-
-            # 좌표 위치의 요소에 값 주입 + 이벤트 발생
-            filled = await page.evaluate(
-                """
-                ({ x, y, text }) => {
-                  const element = document.elementFromPoint(x, y);
-                  if (!element) return false;
-
-                  const tag = element.tagName.toLowerCase();
-                  const isEditable = element.isContentEditable;
-                  if (tag === 'input' || tag === 'textarea') {
-                    element.focus();
-                    element.value = text;
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
-                    return true;
-                  }
-                  if (isEditable) {
-                    element.focus();
-                    element.textContent = text;
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    return true;
-                  }
-                  return false;
-                }
-                """,
-                {"x": x, "y": y, "text": str(text)},
-            )
-
-            if not filled:
-                raise ValueError("No editable element found at coordinates")
-
-        elif action == "evaluate":
-            # 자바스크립트를 실행합니다(값에 스크립트 포함)
-            if value is None:
-                raise ValueError("Value (script) is required for 'evaluate' action")
-            env_default = os.getenv("GAIA_EVALUATE_TIMEOUT_MS", "20000")
-            timeout_raw = (
-                (action_options or {}).get("timeoutMs")
-                if isinstance(action_options, dict)
-                else None
-            )
-            if timeout_raw is None and isinstance(action_options, dict):
-                timeout_raw = action_options.get("timeout_ms")
-            eval_timeout_ms = _normalize_timeout_ms(
-                timeout_raw if timeout_raw is not None else env_default,
-                20000,
-            )
-            try:
-                eval_result = await _evaluate_js_with_timeout(
-                    page,
-                    str(value),
-                    selector=selector,
-                    timeout_ms=eval_timeout_ms,
-                )
-            except Exception as eval_exc:
-                msg = str(eval_exc)
-                lower_msg = msg.lower()
-                if "evaluate timed out after" in lower_msg or "timed out" in lower_msg:
-                    await _reset_session_connection(
-                        session,
-                        reason=f"evaluate_timeout:{msg[:180]}",
-                    )
-                    return {
-                        "success": False,
-                        "reason_code": "action_timeout",
-                        "message": (
-                            f"Evaluate timed out after {eval_timeout_ms}ms. "
-                            "Session connection was reset; retry with a smaller/bounded fn."
-                        ),
-                    }
-                raise
-
-            # 평가 결과를 스크린샷과 함께 반환합니다
-            screenshot_bytes = await page.screenshot(full_page=False)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-            return {
-                "success": True,
-                "message": "JavaScript evaluation completed",
-                "result": eval_result,
-                "screenshot": screenshot_base64,
-            }
-
-        elif action == "hover":
-            # 요소 위에 호버합니다
-            if not selector:
-                raise ValueError("Selector is required for 'hover' action")
-            element = page.locator(selector).first
-            try:
-                bounding_box = await element.bounding_box()
-                if bounding_box:
-                    click_position = {
-                        "x": bounding_box["x"] + bounding_box["width"] / 2,
-                        "y": bounding_box["y"] + bounding_box["height"] / 2,
-                    }
-            except Exception:
-                pass
-            await element.hover(timeout=30000)
-
-        elif action == "dragAndDrop":
-            # 드래그 앤 드롭을 수행합니다(값에 대상 선택자 포함)
-            if not selector or not value:
-                raise ValueError(
-                    "Both selector and value (target) required for 'dragAndDrop' action"
-                )
-            source = page.locator(selector).first
-            target = page.locator(value).first
-            await source.drag_to(target, timeout=30000)
-
-        elif action == "dragSlider":
-            # Radix UI 슬라이더를 특정 값으로 드래그합니다
-            # value는 목표 값 (예: "1000")
-            if not selector:
-                raise ValueError("Selector is required for 'dragSlider' action")
-            if value is None:
-                raise ValueError(
-                    "Value (target value) is required for 'dragSlider' action"
-                )
-
-            # 슬라이더 thumb 요소 찾기
-            thumb = page.locator(selector).first
-
-            try:
-                # 슬라이더의 aria 속성에서 범위 정보 가져오기
-                aria_min = await thumb.get_attribute("aria-valuemin") or "0"
-                aria_max = await thumb.get_attribute("aria-valuemax") or "100"
-                aria_now = await thumb.get_attribute("aria-valuenow") or "0"
-
-                min_val = float(aria_min)
-                max_val = float(aria_max)
-                target_val = float(value)
-
-                print(
-                    f"🎚️ Slider: min={min_val}, max={max_val}, current={aria_now}, target={target_val}"
-                )
-
-                # 방법 1: 키보드로 슬라이더 조작 (가장 안정적)
-                # End 키로 최댓값, Home 키로 최솟값
-                if target_val >= max_val:
-                    await thumb.focus()
-                    await thumb.press("End")
-                    print(f"🎚️ Pressed End key to move slider to max value")
-                elif target_val <= min_val:
-                    await thumb.focus()
-                    await thumb.press("Home")
-                    print(f"🎚️ Pressed Home key to move slider to min value")
-                else:
-                    # 중간 값으로 이동: JavaScript로 직접 값 설정
-                    await thumb.focus()
-
-                    # Radix 슬라이더는 aria-valuenow로 현재 값을 추적
-                    # 키보드로 한 스텝씩 이동하거나, 드래그로 위치 조정
-                    # 여기서는 비율 계산 후 드래그 사용
-
-                    # 슬라이더 트랙 찾기 (thumb의 부모 요소)
-                    track_box = await thumb.evaluate("""el => {
-                        const track = el.closest('[data-slot="slider"]')?.querySelector('[data-slot="slider-track"]');
-                        if (track) {
-                            const rect = track.getBoundingClientRect();
-                            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-                        }
-                        return null;
-                    }""")
-
-                    if track_box:
-                        # 목표 위치 계산
-                        ratio = (target_val - min_val) / (max_val - min_val)
-                        target_x = track_box["x"] + (track_box["width"] * ratio)
-                        target_y = track_box["y"] + track_box["height"] / 2
-
-                        # thumb의 현재 위치
-                        thumb_box = await thumb.bounding_box()
-                        if thumb_box:
-                            start_x = thumb_box["x"] + thumb_box["width"] / 2
-                            start_y = thumb_box["y"] + thumb_box["height"] / 2
-
-                            # 드래그 실행
-                            await page.mouse.move(start_x, start_y)
-                            await page.mouse.down()
-                            await page.mouse.move(target_x, target_y, steps=10)
-                            await page.mouse.up()
-
-                            print(
-                                f"🎚️ Dragged slider from ({start_x:.0f}, {start_y:.0f}) to ({target_x:.0f}, {target_y:.0f})"
-                            )
-                    else:
-                        # 트랙을 찾지 못하면 키보드로 이동
-                        # 현재 값에서 목표 값까지의 스텝 수 계산
-                        current_val = float(aria_now)
-                        steps = int(abs(target_val - current_val))
-                        key = "ArrowRight" if target_val > current_val else "ArrowLeft"
-
-                        for _ in range(min(steps, 100)):  # 최대 100번
-                            await thumb.press(key)
-
-                        print(f"🎚️ Pressed {key} {min(steps, 100)} times")
-
-                # 값 변경 후 잠시 대기
-                await page.wait_for_timeout(300)
-
-                # 클릭 위치 저장 (애니메이션용)
-                thumb_box = await thumb.bounding_box()
-                if thumb_box:
-                    click_position = {
-                        "x": thumb_box["x"] + thumb_box["width"] / 2,
-                        "y": thumb_box["y"] + thumb_box["height"] / 2,
-                    }
-
-            except Exception as slider_error:
-                print(f"❌ Slider drag failed: {slider_error}")
-                raise ValueError(f"Failed to drag slider: {str(slider_error)}")
-
-        elif action == "storeCSSValue":
-            # CSS 값을 저장합니다 (나중에 expectCSSChanged로 비교)
-            # value는 CSS 속성명 (예: "background-color", "opacity")
-            if not selector:
-                raise ValueError("Selector is required for 'storeCSSValue' action")
-            if value is None:
-                raise ValueError(
-                    "Value (CSS property name) is required for 'storeCSSValue' action"
-                )
-
-            element = page.locator(selector).first
-            css_property = value if isinstance(value, str) else value[0]
-
-            # CSS 값 가져오기
-            css_value = await element.evaluate(f'''el => {{
-                const style = window.getComputedStyle(el);
-                return style.getPropertyValue("{css_property}");
-            }}''')
-
-            # 세션에 저장 (selector + property를 키로 사용)
-            storage_key = f"{selector}::{css_property}"
-            session.stored_css_values[storage_key] = css_value
-
-            print(f"💾 Stored CSS value: {storage_key} = {css_value}")
-
-            # 클릭 위치 저장 (애니메이션용)
-            try:
-                bounding_box = await element.bounding_box()
-                if bounding_box:
-                    click_position = {
-                        "x": bounding_box["x"] + bounding_box["width"] / 2,
-                        "y": bounding_box["y"] + bounding_box["height"] / 2,
-                    }
-            except Exception:
-                pass
-
-        elif action == "scrollIntoView":
-            # 요소가 화면에 보이도록 스크롤합니다
-            if not selector:
-                raise ValueError("Selector is required for 'scrollIntoView' action")
-            element = page.locator(selector).first
-            await element.scroll_into_view_if_needed(timeout=10000)
-
-        elif action == "focus":
-            # 요소에 포커스를 맞춥니다
-            if not selector:
-                raise ValueError("Selector is required for 'focus' action")
-            element = page.locator(selector).first
-            await element.focus(timeout=30000)
-
-        elif action == "select":
-            # 드롭다운에서 옵션을 선택합니다(값에 옵션 값 포함)
-            if not selector or value is None:
-                raise ValueError("Selector and value required for 'select' action")
-            element = page.locator(selector).first
-
-            # 옵션 값 확인 후 유효하지 않으면 첫 번째 옵션으로 대체
-            options = await element.evaluate(
-                """
-                (el) => Array.from(el.options || []).map((opt) => opt.value)
-                """
-            )
-            if not options:
-                raise ValueError("No options found for select element")
-
-            if value not in options:
-                value = options[0]
-
-            await element.select_option(value, timeout=30000)
-
-        elif action == "uploadFile":
-            # 파일을 업로드합니다 (input[type='file']에 파일 경로 설정)
-            if not selector or value is None:
-                raise ValueError(
-                    "Selector and file path required for 'uploadFile' action"
-                )
-            element = page.locator(selector).first
-            # value는 파일 경로 문자열 또는 파일 경로 리스트
-            if isinstance(value, str):
-                await element.set_input_files(value, timeout=30000)
-            elif isinstance(value, list):
-                await element.set_input_files(value, timeout=30000)
-            else:
-                raise ValueError(f"Invalid value type for uploadFile: {type(value)}")
-
-        elif action == "expectCSSChanged":
-            # 저장된 CSS 값과 현재 값을 비교하여 변경 여부 확인
-            if not selector:
-                raise ValueError("Selector is required for 'expectCSSChanged' action")
-            if value is None:
-                raise ValueError(
-                    "Value (CSS property name) is required for 'expectCSSChanged' action"
-                )
-
-            element = page.locator(selector).first
-            css_property = value if isinstance(value, str) else value[0]
-
-            # 현재 CSS 값 가져오기
-            current_css_value = await element.evaluate(f'''el => {{
-                const style = window.getComputedStyle(el);
-                return style.getPropertyValue("{css_property}");
-            }}''')
-
-            # 저장된 값과 비교
-            storage_key = f"{selector}::{css_property}"
-            stored_value = session.stored_css_values.get(storage_key)
-
-            if stored_value is None:
-                # 저장된 값이 없으면 실패
-                screenshot_bytes = await page.screenshot(full_page=False)
-                screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                return {
-                    "success": False,
-                    "message": f"No stored CSS value for '{storage_key}'. Use storeCSSValue first.",
-                    "screenshot": screenshot_base64,
-                }
-
-            # 값이 변경되었는지 확인
-            changed = stored_value != current_css_value
-            print(f"🔍 CSS comparison: {storage_key}")
-            print(f"   Before: {stored_value}")
-            print(f"   After:  {current_css_value}")
-            print(f"   Changed: {changed}")
-
-            screenshot_bytes = await page.screenshot(full_page=False)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-
-            if changed:
-                return {
-                    "success": True,
-                    "message": f"CSS '{css_property}' changed from '{stored_value}' to '{current_css_value}'",
-                    "screenshot": screenshot_base64,
-                }
-            else:
-                return {
-                    "success": False,
-                    "message": f"CSS '{css_property}' did not change (still '{current_css_value}')",
-                    "screenshot": screenshot_base64,
-                }
-
-        elif action in (
-            "expectVisible",
-            "expectHidden",
-            "expectTrue",
-            "expectText",
-            "expectAttribute",
-            "expectCountAtLeast",
-        ):
-            # 검증 동작은 결과를 반환하는 방식으로 처리됩니다
-            # 이 동작은 실행되지 않고 검증 결과만 반환합니다
-            result = await _execute_assertion(
-                page, action, selector, value, before_screenshot=before_screenshot
-            )
-
-            # 검증 결과용 스크린샷을 캡처합니다
-            screenshot_bytes = await page.screenshot(full_page=False)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-
-            return {
-                "success": result["success"],
-                "message": result["message"],
-                "screenshot": screenshot_base64,
-            }
-
-        elif action in ("click", "fill", "press"):
-            # :has-text() 실패 시 :text()로 자동 재시도 (fallback)
-            # [type="submit"] 실패 시 제거해서 재시도 (fallback)
-            # [role="switch"]:has-text() → 부모 컨테이너로 탐색 (토글 스위치 특수 처리)
-            fallback_selectors = []
-
-            # 토글 스위치 특수 처리: [role="switch"]:has-text("XXX") 패턴 감지
-            if '[role="switch"]' in selector and ":has-text(" in selector:
-                import re
-
-                # :has-text("텍스트") 추출
-                text_match = re.search(r':has-text\(["\']([^"\']+)["\']\)', selector)
-                if text_match:
-                    text = text_match.group(1)
-                    # 토글 스위치는 보통 label과 함께 있으므로 부모 컨테이너에서 찾기
-                    fallback_selectors.append(
-                        f'.flex:has(label:has-text("{text}")) button[role="switch"]'
-                    )
-                    fallback_selectors.append(
-                        f'div:has(label:has-text("{text}")) button[role="switch"]'
-                    )
-
-            if ":has-text(" in selector:
-                fallback_selectors.append(selector.replace(":has-text(", ":text("))
-            if '[type="submit"]' in selector:
-                fallback_selectors.append(selector.replace('[type="submit"]', ""))
-            if '[type="submit"]' in selector and ":has-text(" in selector:
-                # 둘 다 제거한 버전도 추가
-                fallback_selectors.append(
-                    selector.replace('[type="submit"]', "").replace(
-                        ":has-text(", ":text("
-                    )
-                )
-
-            fallback_selector = fallback_selectors[0] if fallback_selectors else None
-
-            # 선택자가 필요한 동작
-            element = page.locator(selector).first
-
-            # 클릭 애니메이션을 위해 요소 위치를 구합니다
-            click_position = None
-            try:
-                bounding_box = await element.bounding_box(timeout=5000)
-                if bounding_box:
-                    click_position = {
-                        "x": bounding_box["x"] + bounding_box["width"] / 2,
-                        "y": bounding_box["y"] + bounding_box["height"] / 2,
-                    }
-            except Exception:
-                # bounding_box 실패 시 fallback 시도
-                if fallback_selector:
-                    try:
-                        element = page.locator(fallback_selector).first
-                        bounding_box = await element.bounding_box(timeout=5000)
-                        if bounding_box:
-                            click_position = {
-                                "x": bounding_box["x"] + bounding_box["width"] / 2,
-                                "y": bounding_box["y"] + bounding_box["height"] / 2,
-                            }
-                            print(f"⚠️  :has-text() failed, using :text() instead")
-                    except Exception:
-                        pass
-
-            if action == "click":
-                # Scroll element into view before clicking to prevent timeout issues
-                try:
-                    await _reveal_locator_in_scroll_context(element)
-                    await page.wait_for_timeout(150)
-                except Exception as scroll_error:
-                    print(
-                        f"Warning: Could not scroll element into view: {scroll_error}"
-                    )
-
-                # For switch/toggle elements, use JavaScript click for reliability
-                # Playwright's click() sometimes doesn't trigger onChange handlers properly
-                use_js_click = any(
-                    pattern in selector
-                    for pattern in [
-                        "[data-slot='switch']",
-                        "[role='switch']",
-                        "switch",
-                        "toggle",
-                    ]
-                )
-
-                try:
-                    if use_js_click:
-                        print(f"🔧 Using JavaScript click for switch/toggle element")
-                        await element.evaluate("el => el.click()")
-                        await page.wait_for_timeout(300)  # Wait for state change
-                    else:
-                        await element.click(timeout=10000)
-                except Exception as click_error:
-                    # Retry with force click for overlay/intercept issues
-                    try:
-                        if not use_js_click:
-                            print("⚠️  click failed, retrying with force=True")
-                            await element.click(timeout=5000, force=True)
-                            await page.wait_for_timeout(300)
-                            screenshot_bytes = await page.screenshot(full_page=False)
-                            screenshot_base64 = base64.b64encode(
-                                screenshot_bytes
-                            ).decode("utf-8")
-                            return {
-                                "success": True,
-                                "message": "Click action completed with force",
-                                "screenshot": screenshot_base64,
-                            }
-                    except Exception:
-                        pass
-
-                    # Final fallback to JS click
-                    try:
-                        await element.evaluate("el => el.click()")
-                        await page.wait_for_timeout(300)
-                        screenshot_bytes = await page.screenshot(full_page=False)
-                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode(
-                            "utf-8"
-                        )
-                        return {
-                            "success": True,
-                            "message": "Click action completed via JS fallback",
-                            "screenshot": screenshot_base64,
-                        }
-                    except Exception:
-                        raise click_error
-                    error_msg = str(click_error)
-
-                    # "element is not visible" 에러 감지 시 부모 hover 시도
-                    if (
-                        "element is not visible" in error_msg
-                        or "not visible" in error_msg
-                    ):
-                        print(
-                            f"⚠️  Element not visible, trying to hover parent menu first..."
-                        )
-                        try:
-                            # JavaScript로 부모 셀렉터 찾기
-                            parent_selector = await element.evaluate("""
-                                el => {
-                                    // 부모 요소 찾기 (li > a 구조에서 li, nav, 또는 부모 링크)
-                                    let parent = el.parentElement;
-                                    while (parent && parent !== document.body) {
-                                        const tagName = parent.tagName.toLowerCase();
-                                        const role = parent.getAttribute('role');
-                                        const className = parent.className || '';
-
-                                        // 네비게이션 메뉴 아이템 찾기
-                                        if (tagName === 'li' || role === 'menuitem') {
-                                            // li 내부의 최상위 링크/버튼 찾기
-                                            const topLink = parent.querySelector(':scope > a, :scope > button');
-                                            if (topLink && topLink !== el) {
-                                                return topLink.textContent.trim();
-                                            }
-                                        }
-
-                                        parent = parent.parentElement;
-                                    }
-                                    return null;
-                                }
-                            """)
-
-                            if parent_selector:
-                                print(f"🎯 Found parent menu: {parent_selector}")
-                                # Playwright의 실제 hover() 사용
-                                parent_locator = page.locator(
-                                    f"a:text('{parent_selector}'), button:text('{parent_selector}')"
-                                ).first
-                                await parent_locator.hover(timeout=5000)
-                                print(f"✅ Hovered parent menu, waiting for submenu...")
-                                await page.wait_for_timeout(
-                                    1000
-                                )  # 서브메뉴 나타날 시간 증가
-
-                                # 다시 클릭 시도
-                                await element.click(timeout=10000)
-                                print(f"✅ Successfully clicked after hovering parent")
-                            else:
-                                print(f"⚠️  No suitable parent found for hovering")
-                                raise click_error
-                        except Exception as hover_error:
-                            print(f"⚠️  Parent hover failed: {hover_error}")
-                            # 부모 hover 실패 시 원래 fallback 로직 계속
-                            if fallback_selectors and "Timeout" in error_msg:
-                                for fb_selector in fallback_selectors:
-                                    try:
-                                        print(
-                                            f"⚠️  Original selector failed, retrying with: {fb_selector}"
-                                        )
-                                        element = page.locator(fb_selector).first
-                                        await _reveal_locator_in_scroll_context(element)
-                                        await page.wait_for_timeout(150)
-                                        await element.click(timeout=10000)
-                                        break  # 성공하면 루프 종료
-                                    except Exception:
-                                        continue  # 다음 fallback 시도
-                                else:
-                                    # 모든 fallback 실패
-                                    raise click_error
-                            else:
-                                raise click_error
-                    # Fallback 시도: :has-text() → :text(), [type="submit"] 제거 등
-                    elif fallback_selectors and "Timeout" in error_msg:
-                        for fb_selector in fallback_selectors:
-                            try:
-                                print(
-                                    f"⚠️  Original selector failed, retrying with: {fb_selector}"
-                                )
-                                element = page.locator(fb_selector).first
-                                await _reveal_locator_in_scroll_context(element)
-                                await page.wait_for_timeout(150)
-                                await element.click(timeout=10000)
-                                break  # 성공하면 루프 종료
-                            except Exception:
-                                continue  # 다음 fallback 시도
-                        else:
-                            # 모든 fallback 실패
-                            raise click_error
-                    else:
-                        raise
-            elif action == "fill":
-                if value is None:
-                    raise ValueError("Value is required for 'fill' action")
-                try:
-                    await _reveal_locator_in_scroll_context(element)
-                    await element.fill(value, timeout=10000)
-                except Exception as fill_error:
-                    # Fallback 시도
-                    if fallback_selectors and "Timeout" in str(fill_error):
-                        for fb_selector in fallback_selectors:
-                            try:
-                                print(
-                                    f"⚠️  Original selector failed, retrying with: {fb_selector}"
-                                )
-                                element = page.locator(fb_selector).first
-                                await _reveal_locator_in_scroll_context(element)
-                                await element.fill(value, timeout=10000)
-                                break
-                            except Exception:
-                                continue
-                        else:
-                            raise fill_error
-                    else:
-                        raise
-            elif action == "press":
-                if value is None:
-                    raise ValueError("Value is required for 'press' action")
-                try:
-                    await _reveal_locator_in_scroll_context(element)
-                    await element.press(value, timeout=10000)
-                except Exception as press_error:
-                    # Fallback 시도
-                    if fallback_selectors and "Timeout" in str(press_error):
-                        for fb_selector in fallback_selectors:
-                            try:
-                                print(
-                                    f"⚠️  Original selector failed, retrying with: {fb_selector}"
-                                )
-                                element = page.locator(fb_selector).first
-                                await _reveal_locator_in_scroll_context(element)
-                                await element.press(value, timeout=10000)
-                                break
-                            except Exception:
-                                continue
-                        else:
-                            raise press_error
-                    else:
-                        raise
-
-        else:
-            raise ValueError(f"Unsupported action: {action}")
-
-        # 상태 변경을 기다립니다 (CLICK on button[type="submit"]일 때만)
-        # 폼 입력 중간에는 네비게이션 대기하지 않음 (홈페이지로 튕기는 문제 방지)
-        if action == "click" and "submit" in selector.lower():
-            try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                await page.wait_for_timeout(1500)
-        else:
-            # 폼 입력/일반 클릭은 짧게만 대기
-            await page.wait_for_timeout(300)
-
-        # 내비게이션이 발생하면 현재 URL을 업데이트합니다
-        session.current_url = page.url
-
-        # 실시간 미리보기용으로 동작 후 스크린샷을 캡처합니다
-        screenshot_bytes = await page.screenshot(full_page=False)
-        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-
-        return {
-            "success": True,
-            "message": f"Action '{action}' executed on '{selector if selector else 'page'}'",
-            "screenshot": screenshot_base64,
-            "current_url": session.current_url,
-            "click_position": click_position,  # 애니메이션용 클릭 위치를 추가합니다
-        }
-
-    except Exception as e:
-        return {"success": False, "message": f"Action failed: {str(e)}"}
-
-    # 브라우저를 닫지 말고 세션을 유지합니다!
+    from gaia.src.phase4.mcp_simple_action_executor import execute_simple_action_impl
+
+    return await execute_simple_action_impl(
+        url=url,
+        selector=selector,
+        action=action,
+        value=value,
+        session_id=session_id,
+        before_screenshot=before_screenshot,
+        action_options=action_options,
+        playwright_instance=playwright_instance,
+        ensure_session=ensure_session,
+        active_sessions=active_sessions,
+        _get_playwright_instance=_get_playwright_instance,
+        screencast_subscribers=screencast_subscribers,
+        _set_current_screencast_frame=_set_current_screencast_frame,
+        logger=logger,
+        is_element_action=is_element_action,
+        legacy_selector_forbidden=legacy_selector_forbidden,
+        normalize_url=normalize_url,
+        _scroll_locator_container=_scroll_locator_container,
+        _normalize_timeout_ms=_normalize_timeout_ms,
+        _evaluate_js_with_timeout=_evaluate_js_with_timeout,
+        _reset_session_connection=_reset_session_connection,
+        _execute_assertion=_execute_assertion,
+        _reveal_locator_in_scroll_context=_reveal_locator_in_scroll_context,
+    )
 
 
 def _select_frame_for_ref(page: Page, ref_meta: Dict[str, Any]):
@@ -3453,2019 +2530,42 @@ async def execute_ref_action_with_snapshot(
     verify: bool = True,
     tab_id: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    if not playwright_instance:
-        raise HTTPException(status_code=503, detail="Playwright is not initialized.")
-
-    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
-
-    if url:
-        current_normalized = normalize_url(page.url)
-        requested_normalized = normalize_url(url)
-        if current_normalized != requested_normalized:
-            await page.goto(url, timeout=60000)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(1000)
-
-    try:
-        max_action_seconds = float(os.getenv("GAIA_REF_ACTION_MAX_SECONDS", "45"))
-    except Exception:
-        max_action_seconds = 45.0
-    max_action_seconds = max(10.0, min(120.0, max_action_seconds))
-    action_started_at = time.monotonic()
-
-    def _deadline_exceeded() -> bool:
-        return (time.monotonic() - action_started_at) >= max_action_seconds
-
-    attempt_logs: List[Dict[str, Any]] = []
-    retry_path: List[str] = []
-    stale_recovered = False
-    reason_code = "unknown_error"
-    last_live_texts: List[str] = []
-
-    requested_snapshot = session.snapshots.get(snapshot_id)
-    requested_meta = (
-        _resolve_ref_meta_from_snapshot(requested_snapshot, ref_id)
-        if requested_snapshot
-        else None
-    )
-    initial_ref_state: Optional[str] = None
-    if isinstance(requested_snapshot, dict):
-        snap_epoch = int(requested_snapshot.get("epoch") or 0)
-        snap_dom_hash = str(requested_snapshot.get("dom_hash") or "")
-        snap_tab_index = int(requested_snapshot.get("tab_index") or 0)
-        parsed_epoch = 0
-        parsed_hash_short = ""
-        try:
-            parts = str(snapshot_id).split(":")
-            if len(parts) >= 3:
-                parsed_epoch = int(parts[-2] or 0)
-                parsed_hash_short = str(parts[-1] or "")
-        except Exception:
-            parsed_epoch = 0
-            parsed_hash_short = ""
-        if parsed_epoch and parsed_epoch != snap_epoch:
-            initial_ref_state = "stale_snapshot"
-        if parsed_hash_short and snap_dom_hash and not snap_dom_hash.startswith(parsed_hash_short):
-            initial_ref_state = "stale_snapshot"
-        if snap_tab_index != _get_tab_index(page):
-            initial_ref_state = "stale_snapshot"
-    if not requested_snapshot:
-        initial_ref_state = "snapshot_not_found"
-    elif requested_meta is None:
-        initial_ref_state = "not_found"
-    elif not str(requested_meta.get("dom_ref") or "").strip():
-        initial_ref_state = "stale_snapshot"
-
-    if initial_ref_state:
-        retry_path.append(f"recover:{initial_ref_state}")
-        try:
-            fresh_snapshot_result = await snapshot_page(
-                url=(page.url or None), session_id=session_id
-            )
-            fresh_snapshot_id = str(fresh_snapshot_result.get("snapshot_id") or "")
-            fresh_snapshot = (
-                session.snapshots.get(fresh_snapshot_id)
-                if fresh_snapshot_id
-                else None
-            )
-            recovered_meta: Optional[Dict[str, Any]] = None
-            recovered_ref_id = ref_id
-
-            if isinstance(fresh_snapshot, dict):
-                recovered_meta = _resolve_ref_meta_from_snapshot(fresh_snapshot, ref_id)
-                if recovered_meta is None:
-                    recovered_meta = _resolve_stale_ref(requested_meta, fresh_snapshot)
-                    if isinstance(recovered_meta, dict):
-                        recovered_ref_id = str(
-                            recovered_meta.get("ref_id") or recovered_ref_id
-                        )
-                if isinstance(recovered_meta, dict):
-                    requested_snapshot = fresh_snapshot
-                    requested_meta = recovered_meta
-                    snapshot_id = fresh_snapshot_id or snapshot_id
-                    ref_id = recovered_ref_id
-                    stale_recovered = True
-                    reason_code = "stale_ref_recovered"
-                    retry_path.append("recover:ok")
-        except Exception as recover_exc:
-            retry_path.append(f"recover:error:{recover_exc}")
-
-    if (
-        not isinstance(requested_snapshot, dict)
-        or not isinstance(requested_meta, dict)
-        or not str(requested_meta.get("dom_ref") or "").strip()
-    ):
-        if initial_ref_state == "snapshot_not_found":
-            fail_message = "snapshot을 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "snapshot_not_found"
-        elif initial_ref_state == "not_found":
-            fail_message = "snapshot 내 ref를 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "not_found"
-        else:
-            fail_message = "snapshot/ref가 stale 상태입니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "stale_snapshot"
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": fail_code,
-            "reason": fail_message,
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-
-    if not isinstance(requested_meta, dict):
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": "not_found",
-            "reason": "유효한 ref metadata가 없습니다.",
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-
-    scope = requested_meta.get("scope", {}) if isinstance(requested_meta.get("scope"), dict) else {}
-    current_tab_index = _get_tab_index(page)
-    ref_tab_index = scope.get("tab_index")
-    if ref_tab_index is not None:
-        try:
-            if int(ref_tab_index) != current_tab_index:
-                return {
-                    "success": False,
-                    "effective": False,
-                    "reason_code": "tab_scope_mismatch",
-                    "reason": f"ref tab scope mismatch: ref={ref_tab_index}, current={current_tab_index}",
-                    "stale_recovered": stale_recovered,
-                    "retry_path": retry_path,
-                    "attempt_logs": attempt_logs,
-                }
-        except Exception:
-            pass
-
-    ref_frame_index = int(scope.get("frame_index", requested_meta.get("frame_index", 0)) or 0)
-    if ref_frame_index < 0 or ref_frame_index >= len(page.frames):
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": "frame_scope_mismatch",
-            "reason": f"ref frame scope mismatch: ref={ref_frame_index}, frame_count={len(page.frames)}",
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-
-    candidates = _build_ref_candidates(requested_meta)
-    deduped: List[Tuple[str, str]] = []
-    seen_selectors = set()
-    for mode, cand in candidates:
-        key = cand.strip()
-        if not key or key in seen_selectors:
-            continue
-        seen_selectors.add(key)
-        deduped.append((mode, cand))
-    candidates = deduped[:3]
-    if not candidates:
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": "not_found",
-            "reason": "ref metadata에 dom_ref가 없어 요소를 찾을 수 없습니다. 최신 snapshot이 필요합니다.",
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
-    transport_success = True
-    locator_found = False
-    interaction_success = False
-    state_change = {
-        "url_changed": False,
-        "dom_changed": False,
-        "target_visibility_changed": False,
-        "target_value_changed": False,
-        "target_value_matches": False,
-        "target_focus_changed": False,
-        "focus_changed": False,
-        "counter_changed": False,
-        "number_tokens_changed": False,
-        "status_text_changed": False,
-        "list_count_changed": False,
-        "interactive_count_changed": False,
-        "modal_count_changed": False,
-        "backdrop_count_changed": False,
-        "dialog_count_changed": False,
-        "modal_state_changed": False,
-        "auth_state_changed": False,
-        "text_digest_changed": False,
-        "evidence_changed": False,
-        "probe_wait_ms": 0,
-        "probe_scroll": "none",
-        "live_texts_after": [],
-    }
-    ref_attrs = requested_meta.get("attributes") if isinstance(requested_meta.get("attributes"), dict) else {}
-    ref_selector_text = " ".join(
-        [
-            str(requested_meta.get("selector") or ""),
-            str(requested_meta.get("full_selector") or ""),
-            str(requested_meta.get("text") or ""),
-            str((ref_attrs or {}).get("type") or ""),
-            str((ref_attrs or {}).get("role") or ""),
-            str((ref_attrs or {}).get("aria-label") or ""),
-        ]
-    ).lower()
-    submit_like_click = bool(
-        action == "click"
-        and (
-            str((ref_attrs or {}).get("type") or "").lower() == "submit"
-            or "submit" in ref_selector_text
-            or "로그인" in ref_selector_text
-            or "회원가입" in ref_selector_text
-            or "sign in" in ref_selector_text
-            or "log in" in ref_selector_text
-            or "sign up" in ref_selector_text
-            or "register" in ref_selector_text
-        )
-    )
-    modal_regions_for_requested = _collect_modal_regions_from_snapshot(
-        requested_snapshot if isinstance(requested_snapshot, dict) else None
-    )
-    close_like_click = bool(
-        action == "click"
-        and (
-            _is_close_intent_ref(requested_meta)
-            or _is_modal_corner_close_candidate(
-                requested_meta,
-                modal_regions_for_requested,
-            )
-        )
-    )
-    probe_wait_schedule: Tuple[int, ...] = (250,) if submit_like_click else (350, 700, 1500)
-    verify_for_action = verify and (not submit_like_click)
-    if submit_like_click:
-        max_action_seconds = min(max_action_seconds, 20.0)
-    if close_like_click:
-        close_gate_evidence: Dict[str, Any] = {}
-        try:
-            close_gate_evidence = await _collect_page_evidence(page)
-        except Exception:
-            close_gate_evidence = {}
-        if not bool(close_gate_evidence.get("modal_open")):
-            reason_code = "modal_not_open"
-            attempt_logs.append(
-                {
-                    "attempt": 0,
-                    "mode": "precheck",
-                    "reason_code": reason_code,
-                    "error": "close intent requested but modal_open=false",
-                    "state_change": {
-                        "modal_open": bool(close_gate_evidence.get("modal_open")),
-                        "modal_count": int(close_gate_evidence.get("modal_count") or 0),
-                        "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
-                        "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
-                    },
-                }
-            )
-            return {
-                "success": False,
-                "effective": False,
-                "reason_code": reason_code,
-                "reason": "닫기 대상 모달이 열려있지 않습니다. 최신 snapshot으로 재계획하세요.",
-                "snapshot_id_used": snapshot_id,
-                "ref_id_used": ref_id,
-                "retry_path": retry_path,
-                "attempt_count": 0,
-                "state_change": {
-                    "modal_open": bool(close_gate_evidence.get("modal_open")),
-                    "modal_count": int(close_gate_evidence.get("modal_count") or 0),
-                    "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
-                    "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
-                },
-                "attempt_logs": attempt_logs,
-                "current_url": page.url,
-                "stale_recovered": stale_recovered,
-            }
-
-    for attempt_idx, (mode, candidate_selector) in enumerate(candidates, start=1):
-        if _deadline_exceeded():
-            reason_code = "action_timeout"
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": candidate_selector,
-                    "reason_code": reason_code,
-                    "error": f"action budget exceeded ({max_action_seconds:.1f}s)",
-                }
-            )
-            break
-        retry_path.append(f"{attempt_idx}:{mode}")
-        locator, frame_index, resolved_selector, locator_error = await _resolve_locator_from_ref(
-            page, requested_meta, candidate_selector
-        )
-        if locator is None:
-            locator_error_text = str(locator_error or "")
-            if locator_error_text.startswith("ambiguous_selector_matches"):
-                reason_code = "ambiguous_ref_target"
-            elif locator_error_text in {"dom_ref_missing"}:
-                reason_code = "stale_snapshot"
-            else:
-                reason_code = "not_found"
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": resolved_selector,
-                    "reason_code": reason_code,
-                    "error": locator_error,
-                }
-            )
-            print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
-            continue
-
-        locator_found = True
-        before_url = page.url
-        before_dom_hash = await _compute_runtime_dom_hash(page)
-        evidence_collector = _collect_page_evidence_light if submit_like_click else _collect_page_evidence
-        before_evidence = await evidence_collector(page)
-        before_focus = await _read_focus_signature(page)
-        before_target = await _safe_read_target_state(locator)
-
-        async def _collect_state_change_probe(
-            *,
-            probe_wait_ms: int,
-            probe_scroll: str,
-            ancestor_click_fallback: bool = False,
-            ancestor_click_selector: str = "",
-        ) -> Dict[str, Any]:
-            nonlocal last_live_texts
-            after_url = page.url
-            after_dom_hash = await _compute_runtime_dom_hash(page)
-            after_evidence = await evidence_collector(page)
-            after_focus = await _read_focus_signature(page)
-            after_target = await _safe_read_target_state(locator)
-            change = _state_change_flags(
-                action=action,
-                value=value,
-                before_url=before_url,
-                after_url=after_url,
-                before_dom_hash=before_dom_hash,
-                after_dom_hash=after_dom_hash,
-                before_evidence=before_evidence,
-                after_evidence=after_evidence,
-                before_target=before_target,
-                after_target=after_target,
-                before_focus=before_focus,
-                after_focus=after_focus,
-            )
-            live_texts_after = _extract_live_texts(after_evidence.get("live_texts"))
-            if live_texts_after:
-                change["live_texts_after"] = live_texts_after
-                last_live_texts = live_texts_after
-            change["probe_wait_ms"] = probe_wait_ms
-            change["probe_scroll"] = probe_scroll
-            if ancestor_click_fallback:
-                change["ancestor_click_fallback"] = True
-                change["ancestor_click_selector"] = ancestor_click_selector
-            return change
-
-        async def _capture_close_diagnostic(label: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
-            if not close_like_click:
-                return
-            point_x = None
-            point_y = None
-            bbox = requested_meta.get("bounding_box") if isinstance(requested_meta, dict) and isinstance(requested_meta.get("bounding_box"), dict) else {}
-            try:
-                bx = float(bbox.get("x", 0.0) or 0.0)
-                by = float(bbox.get("y", 0.0) or 0.0)
-                bw = float(bbox.get("width", 0.0) or 0.0)
-                bh = float(bbox.get("height", 0.0) or 0.0)
-                if bw > 0.0 and bh > 0.0:
-                    point_x = float(bbox.get("center_x", bx + bw / 2.0) or (bx + bw / 2.0))
-                    point_y = float(bbox.get("center_y", by + bh / 2.0) or (by + bh / 2.0))
-            except Exception:
-                point_x = None
-                point_y = None
-            if point_x is None or point_y is None:
-                try:
-                    box = await locator.bounding_box()
-                    if isinstance(box, dict):
-                        point_x = float(box.get("x", 0.0) or 0.0) + float(box.get("width", 0.0) or 0.0) / 2.0
-                        point_y = float(box.get("y", 0.0) or 0.0) + float(box.get("height", 0.0) or 0.0) / 2.0
-                except Exception:
-                    point_x = None
-                    point_y = None
-            if point_x is None:
-                point_x = 0.0
-            if point_y is None:
-                point_y = 0.0
-
-            diagnostic: Dict[str, Any]
-            try:
-                diagnostic_raw = await page.evaluate(
-                    """
-                    async ({ pointX, pointY }) => {
-                      const modalSelector = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]';
-                      const backdropSelector = '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]';
-                      const pathOf = (node) => {
-                        if (!(node instanceof Element)) return '';
-                        const parts = [];
-                        let current = node;
-                        for (let depth = 0; current && depth < 6; depth += 1) {
-                          const tag = current.tagName.toLowerCase();
-                          const id = current.id ? `#${current.id}` : '';
-                          const cls = (current.className && typeof current.className === 'string')
-                            ? `.${current.className.trim().split(/\\s+/).slice(0, 2).join('.')}`
-                            : '';
-                          parts.push(`${tag}${id}${cls}`);
-                          current = current.parentElement;
-                        }
-                        return parts.join(' <- ');
-                      };
-                      const isVisible = (el) => {
-                        if (!(el instanceof HTMLElement)) return false;
-                        const style = window.getComputedStyle(el);
-                        if (!style) return false;
-                        if (style.display === 'none' || style.visibility === 'hidden') return false;
-                        if (Number(style.opacity || '1') <= 0) return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 2 && rect.height > 2;
-                      };
-                      const sampleState = () => {
-                        const modalNodes = Array.from(document.querySelectorAll(modalSelector)).filter(isVisible);
-                        const backdropNodes = Array.from(document.querySelectorAll(backdropSelector)).filter(isVisible);
-                        const dialogNodes = Array.from(document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')).filter(isVisible);
-                        const modalOpen = modalNodes.length > 0 || backdropNodes.length > 0 || dialogNodes.length > 0;
-                        return {
-                          modal_open: modalOpen,
-                          modal_count: modalNodes.length,
-                          backdrop_count: backdropNodes.length,
-                          dialog_count: dialogNodes.length,
-                        };
-                      };
-                      const timeline = [];
-                      for (let i = 0; i < 8; i += 1) {
-                        timeline.push(sampleState().modal_open);
-                        await new Promise((resolve) => setTimeout(resolve, 80));
-                      }
-                      const state = sampleState();
-                      const hit = document.elementFromPoint(pointX, pointY);
-                      let clickable = hit instanceof Element ? hit : null;
-                      for (let d = 0; clickable && d < 8; d += 1) {
-                        if (
-                          clickable.matches('button, a[href], [role="button"], [role="link"], [onclick], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])')
-                        ) {
-                          break;
-                        }
-                        clickable = clickable.parentElement;
-                      }
-                      return {
-                        ...state,
-                        timeline,
-                        hit_path: pathOf(hit),
-                        clickable_path: pathOf(clickable),
-                        active_path: pathOf(document.activeElement),
-                        point_x: pointX,
-                        point_y: pointY,
-                      };
-                    }
-                    """,
-                    {"pointX": point_x, "pointY": point_y},
-                )
-                diagnostic = diagnostic_raw if isinstance(diagnostic_raw, dict) else {"raw": diagnostic_raw}
-            except Exception as diag_exc:
-                diagnostic = {"error": str(diag_exc)}
-
-            timeline = diagnostic.get("timeline") if isinstance(diagnostic, dict) else None
-            if isinstance(timeline, list) and timeline:
-                any_closed = any((v is False) for v in timeline)
-                end_open = bool(timeline[-1])
-                if any_closed and end_open:
-                    diagnostic["classification"] = "closed_then_reopened"
-                elif all(bool(v) for v in timeline):
-                    diagnostic["classification"] = "never_closed"
-                elif not end_open:
-                    diagnostic["classification"] = "closed_persisted"
-                else:
-                    diagnostic["classification"] = "unknown_transition"
-
-            record: Dict[str, Any] = {
-                "attempt": attempt_idx,
-                "mode": f"{mode}.close_diag",
-                "reason_code": "diagnostic",
-                "label": label,
-                "diagnostic": diagnostic,
-            }
-            if isinstance(extra, dict):
-                record.update(extra)
-            attempt_logs.append(record)
-            print(f"[close_diag] label={label} diag={json_module.dumps(diagnostic, ensure_ascii=False)}")
-
-        async def _attempt_close_ref_fallbacks() -> bool:
-            nonlocal state_change, ref_id, requested_meta
-            if not close_like_click:
-                return False
-            close_fallbacks = _collect_close_ref_candidates(
-                snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
-                requested_meta=requested_meta if isinstance(requested_meta, dict) else None,
-                exclude_ref_id=ref_id,
-                limit=5,
-            )
-            if close_fallbacks:
-                debug_candidates: List[Dict[str, Any]] = []
-                for cand_ref_id, cand_meta in close_fallbacks:
-                    cand_bbox = cand_meta.get("bounding_box") if isinstance(cand_meta.get("bounding_box"), dict) else {}
-                    debug_candidates.append(
-                        {
-                            "ref_id": cand_ref_id,
-                            "text": str(cand_meta.get("text") or "")[:40],
-                            "selector": str(cand_meta.get("selector") or "")[:80],
-                            "cx": cand_bbox.get("center_x"),
-                            "cy": cand_bbox.get("center_y"),
-                        }
-                    )
-                print(f"[close_diag] close_fallback_candidates={json_module.dumps(debug_candidates, ensure_ascii=False)}")
-            if not close_fallbacks:
-                return False
-            for fallback_rank, (fallback_ref_id, fallback_meta) in enumerate(close_fallbacks, start=1):
-                if _deadline_exceeded():
-                    return False
-                fallback_candidates = _build_ref_candidates(fallback_meta)
-                deduped_fallback: List[Tuple[str, str]] = []
-                seen_fallback_selectors = set()
-                for fallback_mode, fallback_selector in fallback_candidates:
-                    fallback_key = str(fallback_selector or "").strip()
-                    if not fallback_key or fallback_key in seen_fallback_selectors:
-                        continue
-                    seen_fallback_selectors.add(fallback_key)
-                    deduped_fallback.append((fallback_mode, fallback_selector))
-                for fallback_mode, fallback_selector in deduped_fallback[:2]:
-                    if _deadline_exceeded():
-                        return False
-                    fallback_locator, fallback_frame_index, fallback_resolved_selector, fallback_locator_error = await _resolve_locator_from_ref(
-                        page, fallback_meta, fallback_selector
-                    )
-                    if fallback_locator is None:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": f"{mode}.close_ref[{fallback_rank}]",
-                                "selector": str(fallback_resolved_selector or fallback_selector),
-                                "reason_code": "not_found",
-                                "error": str(fallback_locator_error or "fallback ref locator not found"),
-                                "fallback_ref_id": fallback_ref_id,
-                            }
-                        )
-                        continue
-                    try:
-                        await fallback_locator.click(timeout=1500, no_wait_after=True)
-                    except Exception as fallback_click_exc:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": f"{mode}.close_ref[{fallback_rank}]",
-                                "selector": fallback_resolved_selector,
-                                "frame_index": fallback_frame_index,
-                                "reason_code": "not_actionable",
-                                "error": str(fallback_click_exc),
-                                "fallback_ref_id": fallback_ref_id,
-                            }
-                        )
-                        continue
-                    await page.wait_for_timeout(250)
-                    fallback_change = await _collect_state_change_probe(
-                        probe_wait_ms=250,
-                        probe_scroll=f"alternate_close_ref:{fallback_ref_id}",
-                    )
-                    if bool(fallback_change.get("effective", True)):
-                        state_change = fallback_change
-                        ref_id = fallback_ref_id
-                        requested_meta = fallback_meta
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": f"{mode}.close_ref[{fallback_rank}]",
-                                "selector": fallback_resolved_selector,
-                                "frame_index": fallback_frame_index,
-                                "reason_code": "ok",
-                                "fallback": "alternate_close_ref",
-                                "fallback_ref_id": fallback_ref_id,
-                                "state_change": fallback_change,
-                            }
-                        )
-                        return True
-                    attempt_logs.append(
-                        {
-                            "attempt": attempt_idx,
-                            "mode": f"{mode}.close_ref[{fallback_rank}]",
-                            "selector": fallback_resolved_selector,
-                            "frame_index": fallback_frame_index,
-                            "reason_code": "no_state_change",
-                            "fallback_ref_id": fallback_ref_id,
-                            "state_change": fallback_change,
-                        }
-                    )
-            return False
-
-        async def _attempt_backdrop_close() -> bool:
-            nonlocal state_change
-            if not close_like_click or _deadline_exceeded():
-                return False
-            try:
-                clicked = await page.evaluate(
-                    """
-                    () => {
-                      const nodes = Array.from(document.querySelectorAll(
-                        '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
-                      ));
-                      const visible = nodes.filter((el) => {
-                        if (!(el instanceof HTMLElement)) return false;
-                        const style = window.getComputedStyle(el);
-                        if (!style) return false;
-                        if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 4 && rect.height > 4;
-                      });
-                      if (!visible.length) return false;
-                      const target = visible[0];
-                      const rect = target.getBoundingClientRect();
-                      const x = rect.left + rect.width / 2;
-                      const y = rect.top + rect.height / 2;
-                      const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
-                      target.dispatchEvent(new MouseEvent('mousedown', opts));
-                      target.dispatchEvent(new MouseEvent('mouseup', opts));
-                      target.dispatchEvent(new MouseEvent('click', opts));
-                      return true;
-                    }
-                    """
-                )
-            except Exception as backdrop_exc:
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": f"{mode}.backdrop",
-                        "reason_code": "not_actionable",
-                        "error": str(backdrop_exc),
-                    }
-                )
-                return False
-            if not bool(clicked):
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": f"{mode}.backdrop",
-                        "reason_code": "not_found",
-                        "error": "no visible backdrop candidate",
-                    }
-                )
-                return False
-            await page.wait_for_timeout(250)
-            backdrop_change = await _collect_state_change_probe(
-                probe_wait_ms=250,
-                probe_scroll="backdrop_fallback",
-            )
-            if bool(backdrop_change.get("effective", True)):
-                state_change = backdrop_change
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": f"{mode}.backdrop",
-                        "reason_code": "ok",
-                        "fallback": "backdrop_click",
-                        "state_change": backdrop_change,
-                    }
-                )
-                return True
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": f"{mode}.backdrop",
-                    "reason_code": "no_state_change",
-                    "state_change": backdrop_change,
-                }
-            )
-            return False
-
-        try:
-            await _execute_action_on_locator(action, page, locator, value, options=options)
-            interaction_success = True
-        except Exception as action_exc:
-            if close_like_click and not _deadline_exceeded():
-                alt_close_ok = await _attempt_close_ref_fallbacks()
-                if alt_close_ok:
-                    session.current_url = page.url
-                    screenshot_bytes = await page.screenshot(full_page=False)
-                    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                    return {
-                        "success": True,
-                        "effective": True,
-                        "reason_code": "ok",
-                        "reason": "close intent fallback via alternate close ref succeeded",
-                        "snapshot_id_used": snapshot_id,
-                        "ref_id_used": ref_id,
-                        "retry_path": retry_path,
-                        "attempt_count": attempt_idx,
-                        "state_change": state_change,
-                        "attempt_logs": attempt_logs,
-                        "current_url": page.url,
-                        "screenshot": screenshot_base64,
-                        "stale_recovered": stale_recovered,
-                    }
-                await _capture_close_diagnostic("alternate_ref_failed")
-                try:
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(250)
-                    state_change = await _collect_state_change_probe(
-                        probe_wait_ms=250,
-                        probe_scroll="escape_fallback",
-                    )
-                    escape_effective = bool(state_change.get("effective", True))
-                    if escape_effective:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": mode,
-                                "selector": resolved_selector,
-                                "frame_index": frame_index,
-                                "reason_code": "ok",
-                                "fallback": "escape",
-                                "state_change": state_change,
-                            }
-                        )
-                        session.current_url = page.url
-                        screenshot_bytes = await page.screenshot(full_page=False)
-                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                        return {
-                            "success": True,
-                            "effective": True,
-                            "reason_code": "ok",
-                            "reason": "close intent fallback via Escape succeeded",
-                            "snapshot_id_used": snapshot_id,
-                            "ref_id_used": ref_id,
-                            "retry_path": retry_path,
-                            "attempt_count": attempt_idx,
-                            "state_change": state_change,
-                            "attempt_logs": attempt_logs,
-                            "current_url": page.url,
-                            "screenshot": screenshot_base64,
-                            "stale_recovered": stale_recovered,
-                        }
-                    await _capture_close_diagnostic("escape_no_state_change")
-                except Exception:
-                    await _capture_close_diagnostic("escape_exception")
-                    pass
-                backdrop_ok = await _attempt_backdrop_close()
-                if backdrop_ok:
-                    session.current_url = page.url
-                    screenshot_bytes = await page.screenshot(full_page=False)
-                    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                    return {
-                        "success": True,
-                        "effective": True,
-                        "reason_code": "ok",
-                        "reason": "close intent fallback via backdrop click succeeded",
-                        "snapshot_id_used": snapshot_id,
-                        "ref_id_used": ref_id,
-                        "retry_path": retry_path,
-                        "attempt_count": attempt_idx,
-                        "state_change": state_change,
-                        "attempt_logs": attempt_logs,
-                        "current_url": page.url,
-                        "screenshot": screenshot_base64,
-                        "stale_recovered": stale_recovered,
-                    }
-                await _capture_close_diagnostic("backdrop_failed")
-            if action == "click" and not _deadline_exceeded():
-                hit_fallback = await _try_click_hit_target_from_point(
-                    page,
-                    locator,
-                    requested_meta if isinstance(requested_meta, dict) else None,
-                )
-                if bool(hit_fallback.get("clicked")):
-                    await page.wait_for_timeout(250)
-                    state_change = await _collect_state_change_probe(
-                        probe_wait_ms=250,
-                        probe_scroll="hit_target_fallback",
-                    )
-                    hit_effective = bool(state_change.get("effective", True)) if verify_for_action else True
-                    if hit_effective:
-                        attempt_logs.append(
-                            {
-                                "attempt": attempt_idx,
-                                "mode": mode,
-                                "selector": resolved_selector,
-                                "frame_index": frame_index,
-                                "reason_code": "ok",
-                                "fallback": "hit_target_click",
-                                "fallback_selector": str(hit_fallback.get("selector") or ""),
-                                "fallback_reason": str(hit_fallback.get("reason") or ""),
-                                "state_change": state_change,
-                            }
-                        )
-                        session.current_url = page.url
-                        screenshot_bytes = await page.screenshot(full_page=False)
-                        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-                        return {
-                            "success": True,
-                            "effective": True,
-                            "reason_code": "ok",
-                            "reason": "click fallback via hit-target mouse click succeeded",
-                            "snapshot_id_used": snapshot_id,
-                            "ref_id_used": ref_id,
-                            "retry_path": retry_path,
-                            "attempt_count": attempt_idx,
-                            "state_change": state_change,
-                            "attempt_logs": attempt_logs,
-                            "current_url": page.url,
-                            "screenshot": screenshot_base64,
-                            "stale_recovered": stale_recovered,
-                        }
-                    attempt_logs.append(
-                        {
-                            "attempt": attempt_idx,
-                            "mode": mode,
-                            "selector": resolved_selector,
-                            "frame_index": frame_index,
-                            "reason_code": "no_state_change",
-                            "fallback": "hit_target_click",
-                            "fallback_selector": str(hit_fallback.get("selector") or ""),
-                            "fallback_reason": str(hit_fallback.get("reason") or ""),
-                            "state_change": state_change,
-                        }
-                    )
-                    await _capture_close_diagnostic(
-                        "hit_target_no_state_change",
-                        extra={"fallback_reason": str(hit_fallback.get("reason") or "")},
-                    )
-                else:
-                    attempt_logs.append(
-                        {
-                            "attempt": attempt_idx,
-                            "mode": mode,
-                            "selector": resolved_selector,
-                            "frame_index": frame_index,
-                            "reason_code": "not_actionable",
-                            "fallback": "hit_target_click",
-                            "fallback_error": str(
-                                hit_fallback.get("error")
-                                or hit_fallback.get("reason")
-                                or "hit_target_not_clicked"
-                            ),
-                        }
-                    )
-                    await _capture_close_diagnostic(
-                        "hit_target_not_clicked",
-                        extra={"fallback_error": str(hit_fallback.get("error") or hit_fallback.get("reason") or "")},
-                    )
-            reason_code = "not_actionable"
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": resolved_selector,
-                    "frame_index": frame_index,
-                    "reason_code": reason_code,
-                    "error": str(action_exc),
-                }
-            )
-            print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
-            continue
-
-        if submit_like_click:
-            await page.wait_for_timeout(250)
-
-        effective = False
-        for probe_wait_ms in probe_wait_schedule:
-            if _deadline_exceeded():
-                reason_code = "action_timeout"
-                break
-            await page.wait_for_timeout(probe_wait_ms)
-            state_change = await _collect_state_change_probe(
-                probe_wait_ms=probe_wait_ms,
-                probe_scroll="none",
-            )
-            effective = bool(state_change.get("effective", True)) if verify_for_action else True
-            if effective:
-                break
-
-        if verify_for_action and not effective and action in {"click", "press"}:
-            scroll_probes: List[Tuple[str, str]] = [
-                ("top", "window.scrollTo(0, 0)"),
-                (
-                    "mid",
-                    "window.scrollTo(0, Math.max(0, Math.floor(((document.documentElement && document.documentElement.scrollHeight) || 0) * 0.5)))",
-                ),
-                (
-                    "bottom",
-                    "window.scrollTo(0, Math.max(0, ((document.documentElement && document.documentElement.scrollHeight) || 0)))",
-                ),
-            ]
-            for probe_name, probe_script in scroll_probes:
-                if _deadline_exceeded():
-                    reason_code = "action_timeout"
-                    break
-                try:
-                    await page.evaluate(probe_script)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(250)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=1500,
-                    probe_scroll=probe_name,
-                )
-                effective = bool(state_change.get("effective", True))
-                if effective:
-                    break
-
-        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
-            effective = await _attempt_close_ref_fallbacks()
-            if not effective:
-                await _capture_close_diagnostic("verify_alternate_ref_failed")
-
-        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
-            try:
-                await page.keyboard.press("Escape")
-                await page.wait_for_timeout(250)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=250,
-                    probe_scroll="escape_fallback",
-                )
-                effective = bool(state_change.get("effective", True))
-            except Exception:
-                pass
-            if not effective:
-                await _capture_close_diagnostic("verify_escape_failed")
-
-        if verify_for_action and not effective and close_like_click and not _deadline_exceeded():
-            effective = await _attempt_backdrop_close()
-            if not effective:
-                await _capture_close_diagnostic("verify_backdrop_failed")
-
-        if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
-            hit_fallback = await _try_click_hit_target_from_point(
-                page,
-                locator,
-                requested_meta if isinstance(requested_meta, dict) else None,
-            )
-            if bool(hit_fallback.get("clicked")):
-                await page.wait_for_timeout(250)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=250,
-                    probe_scroll="hit_target_fallback",
-                )
-                effective = bool(state_change.get("effective", True))
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": mode,
-                        "selector": resolved_selector,
-                        "frame_index": frame_index,
-                        "reason_code": "ok" if effective else "no_state_change",
-                        "fallback": "hit_target_click",
-                        "fallback_selector": str(hit_fallback.get("selector") or ""),
-                        "fallback_reason": str(hit_fallback.get("reason") or ""),
-                        "state_change": state_change,
-                    }
-                )
-                if close_like_click and not effective:
-                    await _capture_close_diagnostic(
-                        "verify_hit_target_no_state_change",
-                        extra={"fallback_reason": str(hit_fallback.get("reason") or "")},
-                    )
-            else:
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": mode,
-                        "selector": resolved_selector,
-                        "frame_index": frame_index,
-                        "reason_code": "not_actionable",
-                        "fallback": "hit_target_click",
-                        "fallback_error": str(
-                            hit_fallback.get("error")
-                            or hit_fallback.get("reason")
-                            or "hit_target_not_clicked"
-                        ),
-                    }
-                )
-                if close_like_click:
-                    await _capture_close_diagnostic(
-                        "verify_hit_target_not_clicked",
-                        extra={"fallback_error": str(hit_fallback.get("error") or hit_fallback.get("reason") or "")},
-                    )
-
-        if verify_for_action and not effective and action == "click" and not _deadline_exceeded():
-            fallback_result = await _try_click_container_ancestor(locator)
-            if bool(fallback_result.get("clicked")):
-                await page.wait_for_timeout(350)
-                state_change = await _collect_state_change_probe(
-                    probe_wait_ms=350,
-                    probe_scroll="container_fallback",
-                    ancestor_click_fallback=True,
-                    ancestor_click_selector=str(fallback_result.get("selector") or ""),
-                )
-                effective = bool(state_change.get("effective", True))
-                if close_like_click and not effective:
-                    await _capture_close_diagnostic("verify_container_fallback_failed")
-
-        if reason_code == "action_timeout":
-            attempt_logs.append(
-                {
-                    "attempt": attempt_idx,
-                    "mode": mode,
-                    "selector": resolved_selector,
-                    "frame_index": frame_index,
-                    "reason_code": reason_code,
-                    "error": f"action budget exceeded ({max_action_seconds:.1f}s)",
-                }
-            )
-            break
-
-        reason_code = "ok" if effective else "no_state_change"
-        attempt_logs.append(
-            {
-                "attempt": attempt_idx,
-                "mode": mode,
-                "selector": resolved_selector,
-                "frame_index": frame_index,
-                "reason_code": reason_code,
-                "state_change": state_change,
-            }
-        )
-        print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
-        if effective:
-            session.current_url = page.url
-            screenshot_bytes = await page.screenshot(full_page=False)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
-            return {
-                "success": True,
-                "effective": True,
-                "reason_code": "ok",
-                "reason": "ref action executed and state changed",
-                "snapshot_id_used": snapshot_id,
-                "ref_id_used": ref_id,
-                "stale_recovered": stale_recovered,
-                "transport_success": transport_success,
-                "locator_found": locator_found,
-                "interaction_success": interaction_success,
-                "state_change": state_change,
-                "live_texts": last_live_texts,
-                "retry_path": retry_path,
-                "attempt_count": len(attempt_logs),
-                "attempt_logs": attempt_logs,
-                "screenshot": screenshot_base64,
-                "current_url": session.current_url,
-                "tab_id": _get_tab_index(page),
-                "targetId": _get_tab_index(page),
-            }
-
-    screenshot = None
-    try:
-        screenshot_bytes = await page.screenshot(full_page=False)
-        screenshot = base64.b64encode(screenshot_bytes).decode("utf-8")
-    except Exception:
-        screenshot = None
-
-    session.current_url = page.url
-    return {
-        "success": False,
-        "effective": False,
-        "reason_code": reason_code if reason_code != "unknown_error" else "failed",
-        "reason": "ref action failed or no state change",
-        "snapshot_id_used": snapshot_id,
-        "ref_id_used": ref_id,
-        "stale_recovered": stale_recovered,
-        "transport_success": transport_success,
-        "locator_found": locator_found,
-        "interaction_success": interaction_success,
-        "state_change": state_change,
-        "live_texts": last_live_texts,
-        "retry_path": retry_path,
-        "attempt_count": len(attempt_logs),
-        "attempt_logs": attempt_logs,
-        "screenshot": screenshot,
-        "current_url": session.current_url,
-        "tab_id": _get_tab_index(page),
-        "targetId": _get_tab_index(page),
-    }
-
-
-def _tab_payload(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
-    current = session.page is page
-    title = ""
-    try:
-        title = page.url
-    except Exception:
-        title = ""
-    return {
-        "tab_id": idx,
-        "targetId": idx,
-        "active": current,
-        "url": page.url,
-        "title": title,
-    }
-
-
-async def _get_page_target_id(page: Page) -> str:
-    cached = _page_target_id_cache.get(page)
-    if cached:
-        return cached
-
-    cdp_session: Optional[CDPSession] = None
-    try:
-        cdp_session = await page.context.new_cdp_session(page)
-        info = await cdp_session.send("Target.getTargetInfo")
-        target_info = info.get("targetInfo") if isinstance(info, dict) else {}
-        target_id = str((target_info or {}).get("targetId") or "").strip()
-        if target_id:
-            _page_target_id_cache[page] = target_id
-        return target_id
-    except Exception:
-        return ""
-    finally:
-        if cdp_session is not None:
-            try:
-                await cdp_session.detach()
-            except Exception:
-                pass
-
-
-async def _list_browser_targets(browser: Optional[Browser]) -> List[Dict[str, str]]:
-    if browser is None:
-        return []
-    browser_cdp: Optional[CDPSession] = None
-    try:
-        browser_cdp = await browser.new_browser_cdp_session()
-        payload = await browser_cdp.send("Target.getTargets")
-        infos = payload.get("targetInfos") if isinstance(payload, dict) else []
-        out: List[Dict[str, str]] = []
-        if isinstance(infos, list):
-            for info in infos:
-                if not isinstance(info, dict):
-                    continue
-                target_id = str(info.get("targetId") or "").strip()
-                target_url = str(info.get("url") or "").strip()
-                if target_id:
-                    out.append({"targetId": target_id, "url": target_url})
-        return out
-    except Exception:
-        return []
-    finally:
-        if browser_cdp is not None:
-            try:
-                await browser_cdp.detach()
-            except Exception:
-                pass
-
-
-async def _resolve_page_from_tab_identifier(
-    pages: List[Page],
-    tab_identifier: Any,
-    browser: Optional[Browser] = None,
-) -> Tuple[str, Optional[int], Optional[Page], List[str]]:
-    idx = _coerce_tab_id(tab_identifier)
-    if idx is not None:
-        if 0 <= idx < len(pages):
-            return "ok", idx, pages[idx], []
-        return "not_found", None, None, []
-
-    needle = str(tab_identifier or "").strip()
-    if not needle:
-        return "not_found", None, None, []
-
-    exact_match: Optional[Tuple[int, Page, str]] = None
-    prefix_matches: List[Tuple[int, Page, str]] = []
-    lower = needle.lower()
-    for idx2, candidate in enumerate(pages):
-        target_id = await _get_page_target_id(candidate)
-        if not target_id:
-            continue
-        if target_id == needle:
-            exact_match = (idx2, candidate, target_id)
-            break
-        if target_id.lower().startswith(lower):
-            prefix_matches.append((idx2, candidate, target_id))
-
-    if exact_match is not None:
-        idx2, candidate, _ = exact_match
-        return "ok", idx2, candidate, []
-    if len(prefix_matches) == 1:
-        idx2, candidate, _ = prefix_matches[0]
-        return "ok", idx2, candidate, []
-    if len(prefix_matches) > 1:
-        return "ambiguous", None, None, [item[2] for item in prefix_matches]
-
-    # OpenClaw parity: target id를 직접 페이지에서 얻지 못하면
-    # browser-level target 목록으로 targetId -> URL 매핑 후 URL 기반으로 페이지를 찾습니다.
-    targets = await _list_browser_targets(browser)
-    if targets:
-        target_exact = next((t for t in targets if t.get("targetId") == needle), None)
-        if target_exact is None:
-            target_prefixes = [t for t in targets if str(t.get("targetId", "")).lower().startswith(lower)]
-            if len(target_prefixes) > 1:
-                return "ambiguous", None, None, [str(t.get("targetId") or "") for t in target_prefixes]
-            target_exact = target_prefixes[0] if len(target_prefixes) == 1 else None
-        if target_exact is not None:
-            target_id = str(target_exact.get("targetId") or "")
-            target_url = str(target_exact.get("url") or "")
-            url_matches = [idx3 for idx3, p in enumerate(pages) if str(p.url or "") == target_url]
-            if len(url_matches) == 1:
-                idx3 = url_matches[0]
-                return "ok", idx3, pages[idx3], []
-            if len(url_matches) > 1:
-                same_url_targets = [t for t in targets if str(t.get("url") or "") == target_url]
-                if len(same_url_targets) == len(url_matches):
-                    target_index = next(
-                        (i for i, t in enumerate(same_url_targets) if str(t.get("targetId") or "") == target_id),
-                        -1,
-                    )
-                    if 0 <= target_index < len(url_matches):
-                        idx3 = url_matches[target_index]
-                        return "ok", idx3, pages[idx3], []
-
-    return "not_found", None, None, []
-
-
-async def _tab_payload_async(session: BrowserSession, page: Page, idx: int) -> Dict[str, Any]:
-    payload = _tab_payload(session, page, idx)
-    target_id = await _get_page_target_id(page)
-    if target_id:
-        payload["cdp_target_id"] = target_id
-    return payload
-
-
-async def _tabs_payload_async(session: BrowserSession, pages: List[Page]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for idx, candidate in enumerate(pages):
-        out.append(await _tab_payload_async(session, candidate, idx))
-    return out
-
-
-def _coerce_tab_id(tab_id: Any) -> Optional[int]:
-    if tab_id is None:
-        return None
-    if isinstance(tab_id, bool):
-        return None
-    if isinstance(tab_id, int):
-        return tab_id
-    text = str(tab_id).strip()
-    if not text:
-        return None
-    lowered = text.lower()
-    for prefix in ("tab:", "tab-", "tab_"):
-        if lowered.startswith(prefix):
-            text = text[len(prefix):].strip()
-            break
-    try:
-        return int(text)
-    except Exception:
-        return None
-
-
-async def _resolve_session_page(session_id: str, tab_id: Optional[Any] = None) -> Tuple[BrowserSession, Page]:
-    if session_id not in active_sessions:
-        active_sessions[session_id] = BrowserSession(session_id)
-    session = active_sessions[session_id]
-    page = await session.get_or_create_page()
-
-    if tab_id is not None:
-        pages = list(page.context.pages)
-        status, _, resolved_page, matches = await _resolve_page_from_tab_identifier(
-            pages,
-            tab_id,
-            session.browser,
-        )
-        if status == "ok" and resolved_page is not None:
-            page = resolved_page
-        elif len(pages) == 1:
-            # OpenClaw parity: stale/foreign target가 와도 단일 탭이면 복구해서 진행.
-            page = pages[0]
-        elif status == "ambiguous":
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "reason_code": "ambiguous_target_id",
-                    "message": "ambiguous target id prefix",
-                    "matches": matches,
-                },
-            )
-        else:
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "reason_code": "not_found",
-                    "message": f"tab not found: {tab_id}",
-                },
-            )
-
-    if session.page is not page:
-        session.page = page
-        session.dialog_listener_armed = False
-        session.file_chooser_listener_armed = False
-
-    session.observability.attach_page(page)
-    session._ensure_dialog_listener()
-    session._ensure_file_chooser_listener()
-    return session, page
-
-
-def _extract_elements_by_ref(snapshot_result: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    raw = snapshot_result.get("dom_elements") or snapshot_result.get("elements") or []
-    out: Dict[str, Dict[str, Any]] = {}
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict):
-                ref_id = str(item.get("ref_id") or "")
-                if ref_id:
-                    out[ref_id] = item
-    return out
-
-
-def _element_signal_score(item: Dict[str, Any]) -> int:
-    score = 0
-    text = str(item.get("text") or "").strip()
-    if text:
-        score += min(12, len(text))
-    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-    for key in ("aria-label", "title", "placeholder", "href"):
-        if str(attrs.get(key) or "").strip():
-            score += 2
-    if str(item.get("element_type") or "").strip():
-        score += 1
-    return score
-
-
-def _dedupe_elements_by_dom_ref(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    deduped: List[Dict[str, Any]] = []
-    index_by_dom_ref: Dict[str, int] = {}
-    for raw in elements:
-        if not isinstance(raw, dict):
-            continue
-        dom_ref = str(raw.get("dom_ref") or "").strip()
-        if not dom_ref:
-            deduped.append(raw)
-            continue
-        prev_idx = index_by_dom_ref.get(dom_ref)
-        if prev_idx is None:
-            index_by_dom_ref[dom_ref] = len(deduped)
-            deduped.append(raw)
-            continue
-        prev = deduped[prev_idx]
-        if _element_signal_score(raw) > _element_signal_score(prev):
-            deduped[prev_idx] = raw
-    return deduped
-
-
-def _element_is_interactive(item: Dict[str, Any]) -> bool:
-    if not isinstance(item, dict):
-        return False
-    tag = str(item.get("tag") or "").strip().lower()
-    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-    role = str(attrs.get("role") or "").strip().lower()
-    element_type = str(item.get("element_type") or "").strip().lower()
-    interactive_tags = {"button", "a", "input", "select", "textarea", "option", "summary"}
-    interactive_roles = {
-        "button",
-        "link",
-        "tab",
-        "menuitem",
-        "checkbox",
-        "radio",
-        "switch",
-        "combobox",
-        "textbox",
-        "option",
-        "slider",
-    }
-    if tag in interactive_tags:
-        return True
-    if role in interactive_roles:
-        return True
-    if element_type in {"button", "link", "input", "checkbox", "radio", "select", "textarea", "semantic"}:
-        return True
-    if str(attrs.get("onclick") or "").strip():
-        return True
-    return False
-
-
-def _is_close_intent_ref(meta: Dict[str, Any]) -> bool:
-    if not isinstance(meta, dict):
-        return False
-    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
-    text = " ".join(
-        [
-            str(meta.get("text") or ""),
-            str(meta.get("selector") or ""),
-            str(meta.get("full_selector") or ""),
-            str(attrs.get("aria-label") or ""),
-            str(attrs.get("title") or ""),
-            str(attrs.get("class") or ""),
-            str(attrs.get("role") or ""),
-            str(attrs.get("type") or ""),
-        ]
-    ).strip().lower()
-    if not text:
-        return False
-    close_tokens = [
-        "close",
-        "dismiss",
-        "cancel",
-        "modal-close",
-        "dialog-close",
-        "aria-label=\"close\"",
-        "aria-label='close'",
-        "닫기",
-        "취소",
-        "나가기",
-    ]
-    if any(token in text for token in close_tokens):
-        return True
-    visible = str(meta.get("text") or "").strip()
-    if visible in {"x", "X", "✕", "✖", "×"}:
-        return True
-    return False
-
-
-def _rank_close_ref_candidate(
-    meta: Dict[str, Any],
-    *,
-    requested_meta: Optional[Dict[str, Any]] = None,
-    modal_regions: Optional[List[Dict[str, float]]] = None,
-) -> int:
-    if not isinstance(meta, dict):
-        return -1
-    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
-    text = str(meta.get("text") or "").strip().lower()
-    selector = str(meta.get("selector") or "").strip().lower()
-    full_selector = str(meta.get("full_selector") or "").strip().lower()
-    aria_label = str(attrs.get("aria-label") or "").strip().lower()
-    title = str(attrs.get("title") or "").strip().lower()
-    class_name = str(attrs.get("class") or "").strip().lower()
-    role = str(attrs.get("role") or "").strip().lower()
-    score = 0
-    if text in {"x", "✕", "✖", "×"}:
-        score += 6
-    if role == "button":
-        score += 3
-    if "close" in aria_label or "닫기" in aria_label:
-        score += 4
-    if "close" in title or "닫기" in title:
-        score += 3
-    if "close" in selector or "close" in full_selector:
-        score += 2
-    if "close" in class_name or "dismiss" in class_name or "modal" in class_name:
-        score += 1
-    if _is_modal_corner_close_candidate(meta, modal_regions or []):
-        score += 5
-    if requested_meta and isinstance(requested_meta, dict):
-        req_scope = (
-            requested_meta.get("scope")
-            if isinstance(requested_meta.get("scope"), dict)
-            else {}
-        )
-        cand_scope = meta.get("scope") if isinstance(meta.get("scope"), dict) else {}
-        if req_scope.get("frame_index") == cand_scope.get("frame_index"):
-            score += 2
-        if req_scope.get("tab_index") == cand_scope.get("tab_index"):
-            score += 2
-    return score
-
-
-def _normalize_bbox_dict(raw_bbox: Any) -> Optional[Dict[str, float]]:
-    if not isinstance(raw_bbox, dict):
-        return None
-    try:
-        x = float(raw_bbox.get("x", 0.0) or 0.0)
-        y = float(raw_bbox.get("y", 0.0) or 0.0)
-        width = float(raw_bbox.get("width", 0.0) or 0.0)
-        height = float(raw_bbox.get("height", 0.0) or 0.0)
-    except Exception:
-        return None
-    if width <= 0.0 or height <= 0.0:
-        return None
-    center_x = float(raw_bbox.get("center_x", x + width / 2.0) or (x + width / 2.0))
-    center_y = float(raw_bbox.get("center_y", y + height / 2.0) or (y + height / 2.0))
-    return {
-        "x": x,
-        "y": y,
-        "width": width,
-        "height": height,
-        "center_x": center_x,
-        "center_y": center_y,
-        "right": x + width,
-        "bottom": y + height,
-    }
-
-
-def _collect_modal_regions_from_snapshot(snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, float]]:
-    if not isinstance(snapshot, dict):
-        return []
-    by_ref = snapshot.get("elements_by_ref")
-    if not isinstance(by_ref, dict):
-        return []
-    regions: List[Dict[str, float]] = []
-    for _, raw_meta in by_ref.items():
-        if not isinstance(raw_meta, dict):
-            continue
-        attrs = raw_meta.get("attributes") if isinstance(raw_meta.get("attributes"), dict) else {}
-        role = str(attrs.get("role") or "").strip().lower()
-        aria_modal = str(attrs.get("aria-modal") or "").strip().lower()
-        class_name = str(attrs.get("class") or "").strip().lower()
-        tag = str(raw_meta.get("tag") or "").strip().lower()
-        if not (
-            aria_modal == "true"
-            or role in {"dialog", "alertdialog"}
-            or tag == "dialog"
-            or any(token in class_name for token in ("modal", "dialog", "popup", "sheet", "drawer"))
-        ):
-            continue
-        bbox = _normalize_bbox_dict(raw_meta.get("bounding_box"))
-        if not bbox:
-            continue
-        if bbox["width"] < 120 or bbox["height"] < 120:
-            continue
-        regions.append(bbox)
-    regions.sort(key=lambda r: r["width"] * r["height"], reverse=True)
-    return regions[:6]
-
-
-def _is_modal_corner_close_candidate(
-    meta: Dict[str, Any],
-    modal_regions: List[Dict[str, float]],
-) -> bool:
-    if not isinstance(meta, dict):
-        return False
-    if not modal_regions:
-        return False
-    if not _element_is_interactive(meta):
-        return False
-    bbox = _normalize_bbox_dict(meta.get("bounding_box"))
-    if not bbox:
-        return False
-    if bbox["width"] > 72 or bbox["height"] > 72:
-        return False
-    if (bbox["width"] * bbox["height"]) > 3600:
-        return False
-    cx = bbox["center_x"]
-    cy = bbox["center_y"]
-    for region in modal_regions:
-        if not (region["x"] <= cx <= region["right"] and region["y"] <= cy <= region["bottom"]):
-            continue
-        rel_x = (cx - region["x"]) / max(region["width"], 1.0)
-        rel_y = (cy - region["y"]) / max(region["height"], 1.0)
-        if rel_x >= 0.72 and rel_y <= 0.28:
-            return True
-    return False
-
-
-def _collect_close_ref_candidates(
-    *,
-    snapshot: Optional[Dict[str, Any]],
-    requested_meta: Optional[Dict[str, Any]],
-    exclude_ref_id: str,
-    limit: int = 5,
-) -> List[Tuple[str, Dict[str, Any]]]:
-    if not isinstance(snapshot, dict):
-        return []
-    by_ref = snapshot.get("elements_by_ref")
-    if not isinstance(by_ref, dict):
-        return []
-    req_scope = (
-        requested_meta.get("scope")
-        if isinstance(requested_meta, dict) and isinstance(requested_meta.get("scope"), dict)
-        else {}
-    )
-    modal_regions = _collect_modal_regions_from_snapshot(snapshot)
-    ranked: List[Tuple[int, str, Dict[str, Any]]] = []
-    for raw_ref_id, raw_meta in by_ref.items():
-        ref_key = str(raw_ref_id or "").strip()
-        if not ref_key or ref_key == exclude_ref_id:
-            continue
-        if not isinstance(raw_meta, dict):
-            continue
-        if not (
-            _is_close_intent_ref(raw_meta)
-            or _is_modal_corner_close_candidate(raw_meta, modal_regions)
-        ):
-            continue
-        cand_scope = raw_meta.get("scope") if isinstance(raw_meta.get("scope"), dict) else {}
-        try:
-            req_tab = req_scope.get("tab_index")
-            cand_tab = cand_scope.get("tab_index")
-            if req_tab is not None and cand_tab is not None and int(req_tab) != int(cand_tab):
-                continue
-        except Exception:
-            pass
-        try:
-            req_frame = req_scope.get("frame_index")
-            cand_frame = cand_scope.get("frame_index")
-            if req_frame is not None and cand_frame is not None and int(req_frame) != int(cand_frame):
-                continue
-        except Exception:
-            pass
-        score = _rank_close_ref_candidate(
-            raw_meta,
-            requested_meta=requested_meta,
-            modal_regions=modal_regions,
-        )
-        ranked.append((score, ref_key, raw_meta))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [(rid, meta) for _, rid, meta in ranked[: max(1, limit)]]
-
-
-_ROLE_INTERACTIVE = {
-    "button",
-    "link",
-    "textbox",
-    "checkbox",
-    "radio",
-    "combobox",
-    "listbox",
-    "menuitem",
-    "menuitemcheckbox",
-    "menuitemradio",
-    "option",
-    "searchbox",
-    "slider",
-    "spinbutton",
-    "switch",
-    "tab",
-    "treeitem",
-}
-
-_ROLE_CONTENT = {
-    "heading",
-    "cell",
-    "gridcell",
-    "columnheader",
-    "rowheader",
-    "listitem",
-    "article",
-    "region",
-    "main",
-    "navigation",
-}
-
-_ROLE_STRUCTURAL = {
-    "generic",
-    "group",
-    "list",
-    "table",
-    "row",
-    "rowgroup",
-    "grid",
-    "treegrid",
-    "menu",
-    "menubar",
-    "toolbar",
-    "tablist",
-    "tree",
-    "directory",
-    "document",
-    "application",
-    "presentation",
-    "none",
-}
-
-
-def _snapshot_line_depth(line: str) -> int:
-    indent = len(line) - len(line.lstrip(" "))
-    return max(0, indent // 2)
-
-
-def _compact_role_tree(snapshot: str) -> str:
-    lines = snapshot.split("\n")
-    out: List[str] = []
-    for i, line in enumerate(lines):
-        if "[ref=" in line:
-            out.append(line)
-            continue
-        if ":" in line and not line.rstrip().endswith(":"):
-            out.append(line)
-            continue
-        current_depth = _snapshot_line_depth(line)
-        has_ref_child = False
-        for j in range(i + 1, len(lines)):
-            child_depth = _snapshot_line_depth(lines[j])
-            if child_depth <= current_depth:
-                break
-            if "[ref=" in lines[j]:
-                has_ref_child = True
-                break
-        if has_ref_child:
-            out.append(line)
-    return "\n".join(out)
-
-
-def _limit_snapshot_text(snapshot: str, max_chars: int) -> tuple[str, bool]:
-    limit = max(200, min(int(max_chars or 24000), 120000))
-    if len(snapshot) <= limit:
-        return snapshot, False
-    return f"{snapshot[:limit]}\n\n[...TRUNCATED - page too large]", True
-
-
-def _parse_ai_ref(suffix: str) -> Optional[str]:
-    m = re.search(r"\[ref=(e\d+)\]", suffix or "", flags=re.IGNORECASE)
-    if not m:
-        return None
-    return m.group(1)
-
-
-def _role_snapshot_stats(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
-    interactive = 0
-    for item in refs.values():
-        role = str((item or {}).get("role") or "").strip().lower()
-        if role in _ROLE_INTERACTIVE:
-            interactive += 1
-    return {
-        "lines": len(snapshot.split("\n")) if snapshot else 0,
-        "chars": len(snapshot),
-        "refs": len(refs),
-        "interactive": interactive,
-    }
-
-
-def _build_role_snapshot_from_aria_text(
-    aria_snapshot: str,
-    *,
-    interactive: bool,
-    compact: bool,
-    max_depth: Optional[int] = None,
-    line_limit: int = 500,
-    max_chars: int = 64000,
-) -> Dict[str, Any]:
-    lines = str(aria_snapshot or "").split("\n")
-    refs: Dict[str, Dict[str, Any]] = {}
-    refs_by_key: Dict[str, List[str]] = defaultdict(list)
-    counts_by_key: Dict[str, int] = defaultdict(int)
-    out: List[str] = []
-    ref_counter = 0
-
-    def _next_ref() -> str:
-        nonlocal ref_counter
-        ref_counter += 1
-        return f"e{ref_counter}"
-
-    for line in lines:
-        depth = _snapshot_line_depth(line)
-        if max_depth is not None and depth > max_depth:
-            continue
-
-        m = re.match(r'^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$', line)
-        if not m:
-            if not interactive:
-                out.append(line)
-            continue
-
-        prefix, role_raw, name, suffix = m.group(1), m.group(2), m.group(3), m.group(4)
-        if role_raw.startswith("/"):
-            if not interactive:
-                out.append(line)
-            continue
-
-        role = (role_raw or "").lower()
-        if interactive and role not in _ROLE_INTERACTIVE:
-            continue
-        if compact and role in _ROLE_STRUCTURAL and not name:
-            continue
-
-        should_have_ref = role in _ROLE_INTERACTIVE or (role in _ROLE_CONTENT and bool(name))
-        if not should_have_ref:
-            out.append(line)
-            continue
-
-        ref = _next_ref()
-        key = f"{role}:{name or ''}"
-        nth = counts_by_key[key]
-        counts_by_key[key] += 1
-        refs_by_key[key].append(ref)
-
-        ref_payload: Dict[str, Any] = {"role": role}
-        if name:
-            ref_payload["name"] = name
-        if nth > 0:
-            ref_payload["nth"] = nth
-        refs[ref] = ref_payload
-
-        enhanced = f"{prefix}{role_raw}"
-        if name:
-            enhanced += f' "{name}"'
-        enhanced += f" [ref={ref}]"
-        if nth > 0:
-            enhanced += f" [nth={nth}]"
-        if suffix:
-            enhanced += suffix
-        out.append(enhanced)
-
-    duplicate_keys = {k for k, v in refs_by_key.items() if len(v) > 1}
-    for ref, data in refs.items():
-        key = f"{data.get('role', '')}:{data.get('name', '')}"
-        if key not in duplicate_keys:
-            data.pop("nth", None)
-
-    snapshot = "\n".join(out) or "(empty)"
-    if compact:
-        snapshot = _compact_role_tree(snapshot)
-    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
-    snapshot = "\n".join(trimmed_lines)
-    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
-    return {
-        "snapshot": snapshot,
-        "refs": refs,
-        "truncated": truncated,
-        "stats": _role_snapshot_stats(snapshot, refs),
-    }
-
-
-def _build_role_snapshot_from_ai_text(
-    ai_snapshot: str,
-    *,
-    interactive: bool,
-    compact: bool,
-    max_depth: Optional[int] = None,
-    line_limit: int = 500,
-    max_chars: int = 64000,
-) -> Dict[str, Any]:
-    lines = str(ai_snapshot or "").split("\n")
-    refs: Dict[str, Dict[str, Any]] = {}
-    out: List[str] = []
-
-    for line in lines:
-        depth = _snapshot_line_depth(line)
-        if max_depth is not None and depth > max_depth:
-            continue
-
-        m = re.match(r'^(\s*-\s*)(\w+)(?:\s+"([^"]*)")?(.*)$', line)
-        if not m:
-            out.append(line)
-            continue
-
-        _, role_raw, name, suffix = m.group(1), m.group(2), m.group(3), m.group(4)
-        if role_raw.startswith("/"):
-            out.append(line)
-            continue
-
-        role = (role_raw or "").lower()
-        if interactive and role not in _ROLE_INTERACTIVE:
-            continue
-        if compact and role in _ROLE_STRUCTURAL and not name:
-            continue
-
-        ref = _parse_ai_ref(suffix or "")
-        if ref:
-            refs[ref] = {"role": role, **({"name": name} if name else {})}
-        out.append(line)
-
-    snapshot = "\n".join(out) or "(empty)"
-    if compact:
-        snapshot = _compact_role_tree(snapshot)
-    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
-    snapshot = "\n".join(trimmed_lines)
-    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
-    return {
-        "snapshot": snapshot,
-        "refs": refs,
-        "truncated": truncated,
-        "stats": _role_snapshot_stats(snapshot, refs),
-    }
-
-
-def _build_role_refs_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    refs: Dict[str, Dict[str, Any]] = {}
-    counts_by_key: Dict[str, int] = defaultdict(int)
-    refs_by_key: Dict[str, List[str]] = defaultdict(list)
-
-    for item in elements:
-        if not isinstance(item, dict):
-            continue
-        ref = str(item.get("ref_id") or "").strip()
-        if not ref:
-            continue
-        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-        role = str(attrs.get("role") or "").strip().lower()
-        if not role:
-            tag = str(item.get("tag") or "").strip().lower()
-            if tag == "a":
-                role = "link"
-            elif tag in {"input", "textarea"}:
-                role = "textbox"
-            elif tag == "select":
-                role = "combobox"
-            elif tag == "button":
-                role = "button"
-            else:
-                role = "generic"
-
-        name = str(item.get("text") or attrs.get("aria-label") or "").strip() or None
-        key = f"{role}:{name or ''}"
-        nth = counts_by_key[key]
-        counts_by_key[key] += 1
-        refs_by_key[key].append(ref)
-
-        payload: Dict[str, Any] = {"role": role}
-        if name:
-            payload["name"] = name
-        if nth > 0:
-            payload["nth"] = nth
-        refs[ref] = payload
-
-    duplicate_keys = {k for k, v in refs_by_key.items() if len(v) > 1}
-    for ref, data in refs.items():
-        key = f"{data.get('role', '')}:{data.get('name', '')}"
-        if key not in duplicate_keys:
-            data.pop("nth", None)
-    return refs
-
-
-async def _try_snapshot_for_ai(page: Page, timeout_ms: int = 5000) -> Optional[str]:
-    timeout_ms = max(500, min(int(timeout_ms or 5000), 60000))
-
-    # Playwright 내부 채널 snapshotForAI 시도 (OpenClaw parity)
-    try:
-        impl = getattr(page, "_impl_obj", None)
-        channel = getattr(impl, "_channel", None)
-        send = getattr(channel, "send", None)
-        if callable(send):
-            res = await send("snapshotForAI", {"timeout": timeout_ms, "track": "response"})
-            if isinstance(res, dict):
-                text = str(res.get("full") or "")
-                if text.strip():
-                    return text
-    except Exception:
-        pass
-
-    # fallback: 접근성 스냅샷 문자열
-    try:
-        locator = page.locator(":root")
-        aria_text = await locator.aria_snapshot(timeout=timeout_ms)
-        if isinstance(aria_text, str) and aria_text.strip():
-            return aria_text
-    except Exception:
-        pass
-    return None
-
-
-def _build_snapshot_text(
-    elements: List[Dict[str, Any]],
-    *,
-    interactive_only: bool,
-    compact: bool,
-    limit: int,
-    max_chars: int,
-) -> Dict[str, Any]:
-    lines: List[str] = []
-    char_count = 0
-    max_items = max(1, min(int(limit or 200), 5000))
-    max_chars = max(200, min(int(max_chars or 24000), 120000))
-    for idx, item in enumerate(elements):
-        if not isinstance(item, dict):
-            continue
-        if interactive_only and not _element_is_interactive(item):
-            continue
-        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
-        tag = str(item.get("tag") or "").strip().lower() or "node"
-        role = str(attrs.get("role") or "").strip().lower()
-        ref = str(item.get("ref_id") or "").strip() or f"e{idx}"
-        text = str(item.get("text") or "").strip()
-        aria_label = str(attrs.get("aria-label") or "").strip()
-        placeholder = str(attrs.get("placeholder") or "").strip()
-        title = str(attrs.get("title") or "").strip()
-        label = text or aria_label or placeholder or title
-        label = re.sub(r"\s+", " ", label).strip()
-        if len(label) > 140:
-            label = label[:140]
-        kind = role or tag
-        if compact:
-            if label:
-                line = f"- {kind} \"{label}\" [ref={ref}]"
-            else:
-                line = f"- {kind} [ref={ref}]"
-        else:
-            line = f"- tag={tag} role={role or '-'} ref={ref}"
-            if label:
-                line += f" text=\"{label}\""
-            if placeholder:
-                line += f" placeholder=\"{placeholder[:80]}\""
-        if char_count + len(line) + 1 > max_chars:
-            break
-        lines.append(line)
-        char_count += len(line) + 1
-        if len(lines) >= max_items:
-            break
-    return {
-        "lines": lines,
-        "text": "\n".join(lines),
-        "stats": {
-            "line_count": len(lines),
-            "char_count": char_count,
-            "interactive_only": bool(interactive_only),
-            "compact": bool(compact),
-            "limit": max_items,
-            "max_chars": max_chars,
+    from gaia.src.phase4.mcp_ref_action_executor import execute_ref_action_with_snapshot_impl
+
+    return await execute_ref_action_with_snapshot_impl(
+        session_id=session_id,
+        snapshot_id=snapshot_id,
+        ref_id=ref_id,
+        action=action,
+        value=value,
+        options=options,
+        url=url,
+        selector_hint=selector_hint,
+        verify=verify,
+        tab_id=tab_id,
+        ctx={
+            "playwright_instance": playwright_instance,
+            "HTTPException": HTTPException,
+            "normalize_url": normalize_url,
+            "snapshot_page": snapshot_page,
+            "_resolve_session_page": _resolve_session_page,
+            "_get_tab_index": _get_tab_index,
+            "_resolve_ref_meta_from_snapshot": _resolve_ref_meta_from_snapshot,
+            "_resolve_stale_ref": _resolve_stale_ref,
+            "_build_ref_candidates": _build_ref_candidates,
+            "_resolve_locator_from_ref": _resolve_locator_from_ref,
+            "_execute_action_on_locator": _execute_action_on_locator,
+            "_try_click_hit_target_from_point": _try_click_hit_target_from_point,
+            "_try_click_container_ancestor": _try_click_container_ancestor,
+            "_extract_live_texts": _extract_live_texts,
+            "_collect_page_evidence": _collect_page_evidence,
+            "_collect_page_evidence_light": _collect_page_evidence_light,
+            "_compute_runtime_dom_hash": _compute_runtime_dom_hash,
+            "_state_change_flags": _state_change_flags,
+            "_safe_read_target_state": _safe_read_target_state,
+            "_read_focus_signature": _read_focus_signature,
         },
-    }
+    )
 
 
 async def _browser_start(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -6985,487 +4085,44 @@ async def _browser_highlight(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_INTERACTION_HANDLERS: Optional[Dict[str, Any]] = None
+
+
+def _get_interaction_handlers() -> Dict[str, Any]:
+    global _INTERACTION_HANDLERS
+    if _INTERACTION_HANDLERS is None:
+        _INTERACTION_HANDLERS = build_interaction_handlers(
+            resolve_session_page_fn=_resolve_session_page,
+            get_tab_index_fn=_get_tab_index,
+            build_error_fn=build_error,
+            browser_state_store_cls=BrowserStateStore,
+        )
+    return _INTERACTION_HANDLERS
+
 async def _browser_dialog_arm(params: Dict[str, Any]) -> Dict[str, Any]:
-    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
-
-    def pick(key: str, default: Any = None) -> Any:
-        if key in params:
-            return params.get(key)
-        if isinstance(payload, dict) and key in payload:
-            return payload.get(key)
-        return default
-
-    session_id = str(pick("session_id", "default"))
-    mode = str(pick("mode") or "dismiss").strip().lower()
-    if mode not in {"accept", "dismiss"}:
-        return build_error("not_actionable", "mode must be accept|dismiss")
-    prompt_text = str(pick("prompt_text") or pick("promptText") or "")
-    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
-    session.dialog_mode = mode
-    session.dialog_prompt_text = prompt_text
-    session._ensure_dialog_listener()
-    return {"success": True, "reason_code": "ok", "mode": mode}
+    return await _get_interaction_handlers()["dialog_arm"](params)
 
 
 async def _browser_file_chooser_arm(params: Dict[str, Any]) -> Dict[str, Any]:
-    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
-
-    def pick(key: str, default: Any = None) -> Any:
-        if key in params:
-            return params.get(key)
-        if isinstance(payload, dict) and key in payload:
-            return payload.get(key)
-        return default
-
-    session_id = str(pick("session_id", "default"))
-    files = pick("files")
-    if isinstance(files, str):
-        file_list = [files]
-    elif isinstance(files, list):
-        file_list = [str(p) for p in files if str(p).strip()]
-    else:
-        file_list = []
-    session, _ = await _resolve_session_page(session_id, tab_id=pick("tab_id", pick("targetId")))
-    session.file_chooser_files = file_list
-    session._ensure_file_chooser_listener()
-    return {"success": True, "reason_code": "ok", "files": file_list}
+    return await _get_interaction_handlers()["file_chooser_arm"](params)
 
 
 async def _browser_download_wait(params: Dict[str, Any]) -> Dict[str, Any]:
-    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
-
-    def pick(key: str, default: Any = None) -> Any:
-        if key in params:
-            return params.get(key)
-        if isinstance(payload, dict) and key in payload:
-            return payload.get(key)
-        return default
-
-    session_id = str(pick("session_id", "default"))
-    timeout_ms = int(pick("timeout_ms") or pick("timeoutMs") or 20000)
-    path = str(pick("path") or "")
-    tab_id = pick("tab_id", pick("targetId"))
-    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
-
-    download = await page.wait_for_event("download", timeout=timeout_ms)
-    suggested_name = download.suggested_filename
-    base_download_dir = (Path.home() / ".gaia" / "downloads").resolve()
-    base_download_dir.mkdir(parents=True, exist_ok=True)
-    if path:
-        save_target = Path(path).expanduser().resolve()
-        if not save_target.is_relative_to(base_download_dir):
-            return build_error(
-                "not_actionable",
-                f"download path must be under {base_download_dir}",
-            )
-    else:
-        save_target = (base_download_dir / f"{int(time.time())}_{suggested_name}").resolve()
-    save_target.parent.mkdir(parents=True, exist_ok=True)
-    await download.save_as(str(save_target))
-    payload = {
-        "url": download.url,
-        "suggested_filename": suggested_name,
-        "saved_path": str(save_target),
-    }
-    session.observability.add_download_event(payload)
-    tab_idx = _get_tab_index(page)
-    return {
-        "success": True,
-        "reason_code": "ok",
-        "tab_id": tab_idx,
-        "targetId": tab_idx,
-        "item": payload,
-    }
+    return await _get_interaction_handlers()["download_wait"](params)
 
 
 async def _browser_state(params: Dict[str, Any]) -> Dict[str, Any]:
-    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
-
-    def pick(key: str, default: Any = None) -> Any:
-        if key in params:
-            return params.get(key)
-        if isinstance(payload, dict) and key in payload:
-            return payload.get(key)
-        return default
-
-    session_id = str(pick("session_id", "default"))
-    tab_id = pick("tab_id", pick("targetId"))
-    profile = str(pick("profile") or "default")
-    kind = str(pick("kind") or "").strip().lower()
-    op = str(pick("op") or "get").strip().lower()
-    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
-    if op == "get":
-        tab_idx = _get_tab_index(page)
-        state = await BrowserStateStore.get_state(page)
-        if kind in {"local", "local_storage"}:
-            state = {"local_storage": dict(state.get("local_storage") or {}), "url": state.get("url", "")}
-        elif kind in {"session", "session_storage"}:
-            state = {"session_storage": dict(state.get("session_storage") or {}), "url": state.get("url", "")}
-        return {
-            "success": True,
-            "reason_code": "ok",
-            "tab_id": tab_idx,
-            "targetId": tab_idx,
-            "state": state,
-            "meta": {"profile": profile, "kind": kind or "all", "op": op},
-        }
-    if op == "set":
-        state_payload = pick("state") if isinstance(pick("state"), dict) else {}
-        if kind in {"local", "local_storage"}:
-            local_payload = state_payload.get("local_storage", state_payload.get("local", state_payload))
-            if not isinstance(local_payload, dict):
-                return build_error("invalid_input", "local_storage payload must be an object")
-            state_payload = {"local_storage": local_payload}
-        elif kind in {"session", "session_storage"}:
-            session_payload = state_payload.get("session_storage", state_payload.get("session", state_payload))
-            if not isinstance(session_payload, dict):
-                return build_error("invalid_input", "session_storage payload must be an object")
-            state_payload = {"session_storage": session_payload}
-        elif kind == "cookies":
-            cookies_payload = state_payload.get("cookies", state_payload)
-            if not isinstance(cookies_payload, list):
-                return build_error("invalid_input", "cookies payload must be an array")
-            state_payload = {"cookies": cookies_payload}
-        meta = await BrowserStateStore.set_state(page, state_payload)
-        meta["profile"] = profile
-        meta["kind"] = kind or "all"
-        tab_idx = _get_tab_index(page)
-        return {"success": True, "reason_code": "ok", "tab_id": tab_idx, "targetId": tab_idx, "meta": meta}
-    if op == "clear":
-        clear_payload = pick("state") if isinstance(pick("state"), dict) else {}
-        if kind in {"local", "local_storage"}:
-            clear_payload = {"local_storage": clear_payload.get("local_storage", clear_payload.get("local", True))}
-        elif kind in {"session", "session_storage"}:
-            clear_payload = {"session_storage": clear_payload.get("session_storage", clear_payload.get("session", True))}
-        elif kind == "cookies":
-            clear_payload = {"cookies": clear_payload.get("cookies", True)}
-        meta = await BrowserStateStore.clear_state(page, clear_payload)
-        meta["profile"] = profile
-        meta["kind"] = kind or "all"
-        tab_idx = _get_tab_index(page)
-        return {"success": True, "reason_code": "ok", "tab_id": tab_idx, "targetId": tab_idx, "meta": meta}
-    return build_error("not_actionable", "state op must be get|set|clear")
+    return await _get_interaction_handlers()["state"](params)
 
 
 async def _browser_env(params: Dict[str, Any]) -> Dict[str, Any]:
-    payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
-
-    def pick(key: str, default: Any = None) -> Any:
-        if key in params:
-            return params.get(key)
-        if isinstance(payload, dict) and key in payload:
-            return payload.get(key)
-        return default
-
-    session_id = str(pick("session_id", "default"))
-    tab_id = pick("tab_id", pick("targetId"))
-    profile = str(pick("profile") or "default")
-    op = str(pick("op") or "get").strip().lower()
-    session, page = await _resolve_session_page(session_id, tab_id=tab_id)
-    if op == "get":
-        tab_idx = _get_tab_index(page)
-        return {
-            "success": True,
-            "reason_code": "ok",
-            "tab_id": tab_idx,
-            "targetId": tab_idx,
-            "state": dict(session.env_overrides),
-            "meta": {"profile": profile, "op": op},
-        }
-    if op == "set":
-        env_payload = pick("env") if isinstance(pick("env"), dict) else {}
-        result = await BrowserStateStore.apply_env(page, env_payload)
-        session.env_overrides.update(result.get("applied", {}))
-        tab_idx = _get_tab_index(page)
-        return {
-            "success": True,
-            "reason_code": "ok",
-            "tab_id": tab_idx,
-            "targetId": tab_idx,
-            "state": dict(session.env_overrides),
-            "meta": dict(result, profile=profile),
-        }
-    return build_error("not_actionable", "env op must be get|set")
+    return await _get_interaction_handlers()["env"](params)
 
 async def run_test_scenario(scenario: TestScenario) -> Dict[str, Any]:
-    """
-    Executes a full test scenario using Playwright.
-    Enhanced with network monitoring and advanced assertions.
-    """
+    """Executes a full test scenario using Playwright."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
-
-    logs = []
-    network_requests = []
-
-    # 자동화 감지 우회 설정
-    browser = await playwright_instance.chromium.launch(
-        headless=False,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ],
-    )
-    page = await browser.new_page()
-
-    # 자동화 감지 우회 스크립트 주입
-    await page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => false,
-        });
-        window.chrome = { runtime: {} };
-    """)
-
-    # 네트워크 요청/응답 리스너
-    import time
-
-    async def log_request(request):
-        network_requests.append(
-            {"method": request.method, "url": request.url, "timestamp": time.time()}
-        )
-
-    async def log_response(response):
-        for req in network_requests:
-            if req["url"] == response.url and "status" not in req:
-                req["status"] = response.status
-                req["response_time"] = time.time()
-                req["duration_ms"] = int(
-                    (req["response_time"] - req["timestamp"]) * 1000
-                )
-                try:
-                    if response.headers.get("content-type", "").startswith(
-                        "application/json"
-                    ):
-                        req["response_body"] = await response.json()
-                except:
-                    pass
-                break
-
-    page.on("request", lambda request: asyncio.create_task(log_request(request)))
-    page.on("response", lambda response: asyncio.create_task(log_response(response)))
-
-    try:
-        # 첫 단계로 지정된 초기 내비게이션을 처리합니다
-        if scenario.steps and scenario.steps[0].action == "goto":
-            step = scenario.steps.pop(0)
-            url = step.params[0] if step.params else "about:blank"
-            await page.goto(url, timeout=30000)
-            logs.append(f"SUCCESS: Navigated to {url}")
-
-        # 나머지 단계를 실행합니다
-        for step in scenario.steps:
-            logs.append(f"Executing step: {step.description}")
-
-            # 'note' 동작(문서화/검증 단계)을 건너뜁니다
-            if step.action == "note" or step.action == "":
-                logs.append(f"NOTE: {step.description}")
-                continue
-
-            # 선택자가 필요 없는 동작을 처리합니다
-            if step.action == "tab":
-                await page.keyboard.press(
-                    "Tab"
-                )  # keyboard.press는 타임아웃을 지원하지 않습니다
-                logs.append(f"SUCCESS: Tab key pressed")
-                continue
-            elif step.action == "scroll":
-                if step.selector:
-                    element = page.locator(step.selector).first
-                    await element.scroll_into_view_if_needed(timeout=10000)
-                    logs.append(f"SUCCESS: Scrolled '{step.selector}' into view")
-                else:
-                    scroll_amount = int(step.params[0]) if step.params else 500
-                    await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
-                    logs.append(f"SUCCESS: Scrolled page by {scroll_amount}px")
-                continue
-
-            # 여러 매치를 처리하기 위해 .first를 사용합니다(엄격 모드 위반 방지)
-            element = page.locator(step.selector).first
-
-            if step.action == "click":
-                await element.click(timeout=10000)
-            elif step.action == "fill":
-                await element.fill(str(step.params[0]), timeout=10000)
-            elif step.action == "press":
-                await element.press(str(step.params[0]), timeout=10000)
-            else:
-                raise ValueError(f"Unsupported action: {step.action}")
-            logs.append(f"SUCCESS: {step.action} on '{step.selector}'")
-
-        # 검증을 실행합니다
-        logs.append(f"Executing assertion: {scenario.assertion.description}")
-        assertion = scenario.assertion
-
-        # 'note' 검증(문서용)만 건너뜁니다
-        if assertion.condition == "note" or assertion.condition == "":
-            logs.append(f"NOTE: {assertion.description}")
-            logs.append(f"SUCCESS: All assertions passed.")
-            return {
-                "status": "success",
-                "logs": logs,
-                "network_requests": network_requests,
-            }
-
-        element = page.locator(assertion.selector)
-
-        if assertion.condition == "is_visible":
-            await expect(element).to_be_visible(timeout=10000)
-        elif assertion.condition == "contains_text":
-            await expect(element).to_contain_text(
-                str(assertion.params[0]), timeout=10000
-            )
-        elif assertion.condition == "url_contains":
-            await expect(page).to_have_url(
-                lambda url: str(assertion.params[0]) in url, timeout=10000
-            )
-
-        # 🆕 Advanced assertions
-        elif assertion.condition == "network_request":
-            # 네트워크 요청 검증
-            method = assertion.params[0] if len(assertion.params) > 0 else "POST"
-            url_pattern = assertion.params[1] if len(assertion.params) > 1 else ""
-            expected_status = assertion.params[2] if len(assertion.params) > 2 else 200
-
-            matching_requests = [
-                req
-                for req in network_requests
-                if req["method"] == method and url_pattern in req["url"]
-            ]
-
-            if not matching_requests:
-                raise AssertionError(
-                    f"No {method} request to URL containing '{url_pattern}'"
-                )
-
-            if matching_requests[-1].get("status") != expected_status:
-                raise AssertionError(
-                    f"Request status {matching_requests[-1].get('status')} != {expected_status}"
-                )
-
-            logs.append(
-                f"SUCCESS: Network request validated - {method} {url_pattern} → {expected_status}"
-            )
-
-        elif assertion.condition == "element_count":
-            # 요소 개수 검증
-            expected_count = int(assertion.params[0])
-            actual_count = await element.count()
-            if actual_count != expected_count:
-                raise AssertionError(
-                    f"Expected {expected_count} elements, found {actual_count}"
-                )
-            logs.append(f"SUCCESS: Element count = {expected_count}")
-
-        elif assertion.condition == "toast_visible":
-            # 토스트 메시지 검증 (일반적인 selector들)
-            toast_selectors = [
-                '[role="alert"]',
-                ".toast",
-                ".notification",
-                '[class*="toast"]',
-                '[class*="snackbar"]',
-            ]
-            expected_text = assertion.params[0] if assertion.params else ""
-
-            toast_found = False
-            for selector in toast_selectors:
-                try:
-                    toast = page.locator(selector).first
-                    await expect(toast).to_be_visible(timeout=2000)
-                    if expected_text:
-                        await expect(toast).to_contain_text(expected_text)
-                    toast_found = True
-                    logs.append(
-                        f"SUCCESS: Toast/notification visible with text '{expected_text}'"
-                    )
-                    break
-                except:
-                    continue
-
-            if not toast_found:
-                raise AssertionError(
-                    f"No toast/notification found with text '{expected_text}'"
-                )
-
-        elif assertion.condition == "api_response_contains":
-            # API 응답 내용 검증
-            url_pattern = assertion.params[0] if len(assertion.params) > 0 else ""
-            expected_key = assertion.params[1] if len(assertion.params) > 1 else ""
-            expected_value = assertion.params[2] if len(assertion.params) > 2 else None
-
-            matching_requests = [
-                req
-                for req in network_requests
-                if url_pattern in req["url"] and "response_body" in req
-            ]
-
-            if not matching_requests:
-                raise AssertionError(
-                    f"No API response found for URL containing '{url_pattern}'"
-                )
-
-            response_body = matching_requests[-1]["response_body"]
-            if expected_key not in response_body:
-                raise AssertionError(f"Response missing key '{expected_key}'")
-
-            if (
-                expected_value is not None
-                and response_body[expected_key] != expected_value
-            ):
-                raise AssertionError(
-                    f"Response[{expected_key}] = {response_body[expected_key]}, expected {expected_value}"
-                )
-
-            logs.append(
-                f"SUCCESS: API response validated - {expected_key} = {response_body.get(expected_key)}"
-            )
-
-        elif assertion.condition == "response_time_under":
-            # API 응답 시간 검증
-            url_pattern = assertion.params[0] if len(assertion.params) > 0 else ""
-            max_duration_ms = (
-                int(assertion.params[1]) if len(assertion.params) > 1 else 1000
-            )
-
-            matching_requests = [
-                req
-                for req in network_requests
-                if url_pattern in req["url"] and "duration_ms" in req
-            ]
-
-            if not matching_requests:
-                raise AssertionError(
-                    f"No API response found for URL containing '{url_pattern}'"
-                )
-
-            actual_duration = matching_requests[-1]["duration_ms"]
-            if actual_duration > max_duration_ms:
-                raise AssertionError(
-                    f"API response time {actual_duration}ms exceeds limit {max_duration_ms}ms"
-                )
-
-            logs.append(
-                f"SUCCESS: API response time {actual_duration}ms < {max_duration_ms}ms"
-            )
-
-        else:
-            raise ValueError(f"Unsupported condition: {assertion.condition}")
-
-        logs.append(f"SUCCESS: All assertions passed.")
-        return {
-            "status": "success",
-            "logs": logs,
-            "network_requests": network_requests,  # 디버깅용
-        }
-
-    except Exception as e:
-        error_message = f"ERROR: {type(e).__name__} - {str(e)}"
-        logs.append(error_message)
-        print(f"Test scenario failed: {error_message}")
-        return {"status": "failed", "logs": logs, "error": error_message}
-    finally:
-        await browser.close()
+    return await run_test_scenario_with_playwright(playwright_instance, scenario)
 
 
 @app.post("/execute")
@@ -7473,351 +4130,26 @@ async def execute_action(request: McpRequest):
     """
     Executes a browser automation action.
     """
-    try:
-        action = request.action
-        params = request.params
-        session_id = params.get("session_id", "default")
-
-        action_aliases = {
-            "start": "browser_start",
-            "install": "browser_install",
-            "profiles": "browser_profiles",
-            "tabs": "browser_tabs",
-            "tabs.open": "browser_tabs_open",
-            "tabs.new": "browser_tabs_open",
-            "tabs.focus": "browser_tabs_focus",
-            "tabs.close": "browser_tabs_close",
-            "tabs.delete": "browser_tabs_close",
-            "tabs.action": "browser_tabs_action",
-            "tabs_open": "browser_tabs_open",
-            "tabs_focus": "browser_tabs_focus",
-            "tabs_close": "browser_tabs_close",
-            "tabs_action": "browser_tabs_action",
-            "snapshot": "browser_snapshot",
-            "act": "browser_act",
-            "wait": "browser_wait",
-            "screenshot": "browser_screenshot",
-            "pdf": "browser_pdf",
-            "console": "browser_console_get",
-            "console_get": "browser_console_get",
-            "errors": "browser_errors_get",
-            "errors_get": "browser_errors_get",
-            "requests": "browser_requests_get",
-            "requests_get": "browser_requests_get",
-            "response_body": "browser_response_body",
-            "trace_start": "browser_trace_start",
-            "trace_stop": "browser_trace_stop",
-            "highlight": "browser_highlight",
-            "dialog_arm": "browser_dialog_arm",
-            "file_chooser_arm": "browser_file_chooser_arm",
-            "download_wait": "browser_download_wait",
-            "state": "browser_state",
-            "env": "browser_env",
-            "close": "browser_close",
-            "browser.start": "browser_start",
-            "browser.install": "browser_install",
-            "browser.profiles": "browser_profiles",
-            "browser.tabs": "browser_tabs",
-            "browser.tabs_open": "browser_tabs_open",
-            "browser.tabs_focus": "browser_tabs_focus",
-            "browser.tabs_close": "browser_tabs_close",
-            "browser.tabs_action": "browser_tabs_action",
-            "browser.tabs.open": "browser_tabs_open",
-            "browser.tabs.new": "browser_tabs_open",
-            "browser.tabs.focus": "browser_tabs_focus",
-            "browser.tabs.close": "browser_tabs_close",
-            "browser.tabs.delete": "browser_tabs_close",
-            "browser.tabs.action": "browser_tabs_action",
-            "browser.snapshot": "browser_snapshot",
-            "browser.act": "browser_act",
-            "browser.wait": "browser_wait",
-            "browser.screenshot": "browser_screenshot",
-            "browser.pdf": "browser_pdf",
-            "browser.console_get": "browser_console_get",
-            "browser.errors_get": "browser_errors_get",
-            "browser.requests_get": "browser_requests_get",
-            "browser.response_body": "browser_response_body",
-            "browser.trace_start": "browser_trace_start",
-            "browser.trace_stop": "browser_trace_stop",
-            "browser.highlight": "browser_highlight",
-            "browser.dialog_arm": "browser_dialog_arm",
-            "browser.file_chooser_arm": "browser_file_chooser_arm",
-            "browser.download_wait": "browser_download_wait",
-            "browser.state": "browser_state",
-            "browser.env": "browser_env",
-            "browser.close": "browser_close",
-        }
-        action = action_aliases.get(action, action)
-
-        if action == "browser_start":
-            return await _browser_start(params)
-
-        elif action == "browser_install":
-            return await _browser_install(params)
-
-        elif action == "browser_profiles":
-            return await _browser_profiles(params)
-
-        elif action == "browser_tabs":
-            return await _browser_tabs(params)
-
-        elif action == "browser_tabs_open":
-            return await _browser_tabs_open(params)
-
-        elif action == "browser_tabs_focus":
-            return await _browser_tabs_focus(params)
-
-        elif action == "browser_tabs_close":
-            return await _browser_tabs_close(params)
-
-        elif action == "browser_tabs_action":
-            return await _browser_tabs_action(params)
-
-        elif action == "browser_snapshot":
-            return await _browser_snapshot(params)
-
-        elif action == "browser_act":
-            return await _browser_act(params)
-
-        elif action == "browser_wait":
-            return await _browser_wait(params)
-
-        elif action == "browser_screenshot":
-            return await _browser_screenshot(params)
-
-        elif action == "browser_pdf":
-            return await _browser_pdf(params)
-
-        elif action == "browser_console_get":
-            return await _browser_console_get(params)
-
-        elif action == "browser_errors_get":
-            return await _browser_errors_get(params)
-
-        elif action == "browser_requests_get":
-            return await _browser_requests_get(params)
-
-        elif action == "browser_response_body":
-            return await _browser_response_body(params)
-
-        elif action == "browser_trace_start":
-            return await _browser_trace_start(params)
-
-        elif action == "browser_trace_stop":
-            return await _browser_trace_stop(params)
-
-        elif action == "browser_highlight":
-            return await _browser_highlight(params)
-
-        elif action == "browser_dialog_arm":
-            return await _browser_dialog_arm(params)
-
-        elif action == "browser_file_chooser_arm":
-            return await _browser_file_chooser_arm(params)
-
-        elif action == "browser_download_wait":
-            return await _browser_download_wait(params)
-
-        elif action == "browser_state":
-            return await _browser_state(params)
-
-        elif action == "browser_env":
-            return await _browser_env(params)
-
-        elif action == "browser_close":
-            close_req = McpRequest(action="close_session", params={"session_id": session_id})
-            result = await close_session(close_req)
-            result.setdefault("reason_code", "ok" if result.get("success") else "not_found")
-            return result
-
-        elif action == "get_console_logs":
-            level = str(params.get("type") or params.get("level") or "")
-            limit = int(params.get("limit") or 100)
-            data = await _browser_console_get(
-                {"session_id": session_id, "level": level, "limit": limit}
-            )
-            return {"success": True, "logs": data.get("items", [])}
-
-        elif action == "get_current_url":
-            _, page = await _resolve_session_page(session_id)
-            return {"success": True, "url": page.url}
-
-        elif action == "analyze_page":
-            url = params.get(
-                "url"
-            )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
-            return await _browser_snapshot({"session_id": session_id, "url": url or ""})
-
-        elif action == "snapshot_page":
-            url = params.get("url")
-            return await _browser_snapshot({"session_id": session_id, "url": url or ""})
-
-        elif action == "capture_screenshot":
-            url = params.get(
-                "url"
-            )  # 현재 페이지를 사용하려면 url을 None으로 둘 수 있습니다
-            return await capture_screenshot(url, session_id)
-
-        elif action == "execute_action":
-            # 전체 시나리오 없이 단순 동작(클릭, 입력, 키 입력)을 실행합니다
-            url = params.get("url")
-            selector = params.get(
-                "selector", ""
-            )  # 일부 동작은 선택자가 비어 있을 수 있습니다
-            action_type = params.get("action")
-            value = params.get("value")
-            before_screenshot = params.get("before_screenshot")  # Vision AI용 이전 스크린샷
-
-            # goto, setViewport, evaluate, tab, scroll, wait, waitForTimeout, clickAt, click_at_coordinates 같은 동작은 선택자가 필요 없습니다
-            # 검증 동작도 선택자가 필요 없으며 value 매개변수를 사용합니다
-            actions_not_needing_selector = [
-                "goto",
-                "setViewport",
-                "evaluate",
-                "tab",
-                "scroll",
-                "wait",
-                "waitForTimeout",
-                "clickAt",
-                "click_at_coordinates",
-                "fillAt",
-                "fill_at_coordinates",
-                "expectTrue",
-                "expectAttribute",
-                "expectCountAtLeast",
-                "expectVisible",
-                "expectHidden",
-            ]
-
-            if not action_type:
-                raise HTTPException(
-                    status_code=400, detail="action is required for 'execute_action'."
-                )
-
-            if is_element_action(action_type):
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "reason_code": "legacy_selector_forbidden",
-                        "message": (
-                            "legacy selector element actions are disabled. "
-                            "use browser_snapshot + browser_act(snapshot_id, ref_id)."
-                        ),
-                    },
-                )
-
-            if legacy_selector_forbidden(action_type, selector):
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "reason_code": "legacy_selector_forbidden",
-                        "message": (
-                            "legacy selector element actions are disabled. "
-                            "use browser_snapshot + browser_act(snapshot_id, ref_id)."
-                        ),
-                    },
-                )
-
-            if action_type not in actions_not_needing_selector and not selector:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"selector is required for action '{action_type}'.",
-                )
-
-            return await execute_simple_action(
-                url,
-                selector,
-                action_type,
-                value,
-                session_id,
-                before_screenshot=before_screenshot,
-            )
-
-        elif action == "execute_ref_action":
-            snapshot_id = params.get("snapshot_id", "")
-            ref_id = params.get("ref_id", "")
-            action_type = params.get("action", "")
-            value = params.get("value")
-            url = params.get("url", "")
-            tab_id = params.get("tab_id", params.get("targetId"))
-            selector_hint = str(params.get("selector_hint", "") or "")
-            verify = bool(params.get("verify", True))
-
-            if not snapshot_id:
-                raise HTTPException(
-                    status_code=400, detail="snapshot_id is required for 'execute_ref_action'."
-                )
-            if not ref_id:
-                raise HTTPException(
-                    status_code=400, detail="ref_id is required for 'execute_ref_action'."
-                )
-            if not action_type:
-                raise HTTPException(
-                    status_code=400, detail="action is required for 'execute_ref_action'."
-                )
-            return await _browser_act(
-                {
-                    "session_id": session_id,
-                    "snapshot_id": snapshot_id,
-                    "ref_id": ref_id,
-                    "action": action_type,
-                    "value": value,
-                    "url": url,
-                    "tab_id": tab_id,
-                    "selector_hint": selector_hint,
-                    "verify": verify,
-                }
-            )
-
-        elif action == "execute_scenario":
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "reason_code": "legacy_selector_forbidden",
-                    "message": (
-                        "execute_scenario legacy selector path is disabled. "
-                        "use browser_snapshot + browser_act(snapshot_id, ref_id)."
-                    ),
-                },
-            )
-
-        raise HTTPException(status_code=400, detail=f"Action '{action}' not supported.")
-    except HTTPException as exc:
-        detail = exc.detail
-        if isinstance(detail, dict) and detail.get("reason_code"):
-            raise
-        normalized_code = "http_4xx" if 400 <= int(exc.status_code) < 500 else "http_5xx"
-        message = str(detail if detail is not None else "HTTP error")
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail={
-                "reason_code": normalized_code,
-                "message": message,
-            },
-        ) from exc
-    except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "reason_code": "http_5xx",
-                "message": f"{type(exc).__name__}: {exc}",
-            },
-        ) from exc
+    return await dispatch_execute_action_route(
+        request=request,
+        namespace=globals(),
+        close_session_fn=close_session,
+        mcp_request_cls=McpRequest,
+        handle_legacy_action_fn=handle_legacy_action,
+        execute_simple_action_fn=execute_simple_action,
+        browser_act_fn=_browser_act,
+        browser_console_get_fn=_browser_console_get,
+        resolve_session_page_fn=_resolve_session_page,
+        browser_snapshot_fn=_browser_snapshot,
+        capture_screenshot_fn=capture_screenshot,
+    )
 
 
 @app.post("/close_session")
 async def close_session(request: McpRequest):
     """브라우저 세션을 닫고 리소스를 정리합니다."""
     session_id = request.params.get("session_id", "default")
-
-    if session_id in active_sessions:
-        session = active_sessions[session_id]
-        await session.close()
-        del active_sessions[session_id]
-        return {"success": True, "message": f"Session '{session_id}' closed"}
-
-    return {"success": False, "message": f"Session '{session_id}' not found"}
+    return await close_session_impl(active_sessions, session_id)
 
 
 @app.websocket("/ws/screencast")
@@ -7826,70 +4158,27 @@ async def websocket_screencast(websocket: WebSocket):
     WebSocket 엔드포인트: 실시간 스크린캐스트 프레임을 스트리밍합니다.
     클라이언트가 연결하면 CDP에서 전송하는 모든 프레임을 실시간으로 받습니다.
     """
-    await websocket.accept()
-    screencast_subscribers.append(websocket)
-    print(
-        f"[WebSocket] New screencast subscriber connected (total: {len(screencast_subscribers)})"
+    await websocket_screencast_loop(
+        websocket,
+        screencast_subscribers,
+        lambda: current_screencast_frame,
+        logger,
     )
-
-    try:
-        # 연결 유지 - 클라이언트가 메시지를 보내거나 연결이 끊어질 때까지 대기
-        while True:
-            # 클라이언트로부터 메시지를 받습니다 (ping/pong 등)
-            data = await websocket.receive_text()
-
-            # 클라이언트가 요청하면 현재 프레임을 즉시 전송
-            if data == "get_current_frame" and current_screencast_frame:
-                await websocket.send_json(
-                    {
-                        "type": "screencast_frame",
-                        "frame": current_screencast_frame,
-                        "timestamp": asyncio.get_event_loop().time(),
-                    }
-                )
-
-    except WebSocketDisconnect:
-        print(f"[WebSocket] Screencast subscriber disconnected")
-    except Exception as e:
-        print(f"[WebSocket] Error: {e}")
-    finally:
-        if websocket in screencast_subscribers:
-            screencast_subscribers.remove(websocket)
-        print(f"[WebSocket] Subscriber removed (total: {len(screencast_subscribers)})")
 
 
 @app.get("/")
 async def root():
-    return {
-        "message": "MCP Host is running.",
-        "enabled": True,
-        "profile": "default",
-        "running": bool(playwright_instance),
-        "chosenBrowser": "chromium",
-        "headless": False,
-        "active_sessions": len(active_sessions),
-        "screencast_subscribers": len(screencast_subscribers),
-        "screencast_active": any(s.screencast_active for s in active_sessions.values()),
-    }
+    return build_root_payload(
+        playwright_instance=playwright_instance,
+        active_sessions=active_sessions,
+        screencast_subscribers=screencast_subscribers,
+    )
 
 
 def main() -> None:
     import uvicorn
 
-    bind_host = os.getenv("MCP_HOST_BIND_HOST", "0.0.0.0")
-    bind_port_raw = os.getenv("MCP_HOST_BIND_PORT")
-    if bind_port_raw:
-        try:
-            bind_port = int(bind_port_raw)
-        except ValueError:
-            bind_port = 8001
-    else:
-        raw_url = (os.getenv("MCP_HOST_URL", "http://127.0.0.1:8001") or "").strip()
-        if "://" not in raw_url:
-            raw_url = f"http://{raw_url}"
-        parsed = urlparse(raw_url)
-        bind_port = parsed.port or 8001
-
+    bind_host, bind_port = resolve_bind_host_port()
     uvicorn.run(app, host=bind_host, port=bind_port)
 
 
