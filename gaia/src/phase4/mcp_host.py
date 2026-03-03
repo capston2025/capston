@@ -51,6 +51,14 @@ from gaia.src.phase4.mcp_simple_action_utils import (
     normalize_timeout_ms as _normalize_timeout_ms,
     evaluate_js_with_timeout as _evaluate_js_with_timeout,
 )
+from gaia.src.phase4.mcp_ref_snapshot_helpers import (
+    _build_role_refs_from_elements,
+    _build_role_snapshot_from_ai_text,
+    _build_role_snapshot_from_aria_text,
+    _build_snapshot_text,
+    _dedupe_elements_by_dom_ref,
+    _extract_elements_by_ref,
+)
 
 logger = logging.getLogger("gaia.mcp_host")
 
@@ -2321,7 +2329,7 @@ async def _execute_action_on_locator(
     raise ValueError(f"Unsupported ref action: {action}")
 
 
-async def _try_click_container_ancestor(locator) -> Dict[str, Any]:
+async def _try_click_container_ancestor(page: Page, locator) -> Dict[str, Any]:
     try:
         payload = await locator.evaluate(
             """
@@ -2337,26 +2345,43 @@ async def _try_click_container_ancestor(locator) -> Dict[str, Any]:
                 '[class*="item"]',
                 '[class*="card"]'
               ];
+              const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
+              const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+
+              const isVisible = (node) => {
+                if (!(node instanceof HTMLElement)) return false;
+                const style = window.getComputedStyle(node);
+                if (!style) return false;
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                if (Number(style.opacity || '1') <= 0.02) return false;
+                if (style.pointerEvents === 'none') return false;
+                const rect = node.getBoundingClientRect();
+                if (rect.width < 24 || rect.height < 20) return false;
+                if (rect.right < 1 || rect.bottom < 1) return false;
+                if (rect.left > viewportW - 1 || rect.top > viewportH - 1) return false;
+                return true;
+              };
 
               let current = el instanceof Element ? el : null;
               for (let depth = 0; current && depth < 8; depth++) {
                 for (const selector of candidates) {
                   const node = current.matches(selector) ? current : null;
                   if (!node || !(node instanceof HTMLElement) || node === el) continue;
-
-                  const style = window.getComputedStyle(node);
-                  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
-                    continue;
-                  }
-                  const rect = node.getBoundingClientRect();
-                  if (rect.width < 24 || rect.height < 20) continue;
+                  if (!isVisible(node)) continue;
 
                   node.scrollIntoView({ block: 'center', inline: 'nearest' });
-                  node.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, view: window }));
-                  node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, button: 0 }));
-                  node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, button: 0 }));
-                  node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, button: 0 }));
-                  return { clicked: true, selector };
+                  const rect = node.getBoundingClientRect();
+                  const clickX = Math.max(1, Math.min(viewportW - 1, Math.round(rect.left + rect.width / 2)));
+                  const clickY = Math.max(1, Math.min(viewportH - 1, Math.round(rect.top + rect.height / 2)));
+
+                  return {
+                    clicked: true,
+                    selector,
+                    reason: 'ancestor_container_click',
+                    clickX,
+                    clickY,
+                    tag: (node.tagName || '').toLowerCase(),
+                  };
                 }
                 current = current.parentElement;
               }
@@ -2364,9 +2389,20 @@ async def _try_click_container_ancestor(locator) -> Dict[str, Any]:
             }
             """
         )
-        if isinstance(payload, dict):
+        if not isinstance(payload, dict):
+            return {"clicked": False, "selector": "", "error": "invalid_payload"}
+        if not bool(payload.get("clicked")):
             return payload
-        return {"clicked": False, "selector": ""}
+
+        try:
+            click_x = float(payload.get("clickX") or 0.0)
+            click_y = float(payload.get("clickY") or 0.0)
+        except Exception:
+            return {"clicked": False, "selector": "", "error": "invalid_click_point"}
+
+        await page.mouse.click(click_x, click_y, delay=50)
+        payload["input"] = "playwright_mouse"
+        return payload
     except Exception as exc:
         return {"clicked": False, "selector": "", "error": str(exc)}
 
@@ -2408,9 +2444,22 @@ async def _try_click_hit_target_from_point(
         return {"clicked": False, "selector": "", "error": "point_not_available"}
 
     try:
+        min_confidence = float(str(os.getenv("GAIA_HIT_TARGET_MIN_CONFIDENCE", "0.35")).strip())
+    except Exception:
+        min_confidence = 0.35
+    min_confidence = max(0.0, min(1.0, float(min_confidence)))
+    allow_external_nav = str(os.getenv("GAIA_HIT_TARGET_ALLOW_EXTERNAL_NAV", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+    try:
         payload = await page.evaluate(
             """
-            ({ pointX, pointY }) => {
+            ({ pointX, pointY, allowExternalNav }) => {
               const clickableSelectors = [
                 'button',
                 'a[href]',
@@ -2446,6 +2495,89 @@ async def _try_click_hit_target_from_point(
                 return null;
               };
 
+              const buildMeta = (node) => {
+                if (!(node instanceof HTMLElement)) return null;
+                const rect = node.getBoundingClientRect();
+                let href = '';
+                let target = '';
+                if (node.tagName && node.tagName.toLowerCase() === 'a') {
+                  href = node.getAttribute('href') || '';
+                  target = node.getAttribute('target') || '';
+                }
+                return {
+                  tag: (node.tagName || '').toLowerCase(),
+                  role: node.getAttribute('role') || '',
+                  aria_label: node.getAttribute('aria-label') || '',
+                  title: node.getAttribute('title') || '',
+                  class: node.className ? String(node.className) : '',
+                  text: (node.innerText || '').trim().slice(0, 80),
+                  href,
+                  target,
+                  rect: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                    right: rect.right,
+                    bottom: rect.bottom,
+                  },
+                };
+              };
+
+              const scoreMeta = (meta) => {
+                const reasons = [];
+                const risks = [];
+                let score = 0.10;
+                if (!meta) return { score: 0.0, reasons: ['no_meta'], risks };
+
+                if (meta.tag === 'button' || meta.role === 'button') { score += 0.35; reasons.push('button'); }
+                if (meta.tag === 'input') { score += 0.20; reasons.push('input'); }
+                if (meta.tag === 'a' && meta.href) {
+                  reasons.push('link');
+                  const href = String(meta.href || '').trim();
+                  if (/^(javascript:|#)/i.test(href)) {
+                    score += 0.10;
+                    reasons.push('link:safe_href');
+                  } else if (/^(mailto:|tel:)/i.test(href)) {
+                    score -= 0.30;
+                    risks.push('link:mailto_tel');
+                  } else {
+                    try {
+                      const url = new URL(href, window.location.href);
+                      if (url.origin !== window.location.origin) {
+                        risks.push('link:external');
+                        score -= allowExternalNav ? 0.10 : 0.45;
+                        reasons.push(allowExternalNav ? 'external_allowed' : 'external_blocked');
+                      } else {
+                        score += 0.10;
+                        reasons.push('same_origin');
+                      }
+                    } catch (_) {
+                      score -= 0.10;
+                      reasons.push('bad_url');
+                    }
+                  }
+                  if ((meta.target || '').toLowerCase() === '_blank') {
+                    score -= 0.10;
+                    risks.push('link:new_tab');
+                  }
+                }
+
+                const label = (String(meta.aria_label || '') + ' ' + String(meta.title || '') + ' ' + String(meta.text || '')).toLowerCase();
+                if (label.trim().length > 0) score += 0.05;
+
+                const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+                const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+                const w = Number(meta.rect && meta.rect.width) || 0;
+                const h = Number(meta.rect && meta.rect.height) || 0;
+                if (w > 0 && h > 0) {
+                  if (w <= 90 && h <= 90) score += 0.10;
+                  if (vw > 0 && vh > 0 && (w >= vw * 0.92 || h >= vh * 0.92)) score -= 0.20;
+                }
+                score = Math.max(0.0, Math.min(1.0, score));
+                return { score, reasons, risks };
+              };
+
               let rootNode = document.elementFromPoint(pointX, pointY);
               if (!rootNode) {
                 return {
@@ -2464,40 +2596,65 @@ async def _try_click_hit_target_from_point(
                   clicked: true,
                   selector: 'iframe',
                   reason: 'iframe_point_click',
+                  confidence: 0.55,
+                  confidence_reasons: ['iframe'],
+                  risk_flags: [],
                   clickX: pointX,
                   clickY: pointY
                 };
               }
 
               const picked = pickClickable(rootNode);
-              if (!picked) {
+              const target = (picked && picked instanceof HTMLElement)
+                ? picked
+                : (rootNode instanceof HTMLElement ? rootNode : null);
+              if (!target) {
                 return {
                   clicked: true,
-                  selector: rootNode instanceof HTMLElement ? rootNode.tagName.toLowerCase() : '',
+                  selector: '',
                   reason: 'raw_point_click',
+                  confidence: 0.10,
+                  confidence_reasons: ['no_target'],
+                  risk_flags: [],
                   clickX: pointX,
                   clickY: pointY
                 };
               }
-              picked.scrollIntoView({ block: 'center', inline: 'nearest' });
-              const rect = picked.getBoundingClientRect();
-              const clickX = rect.left + rect.width / 2;
-              const clickY = rect.top + rect.height / 2;
+              target.scrollIntoView({ block: 'center', inline: 'nearest' });
+              const meta = buildMeta(target);
+              const scored = scoreMeta(meta);
+              const rect = meta && meta.rect ? meta.rect : null;
+              const clickX = rect ? (rect.left + rect.width / 2) : pointX;
+              const clickY = rect ? (rect.top + rect.height / 2) : pointY;
               return {
                 clicked: true,
-                selector: picked.tagName.toLowerCase(),
-                reason: 'hit_target_click',
+                selector: (meta && meta.tag) ? meta.tag : '',
+                reason: picked ? 'hit_target_click' : 'raw_point_click',
                 clickX,
-                clickY
+                clickY,
+                confidence: scored.score,
+                confidence_reasons: scored.reasons,
+                risk_flags: scored.risks,
+                target_meta: meta,
               };
             }
             """,
-            {"pointX": point_x, "pointY": point_y},
+            {"pointX": point_x, "pointY": point_y, "allowExternalNav": allow_external_nav},
         )
         if not isinstance(payload, dict):
             return {"clicked": False, "selector": "", "error": "invalid_payload"}
 
         if not bool(payload.get("clicked")):
+            return payload
+
+        try:
+            confidence = float(payload.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        if confidence < min_confidence:
+            payload["clicked"] = False
+            payload["error"] = f"low_confidence_skip(conf={confidence:.2f} < thr={min_confidence:.2f})"
+            payload["reason"] = str(payload.get("reason") or "") + ":low_confidence_skip"
             return payload
 
         try:
@@ -2508,10 +2665,12 @@ async def _try_click_hit_target_from_point(
             click_y = point_y
 
         await page.mouse.move(click_x, click_y)
-        await page.mouse.down()
-        await page.mouse.up()
+        await page.mouse.click(click_x, click_y, delay=50)
         payload["clickX"] = click_x
         payload["clickY"] = click_y
+        payload["x"] = click_x
+        payload["y"] = click_y
+        payload["input"] = "playwright_mouse"
         return payload
     except Exception as exc:
         return {"clicked": False, "selector": "", "error": str(exc)}
@@ -2546,6 +2705,12 @@ async def execute_ref_action_with_snapshot(
         ctx={
             "playwright_instance": playwright_instance,
             "HTTPException": HTTPException,
+            "active_sessions": active_sessions,
+            "ensure_session": ensure_session,
+            "_get_playwright_instance": _get_playwright_instance,
+            "screencast_subscribers": screencast_subscribers,
+            "_set_current_screencast_frame": _set_current_screencast_frame,
+            "logger": logger,
             "normalize_url": normalize_url,
             "snapshot_page": snapshot_page,
             "_resolve_session_page": _resolve_session_page,
