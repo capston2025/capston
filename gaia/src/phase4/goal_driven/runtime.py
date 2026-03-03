@@ -43,6 +43,9 @@ class FlowMasterOrchestrator:
         self.last_dom_signature: Optional[str] = None
         self.same_dom_count = 0
         self.no_dom_count = 0
+        self._dom_signature_history: List[str] = []
+        self._dom_count_history: List[int] = []
+        self.oscillation_detected = False
 
         self.login_gate_llm_loop_count = 0
         self.consecutive_auto_recovery = 0
@@ -73,12 +76,40 @@ class FlowMasterOrchestrator:
     def observe_dom(self, dom_elements: List[DOMElement]):
         self.no_dom_count = 0
 
+        dom_count = len(dom_elements)
+        if dom_count < 50:
+            dom_count_bucket = "lt50"
+        elif dom_count < 100:
+            dom_count_bucket = "50_99"
+        elif dom_count < 150:
+            dom_count_bucket = "100_149"
+        elif dom_count < 220:
+            dom_count_bucket = "150_219"
+        else:
+            dom_count_bucket = "220p"
+
         signature_parts: List[str] = []
         for el in dom_elements[:15]:
             signature_parts.append(
                 f"{el.tag}:{(el.text or '')[:24]}:{el.role or ''}:{el.type or ''}"
             )
-        dom_signature = "|".join(signature_parts)
+        dom_signature = f"{dom_count_bucket}|" + "|".join(signature_parts)
+
+        self._dom_signature_history.append(dom_signature)
+        if len(self._dom_signature_history) > 8:
+            self._dom_signature_history = self._dom_signature_history[-8:]
+        self._dom_count_history.append(dom_count)
+        if len(self._dom_count_history) > 8:
+            self._dom_count_history = self._dom_count_history[-8:]
+        self.oscillation_detected = False
+        if len(self._dom_signature_history) >= 4:
+            a, b, c, d = self._dom_signature_history[-4:]
+            if a == c and b == d and a != b:
+                self.oscillation_detected = True
+        if not self.oscillation_detected and len(self._dom_count_history) >= 4:
+            a, b, c, d = self._dom_count_history[-4:]
+            if a == c and b == d and a != b and abs(a - b) <= 20:
+                self.oscillation_detected = True
 
         if dom_signature == self.last_dom_signature:
             self.same_dom_count += 1
@@ -91,6 +122,11 @@ class FlowMasterOrchestrator:
                 "화면 상태가 반복되어 더 이상 진행이 어렵습니다. "
                 "현재 페이지에서 수동 전환 후 다시 시도하세요."
             )
+
+    def consume_oscillation(self) -> bool:
+        detected = bool(self.oscillation_detected)
+        self.oscillation_detected = False
+        return detected
 
     def next_directive(
         self,
@@ -212,4 +248,3 @@ class ActionExecResult:
         if self.success and self.effective:
             return None
         return f"[{self.reason_code}] {self.reason or 'Unknown error'}"
-

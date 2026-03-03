@@ -176,6 +176,7 @@ async def run_verify_fallback_chain(
             page,
             locator,
             current_requested_meta if isinstance(current_requested_meta, dict) else None,
+            close_like_click=close_like_click,
         )
         if bool(hit_fallback.get("clicked")):
             await page.wait_for_timeout(250)
@@ -183,7 +184,23 @@ async def run_verify_fallback_chain(
                 probe_wait_ms=250,
                 probe_scroll="hit_target_fallback",
             )
+            post_watch = (
+                hit_fallback.get("post_watch")
+                if isinstance(hit_fallback.get("post_watch"), dict)
+                else {}
+            )
+            if isinstance(current_state_change, dict) and post_watch:
+                current_state_change["post_watch"] = post_watch
+                if bool(post_watch.get("nav_detected")) or bool(post_watch.get("popup_detected")) or bool(post_watch.get("dialog_detected")):
+                    current_state_change["resnapshot_required"] = True
+                    current_state_change["strong_signal"] = "post_watch"
             current_effective = bool(current_state_change.get("effective", True))
+            strong_signal = bool(post_watch.get("nav_detected")) or bool(post_watch.get("popup_detected")) or bool(post_watch.get("dialog_detected"))
+            popup_risk = close_like_click and bool(post_watch.get("popup_detected"))
+            if strong_signal and not close_like_click:
+                current_effective = True
+            if popup_risk:
+                current_effective = False
             attempt_logs.append(
                 {
                     "attempt": attempt_idx,
@@ -198,6 +215,7 @@ async def run_verify_fallback_chain(
                     "fallback_risk_flags": hit_fallback.get("risk_flags"),
                     "fallback_click_x": hit_fallback.get("clickX"),
                     "fallback_click_y": hit_fallback.get("clickY"),
+                    "post_watch": hit_fallback.get("post_watch"),
                     "fallback_meta": hit_fallback,
                     "state_change": current_state_change,
                 }
@@ -225,6 +243,7 @@ async def run_verify_fallback_chain(
                     "fallback_risk_flags": hit_fallback.get("risk_flags"),
                     "fallback_click_x": hit_fallback.get("clickX"),
                     "fallback_click_y": hit_fallback.get("clickY"),
+                    "post_watch": hit_fallback.get("post_watch"),
                     "fallback_meta": hit_fallback,
                 }
             )

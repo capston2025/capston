@@ -521,6 +521,41 @@ class GoalDrivenAgent:
         decision: ActionDecision,
         dom_elements: List[DOMElement],
     ) -> ActionDecision:
+        modal_open_now = bool(
+            self._last_snapshot_evidence.get("modal_open")
+            if isinstance(self._last_snapshot_evidence, dict)
+            else False
+        )
+        blocker_modal_now = modal_open_now
+        if not blocker_modal_now:
+            for el in dom_elements:
+                fields = [
+                    el.text,
+                    el.aria_label,
+                    getattr(el, "title", None),
+                    self._element_full_selectors.get(el.id),
+                    self._element_selectors.get(el.id),
+                ]
+                blob = " ".join(self._normalize_text(field) for field in fields if field)
+                if (
+                    ("로그인" in blob and "필요" in blob)
+                    or "login required" in blob
+                    or "sign in required" in blob
+                    or "authentication required" in blob
+                ):
+                    blocker_modal_now = True
+                    break
+        if not blocker_modal_now:
+            decision_reasoning_blob = self._normalize_text(getattr(decision, "reasoning", None))
+            if (
+                ("로그인" in decision_reasoning_blob and ("필요" in decision_reasoning_blob or "모달" in decision_reasoning_blob))
+                or ("login" in decision_reasoning_blob and ("required" in decision_reasoning_blob or "modal" in decision_reasoning_blob))
+            ):
+                blocker_modal_now = True
+        selected_element: Optional[DOMElement] = None
+        if decision.element_id is not None:
+            selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+
         if (self._runtime_phase or "").upper() == "AUTH" or self._is_login_gate(dom_elements):
             return ActionDecision(
                 action=decision.action,
@@ -576,6 +611,71 @@ class GoalDrivenAgent:
                     goal_achievement_reason=None,
                 )
 
+        try:
+            collect_min_value = float(self._goal_constraints.get("collect_min"))
+        except Exception:
+            collect_min_value = 0.0
+        if collect_min_value <= 1.0:
+            return ActionDecision(
+                action=decision.action,
+                element_id=decision.element_id,
+                value=decision.value,
+                reasoning=decision.reasoning,
+                confidence=decision.confidence,
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        if (
+            blocker_modal_now
+            and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
+            and selected_element is not None
+        ):
+            selected_fields = [
+                selected_element.text,
+                selected_element.aria_label,
+                getattr(selected_element, "title", None),
+                self._element_full_selectors.get(selected_element.id),
+                self._element_selectors.get(selected_element.id),
+            ]
+            selected_blob = " ".join(
+                self._normalize_text(field) for field in selected_fields if field
+            )
+            selected_modal_unblock = bool(
+                any(self._contains_close_hint(field) for field in selected_fields)
+                or any(
+                    token in selected_blob
+                    for token in (
+                        "확인",
+                        "ok",
+                        "okay",
+                        "dismiss",
+                        "취소",
+                        "cancel",
+                        "닫기",
+                        "close",
+                        "modal",
+                        "dialog",
+                        "overlay",
+                        "backdrop",
+                        "popup",
+                        "sheet",
+                        "drawer",
+                    )
+                )
+            )
+            if selected_modal_unblock:
+                self._log("🧱 목표 제약 가드 우회: 모달 차단 해제 액션을 우선 수행합니다.")
+                return ActionDecision(
+                    action=decision.action,
+                    element_id=decision.element_id,
+                    value=decision.value,
+                    reasoning=decision.reasoning,
+                    confidence=decision.confidence,
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
+
         if not self._is_collect_constraint_unmet():
             return decision
 
@@ -583,10 +683,9 @@ class GoalDrivenAgent:
         metric_label = str(self._goal_constraints.get("metric_label") or "")
         current = self._goal_metric_value
         current_text = "unknown" if current is None else str(int(current))
-
-        selected_element: Optional[DOMElement] = None
-        if decision.element_id is not None:
-            selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+        collect_gate_override_after = max(
+            1, self._loop_policy_value("collect_gate_override_after", 2)
+        )
 
         blocked_goal_done = bool(decision.is_goal_achieved)
         if not blocked_goal_done and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}:
@@ -609,6 +708,77 @@ class GoalDrivenAgent:
                     )
         elif not blocked_goal_done:
             return decision
+
+        if (
+            current is None
+            and blocker_modal_now
+            and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
+            and decision.element_id is not None
+        ):
+            self._log("🧱 목표 제약 가드 우회: 차단 모달 상황에서는 수집보다 차단 해제 액션을 우선합니다.")
+            return ActionDecision(
+                action=decision.action,
+                element_id=decision.element_id,
+                value=decision.value,
+                reasoning=decision.reasoning,
+                confidence=decision.confidence,
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        if (
+            current is None
+            and self._no_progress_counter >= collect_gate_override_after
+            and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
+            and decision.element_id is not None
+        ):
+            self._log(
+                "🧱 목표 제약 가드 완화: 수집 지표 unknown 상태 정체가 반복되어 "
+                "직접 상호작용 액션을 우선 시도합니다."
+            )
+            return ActionDecision(
+                action=decision.action,
+                element_id=decision.element_id,
+                value=decision.value,
+                reasoning=decision.reasoning,
+                confidence=decision.confidence,
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        if current is None and blocker_modal_now:
+            modal_pick = self._pick_modal_unblock_element(
+                dom_elements,
+                self._element_full_selectors,
+            )
+            if modal_pick is None:
+                modal_pick = self._pick_modal_unblock_element(
+                    dom_elements,
+                    self._element_selectors,
+                )
+            if modal_pick is None and isinstance(decision.reasoning, str):
+                dom_ids = {int(el.id) for el in dom_elements}
+                for match in re.finditer(r"\[(\d+)\]", decision.reasoning):
+                    try:
+                        candidate_id = int(match.group(1))
+                    except Exception:
+                        continue
+                    if candidate_id not in dom_ids:
+                        continue
+                    ref_id = self._element_ref_ids.get(candidate_id)
+                    if ref_id and not self._is_ref_temporarily_blocked(ref_id):
+                        modal_pick = candidate_id
+                        break
+            if modal_pick is not None:
+                self._log("🧱 목표 제약 가드 우회: 수집보다 모달 차단 해제를 우선합니다.")
+                return ActionDecision(
+                    action=ActionType.CLICK,
+                    element_id=modal_pick,
+                    reasoning="모달이 열린 상태에서는 배경 수집보다 차단 해제(확인/닫기)를 우선 수행",
+                    confidence=0.86,
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
 
         picked = self._pick_collect_element(dom_elements)
         if picked is not None:
@@ -727,14 +897,12 @@ class GoalDrivenAgent:
             return False
         if bool(state_change.get("effective")):
             return True
-        progress_keys = (
+        strong_progress_keys = (
             "url_changed",
             "dom_changed",
             "target_visibility_changed",
             "target_value_changed",
             "target_value_matches",
-            "target_focus_changed",
-            "focus_changed",
             "counter_changed",
             "number_tokens_changed",
             "status_text_changed",
@@ -746,9 +914,11 @@ class GoalDrivenAgent:
             "modal_state_changed",
             "auth_state_changed",
             "text_digest_changed",
-            "evidence_changed",
+            "nav_detected",
+            "popup_detected",
+            "dialog_detected",
         )
-        return any(bool(state_change.get(key)) for key in progress_keys)
+        return any(bool(state_change.get(key)) for key in strong_progress_keys)
 
     def _is_verification_style_goal(self, goal: TestGoal) -> bool:
         text = self._normalize_text(
@@ -813,6 +983,20 @@ class GoalDrivenAgent:
         if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.NAVIGATE}:
             return False
         if not self._is_verification_style_goal(goal):
+            return False
+        goal_text = self._normalize_text(
+            " ".join(
+                [
+                    str(goal.name or ""),
+                    str(goal.description or ""),
+                    " ".join(str(item or "") for item in (goal.success_criteria or [])),
+                ]
+            )
+        )
+        has_close_hint = any(token in goal_text for token in ("닫", "close", "x 버튼", "x버튼", "dismiss"))
+        has_list_hint = any(token in goal_text for token in ("목록", "list", "게시판", "게시글", "board", "row"))
+        if has_close_hint and has_list_hint:
+            # "열기->닫기->목록 복귀" 형태 목표는 단일 전환으로 완료시키지 않는다.
             return False
         if self._is_collect_constraint_unmet():
             return False
@@ -1058,6 +1242,175 @@ class GoalDrivenAgent:
             if cls._normalize_text(el.type) == "submit":
                 score -= 2
 
+            if score > 0:
+                candidates.append((score, el.id))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    @classmethod
+    def _pick_modal_unblock_element(
+        cls,
+        dom_elements: List[DOMElement],
+        selector_map: Dict[int, str],
+        modal_regions_hint: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[int]:
+        modal_regions: List[Dict[str, float]] = []
+        if isinstance(modal_regions_hint, list):
+            for region in modal_regions_hint[:8]:
+                if not isinstance(region, dict):
+                    continue
+                try:
+                    rx = float(region.get("x", 0.0) or 0.0)
+                    ry = float(region.get("y", 0.0) or 0.0)
+                    rw = float(region.get("width", 0.0) or 0.0)
+                    rh = float(region.get("height", 0.0) or 0.0)
+                except Exception:
+                    continue
+                if rw < 80.0 or rh < 80.0:
+                    continue
+                modal_regions.append(
+                    {
+                        "x": rx,
+                        "y": ry,
+                        "width": rw,
+                        "height": rh,
+                        "right": rx + rw,
+                        "bottom": ry + rh,
+                    }
+                )
+        for container in dom_elements:
+            bbox = container.bounding_box if isinstance(container.bounding_box, dict) else {}
+            try:
+                cx = float(bbox.get("x", 0.0) or 0.0)
+                cy = float(bbox.get("y", 0.0) or 0.0)
+                cw = float(bbox.get("width", 0.0) or 0.0)
+                ch = float(bbox.get("height", 0.0) or 0.0)
+            except Exception:
+                continue
+            if cw < 120.0 or ch < 120.0:
+                continue
+            role = cls._normalize_text(container.role)
+            tag = cls._normalize_text(container.tag)
+            class_name = cls._normalize_text(container.class_name)
+            aria_modal = cls._normalize_text(container.aria_modal)
+            if not (
+                aria_modal == "true"
+                or role in {"dialog", "alertdialog"}
+                or tag == "dialog"
+                or any(token in class_name for token in ("modal", "dialog", "popup", "sheet", "drawer", "overlay"))
+            ):
+                continue
+            modal_regions.append(
+                {
+                    "x": cx,
+                    "y": cy,
+                    "width": cw,
+                    "height": ch,
+                    "right": cx + cw,
+                    "bottom": cy + ch,
+                }
+            )
+        modal_regions.sort(key=lambda region: region["width"] * region["height"], reverse=True)
+        if len(modal_regions) > 1:
+            largest_area = modal_regions[0]["width"] * modal_regions[0]["height"]
+            compact_regions = [
+                region
+                for region in modal_regions
+                if (region["width"] * region["height"]) <= (largest_area * 0.92)
+            ]
+            if compact_regions:
+                modal_regions = compact_regions
+        modal_regions = modal_regions[:4]
+
+        candidates: List[tuple[int, int]] = []
+        for el in dom_elements:
+            selector = selector_map.get(el.id, "")
+            role = cls._normalize_text(el.role)
+            tag = cls._normalize_text(el.tag)
+
+            text_fields = [
+                el.text,
+                el.aria_label,
+                el.placeholder,
+                getattr(el, "title", None),
+                selector,
+            ]
+            normalized_blob = " ".join(cls._normalize_text(field) for field in text_fields if field)
+            score = 0
+            close_hint_signal = any(cls._contains_close_hint(field) for field in text_fields)
+
+            if close_hint_signal:
+                score += 5
+            if any(
+                token in normalized_blob
+                for token in ("확인", "ok", "okay", "dismiss", "취소", "cancel", "닫기", "close")
+            ):
+                score += 4
+            if any(
+                token in normalized_blob
+                for token in ("modal", "dialog", "overlay", "backdrop", "popup", "sheet", "drawer")
+            ):
+                score += 3
+            if role in {"button", "dialogclose", "link", "menuitem"} or tag in {"button", "a", "input"}:
+                score += 1
+            if cls._normalize_text(el.text) in {"x", "×", "확인", "ok", "닫기", "취소", "close"}:
+                score += 2
+            if cls._normalize_text(el.type) == "submit":
+                score -= 1
+            bbox = el.bounding_box if isinstance(el.bounding_box, dict) else {}
+            try:
+                ex = float(bbox.get("x", 0.0) or 0.0)
+                ey = float(bbox.get("y", 0.0) or 0.0)
+                ew = float(bbox.get("width", 0.0) or 0.0)
+                eh = float(bbox.get("height", 0.0) or 0.0)
+                ecx = ex + (ew / 2.0)
+                ecy = ey + (eh / 2.0)
+            except Exception:
+                ex = ey = ew = eh = ecx = ecy = 0.0
+            inside_modal_region = False
+            near_modal_corner = False
+            if ew > 0.0 and eh > 0.0:
+                if ew <= 96.0 and eh <= 96.0:
+                    score += 1
+                for region in modal_regions:
+                    if not (region["x"] <= ecx <= region["right"] and region["y"] <= ecy <= region["bottom"]):
+                        continue
+                    inside_modal_region = True
+                    rel_x = (ecx - region["x"]) / max(region["width"], 1.0)
+                    rel_y = (ecy - region["y"]) / max(region["height"], 1.0)
+                    if rel_x >= 0.72 and rel_y <= 0.28:
+                        near_modal_corner = True
+                        score += 6
+                    elif rel_x >= 0.60 and rel_y <= 0.40:
+                        score += 3
+                    unlabeled_icon = (
+                        cls._normalize_text(el.text) in {"", "x", "×", "✕"}
+                        and cls._normalize_text(el.aria_label) == ""
+                        and cls._normalize_text(getattr(el, "title", None)) == ""
+                        and (role in {"button", "dialogclose"} or tag in {"button", "a", "input"})
+                        and ew <= 96.0
+                        and eh <= 96.0
+                    )
+                    if unlabeled_icon:
+                        score += 4
+                        if near_modal_corner:
+                            score += 2
+                    break
+            if modal_regions and not inside_modal_region:
+                # 모달이 열려 있는 상황에서는 모달 영역 밖 아이콘/버튼 오클릭을 강하게 억제.
+                if not close_hint_signal:
+                    continue
+                score -= 3
+
+            if modal_regions:
+                if not (close_hint_signal or near_modal_corner):
+                    continue
+            else:
+                if not close_hint_signal:
+                    continue
             if score > 0 and el.id in selector_map:
                 candidates.append((score, el.id))
 
@@ -1619,12 +1972,23 @@ class GoalDrivenAgent:
 
     @staticmethod
     def _dom_progress_signature(dom_elements: List[DOMElement]) -> str:
+        count = len(dom_elements)
+        if count < 50:
+            bucket = "lt50"
+        elif count < 100:
+            bucket = "50_99"
+        elif count < 150:
+            bucket = "100_149"
+        elif count < 220:
+            bucket = "150_219"
+        else:
+            bucket = "220p"
         chunks: List[str] = []
-        for el in dom_elements[:25]:
+        for el in dom_elements[:20]:
             chunks.append(
                 f"{el.tag}|{(el.text or '')[:40]}|{el.role or ''}|{el.type or ''}|{el.aria_label or ''}"
             )
-        return f"{len(dom_elements)}#" + "||".join(chunks)
+        return f"{bucket}#" + "||".join(chunks)
 
     def _record_action_feedback(
         self,
@@ -1947,6 +2311,10 @@ class GoalDrivenAgent:
         self._runtime_phase = "COLLECT"
         self._progress_counter = 0
         self._no_progress_counter = 0
+        self._modal_opened_once = False
+        self._modal_closed_after_open = False
+        self._close_intent_success_once = False
+        self._close_click_success_once = False
         self._handoff_state = {}
         self._memory_selector_bias = {}
         self._recent_click_element_ids = []
@@ -2072,6 +2440,21 @@ class GoalDrivenAgent:
                         start_time=start_time,
                         reason=orchestrator.stop_reason,
                     )
+            if hasattr(orchestrator, "consume_oscillation") and bool(orchestrator.consume_oscillation()):
+                self._log("🧭 화면 진동(ABAB) 패턴 감지: 컨텍스트 전환을 잠시 중단하고 직접 상호작용 후보를 우선 시도합니다.")
+                force_context_shift = False
+                context_shift_used_elements.clear()
+                context_shift_fail_streak = 0
+                context_shift_cooldown = max(
+                    int(context_shift_cooldown),
+                    self._loop_policy_value("context_shift_cooldown_steps", 4),
+                )
+                self._action_feedback.append(
+                    "화면 상태가 ABAB로 반복되어 컨텍스트 전환을 중지합니다. "
+                    "현재 리스트/모달의 직접 상호작용 후보를 우선 선택하세요."
+                )
+                if len(self._action_feedback) > 10:
+                    self._action_feedback = self._action_feedback[-10:]
 
             detected_phase = self._infer_runtime_phase(dom_elements)
             guarded_phase = self._apply_phase_constraints(detected_phase)
@@ -2337,10 +2720,125 @@ class GoalDrivenAgent:
                     self._element_selectors.get(selected_element.id),
                 ]
             modal_open_now = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
+            active_goal_text_norm = self._normalize_text(self._active_goal_text or "")
+            x_button_goal_required = any(
+                token in active_goal_text_norm
+                for token in ("x 버튼", "x버튼", "우상단 x", "닫기 버튼", "close button", "x icon", "x 아이콘")
+            )
+            if x_button_goal_required and decision.action == ActionType.PRESS:
+                modal_regions_hint = []
+                if isinstance(self._last_snapshot_evidence, dict):
+                    raw_regions = self._last_snapshot_evidence.get("modal_regions")
+                    if isinstance(raw_regions, list):
+                        modal_regions_hint = raw_regions
+                modal_pick_for_x = self._pick_modal_unblock_element(
+                    dom_elements,
+                    self._element_full_selectors,
+                    modal_regions_hint=modal_regions_hint,
+                )
+                if modal_pick_for_x is None:
+                    modal_pick_for_x = self._pick_modal_unblock_element(
+                        dom_elements,
+                        self._element_selectors,
+                        modal_regions_hint=modal_regions_hint,
+                    )
+                if modal_pick_for_x is not None:
+                    decision = ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=modal_pick_for_x,
+                        value=None,
+                        reasoning=(
+                            "목표가 X 버튼 닫기 검증을 요구하므로 key press 대신 모달 닫기 후보 클릭으로 강제 전환합니다. "
+                            + str(decision.reasoning or "")
+                        ).strip(),
+                        confidence=max(float(decision.confidence or 0.0), 0.84),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                    selected_element = next((el for el in dom_elements if el.id == modal_pick_for_x), None)
+                    selected_fields = []
+                    if selected_element is not None:
+                        selected_fields = [
+                            selected_element.text,
+                            selected_element.aria_label,
+                            getattr(selected_element, "title", None),
+                            self._element_full_selectors.get(selected_element.id),
+                            self._element_selectors.get(selected_element.id),
+                        ]
+                    self._log("🧭 X 버튼 요구 목표: press 액션을 닫기 클릭으로 변환합니다.")
             selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
             if not selected_close_signal and selected_element is not None:
                 selected_close_signal = self._normalize_text(selected_element.text) in {"x", "×", "닫기", "close"}
-            close_like_click_intent = bool(decision.action == ActionType.CLICK and selected_close_signal)
+            decision_reasoning_text = self._normalize_text(decision.reasoning)
+            reasoning_close_intent = bool(
+                any(
+                    token in decision_reasoning_text
+                    for token in (
+                        "닫",
+                        "close",
+                        "dismiss",
+                        "종료",
+                        "x 버튼",
+                        "우상단 x",
+                    )
+                )
+            )
+            if (
+                modal_open_now
+                and decision.action == ActionType.CLICK
+                and reasoning_close_intent
+                and not selected_close_signal
+            ):
+                modal_regions_hint = []
+                if isinstance(self._last_snapshot_evidence, dict):
+                    raw_regions = self._last_snapshot_evidence.get("modal_regions")
+                    if isinstance(raw_regions, list):
+                        modal_regions_hint = raw_regions
+                modal_pick = self._pick_modal_unblock_element(
+                    dom_elements,
+                    self._element_full_selectors,
+                    modal_regions_hint=modal_regions_hint,
+                )
+                if modal_pick is None:
+                    modal_pick = self._pick_modal_unblock_element(
+                        dom_elements,
+                        self._element_selectors,
+                        modal_regions_hint=modal_regions_hint,
+                    )
+                if modal_pick is not None and modal_pick != decision.element_id:
+                    decision = ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=modal_pick,
+                        value=decision.value,
+                        reasoning=(
+                            "모달 닫기 의도가 감지되어 우상단/닫기 후보 ref로 재매핑합니다. "
+                            + str(decision.reasoning or "")
+                        ).strip(),
+                        confidence=max(float(decision.confidence or 0.0), 0.82),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                    selected_element = next((el for el in dom_elements if el.id == modal_pick), None)
+                    selected_fields = []
+                    if selected_element is not None:
+                        selected_fields = [
+                            selected_element.text,
+                            selected_element.aria_label,
+                            getattr(selected_element, "title", None),
+                            self._element_full_selectors.get(selected_element.id),
+                            self._element_selectors.get(selected_element.id),
+                        ]
+                    selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
+                    if not selected_close_signal and selected_element is not None:
+                        selected_close_signal = self._normalize_text(selected_element.text) in {"x", "×", "닫기", "close"}
+                    self._log("🧭 모달 닫기 의도 보정: 닫기 후보 ref로 액션 대상을 재선택합니다.")
+            close_like_click_intent = bool(
+                decision.action == ActionType.CLICK
+                and (
+                    selected_close_signal
+                    or (modal_open_now and reasoning_close_intent)
+                )
+            )
             if close_like_click_intent and not modal_open_now:
                 self._log("🧭 모달이 열려있지 않아 close 클릭을 건너뛰고 재계획합니다.")
                 self._action_feedback.append(
@@ -2379,6 +2877,20 @@ class GoalDrivenAgent:
                 )
             else:
                 self._log(f"⚠️ 액션 실패: {error}")
+                attempt_logs = (
+                    self._last_exec_result.attempt_logs
+                    if isinstance(getattr(self, "_last_exec_result", None), ActionExecResult)
+                    else None
+                )
+                if isinstance(attempt_logs, list) and attempt_logs:
+                    last_attempt = attempt_logs[-1] if isinstance(attempt_logs[-1], dict) else {}
+                    if last_attempt:
+                        self._log(
+                            "↳ 실행 상세: "
+                            f"mode={last_attempt.get('mode')}, "
+                            f"reason_code={last_attempt.get('reason_code')}, "
+                            f"error={last_attempt.get('error')}"
+                        )
             if decision.action == ActionType.CLICK and decision.element_id is not None:
                 self._recent_click_element_ids.append(int(decision.element_id))
                 if len(self._recent_click_element_ids) > 24:
@@ -3153,7 +3665,14 @@ JSON 응답:"""
                 return False, self._last_exec_result.as_error_message()
 
             if decision.action == ActionType.CLICK:
-                return _execute_with_ref_recovery("click")
+                click_value: Any = decision.value
+                reasoning_norm = self._normalize_text(decision.reasoning)
+                if any(
+                    token in reasoning_norm
+                    for token in ("닫", "close", "dismiss", "x 버튼", "우상단 x")
+                ):
+                    click_value = "__close_intent__"
+                return _execute_with_ref_recovery("click", action_value=click_value)
 
             elif decision.action == ActionType.FILL:
                 if not decision.value:

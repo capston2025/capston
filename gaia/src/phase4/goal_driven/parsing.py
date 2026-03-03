@@ -51,6 +51,12 @@ def parse_wait_payload(raw: Optional[str]) -> Dict[str, Any]:
     if isinstance(parsed, dict):
         payload: Dict[str, Any] = {}
         key_aliases = {
+            "ms": "time_ms",
+            "duration_ms": "time_ms",
+            "durationMs": "time_ms",
+            "sleep_ms": "time_ms",
+            "sleepMs": "time_ms",
+            "timeout": "timeout_ms",
             "timeMs": "time_ms",
             "timeoutMs": "timeout_ms",
             "textGone": "text_gone",
@@ -60,6 +66,12 @@ def parse_wait_payload(raw: Optional[str]) -> Dict[str, Any]:
         for key in (
             "time_ms",
             "timeMs",
+            "ms",
+            "duration_ms",
+            "durationMs",
+            "sleep_ms",
+            "sleepMs",
+            "timeout",
             "timeout_ms",
             "timeoutMs",
             "selector",
@@ -84,4 +96,3 @@ def parse_wait_payload(raw: Optional[str]) -> Dict[str, Any]:
     if text.isdigit():
         return {"time_ms": max(0, int(text))}
     return {"text": text}
-

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Dict, List, Optional, Set
 
@@ -14,6 +15,37 @@ def _policy_int(agent: Any, key: str, default: int) -> int:
         except Exception:
             return max(0, int(default))
     return max(0, int(default))
+
+
+def _strong_shift_progress(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    strong_keys = (
+        "url_changed",
+        "modal_state_changed",
+        "modal_count_changed",
+        "backdrop_count_changed",
+        "dialog_count_changed",
+        "auth_state_changed",
+        "tab_changed",
+        "frame_changed",
+    )
+    return any(bool(state_change.get(key)) for key in strong_keys)
+
+
+def _is_weak_dom_only_change(
+    *,
+    before_count: int,
+    after_count: int,
+    before_signature: Any,
+    after_signature: Any,
+) -> bool:
+    if before_signature == after_signature:
+        return True
+    count_delta = abs(int(after_count) - int(before_count))
+    if count_delta <= 12:
+        return True
+    return False
 
 
 def handle_forced_context_shift(
@@ -37,9 +69,67 @@ def handle_forced_context_shift(
     context_shift_fail_limit = max(1, _policy_int(agent, "context_shift_fail_limit", 3))
     context_shift_cooldown_steps = _policy_int(agent, "context_shift_cooldown_steps", 4)
     if not force_context_shift:
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
         return {
             "continue_loop": False,
             "force_context_shift": force_context_shift,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
+    modal_open_now = bool(
+        (getattr(agent, "_last_snapshot_evidence", {}) or {}).get("modal_open")
+    )
+    if modal_open_now:
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
+        agent._log("🧭 모달이 열린 상태라 컨텍스트 전환을 중단하고 닫기/상세 상호작용을 우선합니다.")
+        return {
+            "continue_loop": False,
+            "force_context_shift": False,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
+    dom_count_history = list(getattr(agent, "_context_shift_dom_count_history", []) or [])
+    dom_count_history.append(int(len(dom_elements)))
+    if len(dom_count_history) > 8:
+        dom_count_history = dom_count_history[-8:]
+    setattr(agent, "_context_shift_dom_count_history", dom_count_history)
+    if str(os.getenv("GAIA_TRACE_CONTEXT_SHIFT", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        agent._log(
+            "🧪 context-shift trace: "
+            f"dom_count_history={dom_count_history[-4:]}, "
+            f"collect_unmet={bool(collect_unmet)}, "
+            f"no_progress={int(getattr(agent, '_no_progress_counter', 0))}"
+        )
+    if len(dom_count_history) >= 4:
+        a, b, c, d = dom_count_history[-4:]
+        if a == c and b == d and a != b and abs(a - b) <= 20:
+            agent._log("🧭 컨텍스트 전환 DOM 진동(ABAB) 감지: 전환을 중단하고 직접 상호작용 후보 탐색으로 복귀합니다.")
+            return {
+                "continue_loop": False,
+                "force_context_shift": False,
+                "context_shift_fail_streak": context_shift_fail_streak,
+                "context_shift_cooldown": context_shift_cooldown_steps,
+                "ineffective_action_streak": ineffective_action_streak,
+            }
+    forced_shift_streak = int(getattr(agent, "_forced_context_shift_loop_streak", 0)) + 1
+    setattr(agent, "_forced_context_shift_loop_streak", forced_shift_streak)
+    if (not collect_unmet) and forced_shift_streak >= 2:
+        agent._log("🧭 컨텍스트 전환 반복 감지: 전환 루프를 중단하고 직접 상호작용 후보 탐색으로 복귀합니다.")
+        return {
+            "continue_loop": False,
+            "force_context_shift": False,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown_steps,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
+    no_progress_context_shift_min = max(1, _policy_int(agent, "no_progress_context_shift_min", 2))
+    if (not collect_unmet) and int(getattr(agent, "_no_progress_counter", 0)) < no_progress_context_shift_min:
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
+        return {
+            "continue_loop": False,
+            "force_context_shift": False,
             "context_shift_fail_streak": context_shift_fail_streak,
             "context_shift_cooldown": context_shift_cooldown,
             "ineffective_action_streak": ineffective_action_streak,
@@ -79,7 +169,21 @@ def handle_forced_context_shift(
             agent._log(f"⚠️ 컨텍스트 전환 실패: {error}")
 
         post_dom = agent._analyze_dom()
-        changed = bool(post_dom) and agent._dom_progress_signature(post_dom) != before_signature
+        after_signature = agent._dom_progress_signature(post_dom) if post_dom else before_signature
+        state_change = (
+            getattr(agent, "_last_exec_result", None).state_change
+            if getattr(agent, "_last_exec_result", None)
+            else None
+        )
+        changed = _strong_shift_progress(state_change)
+        if not changed and bool(post_dom):
+            weak_change = _is_weak_dom_only_change(
+                before_count=len(dom_elements),
+                after_count=len(post_dom),
+                before_signature=before_signature,
+                after_signature=after_signature,
+            )
+            changed = not weak_change
         agent._record_action_feedback(
             step_number=step_count,
             decision=shift_decision,
@@ -87,7 +191,7 @@ def handle_forced_context_shift(
             changed=changed,
             error=error,
             reason_code=agent._last_exec_result.reason_code if agent._last_exec_result else None,
-            state_change=agent._last_exec_result.state_change if agent._last_exec_result else None,
+            state_change=state_change if isinstance(state_change, dict) else None,
             intent_key=picked_intent_key,
         )
         agent._record_action_memory(
@@ -102,6 +206,7 @@ def handle_forced_context_shift(
         if success and changed:
             ineffective_action_streak = 0
             force_context_shift = False
+            setattr(agent, "_forced_context_shift_loop_streak", 0)
             context_shift_used_elements.clear()
             agent._last_context_shift_intent = ""
             orchestrator.same_dom_count = 0
@@ -111,14 +216,24 @@ def handle_forced_context_shift(
             context_shift_fail_streak += 1
             if len(context_shift_used_elements) > 20:
                 context_shift_used_elements.clear()
-            if context_shift_fail_streak >= context_shift_fail_limit:
+            quick_break_limit = 2 if collect_unmet else context_shift_fail_limit
+            if context_shift_fail_streak >= max(1, quick_break_limit):
                 agent._log(
                     "🧭 컨텍스트 전환이 연속 실패해 일반 액션 전략으로 복귀합니다."
                 )
                 force_context_shift = False
+                setattr(agent, "_forced_context_shift_loop_streak", 0)
                 context_shift_used_elements.clear()
                 agent._last_context_shift_intent = ""
                 context_shift_cooldown = context_shift_cooldown_steps
+                time.sleep(0.2)
+                return {
+                    "continue_loop": False,
+                    "force_context_shift": force_context_shift,
+                    "context_shift_fail_streak": context_shift_fail_streak,
+                    "context_shift_cooldown": context_shift_cooldown,
+                    "ineffective_action_streak": ineffective_action_streak,
+                }
             else:
                 force_context_shift = True
         time.sleep(0.4)
@@ -131,6 +246,7 @@ def handle_forced_context_shift(
         }
 
     if collect_unmet:
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
         agent._log("🧭 전환 후보 부족: 수집 CTA 노출을 위해 스크롤 전환을 시도합니다.")
         scroll_target_id: Optional[int] = None
         shift_pick = agent._pick_collect_context_shift_element(dom_elements, set())
@@ -164,16 +280,38 @@ def handle_forced_context_shift(
         )
         steps.append(step_result)
         post_dom = agent._analyze_dom()
-        changed = bool(post_dom) and agent._dom_progress_signature(post_dom) != before_signature
+        after_signature = agent._dom_progress_signature(post_dom) if post_dom else before_signature
+        state_change = (
+            getattr(agent, "_last_exec_result", None).state_change
+            if getattr(agent, "_last_exec_result", None)
+            else None
+        )
+        changed = _strong_shift_progress(state_change)
+        if not changed and bool(post_dom):
+            weak_change = _is_weak_dom_only_change(
+                before_count=len(dom_elements),
+                after_count=len(post_dom),
+                before_signature=before_signature,
+                after_signature=after_signature,
+            )
+            changed = not weak_change
         if success and changed:
             context_shift_fail_streak = 0
             force_context_shift = False
             context_shift_cooldown = 0
         else:
             context_shift_fail_streak += 1
-            force_context_shift = context_shift_fail_streak < context_shift_fail_limit
-            if context_shift_fail_streak >= context_shift_fail_limit:
+            quick_break_limit = 2 if collect_unmet else context_shift_fail_limit
+            force_context_shift = context_shift_fail_streak < max(1, quick_break_limit)
+            if context_shift_fail_streak >= max(1, quick_break_limit):
                 context_shift_cooldown = context_shift_cooldown_steps
+                return {
+                    "continue_loop": False,
+                    "force_context_shift": False,
+                    "context_shift_fail_streak": context_shift_fail_streak,
+                    "context_shift_cooldown": context_shift_cooldown,
+                    "ineffective_action_streak": ineffective_action_streak,
+                }
         time.sleep(0.3)
         return {
             "continue_loop": True,
