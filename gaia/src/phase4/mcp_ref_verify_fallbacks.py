@@ -28,7 +28,7 @@ async def run_verify_fallback_chain(
     attempt_backdrop_close_fn: Callable[..., Awaitable[Dict[str, Any]]],
     attempt_modal_corner_close_fn: Callable[..., Awaitable[Dict[str, Any]]],
     try_click_hit_target_from_point_fn: Callable[..., Awaitable[Dict[str, Any]]],
-    try_click_container_ancestor_fn: Callable[..., Awaitable[Dict[str, Any]]],
+    try_click_container_ancestor_fn: Callable[[Any, Any], Awaitable[Dict[str, Any]]],
     collect_close_ref_candidates_fn: Callable[..., List[Tuple[str, Dict[str, Any]]]],
     build_ref_candidates_fn: Callable[[Dict[str, Any]], List[Tuple[str, str]]],
     resolve_locator_from_ref_fn: Callable[..., Awaitable[Tuple[Any, Any, Any, Any]]],
@@ -194,6 +194,11 @@ async def run_verify_fallback_chain(
                     "fallback": "hit_target_click",
                     "fallback_selector": str(hit_fallback.get("selector") or ""),
                     "fallback_reason": str(hit_fallback.get("reason") or ""),
+                    "fallback_confidence": hit_fallback.get("confidence"),
+                    "fallback_risk_flags": hit_fallback.get("risk_flags"),
+                    "fallback_click_x": hit_fallback.get("clickX"),
+                    "fallback_click_y": hit_fallback.get("clickY"),
+                    "fallback_meta": hit_fallback,
                     "state_change": current_state_change,
                 }
             )
@@ -216,6 +221,11 @@ async def run_verify_fallback_chain(
                         or hit_fallback.get("reason")
                         or "hit_target_not_clicked"
                     ),
+                    "fallback_confidence": hit_fallback.get("confidence"),
+                    "fallback_risk_flags": hit_fallback.get("risk_flags"),
+                    "fallback_click_x": hit_fallback.get("clickX"),
+                    "fallback_click_y": hit_fallback.get("clickY"),
+                    "fallback_meta": hit_fallback,
                 }
             )
             if close_like_click:
@@ -237,7 +247,7 @@ async def run_verify_fallback_chain(
         and not timed_out
         and not deadline_exceeded_fn()
     ):
-        fallback_result = await try_click_container_ancestor_fn(locator)
+        fallback_result = await try_click_container_ancestor_fn(page, locator)
         if bool(fallback_result.get("clicked")):
             await page.wait_for_timeout(350)
             current_state_change = await collect_state_change_probe_fn(

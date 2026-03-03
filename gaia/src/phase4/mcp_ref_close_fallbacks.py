@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json as json_module
+import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
+from gaia.src.phase4.mcp_ref_input_helpers import trusted_click_point
 
 
 async def attempt_close_ref_fallbacks(
@@ -150,7 +153,7 @@ async def attempt_backdrop_close(
     if not close_like_click or deadline_exceeded_fn():
         return {"success": False}
     try:
-        clicked = await page.evaluate(
+        plan = await page.evaluate(
             """
             () => {
               const nodes = Array.from(document.querySelectorAll(
@@ -161,19 +164,29 @@ async def attempt_backdrop_close(
                 const style = window.getComputedStyle(el);
                 if (!style) return false;
                 if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
+                if (Number(style.opacity || '1') <= 0.02) return false;
                 const rect = el.getBoundingClientRect();
                 return rect.width > 4 && rect.height > 4;
               });
-              if (!visible.length) return false;
+              if (!visible.length) {
+                return { found: false, reason: 'no_visible_backdrop' };
+              }
               const target = visible[0];
               const rect = target.getBoundingClientRect();
               const x = rect.left + rect.width / 2;
               const y = rect.top + rect.height / 2;
-              const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
-              target.dispatchEvent(new MouseEvent('mousedown', opts));
-              target.dispatchEvent(new MouseEvent('mouseup', opts));
-              target.dispatchEvent(new MouseEvent('click', opts));
-              return true;
+              return {
+                found: true,
+                reason: 'backdrop_point',
+                x,
+                y,
+                rect: {
+                  left: rect.left,
+                  top: rect.top,
+                  width: rect.width,
+                  height: rect.height
+                }
+              };
             }
             """
         )
@@ -187,13 +200,34 @@ async def attempt_backdrop_close(
             }
         )
         return {"success": False}
-    if not bool(clicked):
+    if not isinstance(plan, dict) or not bool(plan.get("found")):
         attempt_logs.append(
             {
                 "attempt": attempt_idx,
                 "mode": f"{mode}.backdrop",
                 "reason_code": "not_found",
-                "error": "no visible backdrop candidate",
+                "error": str((plan or {}).get("reason") or "no visible backdrop candidate"),
+            }
+        )
+        return {"success": False}
+    click_meta = await trusted_click_point(
+        page,
+        float(plan.get("x") or 0.0),
+        float(plan.get("y") or 0.0),
+        delay_ms=50,
+        move_first=True,
+        clamp_to_viewport=True,
+    )
+    click_meta = {**plan, **click_meta}
+    if not bool(click_meta.get("clicked")):
+        attempt_logs.append(
+            {
+                "attempt": attempt_idx,
+                "mode": f"{mode}.backdrop",
+                "reason_code": "not_actionable",
+                "fallback": "backdrop_click",
+                "meta": click_meta,
+                "error": str(click_meta.get("error") or "playwright_mouse_click_failed"),
             }
         )
         return {"success": False}
@@ -209,6 +243,7 @@ async def attempt_backdrop_close(
                 "mode": f"{mode}.backdrop",
                 "reason_code": "ok",
                 "fallback": "backdrop_click",
+                "meta": click_meta,
                 "state_change": backdrop_change,
             }
         )
@@ -218,6 +253,8 @@ async def attempt_backdrop_close(
             "attempt": attempt_idx,
             "mode": f"{mode}.backdrop",
             "reason_code": "no_state_change",
+            "fallback": "backdrop_click",
+            "meta": click_meta,
             "state_change": backdrop_change,
         }
     )
@@ -234,9 +271,37 @@ async def attempt_modal_corner_close(
     deadline_exceeded_fn: Callable[[], bool],
     collect_state_change_probe_fn: Callable[..., Awaitable[Dict[str, Any]]],
     modal_regions: Optional[List[Dict[str, float]]] = None,
+    min_confidence: Optional[float] = None,
 ) -> Dict[str, Any]:
     if not close_like_click or deadline_exceeded_fn():
         return {"success": False}
+    for log in attempt_logs:
+        if (
+            int(log.get("attempt") or -1) == int(attempt_idx)
+            and str(log.get("fallback") or "") == "modal_corner_click"
+        ):
+            attempt_logs.append(
+                {
+                    "attempt": attempt_idx,
+                    "mode": f"{mode}.modal_corner",
+                    "reason_code": "not_found",
+                    "error": "modal_corner_already_attempted",
+                }
+            )
+            return {"success": False}
+
+    if min_confidence is None:
+        try:
+            min_confidence = float(
+                str(os.getenv("GAIA_MODAL_CORNER_MIN_CONFIDENCE", "0.55")).strip()
+            )
+        except Exception:
+            min_confidence = 0.55
+    try:
+        min_confidence = max(0.0, min(1.0, float(min_confidence)))
+    except Exception:
+        min_confidence = 0.55
+
     normalized_regions: List[Dict[str, float]] = []
     if isinstance(modal_regions, list):
         for raw in modal_regions:
@@ -262,7 +327,7 @@ async def attempt_modal_corner_close(
                 }
             )
     try:
-        click_result = await page.evaluate(
+        plan = await page.evaluate(
             """
             (regions) => {
               const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -309,15 +374,59 @@ async def attempt_modal_corner_close(
                 .sort((a, b) => (b.width * b.height) - (a.width * a.height))
                 .slice(0, 6);
 
-              if (!merged.length) return { clicked: false, reason: 'no_modal_region' };
+              if (!merged.length) return { found: false, reason: 'no_modal_region' };
 
-              const dispatchClick = (target, x, y) => {
-                const opts = { bubbles: true, cancelable: true, view: window, button: 0, clientX: x, clientY: y };
-                target.dispatchEvent(new MouseEvent('mousemove', opts));
-                target.dispatchEvent(new MouseEvent('mousedown', opts));
-                target.dispatchEvent(new MouseEvent('mouseup', opts));
-                target.dispatchEvent(new MouseEvent('click', opts));
+              const getMeta = (el) => {
+                try {
+                  const rect = el.getBoundingClientRect();
+                  return {
+                    tag: (el.tagName || '').toLowerCase(),
+                    role: (el.getAttribute && el.getAttribute('role')) || '',
+                    aria_label: (el.getAttribute && el.getAttribute('aria-label')) || '',
+                    title: (el.getAttribute && el.getAttribute('title')) || '',
+                    class: (el.className && String(el.className)) || '',
+                    text: ((el.innerText || '').trim().slice(0, 80)),
+                    href: (el.tagName && el.tagName.toLowerCase() === 'a') ? (el.getAttribute('href') || '') : '',
+                    rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+                  };
+                } catch (_e) {
+                  return { tag: '', role: '', aria_label: '', title: '', class: '', text: '', href: '', rect: null };
+                }
               };
+
+              const scoreCloseCandidate = (meta, region) => {
+                const reasons = [];
+                const blob = (
+                  String(meta.aria_label || '') + ' ' +
+                  String(meta.title || '') + ' ' +
+                  String(meta.text || '') + ' ' +
+                  String(meta.class || '')
+                ).toLowerCase();
+                let score = 0.0;
+                if (/(^|\\b)(close|dismiss|닫기)(\\b|$)/i.test(blob)) { score += 0.70; reasons.push('kw:close'); }
+                if (/(^|\\b)(취소)(\\b|$)/i.test(blob)) { score += 0.20; reasons.push('kw:cancel'); }
+                if (/[×✕xX]/.test(String(meta.text || ''))) { score += 0.55; reasons.push('sym:x'); }
+                if (/(btn-close|modal-close|icon-close|close-btn|closebutton)/i.test(blob)) { score += 0.35; reasons.push('cls:close'); }
+                if (meta.tag === 'button' || meta.role === 'button') { score += 0.10; reasons.push('role:button'); }
+                if (meta.tag === 'a' && meta.href) { score -= 0.25; reasons.push('penalty:link'); }
+
+                if (meta.rect && region) {
+                  const w = Number(meta.rect.width || 0);
+                  const h = Number(meta.rect.height || 0);
+                  const cx = Number(meta.rect.left || 0) + w / 2;
+                  const cy = Number(meta.rect.top || 0) + h / 2;
+                  if (w > 0 && h > 0 && w <= 80 && h <= 80) { score += 0.15; reasons.push('geom:small'); }
+                  const nearTopRight = (
+                    cx > (region.x + region.width * 0.72) &&
+                    cy < (region.y + region.height * 0.28)
+                  );
+                  if (nearTopRight) { score += 0.25; reasons.push('geom:near_tr'); }
+                }
+                score = Math.max(0.0, Math.min(1.0, score));
+                return { score, reasons };
+              };
+
+              let best = null;
 
               for (let i = 0; i < merged.length; i++) {
                 const region = merged[i];
@@ -342,19 +451,25 @@ async def attempt_modal_corner_close(
                   if (!style) continue;
                   if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') continue;
                   if (Number(style.opacity || '1') <= 0.02) continue;
-                  dispatchClick(target, x, y);
-                  return {
-                    clicked: true,
-                    reason: 'modal_corner_click',
+                  const targetMeta = getMeta(target);
+                  const scored = scoreCloseCandidate(targetMeta, region);
+                  const candidate = {
+                    found: true,
+                    reason: 'modal_corner_point',
                     region_index: i,
                     x,
                     y,
-                    target_tag: (target.tagName || '').toLowerCase(),
-                    target_text: ((target.innerText || '').trim().slice(0, 80)),
+                    confidence: scored.score,
+                    confidence_reasons: scored.reasons,
+                    target_meta: targetMeta,
                   };
+                  if (!best || Number(candidate.confidence || 0) > Number(best.confidence || 0)) {
+                    best = candidate;
+                  }
                 }
               }
-              return { clicked: false, reason: 'corner_point_miss' };
+              if (best) return best;
+              return { found: false, reason: 'corner_point_miss' };
             }
             """,
             normalized_regions,
@@ -369,16 +484,61 @@ async def attempt_modal_corner_close(
             }
         )
         return {"success": False}
-    if not isinstance(click_result, dict) or not bool(click_result.get("clicked")):
+    if not isinstance(plan, dict) or not bool(plan.get("found")):
         attempt_logs.append(
             {
                 "attempt": attempt_idx,
                 "mode": f"{mode}.modal_corner",
                 "reason_code": "not_found",
-                "error": str((click_result or {}).get("reason") or "modal corner candidate not found"),
+                "error": str((plan or {}).get("reason") or "modal corner candidate not found"),
             }
         )
         return {"success": False}
+
+    try:
+        confidence = float(plan.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    threshold = float(min_confidence)
+    target_meta = plan.get("target_meta") if isinstance(plan.get("target_meta"), dict) else {}
+    target_text = str(target_meta.get("text") or "").strip()
+    if target_text in {"×", "✕", "x", "X"}:
+        threshold = max(0.0, threshold - 0.15)
+    if confidence < threshold:
+        attempt_logs.append(
+            {
+                "attempt": attempt_idx,
+                "mode": f"{mode}.modal_corner",
+                "reason_code": "not_found",
+                "fallback": "modal_corner_click",
+                "error": f"low_confidence_skip(conf={confidence:.2f}, threshold={threshold:.2f})",
+                "meta": plan,
+            }
+        )
+        return {"success": False}
+
+    click_meta = await trusted_click_point(
+        page,
+        float(plan.get("x") or 0.0),
+        float(plan.get("y") or 0.0),
+        delay_ms=50,
+        move_first=True,
+        clamp_to_viewport=True,
+    )
+    click_meta = {**plan, **click_meta}
+    if not bool(click_meta.get("clicked")):
+        attempt_logs.append(
+            {
+                "attempt": attempt_idx,
+                "mode": f"{mode}.modal_corner",
+                "reason_code": "not_actionable",
+                "fallback": "modal_corner_click",
+                "error": str(click_meta.get("error") or "playwright_mouse_click_failed"),
+                "meta": click_meta,
+            }
+        )
+        return {"success": False}
+
     await page.wait_for_timeout(250)
     corner_change = await collect_state_change_probe_fn(
         probe_wait_ms=300,
@@ -391,7 +551,7 @@ async def attempt_modal_corner_close(
                 "mode": f"{mode}.modal_corner",
                 "reason_code": "ok",
                 "fallback": "modal_corner_click",
-                "meta": click_result,
+                "meta": click_meta,
                 "state_change": corner_change,
             }
         )
@@ -402,7 +562,7 @@ async def attempt_modal_corner_close(
             "mode": f"{mode}.modal_corner",
             "reason_code": "no_state_change",
             "fallback": "modal_corner_click",
-            "meta": click_result,
+            "meta": click_meta,
             "state_change": corner_change,
         }
     )

@@ -7,8 +7,8 @@ from playwright.async_api import Browser, CDPSession, Page
 
 from gaia.src.phase4.mcp_browser_session import BrowserSession
 from gaia.src.phase4.mcp_tab_resolution import (
-    _resolve_page_from_tab_identifier_impl,
-    _resolve_session_page_impl,
+    resolve_page_from_tab_identifier as _resolve_page_from_tab_identifier_impl,
+    resolve_session_page as _resolve_session_page_impl,
 )
 
 _page_target_id_cache: "WeakKeyDictionary[Page, str]" = WeakKeyDictionary()

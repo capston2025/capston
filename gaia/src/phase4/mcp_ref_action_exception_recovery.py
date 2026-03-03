@@ -216,6 +216,11 @@ async def handle_action_exception_recovery(
                         "fallback": "hit_target_click",
                         "fallback_selector": str(hit_fallback.get("selector") or ""),
                         "fallback_reason": str(hit_fallback.get("reason") or ""),
+                        "fallback_confidence": hit_fallback.get("confidence"),
+                        "fallback_risk_flags": hit_fallback.get("risk_flags"),
+                        "fallback_click_x": hit_fallback.get("clickX"),
+                        "fallback_click_y": hit_fallback.get("clickY"),
+                        "fallback_meta": hit_fallback,
                         "state_change": current_state_change,
                     }
                 )
@@ -247,6 +252,11 @@ async def handle_action_exception_recovery(
                     "fallback": "hit_target_click",
                     "fallback_selector": str(hit_fallback.get("selector") or ""),
                     "fallback_reason": str(hit_fallback.get("reason") or ""),
+                    "fallback_confidence": hit_fallback.get("confidence"),
+                    "fallback_risk_flags": hit_fallback.get("risk_flags"),
+                    "fallback_click_x": hit_fallback.get("clickX"),
+                    "fallback_click_y": hit_fallback.get("clickY"),
+                    "fallback_meta": hit_fallback,
                     "state_change": current_state_change,
                 }
             )
@@ -268,6 +278,11 @@ async def handle_action_exception_recovery(
                         or hit_fallback.get("reason")
                         or "hit_target_not_clicked"
                     ),
+                    "fallback_confidence": hit_fallback.get("confidence"),
+                    "fallback_risk_flags": hit_fallback.get("risk_flags"),
+                    "fallback_click_x": hit_fallback.get("clickX"),
+                    "fallback_click_y": hit_fallback.get("clickY"),
+                    "fallback_meta": hit_fallback,
                 }
             )
             await capture_close_diagnostic_fn(
