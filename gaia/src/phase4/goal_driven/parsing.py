@@ -35,18 +35,32 @@ def parse_multi_values(raw: Optional[str]) -> List[str]:
     return [text]
 
 
-def parse_wait_payload(raw: Optional[str]) -> Dict[str, Any]:
+def parse_wait_payload(raw: Optional[Any]) -> Dict[str, Any]:
+    if isinstance(raw, (int, float)):
+        return {"time_ms": max(0, int(raw))}
+
+    if isinstance(raw, dict):
+        parsed = raw
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return {"time_ms": 1000}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+
+        if isinstance(parsed, (int, float)):
+            return {"time_ms": max(0, int(parsed))}
+
+        if not isinstance(parsed, dict):
+            if text.isdigit():
+                return {"time_ms": max(0, int(text))}
+            return {"text": text}
+
     text = str(raw or "").strip()
     if not text:
         return {"time_ms": 1000}
-
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        parsed = None
-
-    if isinstance(parsed, (int, float)):
-        return {"time_ms": max(0, int(parsed))}
 
     if isinstance(parsed, dict):
         payload: Dict[str, Any] = {}

@@ -17,6 +17,14 @@ def _policy_int(agent: Any, key: str, default: int) -> int:
     return max(0, int(default))
 
 
+def _emit_reason(agent: Any, code: str) -> None:
+    if not code:
+        return
+    recorder = getattr(agent, "_record_reason_code", None)
+    if callable(recorder):
+        recorder(code)
+
+
 def _strong_shift_progress(state_change: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(state_change, dict):
         return False
@@ -82,6 +90,7 @@ def handle_forced_context_shift(
     )
     if modal_open_now:
         setattr(agent, "_forced_context_shift_loop_streak", 0)
+        _emit_reason(agent, "context_shift_blocked_modal_open")
         agent._log("🧭 모달이 열린 상태라 컨텍스트 전환을 중단하고 닫기/상세 상호작용을 우선합니다.")
         return {
             "continue_loop": False,
@@ -105,6 +114,7 @@ def handle_forced_context_shift(
     if len(dom_count_history) >= 4:
         a, b, c, d = dom_count_history[-4:]
         if a == c and b == d and a != b and abs(a - b) <= 20:
+            _emit_reason(agent, "context_shift_oscillation_abab")
             agent._log("🧭 컨텍스트 전환 DOM 진동(ABAB) 감지: 전환을 중단하고 직접 상호작용 후보 탐색으로 복귀합니다.")
             return {
                 "continue_loop": False,
@@ -116,6 +126,7 @@ def handle_forced_context_shift(
     forced_shift_streak = int(getattr(agent, "_forced_context_shift_loop_streak", 0)) + 1
     setattr(agent, "_forced_context_shift_loop_streak", forced_shift_streak)
     if (not collect_unmet) and forced_shift_streak >= 2:
+        _emit_reason(agent, "context_shift_repeat_break")
         agent._log("🧭 컨텍스트 전환 반복 감지: 전환 루프를 중단하고 직접 상호작용 후보 탐색으로 복귀합니다.")
         return {
             "continue_loop": False,
@@ -218,6 +229,7 @@ def handle_forced_context_shift(
                 context_shift_used_elements.clear()
             quick_break_limit = 2 if collect_unmet else context_shift_fail_limit
             if context_shift_fail_streak >= max(1, quick_break_limit):
+                _emit_reason(agent, "context_shift_fail_exhausted")
                 agent._log(
                     "🧭 컨텍스트 전환이 연속 실패해 일반 액션 전략으로 복귀합니다."
                 )
@@ -304,6 +316,7 @@ def handle_forced_context_shift(
             quick_break_limit = 2 if collect_unmet else context_shift_fail_limit
             force_context_shift = context_shift_fail_streak < max(1, quick_break_limit)
             if context_shift_fail_streak >= max(1, quick_break_limit):
+                _emit_reason(agent, "context_shift_fail_exhausted")
                 context_shift_cooldown = context_shift_cooldown_steps
                 return {
                     "continue_loop": False,
@@ -321,7 +334,83 @@ def handle_forced_context_shift(
             "ineffective_action_streak": ineffective_action_streak,
         }
 
-    agent._log("🧭 컨텍스트 전환 후보를 찾지 못해 기본 LLM 흐름으로 계속 진행합니다.")
+    _emit_reason(agent, "context_shift_no_candidate")
+    fallback_scroll_target: Optional[int] = None
+    if dom_elements:
+        for el in dom_elements:
+            ref_id = agent._element_ref_ids.get(el.id)
+            if ref_id and not agent._is_ref_temporarily_blocked(ref_id):
+                fallback_scroll_target = el.id
+                break
+    if fallback_scroll_target is not None:
+        agent._log("🧭 컨텍스트 전환 후보 부재: 범용 스크롤 fallback으로 상태 변화를 유도합니다.")
+        shift_decision = ActionDecision(
+            action=ActionType.SCROLL,
+            element_id=fallback_scroll_target,
+            reasoning="전환 후보 부족으로 범용 스크롤 fallback 수행",
+            confidence=0.45,
+        )
+        step_result, success, error = sub_agent.run_step(
+            step_number=step_count,
+            step_start=step_start,
+            decision=shift_decision,
+            dom_elements=dom_elements,
+        )
+        steps.append(step_result)
+        post_dom = agent._analyze_dom()
+        after_signature = agent._dom_progress_signature(post_dom) if post_dom else before_signature
+        state_change = (
+            getattr(agent, "_last_exec_result", None).state_change
+            if getattr(agent, "_last_exec_result", None)
+            else None
+        )
+        changed = _strong_shift_progress(state_change)
+        if not changed and bool(post_dom):
+            weak_change = _is_weak_dom_only_change(
+                before_count=len(dom_elements),
+                after_count=len(post_dom),
+                before_signature=before_signature,
+                after_signature=after_signature,
+            )
+            changed = not weak_change
+        agent._record_action_feedback(
+            step_number=step_count,
+            decision=shift_decision,
+            success=success,
+            changed=changed,
+            error=error,
+            reason_code=agent._last_exec_result.reason_code if agent._last_exec_result else "context_shift_no_candidate",
+            state_change=state_change if isinstance(state_change, dict) else None,
+            intent_key="context_shift:fallback_scroll",
+        )
+        agent._record_action_memory(
+            goal=goal,
+            step_number=step_count,
+            decision=shift_decision,
+            success=success,
+            changed=changed,
+            error=error,
+        )
+        if success and changed:
+            _emit_reason(agent, "context_shift_fallback_scroll_ok")
+            return {
+                "continue_loop": True,
+                "force_context_shift": False,
+                "context_shift_fail_streak": 0,
+                "context_shift_cooldown": 0,
+                "ineffective_action_streak": 0,
+            }
+        context_shift_fail_streak += 1
+        _emit_reason(agent, "context_shift_fallback_scroll_failed")
+        return {
+            "continue_loop": True,
+            "force_context_shift": False,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown_steps,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
+
+    agent._log("🧭 컨텍스트 전환 후보/스크롤 fallback 모두 없어 기본 LLM 흐름으로 진행합니다.")
     force_context_shift = False
     return {
         "continue_loop": False,

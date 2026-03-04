@@ -5,6 +5,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import re
 import threading
 import time
@@ -275,6 +276,226 @@ class _TelegramBridge:
             await bot.send_photo(**kwargs)
 
     @staticmethod
+    def _sanitize_payload_for_text(payload_obj: Dict[str, Any]) -> Dict[str, Any]:
+        safe: Dict[str, Any] = dict(payload_obj or {})
+        attachments = safe.get("attachments")
+        if not isinstance(attachments, list):
+            return safe
+
+        sanitized_attachments: list[Dict[str, Any]] = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            item: Dict[str, Any] = {}
+            for key, value in attachment.items():
+                if key == "data":
+                    continue
+                item[key] = value
+            encoded = attachment.get("data")
+            if isinstance(encoded, str) and encoded:
+                item["data_bytes"] = len(encoded)
+            sanitized_attachments.append(item)
+        safe["attachments"] = sanitized_attachments
+        return safe
+
+    @staticmethod
+    def _format_reason_code_summary(summary: Any) -> str:
+        if not isinstance(summary, dict) or not summary:
+            return "-"
+        parts: list[str] = []
+        for key, value in summary.items():
+            try:
+                count = int(value)
+            except Exception:
+                count = 0
+            name = str(key or "").strip()
+            if not name:
+                continue
+            parts.append(f"{name}={count}")
+        return ", ".join(parts) if parts else "-"
+
+    @staticmethod
+    def _truncate(value: Any, limit: int = 120) -> str:
+        text = str(value if value is not None else "").replace("\n", " ").strip()
+        if not text:
+            return "-"
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1] + "…"
+
+    @staticmethod
+    def _resolve_report_mode() -> str:
+        mode = str(os.getenv("GAIA_TG_REPORT_MODE", "summary_with_json") or "").strip().lower()
+        if mode in {"summary_with_json", "summary_only", "legacy_json_text"}:
+            return mode
+        return "summary_with_json"
+
+    @staticmethod
+    def _status_label_ko(status: Any) -> str:
+        token = str(status or "").strip().lower()
+        if token in {"ok", "success"}:
+            return "성공"
+        if token in {"failed", "error"}:
+            return "실패"
+        if token == "empty":
+            return "결과 없음"
+        if token == "exit":
+            return "종료"
+        return token or "-"
+
+    async def _send_json_report(
+        self,
+        bot,
+        chat_id: int,
+        payload_obj: Dict[str, Any],
+        reply_to_message_id: int | None,
+    ) -> bool:
+        try:
+            compact_payload = self._build_compact_report_payload(payload_obj)
+            blob = json.dumps(compact_payload, ensure_ascii=False, indent=2).encode("utf-8")
+            doc = io.BytesIO(blob)
+            doc.name = f"report_{int(time.time())}.json"
+            kwargs: Dict[str, Any] = {
+                "chat_id": chat_id,
+                "document": doc,
+                "caption": "상세 실행 결과(JSON)",
+            }
+            if reply_to_message_id is not None:
+                kwargs["reply_to_message_id"] = reply_to_message_id
+            await bot.send_document(**kwargs)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _compact_validation_checks(rows: Any, limit: int = 50) -> list[Dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        compact: list[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            compact.append(
+                {
+                    "check_id": row.get("check_id"),
+                    "step": row.get("step"),
+                    "status": row.get("status"),
+                    "name": row.get("name"),
+                    "action": row.get("action"),
+                    "input_value": row.get("input_value"),
+                    "error": row.get("error") or "",
+                }
+            )
+            if len(compact) >= limit:
+                break
+        return compact
+
+    @classmethod
+    def _build_compact_report_payload(cls, payload_obj: Dict[str, Any]) -> Dict[str, Any]:
+        payload = payload_obj if isinstance(payload_obj, dict) else {}
+        validation_summary = payload.get("validation_summary")
+        checks = cls._compact_validation_checks(payload.get("validation_checks"), limit=50)
+        reason_codes = payload.get("reason_code_summary")
+        attachments = payload.get("attachments")
+
+        compact: Dict[str, Any] = {
+            "schema_version": "gaia.telegram.report.v1",
+            "generated_at": int(time.time()),
+            "result": {
+                "status": payload.get("status"),
+                "goal": payload.get("goal") or payload.get("command"),
+                "steps": payload.get("steps"),
+                "duration": payload.get("duration"),
+                "reason": payload.get("reason"),
+                "exit_code": payload.get("exit_code"),
+            },
+            "validation": {
+                "summary": validation_summary if isinstance(validation_summary, dict) else {},
+                "checks": checks,
+            },
+            "diagnostics": {
+                "reason_code_summary": reason_codes if isinstance(reason_codes, dict) else {},
+                "url": payload.get("url"),
+                "runtime": payload.get("runtime"),
+            },
+            "artifacts": {
+                "attachments": attachments if isinstance(attachments, list) else [],
+            },
+        }
+
+        # 실패 시 핵심 실패 체크만 추가 제공
+        if str(payload.get("status") or "").strip().lower() in {"failed", "error"}:
+            failed_checks = [row for row in checks if str(row.get("status") or "").strip().lower() == "failed"]
+            compact["diagnostics"]["failed_checks"] = failed_checks[:10]
+
+        return compact
+
+    @classmethod
+    def _format_payload_text(cls, payload: Dict[str, Any], *, mode: str = "summary_with_json") -> str:
+        if not isinstance(payload, dict):
+            return ""
+        goal = cls._truncate(payload.get("goal") or payload.get("command"), 130)
+        reason = cls._truncate(payload.get("reason"), 180)
+        status_label = cls._status_label_ko(payload.get("status"))
+
+        steps = payload.get("steps")
+        steps_text = f"{steps}단계" if steps is not None else "-"
+        duration = payload.get("duration")
+        if duration is None:
+            duration_text = "-"
+        else:
+            try:
+                duration_text = f"{float(duration):.2f}초"
+            except Exception:
+                duration_text = f"{duration}초"
+
+        lines: list[str] = [
+            f"🔥실행 결과 {status_label}🔥",
+            "",
+            f"  목표: {goal}",
+            "",
+            "  단계/시간",
+            f"  {steps_text} / {duration_text}",
+            "",
+            "  판정 사유",
+            f"  {reason}",
+        ]
+
+        validation_summary = payload.get("validation_summary")
+        if isinstance(validation_summary, dict) and validation_summary:
+            total = validation_summary.get("total_checks", 0)
+            passed = validation_summary.get("passed_checks", 0)
+            failed = validation_summary.get("failed_checks", 0)
+            success_rate = validation_summary.get("success_rate", 0)
+            lines.extend(
+                [
+                    "",
+                    "  검증 요약",
+                    f"    - 총 {total}건",
+                    f"    - 성공 {passed}건",
+                    f"    - 실패 {failed}건",
+                    f"    - 성공률 {success_rate}%",
+                ]
+            )
+        if mode == "summary_with_json":
+            lines.extend(
+                [
+                    "",
+                    "  상세 결과",
+                    "    - 첨부된 report.json 확인",
+                ]
+            )
+        elif mode == "summary_only":
+            lines.extend(
+                [
+                    "",
+                    "  상세 결과",
+                    "    - 요약 모드(첨부 없음)",
+                ]
+            )
+        return "\n".join(lines).strip()
+
+    @staticmethod
     def _parse_kv(text: str) -> Dict[str, str]:
         aliases = {
             "id": "username",
@@ -456,13 +677,48 @@ class _TelegramBridge:
                 payload_obj = build_command_payload(self.hub_context, item.raw_command, result)
                 if sink.lines:
                     payload_obj["logs"] = sink.lines
-                payload = json.dumps(payload_obj, ensure_ascii=False, indent=2)
+                payload_for_text = self._sanitize_payload_for_text(payload_obj)
+                report_mode = self._resolve_report_mode()
+                if report_mode == "legacy_json_text":
+                    payload = json.dumps(payload_for_text, ensure_ascii=False, indent=2)
+                else:
+                    payload = self._format_payload_text(payload_for_text, mode=report_mode)
+                    if not payload:
+                        payload = json.dumps(payload_for_text, ensure_ascii=False, indent=2)
                 await self._send_text(application.bot, item.chat_id, payload, item.reply_to_message_id)
+
+                attachment_failed = False
                 if result.attachments:
-                    await self._send_attachments(
+                    try:
+                        await self._send_attachments(
+                            application.bot,
+                            item.chat_id,
+                            result.attachments,
+                            item.reply_to_message_id,
+                        )
+                    except Exception:
+                        attachment_failed = True
+
+                json_failed = False
+                if report_mode == "summary_with_json":
+                    sent = await self._send_json_report(
                         application.bot,
                         item.chat_id,
-                        result.attachments,
+                        payload_for_text,
+                        item.reply_to_message_id,
+                    )
+                    json_failed = not sent
+
+                if attachment_failed or json_failed:
+                    notes: list[str] = []
+                    if attachment_failed:
+                        notes.append("스크린샷 첨부 실패")
+                    if json_failed:
+                        notes.append("상세 JSON 첨부 실패")
+                    await self._send_text(
+                        application.bot,
+                        item.chat_id,
+                        "알림: " + ", ".join(notes),
                         item.reply_to_message_id,
                     )
             except Exception as exc:

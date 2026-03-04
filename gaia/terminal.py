@@ -443,6 +443,130 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
     )
 
 
+def _infer_goal_type(query_text: str) -> str:
+    text = str(query_text or "").lower()
+    if any(token in text for token in ("필터", "filter", "검색", "category", "분류")):
+        return "filter_validation"
+    if any(token in text for token in ("로그인", "login", "auth", "인증")):
+        return "auth_validation"
+    if any(token in text for token in ("회원가입", "signup", "register")):
+        return "signup_validation"
+    return "goal_execution"
+
+
+def _action_label(action_name: str, goal_type: str, reasoning: str) -> str:
+    action = str(action_name or "").lower()
+    reasoning_low = str(reasoning or "").lower()
+    if goal_type == "filter_validation":
+        if action == "select":
+            return "필터 값 변경"
+        if action == "fill":
+            return "필터 검색어 입력"
+        if action == "wait":
+            return "필터 반영 대기"
+        if action == "click":
+            if any(t in reasoning_low for t in ("적용", "apply", "search", "검색", "필터")):
+                return "필터 적용 요청"
+            return "필터 관련 클릭"
+    mapping = {
+        "click": "요소 클릭 검증",
+        "fill": "입력 동작 검증",
+        "select": "선택 동작 검증",
+        "press": "키 입력 동작 검증",
+        "scroll": "스크롤 동작 검증",
+        "wait": "대기/반응 검증",
+        "navigate": "페이지 이동 검증",
+        "hover": "호버 동작 검증",
+    }
+    return mapping.get(action, f"{action or 'unknown'} 동작 검증")
+
+
+def _build_validation_report(query_text: str, result: Any) -> Dict[str, Any]:
+    goal_type = _infer_goal_type(query_text)
+    filter_mode = goal_type == "filter_validation"
+    filter_tokens = ("필터", "filter", "검색", "category", "분류")
+    steps = list(getattr(result, "steps_taken", []) or [])
+    checks: list[Dict[str, Any]] = []
+
+    for step in steps:
+        action_obj = getattr(step, "action", None)
+        action_raw = getattr(action_obj, "action", "")
+        action_name = (
+            str(getattr(action_raw, "value", "") or action_raw or "").strip().lower()
+        )
+        reasoning = str(getattr(action_obj, "reasoning", "") or "").strip()
+        reasoning_low = reasoning.lower()
+        is_relevant = True
+        if filter_mode:
+            is_relevant = action_name in {"select", "fill", "click", "wait"} and (
+                any(token in reasoning_low for token in filter_tokens) or action_name in {"select", "fill"}
+            )
+        if not is_relevant:
+            continue
+
+        success = bool(getattr(step, "success", False))
+        status = "passed" if success else "failed"
+        element_id = getattr(action_obj, "element_id", None)
+        input_value = getattr(action_obj, "value", None)
+        error_message = str(getattr(step, "error_message", "") or "").strip()
+
+        checks.append(
+            {
+                "check_id": f"step_{int(getattr(step, 'step_number', len(checks) + 1) or (len(checks) + 1))}",
+                "name": _action_label(action_name, goal_type, reasoning),
+                "status": status,
+                "step": int(getattr(step, "step_number", len(checks) + 1) or (len(checks) + 1)),
+                "action": action_name or "unknown",
+                "element_id": element_id,
+                "input_value": input_value,
+                "reasoning": reasoning,
+                "error": error_message,
+            }
+        )
+
+    if not checks:
+        for step in steps[:10]:
+            action_obj = getattr(step, "action", None)
+            action_raw = getattr(action_obj, "action", "")
+            action_name = (
+                str(getattr(action_raw, "value", "") or action_raw or "").strip().lower()
+            )
+            reasoning = str(getattr(action_obj, "reasoning", "") or "").strip()
+            success = bool(getattr(step, "success", False))
+            checks.append(
+                {
+                    "check_id": f"step_{int(getattr(step, 'step_number', len(checks) + 1) or (len(checks) + 1))}",
+                    "name": _action_label(action_name, "goal_execution", reasoning),
+                    "status": "passed" if success else "failed",
+                    "step": int(getattr(step, "step_number", len(checks) + 1) or (len(checks) + 1)),
+                    "action": action_name or "unknown",
+                    "element_id": getattr(action_obj, "element_id", None),
+                    "input_value": getattr(action_obj, "value", None),
+                    "reasoning": reasoning,
+                    "error": str(getattr(step, "error_message", "") or "").strip(),
+                }
+            )
+
+    total = len(checks)
+    passed = sum(1 for c in checks if str(c.get("status")) == "passed")
+    failed = sum(1 for c in checks if str(c.get("status")) == "failed")
+    skipped = max(0, total - passed - failed)
+    success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
+
+    summary = {
+        "goal_type": goal_type,
+        "total_checks": total,
+        "passed_checks": passed,
+        "failed_checks": failed,
+        "skipped_checks": skipped,
+        "success_rate": success_rate,
+    }
+    return {
+        "summary": summary,
+        "checks": checks,
+    }
+
+
 def _print_llm_failure_help(reason: str) -> None:
     text = (reason or "").lower()
     if "insufficient_quota" not in text:
@@ -478,12 +602,21 @@ def _run_single_chat_goal(
     print(f"duration: {result.duration_seconds:.2f}s")
     if not result.success:
         _print_llm_failure_help(result.final_reason)
+    validation_report = _build_validation_report(goal.description, result)
     summary = {
         "goal": result.goal_name,
         "status": "success" if result.success else "failed",
         "steps": result.total_steps,
         "reason": result.final_reason,
         "duration_seconds": round(float(result.duration_seconds), 2),
+        "reason_code_summary": (
+            dict(getattr(agent, "_reason_code_counts", {}) or {})
+            if isinstance(getattr(agent, "_reason_code_counts", {}), dict)
+            else {}
+        ),
+        "validation_summary": validation_report.get("summary", {}),
+        "validation_checks": validation_report.get("checks", []),
+        "verification_report": validation_report,
     }
     if isinstance(goal.test_data, dict):
         auth_payload = {}
@@ -593,6 +726,7 @@ def run_ai_terminal(
     max_actions: int = 50,
     session_id: str = WORKSPACE_DEFAULT,
     time_budget_seconds: int | None = None,
+    intervention_callback: Optional[Callable[[str, str], Any]] = None,
 ) -> int:
     if not url:
         print("URL is required for terminal ai mode.", file=sys.stderr)
@@ -616,6 +750,7 @@ def run_ai_terminal(
             mcp_host_url=CONFIG.mcp.host_url,
             session_id=session_id or WORKSPACE_DEFAULT,
             config=config,
+            user_intervention_callback=intervention_callback,
         )
         if budget > 0:
             print(f"AI 자율 탐색 시작: {url} (time_budget={budget}s)")

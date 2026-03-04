@@ -142,6 +142,9 @@ class ExploratoryAgent:
             ping_pong_warning_threshold=3,
             ping_pong_critical_threshold=4,
         )
+        self._forced_completion_reason: str = ""
+        self._auth_intervention_asked: bool = False
+        self._auth_input_values: Dict[str, str] = {}
 
     def _log(self, message: str):
         """로그 출력"""
@@ -722,12 +725,80 @@ class ExploratoryAgent:
 
         # 콜백이 있으면 콜백 사용
         if self._user_intervention_callback:
-            return self._user_intervention_callback(reason, current_url)
+            callback_resp = self._user_intervention_callback(reason, current_url)
+            if isinstance(callback_resp, dict):
+                username = str(
+                    callback_resp.get("username")
+                    or callback_resp.get("id")
+                    or callback_resp.get("user")
+                    or ""
+                ).strip()
+                email = str(callback_resp.get("email") or "").strip()
+                password = str(callback_resp.get("password") or "").strip()
+                auth_mode = str(callback_resp.get("auth_mode") or "").strip().lower()
+                manual_done = bool(callback_resp.get("manual_done"))
+                proceed_raw = callback_resp.get("proceed")
+                proceed = True
+                if isinstance(proceed_raw, bool):
+                    proceed = proceed_raw
+                elif isinstance(proceed_raw, str):
+                    proceed = proceed_raw.strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "y",
+                        "on",
+                        "continue",
+                        "c",
+                    }
+                if auth_mode in {"signup", "register"}:
+                    self._auth_input_values["auth_mode"] = "signup"
+                if username:
+                    self._auth_input_values["username"] = username
+                if email:
+                    self._auth_input_values["email"] = email
+                if password:
+                    self._auth_input_values["password"] = password
+                if manual_done:
+                    self._auth_input_values["manual_done"] = "true"
+                if proceed:
+                    self._forced_completion_reason = ""
+                else:
+                    self._forced_completion_reason = (
+                        "auth_required: 로그인 요청이 와서 사용자 입력을 기다리는 중입니다. "
+                        "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요."
+                    )
+                return proceed
+            proceed = bool(callback_resp)
+            if proceed:
+                self._forced_completion_reason = ""
+            else:
+                self._forced_completion_reason = (
+                    "auth_required: 로그인 요청이 와서 사용자 입력을 기다리는 중입니다. "
+                    "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요."
+                )
+            return proceed
 
         # 콜백이 없으면 기본 input() 사용
+        interactive_stdin = False
+        try:
+            interactive_stdin = bool(os.isatty(0))
+        except Exception:
+            interactive_stdin = False
+        if not interactive_stdin:
+            self._forced_completion_reason = (
+                "auth_required: 로그인 요청이 와서 사용자 입력을 기다리는 중입니다. "
+                "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요."
+            )
+            self._log(
+                "⏸️ 로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요. "
+                "비대화 실행이라 입력을 받을 수 없어 현재 실행을 일시 중지합니다."
+            )
+            return False
         print(f"\n🔔 사용자 개입이 필요합니다!")
         print(f"이유: {reason}")
         print(f"현재 URL: {current_url}")
+        print("로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요.")
         print(f"\n브라우저에서 필요한 작업(로그인 등)을 완료한 후,")
         user_input = (
             input("계속하려면 'c' 또는 'continue'를 입력하세요 (중단: 'q'): ")
@@ -863,28 +934,34 @@ class ExploratoryAgent:
             master_orchestrator.set_phase(self._runtime_phase)
             self._log(f"   - phase: {self._runtime_phase}")
 
+            if self._runtime_phase == "AUTH" and not self._auth_intervention_asked:
+                should_continue = self._request_user_intervention(
+                    reason=(
+                        "로그인 요청이 왔습니다. 어떻게 할까요? "
+                        "아이디/비밀번호를 알려주거나 수동 로그인 후 계속 진행할 수 있습니다."
+                    ),
+                    current_url=page_state.url,
+                )
+                if not should_continue:
+                    self._log("🛑 인증 사용자 입력 대기 상태로 실행을 중지합니다.")
+                    break
+                self._auth_intervention_asked = True
+            elif self._runtime_phase != "AUTH":
+                self._auth_intervention_asked = False
+
             # 로그인 페이지 감지 및 사용자 개입 요청
             if self._is_login_page_with_no_elements(page_state):
                 self._log(
                     "🔐 로그인 페이지 감지됨 (요소 접근 불가 - cross-origin iframe 또는 특수 인증)"
                 )
-                if self.config.non_stop_mode:
-                    self._log(
-                        "🤖 무중단 모드: 사용자 개입 없이 계속 진행합니다 "
-                        "(로그인 게이트는 차단 이슈로 남기고 다음 스텝에서 전략 전환)."
-                    )
-                    if page_state.url and page_state.url != start_url:
-                        self._log("🧭 무중단 모드: 시작 URL로 재동기화합니다.")
-                        self._execute_action("goto", url=start_url)
-                        time.sleep(2)
-                        self._current_url = start_url
-                    continue
-
                 if not self._request_user_intervention(
-                    reason="로그인이 필요합니다. 브라우저에서 수동으로 로그인해주세요.",
+                    reason=(
+                        "로그인이 필요합니다. 로그인 요청왔는데 어떻게 할까요? "
+                        "아이디 비밀번호를 알려주세요."
+                    ),
                     current_url=page_state.url,
                 ):
-                    self._log("탐색 중단")
+                    self._log("탐색 중단 (auth_required)")
                     break
 
                 # 사용자가 로그인 완료 후 페이지 재분석
@@ -1184,15 +1261,18 @@ class ExploratoryAgent:
                     before_toggle_state=before_toggle_state,
                 )
                 if not intent_ok and intent_reason:
-                    issues.append(
-                        self._create_intent_issue(
-                            action=decision.selected_action,
-                            url=page_state.url,
-                            reason=intent_reason,
-                            screenshot_before=screenshot_before,
-                            screenshot_after=screenshot_after,
+                    # select 액션은 화면/URL 변화가 미세해 의도 검증 오탐이 자주 발생한다.
+                    # 범용 탐색 품질을 위해 기본 이슈 기록에서 제외하고 실제 오류 신호(console/http)만 반영한다.
+                    if decision.selected_action.action_type != "select":
+                        issues.append(
+                            self._create_intent_issue(
+                                action=decision.selected_action,
+                                url=page_state.url,
+                                reason=intent_reason,
+                                screenshot_before=screenshot_before,
+                                screenshot_after=screenshot_after,
+                            )
                         )
-                    )
 
             # 12-1. 기능 중심 설명 생성
             feature_info = self._generate_feature_description(
@@ -1744,6 +1824,57 @@ class ExploratoryAgent:
                 confidence=1.0,
             )
 
+        # AUTH phase에서는 LLM 자유탐색보다 인증 플로우를 우선 강제한다.
+        if str(self._runtime_phase or "").upper() == "AUTH":
+            def _auth_haystack(action: TestableAction) -> str:
+                return str(action.description or "").strip().lower()
+
+            auth_fill_keywords = (
+                "아이디",
+                "username",
+                "user id",
+                "email",
+                "이메일",
+                "password",
+                "비밀번호",
+                "otp",
+                "captcha",
+                "인증",
+            )
+            auth_submit_keywords = ("로그인", "login", "log in", "sign in")
+            auth_signup_keywords = ("회원가입", "sign up", "signup", "register")
+
+            auth_fill_actions = [
+                a
+                for a in testable_actions
+                if a.action_type == "fill"
+                and any(k in _auth_haystack(a) for k in auth_fill_keywords)
+            ]
+            if auth_fill_actions:
+                auth_fill_actions.sort(key=lambda x: float(x.priority), reverse=True)
+                return ExplorationDecision(
+                    should_continue=True,
+                    selected_action=auth_fill_actions[0],
+                    reasoning="AUTH 단계: 인증 입력 필드 우선",
+                    confidence=0.9,
+                )
+
+            auth_login_clicks = [
+                a
+                for a in testable_actions
+                if a.action_type == "click"
+                and any(k in _auth_haystack(a) for k in auth_submit_keywords)
+                and not any(k in _auth_haystack(a) for k in auth_signup_keywords)
+            ]
+            if auth_login_clicks:
+                auth_login_clicks.sort(key=lambda x: float(x.priority), reverse=True)
+                return ExplorationDecision(
+                    should_continue=True,
+                    selected_action=auth_login_clicks[0],
+                    reasoning="AUTH 단계: 로그인 제출 액션 우선",
+                    confidence=0.9,
+                )
+
         state_key = self._state_key(page_state, testable_actions)
         self._current_state_key = state_key
         visited_actions = self._state_action_history.get(state_key, set())
@@ -1890,6 +2021,7 @@ class ExploratoryAgent:
         pending_inputs = self._has_pending_inputs(page_state)
         has_tested_inputs = self._has_tested_inputs(page_state)
         auth_form_active = self._has_login_form(page_state)
+        auth_phase_active = str(self._runtime_phase or "").upper() == "AUTH"
         actions_with_status: List[tuple[TestableAction, bool]] = []
 
         for element in page_state.interactive_elements:
@@ -1952,7 +2084,32 @@ class ExploratoryAgent:
                 action_type = "click"
                 description = f"{element.tag}: {element_label or element.role}"
 
-            if auth_form_active:
+            auth_mode = str(self._auth_input_values.get("auth_mode") or "").strip().lower()
+            has_auth_credentials = bool(
+                str(self._auth_input_values.get("password") or "").strip()
+                and (
+                    str(self._auth_input_values.get("username") or "").strip()
+                    or str(self._auth_input_values.get("email") or "").strip()
+                )
+            )
+            if (
+                auth_phase_active
+                and has_auth_credentials
+                and auth_mode not in {"signup", "register"}
+                and action_type == "click"
+            ):
+                desc_lower = description.lower()
+                signup_keywords = (
+                    "회원가입",
+                    "sign up",
+                    "signup",
+                    "register",
+                    "계정이 없으신가요",
+                )
+                if any(keyword in desc_lower for keyword in signup_keywords):
+                    continue
+
+            if auth_phase_active:
                 desc_lower = description.lower()
                 auth_keywords = [
                     "login",
@@ -1981,14 +2138,29 @@ class ExploratoryAgent:
                     "cancel",
                     "취소",
                     "닫기",
-                    "x",
                 ]
-                is_auth_form_control = element.tag in {"input", "textarea"}
+                element_hint = " ".join(
+                    [
+                        desc_lower,
+                        str(element_label or "").lower(),
+                        str(element.selector or "").lower(),
+                        str(getattr(element, "aria_label", "") or "").lower(),
+                        str(getattr(element, "placeholder", "") or "").lower(),
+                        str(getattr(element, "title", "") or "").lower(),
+                        str(getattr(element, "text", "") or "").lower(),
+                    ]
+                )
+                input_type = str(getattr(element, "type", "") or "").lower()
+                is_auth_form_control = element.tag in {"input", "textarea"} and (
+                    input_type in {"password", "email"}
+                    or any(keyword in element_hint for keyword in auth_keywords)
+                )
                 is_auth_cta = action_type == "click" and any(
-                    keyword in desc_lower for keyword in auth_keywords
+                    keyword in element_hint for keyword in auth_keywords
                 )
                 if not (is_auth_form_control or is_auth_cta):
                     continue
+                priority = min(1.0, (priority * 1.15) + 0.05)
 
             if action_type == "select" and not str(element_label or "").strip():
                 priority *= 0.25
@@ -2000,7 +2172,25 @@ class ExploratoryAgent:
                 priority *= 0.8
 
             # Guard: 필수 입력이 남아있으면 제출/확인 버튼 제외
-            if pending_inputs and action_type == "click":
+            auth_trigger_click = False
+            if auth_phase_active and action_type == "click":
+                auth_trigger_keywords = [
+                    "login",
+                    "log in",
+                    "sign in",
+                    "signup",
+                    "sign up",
+                    "회원가입",
+                    "로그인",
+                    "인증",
+                    "verify",
+                ]
+                label_lower = description.lower()
+                auth_trigger_click = any(
+                    keyword in label_lower for keyword in auth_trigger_keywords
+                )
+
+            if pending_inputs and action_type == "click" and not auth_trigger_click:
                 if self._has_login_form(page_state):
                     if element.tag == "input" and (element.type or "").lower() in [
                         "submit",
@@ -2095,6 +2285,8 @@ class ExploratoryAgent:
                     "clear",
                     "reset",
                     "logout",
+                    "로그아웃",
+                    "로그 아웃",
                     "log out",
                     "sign out",
                     "reset app state",
@@ -2135,6 +2327,23 @@ class ExploratoryAgent:
         has_untested = any(not tested for _, tested in actions_with_status)
         if has_untested:
             actions = [action for action, tested in actions_with_status if not tested]
+            if auth_phase_active and self._has_login_form(page_state):
+                auth_submit_keywords = ("login", "log in", "sign in", "로그인")
+                for action, _tested in actions_with_status:
+                    if action.action_type != "click":
+                        continue
+                    desc = str(action.description or "").lower()
+                    if not any(keyword in desc for keyword in auth_submit_keywords):
+                        continue
+                    duplicate = any(
+                        str(existing.element_id) == str(action.element_id)
+                        and str(existing.action_type) == str(action.action_type)
+                        for existing in actions
+                    )
+                    if duplicate:
+                        continue
+                    action.priority = min(1.0, float(action.priority) + 0.35)
+                    actions.append(action)
         actions.extend(self._build_navigation_actions(page_state))
 
         # 우선순위로 정렬
@@ -2747,16 +2956,25 @@ JSON 응답:"""
                     error_logs=new_errors,
                     url=page_state.url,
                 )
-                issues.append(issue)
+                if issue is not None:
+                    issues.append(issue)
 
             # 액션 실패도 이슈로 기록
             if not success and error:
-                issue = self._create_action_failure_issue(
-                    action=action,
-                    error_message=error,
-                    url=page_state.url,
+                err_lower = str(error or "").lower()
+                desc_lower = str(action.description or "").lower()
+                is_auth_login_timeout = (
+                    str(self._runtime_phase or "").upper() == "AUTH"
+                    and ("로그인" in desc_lower or "login" in desc_lower)
+                    and "read timed out" in err_lower
                 )
-                issues.append(issue)
+                if not is_auth_login_timeout:
+                    issue = self._create_action_failure_issue(
+                        action=action,
+                        error_message=error,
+                        url=page_state.url,
+                    )
+                    issues.append(issue)
 
             return success, error, issues
 
@@ -2818,6 +3036,9 @@ JSON 응답:"""
     ) -> tuple[bool, Optional[str]]:
         """MCP Host를 통해 액션 실행"""
         self._last_exec_meta = {}
+        request_timeout = float(self.config.action_timeout)
+        if action in {"click", "fill", "select"}:
+            request_timeout = max(request_timeout, 60.0)
 
         resolved_ref_id = ref_id
         is_element_action = action in {
@@ -2869,7 +3090,7 @@ JSON 응답:"""
                 response = requests.post(
                     f"{self.mcp_host_url}/execute",
                     json={"action": "browser_act", "params": ref_params},
-                    timeout=self.config.action_timeout,
+                    timeout=request_timeout,
                 )
                 data = response.json()
                 success = bool(data.get("success"))
@@ -2925,7 +3146,7 @@ JSON 응답:"""
                         retry_response = requests.post(
                             f"{self.mcp_host_url}/execute",
                             json={"action": "browser_act", "params": retry_params},
-                            timeout=self.config.action_timeout,
+                            timeout=request_timeout,
                         )
                         retry_data = retry_response.json()
                         retry_success = bool(retry_data.get("success"))
@@ -2989,7 +3210,7 @@ JSON 응답:"""
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
                 json={"action": "browser_act", "params": params},
-                timeout=self.config.action_timeout,
+                timeout=request_timeout,
             )
 
             # HTTP 상태 코드 로깅
@@ -3347,6 +3568,20 @@ JSON 응답:"""
             if "username" in desc_lower or "사용자" in desc_lower:
                 return "standard_user"
 
+        if self._auth_input_values:
+            if "비밀번호" in desc_lower or "password" in desc_lower:
+                password = str(self._auth_input_values.get("password") or "").strip()
+                if password:
+                    return password
+            else:
+                username = str(
+                    self._auth_input_values.get("username")
+                    or self._auth_input_values.get("email")
+                    or ""
+                ).strip()
+                if username:
+                    return username
+
         # 명시적으로 제공된 값 사용 (LLM이 제공한 input_values 우선)
         if input_values:
             # 비밀번호 필드면 password 키 찾기
@@ -3386,25 +3621,32 @@ JSON 응답:"""
         action: TestableAction,
         error_logs: List[Any],
         url: str,
-    ) -> FoundIssue:
+    ) -> Optional[FoundIssue]:
         """콘솔 에러 이슈 생성"""
         issue_id = f"ERR_{int(time.time())}_{len(self._found_issues)}"
         normalized_logs = [str(item) for item in error_logs]
+        filtered_logs = [
+            log
+            for log in normalized_logs
+            if not self._is_expected_non_bug_console_error(log)
+        ]
+        if not filtered_logs:
+            return None
 
         return FoundIssue(
             issue_id=issue_id,
             issue_type=IssueType.ERROR,
-            severity="high",
+            severity="medium",
             title=f"JavaScript 에러 발생: {action.description}",
             description=f"액션 실행 후 콘솔 에러가 발생했습니다.\n\n에러 로그:\n"
-            + "\n".join(normalized_logs[:5]),
+            + "\n".join(filtered_logs[:5]),
             url=url,
             steps_to_reproduce=[
                 f"1. {url}로 이동",
                 f"2. {action.description}를 {action.action_type}",
             ],
-            error_message=normalized_logs[0] if normalized_logs else None,
-            console_logs=normalized_logs,
+            error_message=filtered_logs[0] if filtered_logs else None,
+            console_logs=filtered_logs,
         )
 
     def _create_action_failure_issue(
@@ -3415,11 +3657,17 @@ JSON 응답:"""
     ) -> FoundIssue:
         """액션 실패 이슈 생성"""
         issue_id = f"FAIL_{int(time.time())}_{len(self._found_issues)}"
+        err = str(error_message or "").lower()
+        severity = "medium"
+        issue_type = IssueType.UNEXPECTED_BEHAVIOR
+        if "read timed out" in err or "request_exception" in err:
+            severity = "low"
+            issue_type = IssueType.TIMEOUT
 
         return FoundIssue(
             issue_id=issue_id,
-            issue_type=IssueType.UNEXPECTED_BEHAVIOR,
-            severity="medium",
+            issue_type=issue_type,
+            severity=severity,
             title=f"액션 실행 실패: {action.description}",
             description=f"액션을 실행했지만 실패했습니다.\n\n오류: {error_message}",
             url=url,
@@ -3606,22 +3854,65 @@ JSON 응답:"""
         self, console_errors: List[str], screenshot: Optional[str]
     ):
         """콘솔 에러 리포트"""
+        filtered_errors = [
+            str(log)
+            for log in (console_errors or [])
+            if not self._is_expected_non_bug_console_error(str(log))
+        ]
+        if not filtered_errors:
+            return
         issue_id = f"CONSOLE_{int(time.time())}"
 
         issue = FoundIssue(
             issue_id=issue_id,
             issue_type=IssueType.ERROR,
             severity="medium",
-            title=f"콘솔 에러 감지: {len(console_errors)}개",
+            title=f"콘솔 에러 감지: {len(filtered_errors)}개",
             description=f"페이지 로드 시 콘솔 에러가 발견되었습니다.\n\n"
-            + "\n".join(console_errors[:5]),
+            + "\n".join(filtered_errors[:5]),
             url=self._current_url,
             steps_to_reproduce=[f"1. {self._current_url}로 이동"],
-            console_logs=console_errors,
+            console_logs=filtered_errors,
             screenshot_before=screenshot,
         )
 
         self._found_issues.append(issue)
+
+    @staticmethod
+    def _is_expected_non_bug_console_error(log_text: str) -> bool:
+        text = str(log_text or "").lower()
+        if not text:
+            return False
+        expected_patterns = (
+            "이미 사용 중인 아이디",
+            "already used",
+            "already exists",
+            "duplicate",
+            "invalid credentials",
+            "wrong password",
+            "비밀번호가 일치하지",
+            "회원가입 실패",
+            "로그인 실패",
+            "api 에러 상세",
+        )
+        has_expected = any(pat in text for pat in expected_patterns)
+        if not has_expected:
+            return False
+        if "400" in text or "failed to load resource" in text:
+            return True
+        # 사이트별 인증/중복 검증 메시지는 HTTP 코드가 노출되지 않아도 정상 동작일 수 있음
+        auth_validation_hints = (
+            "회원가입",
+            "로그인",
+            "auth",
+            "credential",
+            "아이디",
+            "비밀번호",
+            "validation",
+        )
+        if any(h in text for h in auth_validation_hints):
+            return True
+        return False
 
     def _calculate_coverage(self) -> Dict[str, Any]:
         """테스트 커버리지 계산"""
@@ -3647,6 +3938,8 @@ JSON 응답:"""
         duration_seconds: float = 0.0,
     ) -> str:
         """탐색 종료 이유 결정"""
+        if self._forced_completion_reason:
+            return self._forced_completion_reason
         if (
             self.config.loop_mode == "time"
             and int(self.config.time_budget_seconds or 0) > 0

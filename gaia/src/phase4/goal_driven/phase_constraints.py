@@ -16,9 +16,9 @@ def is_collect_constraint_unmet(
     except Exception:
         collect_min_value = 0.0
     if goal_metric_value is None:
-        # "1개 열기/보기/클릭"류 목표는 초기 metric이 unknown이어도
-        # 상호작용 진입을 막지 않아야 루프를 피할 수 있다.
-        return collect_min_value > 1.0
+        # unknown metric은 low-confidence 상태로 간주하고 hard gate를 적용하지 않는다.
+        # (정체 루프 방지, 실제 완료는 후속 검증/증거로 판정)
+        return False
     return float(goal_metric_value) + 1e-9 < collect_min_value
 
 

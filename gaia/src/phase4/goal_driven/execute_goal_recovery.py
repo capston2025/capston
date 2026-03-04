@@ -6,6 +6,38 @@ from typing import Any, Dict, List, Optional
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
 
+def _policy_int(agent: Any, key: str, default: int) -> int:
+    cfg = getattr(agent, "_loop_policy", {})
+    if isinstance(cfg, dict):
+        try:
+            return max(0, int(cfg.get(key, default)))
+        except Exception:
+            return max(0, int(default))
+    return max(0, int(default))
+
+
+def _emit_reason(agent: Any, code: str) -> None:
+    if not code:
+        return
+    recorder = getattr(agent, "_record_reason_code", None)
+    if callable(recorder):
+        recorder(code)
+
+
+def _retry_streak(agent: Any, key: str, *, reset: bool = False) -> int:
+    bucket = getattr(agent, "_recovery_retry_streaks", {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+    if reset:
+        bucket[key] = 0
+        agent._recovery_retry_streaks = bucket
+        return 0
+    value = int(bucket.get(key, 0)) + 1
+    bucket[key] = value
+    agent._recovery_retry_streaks = bucket
+    return value
+
+
 def handle_action_recovery(
     *,
     agent: Any,
@@ -21,6 +53,8 @@ def handle_action_recovery(
     ineffective_action_streak: int,
 ) -> Dict[str, Any]:
     if success and changed:
+        _retry_streak(agent, "transient", reset=True)
+        _retry_streak(agent, "timeout", reset=True)
         return {
             "continue_loop": False,
             "force_context_shift": force_context_shift,
@@ -55,6 +89,7 @@ def handle_action_recovery(
 
     if reason_code == "modal_not_open":
         agent._log("🧭 close 대상 모달이 현재 열려있지 않아 재계획합니다.")
+        _emit_reason(agent, "modal_not_open_replan")
         agent._action_feedback.append(
             "닫기 액션 시점에 모달이 열려있지 않았습니다. 최신 화면 기준으로 후보를 다시 수집하고 "
             "닫기 대신 현재 활성 CTA를 선택하세요."
@@ -65,7 +100,7 @@ def handle_action_recovery(
         time.sleep(0.2)
         return {
             "continue_loop": True,
-            "force_context_shift": True,
+            "force_context_shift": False,
             "ineffective_action_streak": 0,
         }
 
@@ -92,6 +127,9 @@ def handle_action_recovery(
         "ambiguous_selector",
         "not_found",
     }:
+        _emit_reason(agent, "snapshot_refresh")
+        _retry_streak(agent, "transient", reset=True)
+        _retry_streak(agent, "timeout", reset=True)
         agent._log("♻️ snapshot/ref 갱신이 필요해 DOM을 재수집합니다.")
         _ = agent._analyze_dom()
         time.sleep(0.25)
@@ -101,11 +139,41 @@ def handle_action_recovery(
             "ineffective_action_streak": 0,
         }
 
-    if reason_code in {"request_exception", "http_5xx"}:
+    if reason_code in {"request_exception", "http_5xx", "action_timeout"}:
         attempt_count = agent._last_exec_result.attempt_count if agent._last_exec_result else 0
-        backoff = min(2.5, 0.6 + (0.25 * max(0, attempt_count)))
+        is_timeout = reason_code == "action_timeout"
+        bucket_key = "timeout" if is_timeout else "transient"
+        retry_limit = max(
+            1,
+            _policy_int(
+                agent,
+                "action_timeout_retry_limit" if is_timeout else "transient_retry_limit",
+                2,
+            ),
+        )
+        streak = _retry_streak(agent, bucket_key, reset=False)
+        backoff_base = 0.8 if is_timeout else 0.6
+        backoff = min(3.5, backoff_base + (0.35 * max(0, attempt_count)) + (0.25 * max(0, streak - 1)))
+        if streak > retry_limit:
+            _emit_reason(
+                agent,
+                "action_timeout_retry_exhausted" if is_timeout else "transient_retry_exhausted",
+            )
+            agent._log(
+                f"🌐 재시도 예산 소진({reason_code}, streak={streak}/{retry_limit}): "
+                "강제 컨텍스트 전환으로 복구 전략을 변경합니다."
+            )
+            _ = agent._analyze_dom()
+            time.sleep(0.2)
+            return {
+                "continue_loop": True,
+                "force_context_shift": True,
+                "ineffective_action_streak": 0,
+            }
+        _emit_reason(agent, "action_timeout_retry" if is_timeout else "transient_retry")
         agent._log(
-            f"🌐 일시적 통신 오류({reason_code}) 감지: {backoff:.2f}s 대기 후 재시도합니다."
+            f"🌐 일시적 실행 오류({reason_code}) 감지: "
+            f"{backoff:.2f}s 대기 후 재시도합니다. (streak={streak}/{retry_limit})"
         )
         _ = agent._analyze_dom()
         time.sleep(backoff)

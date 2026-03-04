@@ -147,6 +147,9 @@ class GoalDrivenAgent:
         self._goal_constraints: Dict[str, Any] = {}
         self._goal_metric_value: Optional[float] = None
         self._goal_tokens: set[str] = set()
+        self._reason_code_counts: Dict[str, int] = {}
+        self._recovery_retry_streaks: Dict[str, int] = {}
+        self._overlay_intercept_pending: bool = False
         self._loop_policy: Dict[str, int] = {
             "ref_soft_fail_limit": self._env_int("GAIA_LOOP_REF_SOFT_FAIL_LIMIT", 2, low=1, high=20),
             "scroll_streak_limit": self._env_int("GAIA_LOOP_SCROLL_STREAK_LIMIT", 3, low=1, high=20),
@@ -156,6 +159,11 @@ class GoalDrivenAgent:
             "ineffective_action_stop_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_STOP_LIMIT", 8, low=2, high=80),
             "context_shift_fail_limit": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_FAIL_LIMIT", 3, low=1, high=20),
             "context_shift_cooldown_steps": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_COOLDOWN_STEPS", 4, low=0, high=60),
+            "transient_retry_limit": self._env_int("GAIA_LOOP_TRANSIENT_RETRY_LIMIT", 2, low=1, high=20),
+            "action_timeout_retry_limit": self._env_int("GAIA_LOOP_ACTION_TIMEOUT_RETRY_LIMIT", 2, low=1, high=20),
+            "collect_gate_override_after": self._env_int("GAIA_LOOP_COLLECT_GATE_OVERRIDE_AFTER", 2, low=1, high=20),
+            "captcha_solver_attempt_limit": self._env_int("GAIA_CAPTCHA_SOLVER_ATTEMPT_LIMIT", 2, low=1, high=10),
+            "captcha_solver_cooldown_steps": self._env_int("GAIA_CAPTCHA_SOLVER_COOLDOWN_STEPS", 4, low=1, high=40),
         }
 
         # 실행 기억(KB)
@@ -189,6 +197,14 @@ class GoalDrivenAgent:
         except Exception:
             value = int(default)
         return max(0, value)
+
+    def _record_reason_code(self, code: Optional[str]) -> None:
+        key = str(code or "").strip()
+        if not key:
+            return
+        counts = self._reason_code_counts if isinstance(self._reason_code_counts, dict) else {}
+        counts[key] = int(counts.get(key, 0)) + 1
+        self._reason_code_counts = counts
 
     @staticmethod
     def _normalize_text(value: Optional[str]) -> str:
@@ -980,7 +996,7 @@ class GoalDrivenAgent:
     ) -> bool:
         if not (success and changed):
             return False
-        if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.NAVIGATE}:
+        if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.NAVIGATE, ActionType.SELECT}:
             return False
         if not self._is_verification_style_goal(goal):
             return False
@@ -1811,6 +1827,17 @@ class GoalDrivenAgent:
         close_hints = ("닫", "close", "x 버튼", "모달", "popup", "팝업")
         return decision.action.value in {"click", "wait"} and any(h in reason for h in close_hints)
 
+    @staticmethod
+    def _error_indicates_overlay_intercept(error: Optional[str]) -> bool:
+        text = str(error or "").lower()
+        if not text:
+            return False
+        if "intercepts pointer events" in text:
+            return True
+        if "subtree intercepts pointer events" in text:
+            return True
+        return False
+
     def _pick_context_shift_element(
         self,
         dom_elements: List[DOMElement],
@@ -2044,6 +2071,7 @@ class GoalDrivenAgent:
         intent_key: Optional[str] = None,
     ):
         code = reason_code or (self._last_exec_result.reason_code if self._last_exec_result else "unknown")
+        self._record_reason_code(str(code or "unknown"))
         self._update_intent_stats(
             intent_key=intent_key or "",
             success=bool(success),
@@ -2341,6 +2369,9 @@ class GoalDrivenAgent:
         start_time = time.time()
         self._action_history = []
         self._action_feedback = []
+        self._reason_code_counts = {}
+        self._recovery_retry_streaks = {}
+        self._overlay_intercept_pending = False
         steps: List[StepResult] = []
         self._active_goal_text = f"{goal.name} {goal.description}".strip().lower()
         self._ineffective_ref_counts = {}
@@ -2541,14 +2572,23 @@ class GoalDrivenAgent:
             screenshot = self._capture_screenshot()
 
             # 2.5 CAPTCHA 감지 및 자동 해결
-            if screenshot and not getattr(self, "_captcha_solver_skip", False):
+            captcha_skip_until = int(getattr(self, "_captcha_solver_skip_until_step", 0) or 0)
+            captcha_solver_allowed = (
+                screenshot
+                and not getattr(self, "_captcha_solver_skip", False)
+                and int(step_count) >= captcha_skip_until
+            )
+            if captcha_solver_allowed:
                 if not hasattr(self, "_captcha_solver"):
+                    captcha_attempts = self._loop_policy_value("captcha_solver_attempt_limit", 2)
+                    if captcha_attempts <= 0:
+                        captcha_attempts = 2
                     self._captcha_solver = CaptchaSolver(
                         vision_client=self.llm,
                         execute_fn=self._execute_action,
                         mcp_host_url=self.mcp_host_url,
                         session_id=self.session_id,
-                        max_attempts=5,
+                        max_attempts=captcha_attempts,
                         log_fn=self._log,
                     )
                 captcha_result = self._captcha_solver.detect_and_handle(
@@ -2558,6 +2598,7 @@ class GoalDrivenAgent:
                 )
                 if captcha_result.solved:
                     self._log(f"🔓 CAPTCHA 해결 완료 ({captcha_result.attempts}회 시도)")
+                    self._captcha_solver_skip_until_step = 0
                     self._action_history.append(
                         f"Step {step_count}: captcha_solve - CAPTCHA 자동 해결 ({captcha_result.status})"
                     )
@@ -2565,12 +2606,20 @@ class GoalDrivenAgent:
                     continue  # DOM 재수집 후 다음 스텝
                 elif captcha_result.status == "gave_up":
                     self._log("🏳️ CAPTCHA 해결 포기 — 일반 LLM 흐름으로 계속")
+                    cooldown_steps = self._loop_policy_value("captcha_solver_cooldown_steps", 4)
+                    if cooldown_steps <= 0:
+                        cooldown_steps = 4
+                    self._captcha_solver_skip_until_step = int(step_count) + int(cooldown_steps)
                     self._action_feedback.append(
                         "CAPTCHA가 감지되었으나 자동 해결에 실패했습니다. "
                         "가능하면 CAPTCHA를 우회하는 경로를 찾거나, 사용자 개입이 필요합니다."
                     )
                     if len(self._action_feedback) > 10:
                         self._action_feedback = self._action_feedback[-10:]
+            elif screenshot and int(step_count) < captcha_skip_until:
+                self._log(
+                    f"⏭️ CAPTCHA solver cooldown 적용 중(step<{captcha_skip_until}) — 일반 실행 흐름 유지"
+                )
                 # no_captcha 또는 unsupported → 일반 흐름 계속
 
             directive = orchestrator.next_directive(
@@ -2761,6 +2810,7 @@ class GoalDrivenAgent:
                     self._element_selectors.get(selected_element.id),
                 ]
             modal_open_now = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
+            overlay_intercept_pending = bool(getattr(self, "_overlay_intercept_pending", False))
             active_goal_text_norm = self._normalize_text(self._active_goal_text or "")
             x_button_goal_required = any(
                 token in active_goal_text_norm
@@ -2824,6 +2874,52 @@ class GoalDrivenAgent:
                     )
                 )
             )
+            if (
+                overlay_intercept_pending
+                and decision.action == ActionType.CLICK
+                and not selected_close_signal
+            ):
+                modal_regions_hint = []
+                if isinstance(self._last_snapshot_evidence, dict):
+                    raw_regions = self._last_snapshot_evidence.get("modal_regions")
+                    if isinstance(raw_regions, list):
+                        modal_regions_hint = raw_regions
+                modal_pick = self._pick_modal_unblock_element(
+                    dom_elements,
+                    self._element_full_selectors,
+                    modal_regions_hint=modal_regions_hint,
+                )
+                if modal_pick is None:
+                    modal_pick = self._pick_modal_unblock_element(
+                        dom_elements,
+                        self._element_selectors,
+                        modal_regions_hint=modal_regions_hint,
+                    )
+                if modal_pick is not None and modal_pick != decision.element_id:
+                    self._log("🧭 overlay intercept 감지: 배경 클릭을 중단하고 모달 닫기 후보로 강제 전환합니다.")
+                    decision = ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=modal_pick,
+                        value=None,
+                        reasoning="배경 요소 클릭이 오버레이에 가로막혀 모달 닫기 후보로 강제 전환",
+                        confidence=max(float(decision.confidence or 0.0), 0.86),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                    selected_element = next((el for el in dom_elements if el.id == modal_pick), None)
+                    selected_fields = []
+                    if selected_element is not None:
+                        selected_fields = [
+                            selected_element.text,
+                            selected_element.aria_label,
+                            getattr(selected_element, "title", None),
+                            self._element_full_selectors.get(selected_element.id),
+                            self._element_selectors.get(selected_element.id),
+                        ]
+                    selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
+                    if not selected_close_signal and selected_element is not None:
+                        selected_close_signal = self._normalize_text(selected_element.text) in {"x", "×", "닫기", "close"}
+                    reasoning_close_intent = True
             if (
                 modal_open_now
                 and decision.action == ActionType.CLICK
@@ -2987,6 +3083,11 @@ class GoalDrivenAgent:
                 error=error,
             )
             reason_code = self._last_exec_result.reason_code if self._last_exec_result else "unknown"
+            if bool(success and changed):
+                self._overlay_intercept_pending = False
+            elif reason_code in {"not_actionable", "no_state_change"} and self._error_indicates_overlay_intercept(error):
+                self._overlay_intercept_pending = True
+                self._record_reason_code("overlay_intercept_detected")
             ref_used = self._last_exec_result.ref_id_used if self._last_exec_result else ""
             self._track_ref_outcome(
                 ref_id=ref_used,
@@ -3512,11 +3613,22 @@ JSON 응답:"""
 
         try:
             data = json.loads(text)
+            action_raw = str(data.get("action", "wait")).strip().lower()
+            raw_value = data.get("value")
+            normalized_value: Optional[str]
+            if raw_value is None:
+                normalized_value = None
+            elif isinstance(raw_value, str):
+                normalized_value = raw_value
+            elif action_raw in {"wait", "select"} and isinstance(raw_value, (dict, list, int, float, bool)):
+                normalized_value = json.dumps(raw_value, ensure_ascii=False)
+            else:
+                normalized_value = str(raw_value)
 
             return ActionDecision(
                 action=ActionType(data.get("action", "wait")),
                 element_id=data.get("element_id"),
-                value=data.get("value"),
+                value=normalized_value,
                 reasoning=data.get("reasoning", ""),
                 confidence=data.get("confidence", 0.5),
                 is_goal_achieved=data.get("is_goal_achieved", False),

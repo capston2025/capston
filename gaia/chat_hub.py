@@ -1,11 +1,17 @@
 """Interactive chat hub for GAIA."""
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import socket
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Protocol
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Protocol, TextIO
+from urllib import request as urllib_request
 from urllib.parse import urlparse
 
 import requests
@@ -58,6 +64,11 @@ class TerminalSink:
     def error(self, text: str) -> None:
         if text:
             print(text)
+
+
+_MCP_HOST_PROCESS: Optional[subprocess.Popen[str]] = None
+_MCP_HOST_LOG_FILE: Optional[TextIO] = None
+_MCP_HOST_CLEANUP_REGISTERED = False
 
 
 def _help_text() -> str:
@@ -151,8 +162,126 @@ def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
     return payload
 
 
+def _resolve_mcp_target() -> tuple[str, int, str]:
+    raw = str(
+        os.getenv("GAIA_MCP_HOST_URL")
+        or os.getenv("MCP_HOST_URL")
+        or "http://127.0.0.1:8001"
+    ).strip()
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "http").strip().lower()
+    host = (parsed.hostname or "127.0.0.1").strip() or "127.0.0.1"
+    default_port = 443 if scheme == "https" else 8001
+    try:
+        port = int(parsed.port or default_port)
+    except Exception:
+        port = default_port
+    base_url = f"{scheme}://{host}:{port}"
+    return host, port, base_url
+
+
+def _is_tcp_open(host: str, port: int, timeout: float = 0.35) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _is_mcp_ready(host: str, port: int, base_url: str, timeout: float = 0.8) -> bool:
+    if not _is_tcp_open(host, port, timeout=min(timeout, 0.35)):
+        return False
+    try:
+        req = urllib_request.Request(
+            f"{base_url.rstrip('/')}/health",
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
+            if int(getattr(resp, "status", 0) or 0) != 200:
+                return False
+            raw = resp.read().decode("utf-8")
+        payload = json.loads(raw)
+        return isinstance(payload, dict) and payload.get("status") == "ok"
+    except Exception:
+        return False
+
+
+def _stop_spawned_mcp_host() -> None:
+    global _MCP_HOST_PROCESS
+    global _MCP_HOST_LOG_FILE
+    if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
+        _MCP_HOST_PROCESS.terminate()
+        try:
+            _MCP_HOST_PROCESS.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _MCP_HOST_PROCESS.kill()
+    _MCP_HOST_PROCESS = None
+    if _MCP_HOST_LOG_FILE is not None:
+        try:
+            _MCP_HOST_LOG_FILE.close()
+        except Exception:
+            pass
+        _MCP_HOST_LOG_FILE = None
+
+
+def _ensure_mcp_host_running() -> bool:
+    global _MCP_HOST_PROCESS
+    global _MCP_HOST_LOG_FILE
+    global _MCP_HOST_CLEANUP_REGISTERED
+
+    host, port, base_url = _resolve_mcp_target()
+    if _is_mcp_ready(host, port, base_url):
+        return True
+
+    # 포트가 열려 있는데 health가 다른 형태면 타 서비스가 쓰고 있는 것으로 보고 중단한다.
+    if _is_tcp_open(host, port) and not _is_mcp_ready(host, port, base_url):
+        return False
+
+    if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if _is_mcp_ready(host, port, base_url):
+                return True
+            time.sleep(0.15)
+        return False
+
+    if not _MCP_HOST_CLEANUP_REGISTERED:
+        atexit.register(_stop_spawned_mcp_host)
+        _MCP_HOST_CLEANUP_REGISTERED = True
+
+    log_dir = Path.home() / ".gaia" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "mcp_host.chat_hub.log"
+    _MCP_HOST_LOG_FILE = log_path.open("a", encoding="utf-8")
+    _MCP_HOST_PROCESS = subprocess.Popen(
+        [sys.executable, "-m", "gaia.src.phase4.mcp_host"],
+        stdout=_MCP_HOST_LOG_FILE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        if _is_mcp_ready(host, port, base_url):
+            return True
+        if _MCP_HOST_PROCESS.poll() is not None:
+            break
+        time.sleep(0.2)
+
+    _stop_spawned_mcp_host()
+    return False
+
+
 def _mcp_execute(action: str, params: dict) -> tuple[int, dict]:
-    host = (os.getenv("GAIA_MCP_HOST_URL") or "http://127.0.0.1:8001").rstrip("/")
+    host = (
+        os.getenv("GAIA_MCP_HOST_URL")
+        or os.getenv("MCP_HOST_URL")
+        or "http://127.0.0.1:8001"
+    ).rstrip("/")
+    if not _ensure_mcp_host_running():
+        return 500, {"detail": "mcp_host_unavailable"}
     try:
         resp = requests.post(
             f"{host}/execute",
@@ -220,6 +349,70 @@ def _build_reason_code_summary(detail: Dict[str, Any]) -> Dict[str, int]:
     return {}
 
 
+def _short_cell(value: Any, limit: int = 52) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _check_status_label(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if token == "passed":
+        return "PASS"
+    if token == "failed":
+        return "FAIL"
+    if token == "skipped":
+        return "SKIP"
+    if token:
+        return token.upper()
+    return "-"
+
+
+def _build_validation_table(validation_checks: list[Any]) -> Dict[str, Any]:
+    columns = ["step", "status", "name", "action", "input", "error"]
+    rows: list[Dict[str, Any]] = []
+    for row in validation_checks:
+        if not isinstance(row, dict):
+            continue
+        rows.append(
+            {
+                "step": row.get("step"),
+                "status": _check_status_label(row.get("status")),
+                "name": _short_cell(row.get("name") or "unnamed_check"),
+                "action": _short_cell(row.get("action") or "-"),
+                "input": _short_cell(row.get("input_value") or "-"),
+                "error": _short_cell(row.get("error") or "-"),
+            }
+        )
+    return {"columns": columns, "rows": rows, "total_rows": len(rows)}
+
+
+def _build_validation_table_markdown(table: Dict[str, Any], max_rows: int = 10) -> str:
+    columns = table.get("columns") if isinstance(table, dict) else None
+    rows = table.get("rows") if isinstance(table, dict) else None
+    if not isinstance(columns, list) or not isinstance(rows, list) or not columns:
+        return ""
+
+    safe_columns = [str(col or "").strip() for col in columns]
+
+    def _esc(text: Any) -> str:
+        return _short_cell(text).replace("|", "\\|")
+
+    header = "| " + " | ".join(safe_columns) + " |"
+    sep = "| " + " | ".join(["---"] * len(safe_columns)) + " |"
+    lines = [header, sep]
+    for row in rows[:max_rows]:
+        if not isinstance(row, dict):
+            continue
+        cells = [_esc(row.get(col, "")) for col in safe_columns]
+        lines.append("| " + " | ".join(cells) + " |")
+    hidden = len(rows) - min(len(rows), max_rows)
+    if hidden > 0:
+        lines.append(f"_... +{hidden} more rows_")
+    return "\n".join(lines)
+
+
 def build_command_payload(
     context: HubContext,
     raw_command: str,
@@ -249,6 +442,18 @@ def build_command_payload(
     }
     if result.output:
         payload["output"] = result.output
+    validation_summary = data.get("validation_summary")
+    if isinstance(validation_summary, dict):
+        payload["validation_summary"] = validation_summary
+    validation_checks = data.get("validation_checks")
+    if isinstance(validation_checks, list):
+        payload["validation_checks"] = validation_checks
+        table = _build_validation_table(validation_checks)
+        payload["validation_table"] = table
+        payload["validation_table_markdown"] = _build_validation_table_markdown(table)
+    verification_report = data.get("verification_report")
+    if isinstance(verification_report, dict):
+        payload["verification_report"] = verification_report
     if not payload["goal"] and command.startswith("/test "):
         payload["goal"] = command[6:].strip()
     return payload
@@ -401,12 +606,58 @@ def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
     return _callback
 
 
+def _build_ai_intervention_callback(context: HubContext, sink: HubSink):
+    def _callback(reason: str, current_url: str) -> dict:
+        payload: dict[str, Any] = {
+            "kind": "auth",
+            "reason": str(reason or "").strip(),
+            "url": str(current_url or "").strip(),
+            "question": "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요.",
+            "fields": [
+                "proceed",
+                "auth_mode",
+                "manual_done",
+                "username",
+                "email",
+                "password",
+            ],
+        }
+        context.pending_user_input = dict(payload)
+        _notify_session_update(context)
+        if context.pending_user_response:
+            response = dict(context.pending_user_response)
+            context.pending_user_response = {}
+            context.pending_user_input = {}
+            _notify_session_update(context)
+            return response
+        sink.info(
+            "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요.\n"
+            "응답 예시:\n"
+            "/handoff proceed=true username=<id_or_email> password=<pw>\n"
+            "또는 /handoff proceed=true auth_mode=signup\n"
+            "또는 수동 로그인 후 /handoff proceed=true manual_done=true"
+        )
+        return {"action": "cancel", "proceed": False}
+
+    return _callback
+
+
 def _run_test(
     context: HubContext,
     query: str,
     sink: HubSink,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> tuple[int, dict]:
+    if not _ensure_mcp_host_running():
+        sink.error("MCP host를 시작할 수 없습니다. /health 확인 후 다시 시도하세요.")
+        return 1, {
+            "goal": query,
+            "status": "failed",
+            "steps": 0,
+            "reason": "mcp_host_unavailable",
+            "duration_seconds": 0.0,
+        }
+
     runtime = context.runtime
     if context.control_channel == "telegram" and runtime == "gui":
         runtime = "terminal"
@@ -441,10 +692,15 @@ def _run_test(
 
 def _run_ai(
     context: HubContext,
+    sink: HubSink,
     max_actions: int = 50,
     *,
     time_budget_seconds: int | None = None,
 ) -> int:
+    if not _ensure_mcp_host_running():
+        sink.error("MCP host를 시작할 수 없습니다. /health 확인 후 다시 시도하세요.")
+        return 1
+
     runtime = "terminal" if context.control_channel == "telegram" else context.runtime
     if runtime == "gui":
         if time_budget_seconds and int(time_budget_seconds) > 0:
@@ -454,11 +710,13 @@ def _run_ai(
 
     from gaia.terminal import run_ai_terminal
 
+    intervention_cb = _build_ai_intervention_callback(context, sink=sink)
     return run_ai_terminal(
         url=context.url,
         max_actions=max_actions,
         session_id=context.session_id,
         time_budget_seconds=time_budget_seconds,
+        intervention_callback=intervention_cb,
     )
 
 
@@ -753,6 +1011,34 @@ def dispatch_command(
             lines.append(f"reason: {detail.get('reason')}")
         if detail.get("duration_seconds") is not None:
             lines.append(f"duration: {detail.get('duration_seconds')}s")
+        validation_summary = (
+            detail.get("validation_summary")
+            if isinstance(detail.get("validation_summary"), dict)
+            else {}
+        )
+        validation_checks = (
+            detail.get("validation_checks")
+            if isinstance(detail.get("validation_checks"), list)
+            else []
+        )
+        if validation_summary:
+            lines.append("validation:")
+            lines.append(f"  total: {validation_summary.get('total_checks', 0)}")
+            lines.append(f"  passed: {validation_summary.get('passed_checks', 0)}")
+            lines.append(f"  failed: {validation_summary.get('failed_checks', 0)}")
+            lines.append(f"  success_rate: {validation_summary.get('success_rate', 0)}%")
+        if validation_checks:
+            lines.append("checks:")
+            for check in validation_checks[:8]:
+                if not isinstance(check, dict):
+                    continue
+                status_token = str(check.get("status") or "").strip().lower()
+                status_label = "PASS" if status_token == "passed" else ("FAIL" if status_token == "failed" else "SKIP")
+                name = str(check.get("name") or "unnamed_check").strip()
+                step_no = check.get("step")
+                lines.append(f"  - [{status_label}] step={step_no} {name}")
+            if len(validation_checks) > 8:
+                lines.append(f"  - ... +{len(validation_checks) - 8} more")
         auth = detail.get("auth")
         if isinstance(auth, dict) and auth:
             lines.append("auth:")
@@ -785,6 +1071,13 @@ def dispatch_command(
                 "reason": detail.get("reason") or "",
                 "duration": duration_value,
                 "reason_code_summary": reason_summary,
+                "validation_summary": validation_summary,
+                "validation_checks": validation_checks,
+                "verification_report": (
+                    detail.get("verification_report")
+                    if isinstance(detail.get("verification_report"), dict)
+                    else {}
+                ),
             },
         )
 
@@ -799,6 +1092,7 @@ def dispatch_command(
         t0 = time.time()
         code = _run_ai(
             context,
+            sink=sink,
             max_actions=max_actions,
             time_budget_seconds=time_budget_seconds,
         )
@@ -839,6 +1133,7 @@ def dispatch_command(
         t0 = time.time()
         code = _run_ai(
             context,
+            sink=sink,
             max_actions=10_000_000,
             time_budget_seconds=time_budget_seconds,
         )

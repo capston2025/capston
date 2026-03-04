@@ -103,6 +103,11 @@ class LLMVisionClient:
             raise RuntimeError("codex CLI를 찾을 수 없습니다.")
 
         images = images or []
+        try:
+            codex_timeout_sec = int(os.getenv("GAIA_CODEX_EXEC_TIMEOUT_SEC", "120") or 120)
+        except Exception:
+            codex_timeout_sec = 120
+        codex_timeout_sec = max(15, min(codex_timeout_sec, 600))
         with tempfile.TemporaryDirectory(prefix="gaia-codex-") as tmpdir:
             tmp_path = Path(tmpdir)
             output_file = tmp_path / "last_message.txt"
@@ -131,45 +136,50 @@ class LLMVisionClient:
                     run_cmd.extend(["-i", str(image_path)])
 
                 run_cmd.append("-")
-                completed = subprocess.run(
-                    run_cmd,
-                    input=prompt.encode("utf-8"),
-                    capture_output=True,
-                    check=False,
-                )
-                stdout_text = (
-                    completed.stdout.decode("utf-8", errors="replace")
-                    if isinstance(completed.stdout, (bytes, bytearray))
-                    else str(completed.stdout or "")
-                )
-                stderr_text = (
-                    completed.stderr.decode("utf-8", errors="replace")
-                    if isinstance(completed.stderr, (bytes, bytearray))
-                    else str(completed.stderr or "")
-                )
-                if completed.returncode == 0:
-                    content = ""
-                    if output_file.exists():
-                        content = output_file.read_text(encoding="utf-8", errors="replace").strip()
-                    if not content:
-                        content = (stdout_text or "").strip()
-                    if content:
-                        return content
+                try:
+                    completed = subprocess.run(
+                        run_cmd,
+                        input=prompt.encode("utf-8"),
+                        capture_output=True,
+                        check=False,
+                        timeout=codex_timeout_sec,
+                    )
+                    stdout_text = (
+                        completed.stdout.decode("utf-8", errors="replace")
+                        if isinstance(completed.stdout, (bytes, bytearray))
+                        else str(completed.stdout or "")
+                    )
+                    stderr_text = (
+                        completed.stderr.decode("utf-8", errors="replace")
+                        if isinstance(completed.stderr, (bytes, bytearray))
+                        else str(completed.stderr or "")
+                    )
+                    if completed.returncode == 0:
+                        content = ""
+                        if output_file.exists():
+                            content = output_file.read_text(encoding="utf-8", errors="replace").strip()
+                        if not content:
+                            content = (stdout_text or "").strip()
+                        if content:
+                            return content
 
-                    last_error = "empty_response_from_codex_exec"
-                    # 첫 시도(model 지정)에서 빈 응답이면 기본 모델 시도도 해본다.
-                    continue
+                        last_error = "empty_response_from_codex_exec"
+                        # 첫 시도(model 지정)에서 빈 응답이면 기본 모델 시도도 해본다.
+                        continue
 
-                last_error = (stderr_text or stdout_text or "").strip()
-                # 모델 지정 실패 계열이면 기본 모델로 재시도
-                lower_error = last_error.lower()
-                if candidate_model and (
-                    "unknown model" in lower_error
-                    or "invalid model" in lower_error
-                    or "unsupported model" in lower_error
-                ):
+                    last_error = (stderr_text or stdout_text or "").strip()
+                    # 모델 지정 실패 계열이면 기본 모델로 재시도
+                    lower_error = last_error.lower()
+                    if candidate_model and (
+                        "unknown model" in lower_error
+                        or "invalid model" in lower_error
+                        or "unsupported model" in lower_error
+                    ):
+                        continue
+                    break
+                except subprocess.TimeoutExpired:
+                    last_error = f"codex_exec_timeout:{codex_timeout_sec}s"
                     continue
-                break
 
         raise RuntimeError(f"codex exec failed: {last_error or 'unknown error'}")
 

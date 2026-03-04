@@ -141,6 +141,24 @@ class CaptchaSolver:
         self._session_id = session_id
         self._max_attempts = max_attempts
         self._log = log_fn or (lambda msg: logger.info(msg))
+        try:
+            self._sleep_scale = float(os.getenv("GAIA_CAPTCHA_SLEEP_SCALE", "0.35") or 0.35)
+        except Exception:
+            self._sleep_scale = 0.35
+        self._sleep_scale = max(0.05, min(self._sleep_scale, 1.0))
+        try:
+            self._max_total_seconds = float(os.getenv("GAIA_CAPTCHA_MAX_TOTAL_SECONDS", "8.0") or 8.0)
+        except Exception:
+            self._max_total_seconds = 8.0
+        self._max_total_seconds = max(2.0, min(self._max_total_seconds, 30.0))
+
+    def _sleep(self, base_seconds: float) -> None:
+        try:
+            seconds = max(0.0, float(base_seconds) * self._sleep_scale)
+        except Exception:
+            seconds = 0.0
+        if seconds > 0:
+            time.sleep(seconds)
 
     # ------------------------------------------------------------------
     # 공개 API
@@ -236,8 +254,18 @@ JSON response:"""
     ) -> CaptchaStepResult:
         """이미지 선택형 CAPTCHA를 다단계로 처리한다."""
         previous_instruction = ""
+        started_at = time.time()
 
         for attempt in range(1, self._max_attempts + 1):
+            if (time.time() - started_at) >= self._max_total_seconds:
+                self._log(
+                    f"⏱️ CAPTCHA 처리 시간 예산 초과({self._max_total_seconds:.1f}s). 조기 종료합니다."
+                )
+                return CaptchaStepResult(
+                    status="gave_up",
+                    attempts=max(1, attempt - 1),
+                    reasoning=f"timeout_budget_exceeded:{self._max_total_seconds:.1f}s",
+                )
             self._log(f"🧩 CAPTCHA 시도 {attempt}/{self._max_attempts}")
 
             # 1. 현재 스크린샷 분석
@@ -256,14 +284,14 @@ JSON response:"""
                 # 2. 셀 클릭
                 for cell_idx in solution.selected_cells:
                     self._click_captcha_cell(cell_idx, solution.grid_size)
-                    time.sleep(0.3)
+                    self._sleep(0.3)
 
                 # 3. 제출 버튼 클릭
-                time.sleep(0.5)
+                self._sleep(0.5)
                 self._click_verify_button(page_url)
 
             # 4. 결과 확인 (1.5초 대기 후 스크린샷)
-            time.sleep(1.5)
+            self._sleep(1.5)
             before_screenshot = screenshot
             new_screenshot = capture_fn() if capture_fn else None
             if not new_screenshot:
@@ -291,12 +319,12 @@ JSON response:"""
                 if refresh_result.get("selected_cells"):
                     for cell_idx in refresh_result["selected_cells"]:
                         self._click_captcha_cell(cell_idx, refresh_result.get("grid_size", {"rows": 3, "cols": 3}))
-                        time.sleep(0.3)
+                        self._sleep(0.3)
 
                     if refresh_result.get("should_submit", True):
-                        time.sleep(0.5)
+                        self._sleep(0.5)
                         self._click_verify_button(page_url)
-                        time.sleep(1.5)
+                        self._sleep(1.5)
 
                         # 다시 확인
                         final_screenshot = capture_fn() if capture_fn else None
@@ -309,7 +337,7 @@ JSON response:"""
                 else:
                     # 새 셀이 없으면 제출
                     self._click_verify_button(page_url)
-                    time.sleep(1.5)
+                    self._sleep(1.5)
                     screenshot = capture_fn() if capture_fn else new_screenshot
 
             elif status == "failed":
@@ -317,7 +345,7 @@ JSON response:"""
                 if attempt < self._max_attempts:
                     # 새 문제 요청
                     self._request_new_challenge(page_url)
-                    time.sleep(2)
+                    self._sleep(2)
                     screenshot = capture_fn() if capture_fn else new_screenshot
                 continue
 
@@ -333,7 +361,14 @@ JSON response:"""
 
     def _handle_text_captcha(self, screenshot: str, page_url: str) -> CaptchaStepResult:
         """텍스트 CAPTCHA 처리: ddddocr → GPT Vision 폴백."""
+        started_at = time.time()
         for attempt in range(1, self._max_attempts + 1):
+            if (time.time() - started_at) >= self._max_total_seconds:
+                return CaptchaStepResult(
+                    status="gave_up",
+                    attempts=max(1, attempt - 1),
+                    reasoning=f"timeout_budget_exceeded:{self._max_total_seconds:.1f}s",
+                )
             # ddddocr 먼저 시도
             text = self._ocr_text(screenshot)
             if not text:
@@ -346,9 +381,9 @@ JSON response:"""
 
             self._log(f"📝 인식된 텍스트: {text}")
             self._type_captcha_text(text)
-            time.sleep(0.5)
+            self._sleep(0.5)
             self._click_verify_button(page_url)
-            time.sleep(1.5)
+            self._sleep(1.5)
             return CaptchaStepResult(solved=True, status="solved", attempts=attempt)
 
         return CaptchaStepResult(status="gave_up", attempts=self._max_attempts)
@@ -398,7 +433,7 @@ JSON response:"""
                     }}
                 """,
             )
-            time.sleep(1)
+            self._sleep(1)
             return CaptchaStepResult(solved=True, status="solved", attempts=1)
         except Exception as exc:
             self._log(f"⚠️ 슬라이더 CAPTCHA 실패: {exc}")
@@ -419,7 +454,7 @@ JSON response:"""
                     if (iframe) { iframe.contentDocument?.querySelector('[type=checkbox]')?.click(); }
                 """,
             )
-            time.sleep(3)
+            self._sleep(3)
             return CaptchaStepResult(solved=True, status="solved", attempts=1)
         except Exception as exc:
             self._log(f"⚠️ Turnstile 실패: {exc}")
