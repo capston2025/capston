@@ -1443,7 +1443,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     const actionability = getActionability(el);
                     if (!actionability.visible) return;
 
-                    elements.push({
+                    const entry = {
                         tag: el.tagName.toLowerCase(),
                         dom_ref: assignDomRef(el),
                         selector: getUniqueSelector(el),
@@ -1465,7 +1465,26 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         element_type: 'input',
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
-                    });
+                    };
+
+                    // select 요소의 option 목록 수집 (최대 20개)
+                    if (el.tagName.toLowerCase() === 'select') {
+                        const opts = [];
+                        const optEls = el.querySelectorAll('option');
+                        const limit = Math.min(optEls.length, 20);
+                        for (let i = 0; i < limit; i++) {
+                            const o = optEls[i];
+                            opts.push({ value: o.value, text: (o.textContent || '').trim() });
+                        }
+                        if (optEls.length > 20) {
+                            opts.push({ value: '__truncated__', text: '...' + (optEls.length - 20) + ' more' });
+                        }
+                        entry.attributes['options'] = opts;
+                        // 현재 선택된 값도 기록
+                        entry.attributes['selected_value'] = el.value || '';
+                    }
+
+                    elements.push(entry);
                 });
 
                 // 버튼과 상호작용 가능한 역할 요소를 수집
@@ -2411,6 +2430,8 @@ async def _try_click_hit_target_from_point(
     page: Page,
     locator,
     ref_meta: Optional[Dict[str, Any]] = None,
+    *,
+    close_like_click: bool = False,
 ) -> Dict[str, Any]:
     point_x: Optional[float] = None
     point_y: Optional[float] = None
@@ -2444,22 +2465,36 @@ async def _try_click_hit_target_from_point(
         return {"clicked": False, "selector": "", "error": "point_not_available"}
 
     try:
-        min_confidence = float(str(os.getenv("GAIA_HIT_TARGET_MIN_CONFIDENCE", "0.35")).strip())
+        min_confidence = float(
+            str(os.getenv("GAIA_HIT_TARGET_MIN_CONFIDENCE", "0.35")).strip()
+        )
     except Exception:
         min_confidence = 0.35
     min_confidence = max(0.0, min(1.0, float(min_confidence)))
-    allow_external_nav = str(os.getenv("GAIA_HIT_TARGET_ALLOW_EXTERNAL_NAV", "0")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    }
+    allow_external_nav = str(
+        os.getenv("GAIA_HIT_TARGET_ALLOW_EXTERNAL_NAV", "0")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    require_close_hint = str(
+        os.getenv("GAIA_CLOSE_HINT_REQUIRED_FOR_HIT_TARGET", "1")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    auto_close_popup_on_close = str(
+        os.getenv("GAIA_CLOSE_FALLBACK_AUTOCLOSE_POPUP", "1")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    try:
+        watch_ms = int(str(os.getenv("GAIA_FALLBACK_WATCH_MS", "1200")).strip() or "1200")
+    except Exception:
+        watch_ms = 1200
+    try:
+        settle_ms = int(
+            str(os.getenv("GAIA_FALLBACK_WATCH_SETTLE_MS", "900")).strip() or "900"
+        )
+    except Exception:
+        settle_ms = 900
 
     try:
         payload = await page.evaluate(
             """
-            ({ pointX, pointY, allowExternalNav }) => {
+            ({ pointX, pointY, allowExternalNav, closeLikeClick, requireCloseHint, minConfidence }) => {
               const clickableSelectors = [
                 'button',
                 'a[href]',
@@ -2480,6 +2515,23 @@ async def _try_click_hit_target_from_point(
                 if (style.pointerEvents === 'none') return false;
                 const rect = node.getBoundingClientRect();
                 return rect.width > 2 && rect.height > 2;
+              };
+              const norm = (v) => String(v || '').toLowerCase();
+
+              const hasCloseHint = (node) => {
+                if (!(node instanceof HTMLElement)) return false;
+                const txt = norm(node.innerText || node.textContent || '').trim();
+                const aria = norm(node.getAttribute('aria-label'));
+                const title = norm(node.getAttribute('title'));
+                const testid = norm(node.getAttribute('data-testid'));
+                const id = norm(node.id);
+                const cls = norm(node.className);
+                const pool = [txt, aria, title, testid, id, cls].filter(Boolean).join(' ');
+                if (!pool) return false;
+                const hints = ['close', 'dismiss', 'cancel', 'exit', '닫기', '취소'];
+                if (hints.some((h) => pool.includes(h))) return true;
+                if (txt === 'x' || txt === '×' || txt === '✕') return true;
+                return false;
               };
 
               const pickClickable = (startNode) => {
@@ -2592,13 +2644,28 @@ async def _try_click_hit_target_from_point(
               // page.mouse.click는 뷰포트 좌표 기준이므로 iframe 내부여도 전역 좌표 클릭이 동작합니다.
               // 따라서 iframe 내부 DOM 직접 접근/dispatch 대신 전역 좌표를 반환합니다.
               if (rootNode instanceof HTMLIFrameElement) {
+                const confidence = closeLikeClick ? 0.15 : 0.55;
+                if (closeLikeClick && requireCloseHint) {
+                  return {
+                    clicked: false,
+                    selector: 'iframe',
+                    reason: 'close_hint_missing',
+                    confidence,
+                    confidence_reasons: ['iframe', 'close_hint_missing'],
+                    close_hint: false,
+                    risk_flags: ['iframe_point', 'close_hint_missing'],
+                    clickX: pointX,
+                    clickY: pointY
+                  };
+                }
                 return {
-                  clicked: true,
+                  clicked: confidence >= minConfidence,
                   selector: 'iframe',
                   reason: 'iframe_point_click',
-                  confidence: 0.55,
+                  confidence,
                   confidence_reasons: ['iframe'],
                   risk_flags: [],
+                  close_hint: false,
                   clickX: pointX,
                   clickY: pointY
                 };
@@ -2610,12 +2677,12 @@ async def _try_click_hit_target_from_point(
                 : (rootNode instanceof HTMLElement ? rootNode : null);
               if (!target) {
                 return {
-                  clicked: true,
+                  clicked: false,
                   selector: '',
                   reason: 'raw_point_click',
-                  confidence: 0.10,
+                  confidence: 0.0,
                   confidence_reasons: ['no_target'],
-                  risk_flags: [],
+                  risk_flags: ['no_target'],
                   clickX: pointX,
                   clickY: pointY
                 };
@@ -2623,9 +2690,29 @@ async def _try_click_hit_target_from_point(
               target.scrollIntoView({ block: 'center', inline: 'nearest' });
               const meta = buildMeta(target);
               const scored = scoreMeta(meta);
+              const closeHint = hasCloseHint(target);
               const rect = meta && meta.rect ? meta.rect : null;
               const clickX = rect ? (rect.left + rect.width / 2) : pointX;
               const clickY = rect ? (rect.top + rect.height / 2) : pointY;
+
+              const risks = Array.isArray(scored.risks) ? [...scored.risks] : [];
+              if (closeLikeClick && !closeHint) risks.push('close_hint_missing');
+
+              if (closeLikeClick && requireCloseHint && !closeHint) {
+                return {
+                  clicked: false,
+                  selector: (meta && meta.tag) ? meta.tag : '',
+                  reason: 'close_hint_missing',
+                  clickX,
+                  clickY,
+                  confidence: 0.0,
+                  confidence_reasons: ['close_hint_missing'],
+                  close_hint: false,
+                  risk_flags: risks,
+                  target_meta: meta,
+                };
+              }
+
               return {
                 clicked: true,
                 selector: (meta && meta.tag) ? meta.tag : '',
@@ -2634,12 +2721,20 @@ async def _try_click_hit_target_from_point(
                 clickY,
                 confidence: scored.score,
                 confidence_reasons: scored.reasons,
-                risk_flags: scored.risks,
+                close_hint: closeHint,
+                risk_flags: risks,
                 target_meta: meta,
               };
             }
             """,
-            {"pointX": point_x, "pointY": point_y, "allowExternalNav": allow_external_nav},
+            {
+                "pointX": point_x,
+                "pointY": point_y,
+                "allowExternalNav": allow_external_nav,
+                "closeLikeClick": bool(close_like_click),
+                "requireCloseHint": bool(require_close_hint),
+                "minConfidence": float(min_confidence),
+            },
         )
         if not isinstance(payload, dict):
             return {"clicked": False, "selector": "", "error": "invalid_payload"}
@@ -2664,13 +2759,29 @@ async def _try_click_hit_target_from_point(
             click_x = point_x
             click_y = point_y
 
-        await page.mouse.move(click_x, click_y)
-        await page.mouse.click(click_x, click_y, delay=50)
+        from gaia.src.phase4.mcp_ref_post_click_watch import watch_after_trusted_click
+
+        async def _click() -> None:
+            await page.mouse.click(click_x, click_y, delay=50)
+
+        post_watch = await watch_after_trusted_click(
+            page,
+            _click,
+            watch_ms=watch_ms,
+            settle_ms=settle_ms,
+            wait_until="commit",
+            watch_popup=True,
+            watch_navigation=True,
+            watch_dialog=True,
+            auto_dismiss_dialog=True,
+            auto_close_popup=bool(close_like_click and auto_close_popup_on_close),
+        )
         payload["clickX"] = click_x
         payload["clickY"] = click_y
         payload["x"] = click_x
         payload["y"] = click_y
         payload["input"] = "playwright_mouse"
+        payload["post_watch"] = post_watch
         return payload
     except Exception as exc:
         return {"clicked": False, "selector": "", "error": str(exc)}
@@ -3565,11 +3676,22 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
         if "fn" in wait_payload and "js" not in wait_payload:
             wait_payload["js"] = wait_payload.pop("fn")
 
-        rich_wait_keys = {"selector", "js", "url", "load_state", "text", "text_gone", "timeout_ms", "time_ms"}
+        rich_wait_keys = {"selector", "js", "url", "load_state", "text", "text_gone", "time_ms"}
         if any(wait_payload.get(k) not in (None, "") for k in rich_wait_keys):
             return await _browser_wait(wait_payload)
-
-        wait_ms = int(value) if isinstance(value, (int, str)) and str(value).strip() else 500
+        wait_ms: int
+        if wait_payload.get("timeout_ms") not in (None, ""):
+            try:
+                wait_ms = max(0, int(wait_payload.get("timeout_ms")))
+            except Exception:
+                wait_ms = 500
+        elif isinstance(value, (int, str)) and str(value).strip():
+            try:
+                wait_ms = max(0, int(value))
+            except Exception:
+                wait_ms = 500
+        else:
+            wait_ms = 500
         await page.wait_for_timeout(max(0, wait_ms))
         session.current_url = page.url
         screenshot_bytes = await page.screenshot(full_page=False)

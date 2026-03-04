@@ -30,9 +30,86 @@ def build_initial_state_change() -> Dict[str, Any]:
     }
 
 
+def _normalize_bbox(meta: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    raw = meta.get("bounding_box")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        x = float(raw.get("x", 0.0) or 0.0)
+        y = float(raw.get("y", 0.0) or 0.0)
+        width = float(raw.get("width", 0.0) or 0.0)
+        height = float(raw.get("height", 0.0) or 0.0)
+    except Exception:
+        return None
+    if width <= 0.0 or height <= 0.0:
+        return None
+    return {
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "right": x + width,
+        "bottom": y + height,
+        "center_x": x + (width / 2.0),
+        "center_y": y + (height / 2.0),
+    }
+
+
+def _is_unlabeled_icon_ref(meta: Dict[str, Any]) -> bool:
+    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+    text = str(meta.get("text") or "").strip().lower()
+    aria = str(attrs.get("aria-label") or attrs.get("aria_label") or "").strip().lower()
+    title = str(attrs.get("title") or meta.get("title") or "").strip().lower()
+    placeholder = str(meta.get("placeholder") or "").strip().lower()
+    if text in {"x", "×", "✕", "close", "닫기"}:
+        return True
+    if aria or title or placeholder:
+        return False
+    return text == ""
+
+
+def _is_relaxed_modal_corner_candidate(
+    meta: Dict[str, Any],
+    modal_regions: list[Dict[str, float]],
+) -> bool:
+    if not isinstance(meta, dict) or not modal_regions:
+        return False
+    bbox = _normalize_bbox(meta)
+    if not bbox:
+        return False
+    if bbox["width"] > 120 or bbox["height"] > 120:
+        return False
+    if (bbox["width"] * bbox["height"]) > 6400:
+        return False
+    if not _is_unlabeled_icon_ref(meta):
+        return False
+    for region in modal_regions:
+        try:
+            rx = float(region.get("x", 0.0) or 0.0)
+            ry = float(region.get("y", 0.0) or 0.0)
+            rw = float(region.get("width", 0.0) or 0.0)
+            rh = float(region.get("height", 0.0) or 0.0)
+        except Exception:
+            continue
+        if rw <= 0.0 or rh <= 0.0:
+            continue
+        rr = rx + rw
+        rb = ry + rh
+        cx = bbox["center_x"]
+        cy = bbox["center_y"]
+        if not (rx <= cx <= rr and ry <= cy <= rb):
+            continue
+        rel_x = (cx - rx) / max(rw, 1.0)
+        rel_y = (cy - ry) / max(rh, 1.0)
+        if rel_x >= 0.60 and rel_y <= 0.40:
+            return True
+    return False
+
+
 async def prepare_ref_action_execution_context(
     *,
     action: str,
+    value: Any = None,
     verify: bool,
     requested_meta: Dict[str, Any],
     requested_snapshot: Optional[Dict[str, Any]],
@@ -80,9 +157,12 @@ async def prepare_ref_action_execution_context(
     modal_regions_for_requested = collect_modal_regions_from_snapshot_fn(
         requested_snapshot if isinstance(requested_snapshot, dict) else None
     )
+    value_text = str(value or "").strip().lower()
     close_like_click = bool(
         action == "click"
         and (
+            value_text in {"__close_intent__", "close_intent", "intent:close"}
+            or
             is_close_intent_ref_fn(requested_meta)
             or is_modal_corner_close_candidate_fn(
                 requested_meta,
@@ -90,13 +170,26 @@ async def prepare_ref_action_execution_context(
             )
         )
     )
+    if (
+        action == "click"
+        and (not close_like_click)
+        and _is_relaxed_modal_corner_candidate(requested_meta, modal_regions_for_requested)
+    ):
+        close_like_click = True
     probe_wait_schedule: Tuple[int, ...] = (
         (350, 800, 1500, 3000, 5000) if submit_like_click else (350, 700, 1500)
     )
     verify_for_action = bool(verify)
     adjusted_max_action_seconds = max_action_seconds
     precheck_response: Optional[Dict[str, Any]] = None
-    if close_like_click:
+    # soft_close 판단: "X" 텍스트만으로 감지된 경우 modal precheck 건너뛰기
+    # _is_close_intent_ref 에서 설정한 마커 또는 visible text가 단일 닫기 문자인 경우
+    visible_text_raw = str(requested_meta.get("text") or "").strip()
+    is_soft_close = bool(
+        requested_meta.get("_soft_close")
+        or visible_text_raw in {"x", "X", "✕", "✖", "×"}
+    )
+    if close_like_click and not is_soft_close:
         close_gate_evidence: Dict[str, Any]
         try:
             close_gate_evidence = await collect_page_evidence_fn(page)

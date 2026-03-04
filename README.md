@@ -2,6 +2,26 @@
 
 GAIA는 “기획서만 주어지면 브라우저 테스트 플랜부터 실행·보고까지 자동으로 만들어 준다”는 목표로 설계된 1학기 MVP다. GPT 기반 플래너가 UI 테스트 시나리오와 체크리스트를 만들고, 적응형 스케줄러와 GPT-5 오케스트레이터가 Playwright MCP를 통해 실제 사이트를 탐색한다.
 
+## 발표용 빠른 링크 (중간발표 v2)
+- 대본(12슬라이드): `gaia/docs/presentation/MIDTERM_15MIN_V2.md`
+- 슬라이드 증빙맵: `gaia/docs/presentation/SLIDE_EVIDENCE_MAP.md`
+- 발표 리허설용 포트폴리오 요약: `PORTFOLIO_SKELETON.md`
+- 실행 이력 증빙 로그: `PORTFOLIO_RUN_LOG.md`
+
+데모 실행 명령(발표 중 1회 검증용):
+```bash
+python -m gaia.cli chat \
+  --llm-provider openai \
+  --llm-model gpt-5.3-codex \
+  --auth reuse \
+  --auth-method oauth \
+  --url https://inuu-timetable.vercel.app/ \
+  --runtime terminal \
+  --session workspace_default \
+  --once \
+  --feature-query "15학점 정도 과목 담고 시간표 조합 버튼으로 조합 생성 후 시간표에 적용"
+```
+
 ## 왜 GAIA인가?
 - **Spec → Test까지 One-click**: PDF 기획서를 투입하면 100+ 시나리오와 25개 체크리스트가 자동 생성된다.
 - **Adaptive Execution**: 우선순위·DOM 변화·실패 히스토리를 반영하는 스케줄러가 가장 가치 있는 시나리오부터 반복 실행한다.
@@ -403,11 +423,14 @@ python run_local_test.py            # 로컬 UI 테스트 사이트용 데모
 ```
 
 ## 문서 & 진행 관리
-- `gaia/docs/PROJECT_CONTEXT.md`: 전체 프로젝트 배경 및 목표.
-- `gaia/docs/PROGRESS.md`: 주차별 진행 로그.
-- `gaia/docs/IMPLEMENTATION_GUIDE.md`: 환경 구성, 모듈 간 의존성, 다음 단계 메모.
-- `ADAPTIVE_SCHEDULER_SUMMARY.md`, `VERIFICATION_REPORT.md`: 스케줄러/검증 관련 요약.
+- `gaia/docs/presentation/MIDTERM_15MIN_V2.md`: 중간발표 15분 대본(12슬라이드).
+- `gaia/docs/presentation/SLIDE_EVIDENCE_MAP.md`: 슬라이드별 근거 문서 매핑.
+- `gaia/docs/TEAM_OWNERSHIP.md`: 오너십/역할 분담.
+- `gaia/docs/TEAM_PLAYBOOK.md`: 4주 실행 계획/운영 리듬.
+- `gaia/docs/INSTALL_WINDOWS_MAC.md`: 플랫폼별 설치 가이드.
+- `gaia/docs/team/*.md`: 팀원별 세부 실행 가이드.
+- `PORTFOLIO_SKELETON.md`, `PORTFOLIO_RUN_LOG.md`: 발표/포트폴리오 서술 + 증빙 로그.
 - `artifacts/plans/*.json`: QA 데모/회귀 테스트용 고정 플랜.
 
 ---
-GAIA는 “학생/초기 팀도 버튼 몇 번이면 회귀 테스트를 돌릴 수 있는” QA 파이프라인을 목표로 계속 진화하고 있다. 새로운 기능을 추가할 때는 `docs/PROGRESS.md`를 업데이트하고, 캐시 구조 변경 시 `artifacts/cache` 포맷을 함께 기록해 주세요.
+GAIA는 “학생/초기 팀도 버튼 몇 번이면 회귀 테스트를 돌릴 수 있는” QA 파이프라인을 목표로 계속 진화하고 있다. 새로운 기능을 추가할 때는 `gaia/docs/TEAM_PLAYBOOK.md`와 관련 팀 문서를 함께 갱신하고, 캐시 구조 변경 시 `artifacts/cache` 포맷을 함께 기록해 주세요.

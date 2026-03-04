@@ -87,6 +87,7 @@ class DOMElement(BaseModel):
     class_name: Optional[str] = Field(default=None)
     href: Optional[str] = Field(default=None, description="링크 URL")
     bounding_box: Optional[dict] = Field(default=None, description="요소 위치 정보")
+    options: Optional[list] = Field(default=None, description="select 요소의 option 목록 [{value, text}]")
 
     # 상태
     is_visible: bool = Field(default=True)

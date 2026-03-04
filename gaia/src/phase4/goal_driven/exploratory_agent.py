@@ -1390,6 +1390,7 @@ class ExploratoryAgent:
                         href=el.href,
                         placeholder=el.placeholder,
                         bounding_box=el.bounding_box,
+                        options=el.options,
                         tested=tested,
                     )
                 )
@@ -1513,6 +1514,7 @@ class ExploratoryAgent:
                         class_name=attrs.get("class"),
                         href=attrs.get("href"),
                         bounding_box=el.get("bounding_box"),
+                        options=attrs.get("options"),
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=not (
                             (
@@ -1936,7 +1938,16 @@ class ExploratoryAgent:
                 description = f"버튼: {button_label}"
             elif element.tag == "select":
                 action_type = "select"
-                description = f"드롭다운: {element_label}"
+                opt_hint = ""
+                if hasattr(element, "options") and element.options:
+                    opt_texts = [
+                        str(o.get("text", "")).strip()
+                        for o in element.options[:5]
+                        if isinstance(o, dict) and str(o.get("text", "")).strip()
+                    ]
+                    if opt_texts:
+                        opt_hint = f" [{' / '.join(opt_texts)}]"
+                description = f"드롭다운: {element_label}{opt_hint}"
             else:
                 action_type = "click"
                 description = f"{element.tag}: {element_label or element.role}"
@@ -2707,11 +2718,13 @@ JSON 응답:"""
                                 value={"x": center_x, "y": center_y, "text": value},
                             )
             elif action.action_type == "select":
+                # 실제 option 목록에서 유효한 값 선택
+                select_value = self._pick_select_option(element_state)
                 success, error = self._execute_action(
                     "select",
                     selector=selector or None,
                     ref_id=resolved_ref_id or None,
-                    value="1",
+                    value=select_value,
                 )
             elif action.action_type == "hover":
                 success, error = self._execute_action(
@@ -3168,6 +3181,30 @@ JSON 응답:"""
             return json.loads(result)
         except Exception:
             return None
+
+    def _pick_select_option(self, element_state: Optional[Any]) -> str:
+        """select 요소에서 유효한 option value를 선택한다."""
+        if element_state is None:
+            return "1"
+        opts = getattr(element_state, "options", None)
+        if not opts or not isinstance(opts, list):
+            return "1"
+        # 빈 값/placeholder 옵션을 제외한 실제 옵션 필터링
+        real_opts = [
+            o for o in opts
+            if isinstance(o, dict)
+            and str(o.get("value", "")).strip()
+            and str(o.get("value", "")).strip() != "__truncated__"
+        ]
+        if not real_opts:
+            return "1"
+        # 현재 선택된 값이 아닌 다른 옵션 선택 (탐색 다양성)
+        selected_val = getattr(element_state, "text", "") or ""
+        for opt in real_opts:
+            if str(opt.get("text", "")).strip() != selected_val.strip():
+                return str(opt["value"])
+        # 모든 옵션이 동일하면 첫 번째 반환
+        return str(real_opts[0]["value"])
 
     def _get_toggle_state(self, selector: Optional[str]) -> Optional[dict]:
         if not selector:

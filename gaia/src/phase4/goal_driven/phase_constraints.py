@@ -11,9 +11,15 @@ def is_collect_constraint_unmet(
     collect_min = goal_constraints.get("collect_min")
     if collect_min is None:
         return False
+    try:
+        collect_min_value = float(collect_min)
+    except Exception:
+        collect_min_value = 0.0
     if goal_metric_value is None:
-        return True
-    return float(goal_metric_value) + 1e-9 < float(collect_min)
+        # "1개 열기/보기/클릭"류 목표는 초기 metric이 unknown이어도
+        # 상호작용 진입을 막지 않아야 루프를 피할 수 있다.
+        return collect_min_value > 1.0
+    return float(goal_metric_value) + 1e-9 < collect_min_value
 
 
 def apply_phase_constraints(

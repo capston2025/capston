@@ -5,6 +5,7 @@ import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from gaia.src.phase4.mcp_ref_input_helpers import trusted_click_point
+from gaia.src.phase4.mcp_ref_post_click_watch import watch_after_trusted_click
 
 
 async def attempt_close_ref_fallbacks(
@@ -210,13 +211,43 @@ async def attempt_backdrop_close(
             }
         )
         return {"success": False}
-    click_meta = await trusted_click_point(
+    watch_ms = 1200
+    settle_ms = 900
+    try:
+        watch_ms = int(str(os.getenv("GAIA_FALLBACK_WATCH_MS", "1200")).strip() or "1200")
+        settle_ms = int(
+            str(os.getenv("GAIA_FALLBACK_WATCH_SETTLE_MS", "900")).strip() or "900"
+        )
+    except Exception:
+        watch_ms = 1200
+        settle_ms = 900
+
+    click_meta: Dict[str, Any] = {}
+
+    async def _click() -> None:
+        nonlocal click_meta
+        click_meta = await trusted_click_point(
+            page,
+            float(plan.get("x") or 0.0),
+            float(plan.get("y") or 0.0),
+            delay_ms=50,
+            move_first=True,
+            clamp_to_viewport=True,
+        )
+        if not bool(click_meta.get("clicked")):
+            raise RuntimeError(str(click_meta.get("error") or "playwright_mouse_click_failed"))
+
+    post_watch = await watch_after_trusted_click(
         page,
-        float(plan.get("x") or 0.0),
-        float(plan.get("y") or 0.0),
-        delay_ms=50,
-        move_first=True,
-        clamp_to_viewport=True,
+        _click,
+        watch_ms=watch_ms,
+        settle_ms=settle_ms,
+        wait_until="commit",
+        watch_popup=True,
+        watch_navigation=True,
+        watch_dialog=True,
+        auto_dismiss_dialog=True,
+        auto_close_popup=False,
     )
     click_meta = {**plan, **click_meta}
     if not bool(click_meta.get("clicked")):
@@ -228,6 +259,7 @@ async def attempt_backdrop_close(
                 "fallback": "backdrop_click",
                 "meta": click_meta,
                 "error": str(click_meta.get("error") or "playwright_mouse_click_failed"),
+                "post_watch": post_watch,
             }
         )
         return {"success": False}
@@ -237,6 +269,9 @@ async def attempt_backdrop_close(
         probe_scroll="backdrop_fallback",
     )
     if bool(backdrop_change.get("effective", True)):
+        backdrop_change["post_watch"] = post_watch
+        if bool(post_watch.get("nav_detected")) or bool(post_watch.get("popup_detected")):
+            backdrop_change["resnapshot_required"] = True
         attempt_logs.append(
             {
                 "attempt": attempt_idx,
@@ -244,6 +279,7 @@ async def attempt_backdrop_close(
                 "reason_code": "ok",
                 "fallback": "backdrop_click",
                 "meta": click_meta,
+                "post_watch": post_watch,
                 "state_change": backdrop_change,
             }
         )
@@ -255,6 +291,7 @@ async def attempt_backdrop_close(
             "reason_code": "no_state_change",
             "fallback": "backdrop_click",
             "meta": click_meta,
+            "post_watch": post_watch,
             "state_change": backdrop_change,
         }
     )
@@ -371,10 +408,23 @@ async def attempt_modal_corner_close(
 
               const merged = [...external, ...detected]
                 .filter((r) => r.right > 0 && r.bottom > 0 && r.x < viewportW && r.y < viewportH)
-                .sort((a, b) => (b.width * b.height) - (a.width * a.height))
-                .slice(0, 6);
+                .slice(0, 24);
 
               if (!merged.length) return { found: false, reason: 'no_modal_region' };
+
+              const rankedRegions = merged
+                .map((r) => {
+                  const area = Number(r.width || 0) * Number(r.height || 0);
+                  const overlayRoot = Number(r.width || 0) >= viewportW * 0.88 && Number(r.height || 0) >= viewportH * 0.88;
+                  return { ...r, _area: area, _overlay_root: overlayRoot };
+                })
+                .sort((a, b) => {
+                  if (Number(a._overlay_root) !== Number(b._overlay_root)) {
+                    return Number(a._overlay_root) - Number(b._overlay_root);
+                  }
+                  return Number(b._area || 0) - Number(a._area || 0);
+                })
+                .slice(0, 6);
 
               const getMeta = (el) => {
                 try {
@@ -384,13 +434,15 @@ async def attempt_modal_corner_close(
                     role: (el.getAttribute && el.getAttribute('role')) || '',
                     aria_label: (el.getAttribute && el.getAttribute('aria-label')) || '',
                     title: (el.getAttribute && el.getAttribute('title')) || '',
+                    data_testid: (el.getAttribute && el.getAttribute('data-testid')) || '',
                     class: (el.className && String(el.className)) || '',
                     text: ((el.innerText || '').trim().slice(0, 80)),
                     href: (el.tagName && el.tagName.toLowerCase() === 'a') ? (el.getAttribute('href') || '') : '',
+                    has_svg: !!(el.querySelector && el.querySelector('svg')),
                     rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
                   };
                 } catch (_e) {
-                  return { tag: '', role: '', aria_label: '', title: '', class: '', text: '', href: '', rect: null };
+                  return { tag: '', role: '', aria_label: '', title: '', data_testid: '', class: '', text: '', href: '', has_svg: false, rect: null };
                 }
               };
 
@@ -403,6 +455,7 @@ async def attempt_modal_corner_close(
                   String(meta.class || '')
                 ).toLowerCase();
                 let score = 0.0;
+                let iconOnlyFullPattern = false;
                 if (/(^|\\b)(close|dismiss|닫기)(\\b|$)/i.test(blob)) { score += 0.70; reasons.push('kw:close'); }
                 if (/(^|\\b)(취소)(\\b|$)/i.test(blob)) { score += 0.20; reasons.push('kw:cancel'); }
                 if (/[×✕xX]/.test(String(meta.text || ''))) { score += 0.55; reasons.push('sym:x'); }
@@ -421,15 +474,88 @@ async def attempt_modal_corner_close(
                     cy < (region.y + region.height * 0.28)
                   );
                   if (nearTopRight) { score += 0.25; reasons.push('geom:near_tr'); }
+                  const btnRight = Number(meta.rect.left || 0) + w;
+                  const btnTop = Number(meta.rect.top || 0);
+                  const unlabeled = (
+                    String(meta.text || '').trim() === '' &&
+                    String(meta.aria_label || '').trim() === '' &&
+                    String(meta.title || '').trim() === '' &&
+                    String(meta.data_testid || '').trim() === ''
+                  );
+                  const strictNearTopRight = (
+                    Math.abs((region.x + region.width) - btnRight) <= 32 &&
+                    Math.abs(btnTop - region.y) <= 32
+                  );
+                  if (
+                    unlabeled &&
+                    !!meta.has_svg &&
+                    (meta.tag === 'button' || meta.role === 'button') &&
+                    w > 0 &&
+                    h > 0 &&
+                    w <= 56 &&
+                    h <= 56 &&
+                    strictNearTopRight
+                  ) {
+                    score += 0.45;
+                    reasons.push('pattern:icon_only_full');
+                    iconOnlyFullPattern = true;
+                  }
                 }
                 score = Math.max(0.0, Math.min(1.0, score));
-                return { score, reasons };
+                return { score, reasons, iconOnlyFullPattern };
               };
 
               let best = null;
+              const byRegion = (meta, region) => {
+                if (!meta || !meta.rect || !region) return false;
+                const w = Number(meta.rect.width || 0);
+                const h = Number(meta.rect.height || 0);
+                if (w <= 0 || h <= 0) return false;
+                const cx = Number(meta.rect.left || 0) + w / 2;
+                const cy = Number(meta.rect.top || 0) + h / 2;
+                return (
+                  cx >= region.x &&
+                  cx <= region.x + region.width &&
+                  cy >= region.y &&
+                  cy <= region.y + region.height
+                );
+              };
+              const scoreAndPick = (candidate) => {
+                if (!candidate || !candidate.found) return;
+                if (!best || Number(candidate.confidence || 0) > Number(best.confidence || 0)) {
+                  best = candidate;
+                }
+              };
 
-              for (let i = 0; i < merged.length; i++) {
-                const region = merged[i];
+              for (let i = 0; i < rankedRegions.length; i++) {
+                const region = rankedRegions[i];
+                const allTargets = Array.from(document.querySelectorAll('button,[role="button"],[aria-label],[title],[tabindex]'))
+                  .filter((el) => el instanceof HTMLElement)
+                  .filter((el) => {
+                    const style = window.getComputedStyle(el);
+                    if (!style) return false;
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
+                    if (Number(style.opacity || '1') <= 0.02) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width >= 10 && rect.height >= 10;
+                  });
+                for (const target of allTargets) {
+                  const targetMeta = getMeta(target);
+                  if (!byRegion(targetMeta, region)) continue;
+                  const scored = scoreCloseCandidate(targetMeta, region);
+                  scoreAndPick({
+                    found: true,
+                    reason: 'modal_internal_candidate',
+                    region_index: i,
+                    x: Number((targetMeta.rect.left || 0) + (targetMeta.rect.width || 0) / 2),
+                    y: Number((targetMeta.rect.top || 0) + (targetMeta.rect.height || 0) / 2),
+                    confidence: scored.score,
+                    confidence_reasons: scored.reasons,
+                    icon_only_full_pattern: Boolean(scored.iconOnlyFullPattern),
+                    target_meta: targetMeta,
+                  });
+                }
+
                 const points = [
                   {
                     x: Math.min(region.right - 14, Math.max(region.x + 10, region.x + region.width * 0.94)),
@@ -461,11 +587,10 @@ async def attempt_modal_corner_close(
                     y,
                     confidence: scored.score,
                     confidence_reasons: scored.reasons,
+                    icon_only_full_pattern: Boolean(scored.iconOnlyFullPattern),
                     target_meta: targetMeta,
                   };
-                  if (!best || Number(candidate.confidence || 0) > Number(best.confidence || 0)) {
-                    best = candidate;
-                  }
+                  scoreAndPick(candidate);
                 }
               }
               if (best) return best;
@@ -502,7 +627,11 @@ async def attempt_modal_corner_close(
     threshold = float(min_confidence)
     target_meta = plan.get("target_meta") if isinstance(plan.get("target_meta"), dict) else {}
     target_text = str(target_meta.get("text") or "").strip()
-    if target_text in {"×", "✕", "x", "X"}:
+    if bool(plan.get("icon_only_full_pattern")):
+        threshold = max(0.0, threshold - 0.15)
+    elif target_text in {"×", "✕", "x", "X"}:
+        threshold = max(0.0, threshold - 0.10)
+    elif str(target_meta.get("aria_label") or "").strip().lower() in {"close", "닫기"}:
         threshold = max(0.0, threshold - 0.15)
     if confidence < threshold:
         attempt_logs.append(
@@ -517,13 +646,43 @@ async def attempt_modal_corner_close(
         )
         return {"success": False}
 
-    click_meta = await trusted_click_point(
+    watch_ms = 1200
+    settle_ms = 900
+    try:
+        watch_ms = int(str(os.getenv("GAIA_FALLBACK_WATCH_MS", "1200")).strip() or "1200")
+        settle_ms = int(
+            str(os.getenv("GAIA_FALLBACK_WATCH_SETTLE_MS", "900")).strip() or "900"
+        )
+    except Exception:
+        watch_ms = 1200
+        settle_ms = 900
+
+    click_meta: Dict[str, Any] = {}
+
+    async def _click() -> None:
+        nonlocal click_meta
+        click_meta = await trusted_click_point(
+            page,
+            float(plan.get("x") or 0.0),
+            float(plan.get("y") or 0.0),
+            delay_ms=50,
+            move_first=True,
+            clamp_to_viewport=True,
+        )
+        if not bool(click_meta.get("clicked")):
+            raise RuntimeError(str(click_meta.get("error") or "playwright_mouse_click_failed"))
+
+    post_watch = await watch_after_trusted_click(
         page,
-        float(plan.get("x") or 0.0),
-        float(plan.get("y") or 0.0),
-        delay_ms=50,
-        move_first=True,
-        clamp_to_viewport=True,
+        _click,
+        watch_ms=watch_ms,
+        settle_ms=settle_ms,
+        wait_until="commit",
+        watch_popup=True,
+        watch_navigation=True,
+        watch_dialog=True,
+        auto_dismiss_dialog=True,
+        auto_close_popup=False,
     )
     click_meta = {**plan, **click_meta}
     if not bool(click_meta.get("clicked")):
@@ -535,6 +694,7 @@ async def attempt_modal_corner_close(
                 "fallback": "modal_corner_click",
                 "error": str(click_meta.get("error") or "playwright_mouse_click_failed"),
                 "meta": click_meta,
+                "post_watch": post_watch,
             }
         )
         return {"success": False}
@@ -545,6 +705,9 @@ async def attempt_modal_corner_close(
         probe_scroll="modal_corner_fallback",
     )
     if bool(corner_change.get("effective", True)):
+        corner_change["post_watch"] = post_watch
+        if bool(post_watch.get("nav_detected")) or bool(post_watch.get("popup_detected")):
+            corner_change["resnapshot_required"] = True
         attempt_logs.append(
             {
                 "attempt": attempt_idx,
@@ -552,6 +715,7 @@ async def attempt_modal_corner_close(
                 "reason_code": "ok",
                 "fallback": "modal_corner_click",
                 "meta": click_meta,
+                "post_watch": post_watch,
                 "state_change": corner_change,
             }
         )
@@ -563,6 +727,7 @@ async def attempt_modal_corner_close(
             "reason_code": "no_state_change",
             "fallback": "modal_corner_click",
             "meta": click_meta,
+            "post_watch": post_watch,
             "state_change": corner_change,
         }
     )

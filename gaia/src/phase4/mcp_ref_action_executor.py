@@ -105,6 +105,22 @@ async def execute_ref_action_with_snapshot_impl(
     stale_recovered = False
     reason_code = "unknown_error"
     last_live_texts: List[str] = []
+    _resnapshot_on_strong_signal = str(
+        os.getenv("GAIA_RESNAPSHOT_ON_STRONG_SIGNAL", "1")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    async def _maybe_resnapshot(reason: str) -> Optional[str]:
+        if not _resnapshot_on_strong_signal:
+            return None
+        try:
+            snap = await snapshot_page(session_id=session_id, url=page.url, tab_id=tab_id)
+            snap_id = snap.get("snapshot_id") if isinstance(snap, dict) else None
+            if isinstance(snap_id, str) and snap_id.strip():
+                retry_path.append(f"resnapshot:{reason}")
+                return snap_id
+        except Exception:
+            return None
+        return None
 
     requested_snapshot = session.snapshots.get(snapshot_id)
     requested_meta = (
@@ -264,6 +280,7 @@ async def execute_ref_action_with_snapshot_impl(
     interaction_success = False
     context_prep = await prepare_ref_action_execution_context(
         action=action,
+        value=value,
         verify=verify,
         requested_meta=requested_meta,
         requested_snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
@@ -458,6 +475,10 @@ async def execute_ref_action_with_snapshot_impl(
             if isinstance(recovery_result.get("return_response"), dict):
                 return recovery_result["return_response"]
             state_change = recovery_result.get("state_change") or state_change
+            if isinstance(state_change, dict) and bool(state_change.get("resnapshot_required")):
+                post_click_snapshot_id = await _maybe_resnapshot("exception_recovery")
+                if post_click_snapshot_id:
+                    state_change["post_click_snapshot_id"] = post_click_snapshot_id
             ref_id = str(recovery_result.get("ref_id") or ref_id)
             updated_meta = recovery_result.get("requested_meta")
             if isinstance(updated_meta, dict):
@@ -514,6 +535,10 @@ async def execute_ref_action_with_snapshot_impl(
         )
         effective = bool(verify_fallback_result.get("effective"))
         state_change = verify_fallback_result.get("state_change") or state_change
+        if isinstance(state_change, dict) and bool(state_change.get("resnapshot_required")):
+            post_click_snapshot_id = await _maybe_resnapshot("verify_fallback")
+            if post_click_snapshot_id:
+                state_change["post_click_snapshot_id"] = post_click_snapshot_id
         ref_id = str(verify_fallback_result.get("ref_id") or ref_id)
         updated_meta = verify_fallback_result.get("requested_meta")
         if isinstance(updated_meta, dict):

@@ -3,6 +3,11 @@
 이 문서는 채용 포트폴리오에 바로 옮겨 적을 수 있는 형태로 구성했다.  
 상세 실행 이력/원본 로그는 `/Users/coldmans/Documents/GitHub/capston/PORTFOLIO_RUN_LOG.md`를 증빙으로 사용한다.
 
+## 중간발표 v2 동기화 링크
+- 발표 대본(12슬라이드): `/Users/coldmans/Documents/GitHub/capston/gaia/docs/presentation/MIDTERM_15MIN_V2.md`
+- 슬라이드 근거 매핑: `/Users/coldmans/Documents/GitHub/capston/gaia/docs/presentation/SLIDE_EVIDENCE_MAP.md`
+- 실행 로그 증빙: `/Users/coldmans/Documents/GitHub/capston/PORTFOLIO_RUN_LOG.md`
+
 ---
 
 ## 1) 한 줄 소개
@@ -204,4 +209,3 @@
 - [ ] Telegram 원격 개입(질문→응답→재개) 완주 사례 추가
 - [ ] 타 도메인 1~2개 추가로 범용성 검증 결과 기재
 - [ ] 성능 지표(평균 실행시간/스텝) 표 추가
-
