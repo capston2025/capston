@@ -182,7 +182,14 @@ async def prepare_ref_action_execution_context(
     verify_for_action = bool(verify)
     adjusted_max_action_seconds = max_action_seconds
     precheck_response: Optional[Dict[str, Any]] = None
-    if close_like_click:
+    # soft_close 판단: "X" 텍스트만으로 감지된 경우 modal precheck 건너뛰기
+    # _is_close_intent_ref 에서 설정한 마커 또는 visible text가 단일 닫기 문자인 경우
+    visible_text_raw = str(requested_meta.get("text") or "").strip()
+    is_soft_close = bool(
+        requested_meta.get("_soft_close")
+        or visible_text_raw in {"x", "X", "✕", "✖", "×"}
+    )
+    if close_like_click and not is_soft_close:
         close_gate_evidence: Dict[str, Any]
         try:
             close_gate_evidence = await collect_page_evidence_fn(page)

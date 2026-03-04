@@ -115,10 +115,24 @@ def _is_close_intent_ref(meta: Dict[str, Any]) -> bool:
         "취소",
         "나가기",
     ]
-    if any(token in text for token in close_tokens):
-        return True
     visible = str(meta.get("text") or "").strip()
-    if visible in {"x", "X", "✕", "✖", "×"}:
+    is_x_like_text = visible in {"x", "X", "✕", "✖", "×"}
+    if any(token in text for token in close_tokens):
+        if is_x_like_text:
+            # "X" 텍스트 + class/selector에 close 토큰 → soft close
+            # aria-label/title이 명시적으로 close를 포함할 때만 hard close
+            explicit_label = str(attrs.get("aria-label") or "").strip().lower()
+            explicit_title = str(attrs.get("title") or "").strip().lower()
+            has_explicit_close = (
+                any(kw in explicit_label for kw in ("close", "닫기", "dismiss"))
+                or any(kw in explicit_title for kw in ("close", "닫기", "dismiss"))
+            )
+            if not has_explicit_close:
+                meta["_soft_close"] = True
+        return True
+    if is_x_like_text:
+        # class/selector에 close 토큰 없이 "X" 텍스트만 있는 경우도 soft close
+        meta["_soft_close"] = True
         return True
     return False
 

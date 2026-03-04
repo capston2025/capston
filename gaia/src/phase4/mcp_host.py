@@ -1443,7 +1443,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     const actionability = getActionability(el);
                     if (!actionability.visible) return;
 
-                    elements.push({
+                    const entry = {
                         tag: el.tagName.toLowerCase(),
                         dom_ref: assignDomRef(el),
                         selector: getUniqueSelector(el),
@@ -1465,7 +1465,26 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         element_type: 'input',
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
-                    });
+                    };
+
+                    // select 요소의 option 목록 수집 (최대 20개)
+                    if (el.tagName.toLowerCase() === 'select') {
+                        const opts = [];
+                        const optEls = el.querySelectorAll('option');
+                        const limit = Math.min(optEls.length, 20);
+                        for (let i = 0; i < limit; i++) {
+                            const o = optEls[i];
+                            opts.push({ value: o.value, text: (o.textContent || '').trim() });
+                        }
+                        if (optEls.length > 20) {
+                            opts.push({ value: '__truncated__', text: '...' + (optEls.length - 20) + ' more' });
+                        }
+                        entry.attributes['options'] = opts;
+                        // 현재 선택된 값도 기록
+                        entry.attributes['selected_value'] = el.value || '';
+                    }
+
+                    elements.push(entry);
                 });
 
                 // 버튼과 상호작용 가능한 역할 요소를 수집
@@ -3657,11 +3676,22 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
         if "fn" in wait_payload and "js" not in wait_payload:
             wait_payload["js"] = wait_payload.pop("fn")
 
-        rich_wait_keys = {"selector", "js", "url", "load_state", "text", "text_gone", "timeout_ms", "time_ms"}
+        rich_wait_keys = {"selector", "js", "url", "load_state", "text", "text_gone", "time_ms"}
         if any(wait_payload.get(k) not in (None, "") for k in rich_wait_keys):
             return await _browser_wait(wait_payload)
-
-        wait_ms = int(value) if isinstance(value, (int, str)) and str(value).strip() else 500
+        wait_ms: int
+        if wait_payload.get("timeout_ms") not in (None, ""):
+            try:
+                wait_ms = max(0, int(wait_payload.get("timeout_ms")))
+            except Exception:
+                wait_ms = 500
+        elif isinstance(value, (int, str)) and str(value).strip():
+            try:
+                wait_ms = max(0, int(value))
+            except Exception:
+                wait_ms = 500
+        else:
+            wait_ms = 500
         await page.wait_for_timeout(max(0, wait_ms))
         session.current_url = page.url
         screenshot_bytes = await page.screenshot(full_page=False)

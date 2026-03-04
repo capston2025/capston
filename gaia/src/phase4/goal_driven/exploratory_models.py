@@ -28,6 +28,7 @@ class ElementState(BaseModel):
     href: Optional[str] = None
     placeholder: Optional[str] = None
     bounding_box: Optional[dict] = None
+    options: Optional[list] = None  # select 요소의 option 목록 [{value, text}]
 
     # 테스트 상태
     tested: bool = Field(default=False, description="테스트 완료 여부")

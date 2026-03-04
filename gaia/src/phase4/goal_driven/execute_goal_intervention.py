@@ -22,8 +22,8 @@ def handle_login_intervention(
                     return {
                         "aborted": True,
                         "reason": (
-                            "로그인 화면에서 사용자 개입이 필요하지만 입력이 제공되지 않아 중단했습니다. "
-                            "다시 실행 후 로그인 진행 여부/계정 정보를 입력해 주세요."
+                        "로그인 화면에서 사용자 개입이 필요해 실행을 일시 중지했습니다. "
+                        "사용자 응답(/handoff 또는 재실행 인자)으로 로그인/회원가입(auth_mode=signup) 정보를 제공해 주세요."
                         ),
                         "has_login_test_data": has_login_test_data,
                         "login_intervention_asked": login_intervention_asked,

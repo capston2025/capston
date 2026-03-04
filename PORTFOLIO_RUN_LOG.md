@@ -4,6 +4,11 @@
 - 취업용 포트폴리오에서 "문제 해결 능력"을 증명하기 위한 실전 개발 기록.
 - 단순 성공 기록이 아니라 실패 원인, 가설, 수정, 재검증 결과까지 남긴다.
 
+## 발표 동기화 문서
+- 발표 대본(12슬라이드): `/Users/coldmans/Documents/GitHub/capston/gaia/docs/presentation/MIDTERM_15MIN_V2.md`
+- 슬라이드별 증빙맵: `/Users/coldmans/Documents/GitHub/capston/gaia/docs/presentation/SLIDE_EVIDENCE_MAP.md`
+- 포트폴리오 스켈레톤: `/Users/coldmans/Documents/GitHub/capston/PORTFOLIO_SKELETON.md`
+
 ---
 
 ## 기록 규칙
@@ -199,4 +204,3 @@
 - [ ] Telegram 경유 개입 질문-응답-재개 흐름 로그 정량화
 - [ ] 도메인 변경 시(타 사이트) 제약 파서 오탐률 측정
 - [ ] OpenClaw parity 미매핑 항목 추적표 추가
-

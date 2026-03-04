@@ -1561,6 +1561,23 @@ class GoalDrivenAgent:
 
         self._log("🙋 사용자 개입 필요: 목표가 모호하거나 중요한 정보가 부족합니다.")
         try:
+            interactive_stdin = bool(os.isatty(0))
+        except Exception:
+            interactive_stdin = False
+        if not interactive_stdin:
+            self._handoff_state = {
+                "kind": "clarification",
+                "provided": False,
+                "phase": self._runtime_phase,
+                "requested": True,
+                "timestamp": int(time.time()),
+            }
+            self._log(
+                "⏸️ 비대화 실행이라 추가 입력을 받을 수 없습니다. "
+                "실행을 일시 중지하고 사용자 응답(/handoff 또는 재실행 인자) 대기 상태로 전환합니다."
+            )
+            return False
+        try:
             refined = input("구체 목표를 입력하세요 (비우면 기존 목표 유지): ").strip()
         except (EOFError, KeyboardInterrupt):
             self._log("사용자 입력이 중단되었습니다.")
@@ -1608,11 +1625,35 @@ class GoalDrivenAgent:
             "goal_description": goal.description,
             "question": (
                 "로그인/인증 정보가 필요합니다. "
-                "진행 여부와 계정 정보(username/email/password) 또는 수동 로그인 완료 여부를 알려주세요."
+                "진행 여부와 계정 정보(username/email/password) 또는 수동 로그인 완료 여부를 알려주세요. "
+                "회원가입으로 진행하려면 auth_mode=signup을 함께 전달하세요."
             ),
-            "fields": ["proceed", "username", "email", "password", "manual_done"],
+            "fields": [
+                "proceed",
+                "auth_mode",
+                "manual_done",
+                "username",
+                "email",
+                "password",
+                "department",
+                "grade_year",
+                "return_credentials",
+            ],
         }
         callback_resp = self._request_user_intervention(callback_payload)
+        if callback_resp is None:
+            try:
+                interactive_stdin = bool(os.isatty(0))
+            except Exception:
+                interactive_stdin = False
+            if not interactive_stdin:
+                self._handoff_state["provided"] = False
+                self._handoff_state["mode"] = "awaiting_user_input"
+                self._log(
+                    "⏸️ 로그인/인증 개입이 필요하지만 비대화 실행이라 입력을 받을 수 없습니다. "
+                    "실행을 중단하고 사용자 응답(회원가입 포함)을 기다립니다."
+                )
+                return False
         if callback_resp is not None:
             if str(callback_resp.get("action") or "").lower() in {"cancel", "deny", "no"}:
                 self._log("로그인 개입이 취소되었습니다.")
@@ -3141,6 +3182,7 @@ class GoalDrivenAgent:
                         class_name=attrs.get("class"),
                         href=attrs.get("href"),
                         bounding_box=el.get("bounding_box"),
+                        options=attrs.get("options"),
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=bool(el.get("is_enabled", True)),
                     )
@@ -3432,6 +3474,10 @@ JSON 응답:"""
                 parts.append(f'placeholder="{el.placeholder}"')
             if el.aria_label:
                 parts.append(f'aria-label="{el.aria_label}"')
+            # select 요소의 option 목록 표시
+            if el.tag == "select" and el.options:
+                opt_strs = [f'{o.get("value","")}: {o.get("text","")}' for o in el.options[:10]]
+                parts.append(f'options=[{" | ".join(opt_strs)}]')
 
             lines.append(" ".join(parts))
 
@@ -3706,7 +3752,10 @@ JSON 응답:"""
                 return _execute_with_ref_recovery("select", action_value=decision.value)
 
             elif decision.action == ActionType.WAIT:
-                self._last_exec_result = self._execute_action("wait", value=decision.value)
+                wait_value = decision.value
+                if wait_value is None or (isinstance(wait_value, str) and not wait_value.strip()):
+                    wait_value = {"timeMs": 700}
+                self._last_exec_result = self._execute_action("wait", value=wait_value)
                 return bool(self._last_exec_result.success and self._last_exec_result.effective), self._last_exec_result.as_error_message()
 
             elif decision.action == ActionType.NAVIGATE:

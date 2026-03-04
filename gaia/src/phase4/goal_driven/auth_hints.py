@@ -62,7 +62,30 @@ def contains_next_pagination_hint(value: Optional[str], normalize_text: Normaliz
     text = normalize_text(value)
     if not text:
         return False
-    return any(ch in text for ch in ("›", "»", ">"))
+    if any(token in text for token in ("prev", "previous", "back", "이전", "앞", "prior")):
+        return False
+    if any(ch in text for ch in ("›", "»", "→", "⟩")):
+        return True
+    if re.search(r"(?:^|[\s\-_:/\[\]()])next(?:$|[\s\-_:/\[\]()])", text):
+        return True
+    if any(
+        token in text
+        for token in (
+            "다음",
+            "다음페이지",
+            "다음 페이지",
+            "다음으로",
+            "nextpage",
+            "page-next",
+            "pager-next",
+            "nav-next",
+            "go-next",
+        )
+    ):
+        return True
+    if text.endswith(">") and len(text) <= 5:
+        return True
+    return False
 
 
 def recover_dom_after_empty(
