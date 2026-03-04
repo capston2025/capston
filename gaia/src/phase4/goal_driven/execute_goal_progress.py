@@ -6,6 +6,54 @@ from typing import Any, Dict, List, Optional
 from .models import ActionDecision, ActionType, DOMElement, GoalResult, StepResult, TestGoal
 
 
+def _emit_reason(agent: Any, code: str) -> None:
+    if not code:
+        return
+    recorder = getattr(agent, "_record_reason_code", None)
+    if callable(recorder):
+        recorder(code)
+
+
+def _strong_state_progress(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    keys = (
+        "url_changed",
+        "target_visibility_changed",
+        "target_value_changed",
+        "target_value_matches",
+        "counter_changed",
+        "number_tokens_changed",
+        "status_text_changed",
+        "list_count_changed",
+        "interactive_count_changed",
+        "modal_count_changed",
+        "backdrop_count_changed",
+        "dialog_count_changed",
+        "modal_state_changed",
+        "auth_state_changed",
+        "text_digest_changed",
+        "nav_detected",
+        "popup_detected",
+        "dialog_detected",
+    )
+    return any(bool(state_change.get(key)) for key in keys)
+
+
+def _is_weak_dom_only_change(
+    *,
+    before_count: int,
+    after_count: int,
+    before_signature: Any,
+    after_signature: Any,
+) -> bool:
+    if before_signature == after_signature:
+        return True
+    if abs(int(after_count) - int(before_count)) <= 12:
+        return True
+    return False
+
+
 def evaluate_post_action_progress(
     *,
     agent: Any,
@@ -63,9 +111,29 @@ def evaluate_post_action_progress(
             or bool(state_change.get("dialog_count_changed"))
         )
     )
-    changed_by_state = agent._state_change_indicates_progress(state_change)
-    changed_by_dom = bool(post_dom) and agent._dom_progress_signature(post_dom) != before_signature
+    changed_by_state = _strong_state_progress(state_change)
+    after_signature = agent._dom_progress_signature(post_dom) if post_dom else before_signature
+    changed_by_dom = False
+    if bool(post_dom) and before_signature != after_signature:
+        weak_dom_only = _is_weak_dom_only_change(
+            before_count=len(dom_elements),
+            after_count=len(post_dom),
+            before_signature=before_signature,
+            after_signature=after_signature,
+        )
+        changed_by_dom = not weak_dom_only
     changed = bool(changed_by_state or changed_by_dom)
+    if changed_by_state:
+        _emit_reason(agent, "progress_state_change")
+    elif changed_by_dom:
+        _emit_reason(agent, "progress_dom_signature")
+    elif (
+        bool(success)
+        and isinstance(state_change, dict)
+        and bool(state_change.get("effective"))
+    ):
+        # OpenClaw-style guard: weak effective(관측상 약한 변화)는 루프 리셋 신호로 쓰지 않는다.
+        _emit_reason(agent, "weak_effective_ignored")
     if decision_close_intent and bool(success):
         # close intent 액션이 실제로 실행됐다면, evidence 지연/누락이 있더라도
         # "모달이 열린 상태를 다루는 흐름"으로 간주해 종료 판정 누락을 줄인다.

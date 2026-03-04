@@ -16,6 +16,22 @@ def _policy_int(agent: Any, key: str, default: int) -> int:
     return max(0, int(default))
 
 
+def _emit_reason(agent: Any, code: str) -> None:
+    if not code:
+        return
+    recorder = getattr(agent, "_record_reason_code", None)
+    if callable(recorder):
+        recorder(code)
+
+
+def _action_signature(decision: ActionDecision) -> str:
+    element_id = int(decision.element_id) if decision.element_id is not None else -1
+    value = str(decision.value or "").strip().lower()
+    if len(value) > 48:
+        value = value[:48]
+    return f"{decision.action.value}:{element_id}:{value}"
+
+
 def update_action_streaks_and_loops(
     *,
     agent: Any,
@@ -39,6 +55,12 @@ def update_action_streaks_and_loops(
     no_progress_context_shift_min = _policy_int(agent, "no_progress_context_shift_min", 2)
     ineffective_action_shift_limit = max(1, _policy_int(agent, "ineffective_action_shift_limit", 3))
     ineffective_action_stop_limit = max(2, _policy_int(agent, "ineffective_action_stop_limit", 8))
+
+    sig_history = list(getattr(agent, "_loop_action_signature_history", []) or [])
+    sig_history.append(_action_signature(decision))
+    if len(sig_history) > 10:
+        sig_history = sig_history[-10:]
+    setattr(agent, "_loop_action_signature_history", sig_history)
 
     if decision.action in {
         ActionType.CLICK,
@@ -94,8 +116,23 @@ def update_action_streaks_and_loops(
         and agent._no_progress_counter >= no_progress_context_shift_min
     ):
         force_context_shift = True
+        _emit_reason(agent, "loop_ineffective_shift")
+
+    if len(sig_history) >= 4 and agent._no_progress_counter >= no_progress_context_shift_min:
+        a, b, c, d = sig_history[-4:]
+        if a == c and b == d and a != b:
+            agent._log("🧭 액션 진동(ABAB) 감지: 강제 컨텍스트 전환을 적용합니다.")
+            force_context_shift = True
+            _emit_reason(agent, "loop_oscillation_action_abab")
+    if len(sig_history) >= 5 and agent._no_progress_counter >= no_progress_context_shift_min:
+        tail = sig_history[-5:]
+        if len(set(tail)) == 1:
+            agent._log("🧭 동일 액션 반복 루프 감지: 강제 컨텍스트 전환을 적용합니다.")
+            force_context_shift = True
+            _emit_reason(agent, "loop_repeat_same_action")
 
     if ineffective_action_streak >= ineffective_action_stop_limit:
+        _emit_reason(agent, "loop_ineffective_stop")
         terminal_result = agent._build_failure_result(
             goal=goal,
             steps=steps,

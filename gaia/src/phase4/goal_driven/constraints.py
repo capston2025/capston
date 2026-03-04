@@ -126,6 +126,22 @@ def estimate_goal_metric_from_dom(
     metric_terms = [str(x) for x in (goal_constraints.get("metric_terms") or []) if str(x).strip()]
 
     values: List[int] = []
+    contextual_values: List[int] = []
+    aggregate_hints = (
+        "총",
+        "합계",
+        "현재",
+        "누적",
+        "선택",
+        "담은",
+        "장바구니",
+        "위시",
+        "wishlist",
+        "selected",
+        "cart",
+        "time table",
+        "시간표",
+    )
     for el in dom_elements:
         fields = [
             getattr(el, "text", None),
@@ -136,7 +152,14 @@ def estimate_goal_metric_from_dom(
         for field in fields:
             if not field:
                 continue
-            values.extend(extract_metric_values_from_text(str(field), metric_terms, normalize_text))
+            field_text = str(field)
+            field_values = extract_metric_values_from_text(field_text, metric_terms, normalize_text)
+            if not field_values:
+                continue
+            values.extend(field_values)
+            normalized_field = normalize_text(field_text)
+            if any(hint in normalized_field for hint in aggregate_hints):
+                contextual_values.extend(field_values)
 
     collect_min = goal_constraints.get("collect_min")
     apply_target = goal_constraints.get("apply_target")
@@ -152,5 +175,21 @@ def estimate_goal_metric_from_dom(
 
     filtered = [v for v in values if 0 <= int(v) <= dynamic_upper]
     if not filtered:
+        return None
+    contextual_filtered = [v for v in contextual_values if 0 <= int(v) <= dynamic_upper]
+    if contextual_filtered:
+        return float(max(contextual_filtered))
+
+    # context 힌트가 없는 숫자 추정치는 저신뢰로 취급한다.
+    # 단일/유사 숫자만 반복 관측되고 collect_min 대비 너무 작으면 unknown으로 반환해
+    # hard gate 루프를 방지한다.
+    collect_min = goal_constraints.get("collect_min")
+    try:
+        collect_min_value = float(collect_min)
+    except Exception:
+        collect_min_value = 0.0
+    max_value = float(max(filtered))
+    unique_count = len({int(v) for v in filtered})
+    if collect_min_value >= 3.0 and max_value < (collect_min_value * 0.35) and unique_count <= 2:
         return None
     return float(max(filtered))
