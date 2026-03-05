@@ -47,6 +47,7 @@ from gaia.src.phase4.mcp_ref_state_probe import (
 from gaia.src.phase4.mcp_ref_verify_fallbacks import (
     run_verify_fallback_chain,
 )
+from gaia.src.phase4.mcp_error_converter import to_ai_friendly_error
 
 
 async def execute_ref_action_with_snapshot_impl(
@@ -188,7 +189,8 @@ async def execute_ref_action_with_snapshot_impl(
                     reason_code = "stale_ref_recovered"
                     retry_path.append("recover:ok")
         except Exception as recover_exc:
-            retry_path.append(f"recover:error:{recover_exc}")
+            friendly = to_ai_friendly_error(recover_exc, ref_id=ref_id)
+            retry_path.append(f"recover:error:{friendly}")
 
     if (
         not isinstance(requested_snapshot, dict)
@@ -439,6 +441,8 @@ async def execute_ref_action_with_snapshot_impl(
             await _execute_action_on_locator(action, page, locator, value, options=options)
             interaction_success = True
         except Exception as action_exc:
+            friendly_msg = to_ai_friendly_error(action_exc, ref_id=ref_id)
+            retry_path.append(f"action_error:{friendly_msg}")
             recovery_result = await handle_action_exception_recovery(
                 action_exc=action_exc,
                 action=action,

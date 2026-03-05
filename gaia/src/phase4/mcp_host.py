@@ -1353,12 +1353,17 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         el.disabled === true ||
                         String(el.getAttribute('disabled') || '').toLowerCase() === 'true' ||
                         String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
-                    const visible = displayVisible && opacity > 0.02 && pointerEvents !== 'none' && hasRect && onViewport;
+                    // OpenClaw-aligned split:
+                    // - collect visibility: allow offscreen candidates (no viewport gating)
+                    // - execution-time actionability: handled at action phase (scroll/reveal/probe)
+                    const collectVisible = displayVisible && opacity > 0.02 && pointerEvents !== 'none' && hasRect;
+                    const visible = collectVisible;
                     return {
                         visible,
-                        actionable: visible && !disabled,
+                        actionable: collectVisible && !disabled,
                         disabled,
                         opacity,
+                        onViewport,
                         pointerEvents: style.pointerEvents || '',
                     };
                 }
@@ -1458,6 +1463,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'gaia-visible-strict': actionability.visible ? 'true' : 'false',
                             'gaia-actionable': actionability.actionable ? 'true' : 'false',
                             'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-on-viewport': actionability.onViewport ? 'true' : 'false',
                             'gaia-pointer-events': actionability.pointerEvents || '',
                             'gaia-opacity': String(actionability.opacity),
                         },
@@ -1547,11 +1553,58 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'gaia-visible-strict': actionability.visible ? 'true' : 'false',
                             'gaia-actionable': actionability.actionable ? 'true' : 'false',
                             'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-on-viewport': actionability.onViewport ? 'true' : 'false',
                             'gaia-pointer-events': actionability.pointerEvents || '',
                             'gaia-opacity': String(actionability.opacity),
                         },
                         bounding_box: getBoundingBox(el),
                         element_type: 'button',
+                        actionable: actionability.actionable,
+                        visible_strict: actionability.visible,
+                    });
+                });
+
+                // 페이지네이션/네비게이션 시그널 수집 (아이콘형 next/prev 포함)
+                queryAll('button, a, [role="button"], [role="link"]').forEach(el => {
+                    const actionability = getActionability(el);
+                    if (!actionability.visible) return;
+
+                    const rawText = (el.innerText || el.textContent || '').trim();
+                    const ariaLabel = (el.getAttribute('aria-label') || '').trim();
+                    const title = (el.getAttribute('title') || '').trim();
+                    const cls = (el.className && typeof el.className === 'string') ? el.className : '';
+                    const dataPage = (el.getAttribute('data-page') || '').trim();
+                    const ariaCurrent = (el.getAttribute('aria-current') || '').trim();
+                    const role = (el.getAttribute('role') || '').trim();
+                    const blob = `${rawText} ${ariaLabel} ${title} ${cls} ${dataPage}`.toLowerCase();
+                    const hasPaginationSignal =
+                        /(pagination|pager|page-|page_|\\bpage\\b|next|prev|previous|다음|이전|chevron|arrow)/.test(blob)
+                        || !!ariaCurrent
+                        || /^[<>‹›«»→←]+$/.test(rawText);
+                    if (!hasPaginationSignal) return;
+
+                    const text = rawText || ariaLabel || title || dataPage || '[page-nav]';
+                    elements.push({
+                        tag: el.tagName.toLowerCase(),
+                        dom_ref: assignDomRef(el),
+                        selector: getUniqueSelector(el),
+                        text: text,
+                        attributes: {
+                            role: role,
+                            class: cls || '',
+                            'aria-label': ariaLabel,
+                            title: title,
+                            'aria-current': ariaCurrent,
+                            'data-page': dataPage,
+                            'gaia-visible-strict': actionability.visible ? 'true' : 'false',
+                            'gaia-actionable': actionability.actionable ? 'true' : 'false',
+                            'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-on-viewport': actionability.onViewport ? 'true' : 'false',
+                            'gaia-pointer-events': actionability.pointerEvents || '',
+                            'gaia-opacity': String(actionability.opacity),
+                        },
+                        bounding_box: getBoundingBox(el),
+                        element_type: 'pagination',
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
                     });
@@ -1579,6 +1632,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'gaia-visible-strict': actionability.visible ? 'true' : 'false',
                             'gaia-actionable': actionability.actionable ? 'true' : 'false',
                             'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-on-viewport': actionability.onViewport ? 'true' : 'false',
                             'gaia-pointer-events': actionability.pointerEvents || '',
                             'gaia-opacity': String(actionability.opacity),
                         },
@@ -1619,6 +1673,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'gaia-visible-strict': actionability.visible ? 'true' : 'false',
                             'gaia-actionable': actionability.actionable ? 'true' : 'false',
                             'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-on-viewport': actionability.onViewport ? 'true' : 'false',
                             'gaia-pointer-events': actionability.pointerEvents || '',
                             'gaia-opacity': String(actionability.opacity),
                         },
@@ -1716,6 +1771,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                             'gaia-visible-strict': actionability.visible ? 'true' : 'false',
                             'gaia-actionable': actionability.actionable ? 'true' : 'false',
                             'gaia-disabled': actionability.disabled ? 'true' : 'false',
+                            'gaia-on-viewport': actionability.onViewport ? 'true' : 'false',
                             'gaia-pointer-events': actionability.pointerEvents || '',
                             'gaia-opacity': String(actionability.opacity),
                         },
@@ -2226,6 +2282,21 @@ async def _scroll_locator_container(locator, value: Any) -> Dict[str, Any]:
     )
 
 
+def _validate_upload_path(path: str) -> str:
+    """업로드 파일 경로를 검증합니다. Path traversal 방지."""
+    import os as _os
+
+    resolved = _os.path.realpath(path)
+    upload_dir = _os.getenv("GAIA_UPLOAD_DIR", "")
+    if upload_dir:
+        allowed = _os.path.realpath(upload_dir)
+        if not resolved.startswith(allowed + _os.sep) and resolved != allowed:
+            raise ValueError(f"File path not allowed (outside GAIA_UPLOAD_DIR): {path}")
+    if not _os.path.isfile(resolved):
+        raise ValueError(f"File not found: {path}")
+    return resolved
+
+
 async def _execute_action_on_locator(
     action: str,
     page: Page,
@@ -2236,11 +2307,7 @@ async def _execute_action_on_locator(
     opts = dict(options or {})
 
     def _normalize_timeout(raw: Any, default_ms: int) -> int:
-        try:
-            candidate = int(raw)
-        except Exception:
-            candidate = default_ms
-        return max(500, min(60000, candidate))
+        return _normalize_timeout_ms(raw if raw is not None else default_ms, default_ms)
 
     if action == "click":
         await _reveal_locator_in_scroll_context(locator)
@@ -2273,7 +2340,17 @@ async def _execute_action_on_locator(
             raise ValueError("fill requires value")
         await _reveal_locator_in_scroll_context(locator)
         timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
-        await locator.fill(str(value), timeout=timeout_ms)
+        slowly = bool(opts.get("slowly") or opts.get("sequentialKeystrokes"))
+        if slowly:
+            # React/Vue 등 keystroke 이벤트가 필요한 프레임워크용
+            # locator.fill()은 value 속성을 직접 설정하므로 onChange 미발화
+            # locator.type()은 개별 키스트로크를 발생시켜 이벤트 핸들러 동작
+            await locator.clear(timeout=timeout_ms)
+            delay_ms = int(opts.get("delay", 75))
+            delay_ms = max(10, min(300, delay_ms))
+            await locator.type(str(value), delay=delay_ms, timeout=timeout_ms)
+        else:
+            await locator.fill(str(value), timeout=timeout_ms)
         return
     if action == "press":
         key = str(value or "Enter")
@@ -2285,6 +2362,14 @@ async def _execute_action_on_locator(
         await _reveal_locator_in_scroll_context(locator)
         timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
         await locator.hover(timeout=timeout_ms)
+        return
+    if action == "setChecked":
+        # checkbox/radio 전용: Playwright setChecked()는 이미 해당 상태인 경우 skip
+        await _reveal_locator_in_scroll_context(locator)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 8000)
+        _FALSY_VALUES = {False, "false", "0", 0, None, ""}
+        checked = value not in _FALSY_VALUES
+        await locator.set_checked(checked, timeout=timeout_ms)
         return
     if action == "scroll":
         await _scroll_locator_container(locator, value)
@@ -2327,23 +2412,54 @@ async def _execute_action_on_locator(
     if action == "dragSlider":
         if value is None:
             raise ValueError("dragSlider requires numeric value")
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"dragSlider requires numeric value, got: {value!r}")
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
         ok = await locator.evaluate(
             """
-            (el, targetValue) => {
-              const num = Number(targetValue);
-              if (Number.isNaN(num)) return false;
-              if (el.value === undefined) return false;
-              el.focus();
-              el.value = String(num);
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
+            (el, payload) => {
+              const { targetValue, timeoutMs } = payload;
+              return new Promise((resolve, reject) => {
+                const timer = setTimeout(
+                  () => reject(new Error("dragSlider timed out after " + timeoutMs + "ms")),
+                  timeoutMs
+                );
+                try {
+                  const num = Number(targetValue);
+                  if (Number.isNaN(num)) { clearTimeout(timer); resolve(false); return; }
+                  if (el.value === undefined) { clearTimeout(timer); resolve(false); return; }
+                  el.focus();
+                  el.value = String(num);
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  clearTimeout(timer);
+                  resolve(true);
+                } catch (e) {
+                  clearTimeout(timer);
+                  reject(e);
+                }
+              });
             }
             """,
-            value,
+            {"targetValue": value, "timeoutMs": timeout_ms},
         )
         if not ok:
             raise ValueError("dragSlider target is not an input-like element")
+        return
+    if action == "uploadFile":
+        if value is None:
+            raise ValueError("uploadFile requires file path value")
+        await _reveal_locator_in_scroll_context(locator)
+        timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 30000)
+        raw_paths = value if isinstance(value, list) else [str(value)]
+        file_paths = [_validate_upload_path(p) for p in raw_paths]
+        await locator.set_input_files(file_paths, timeout=timeout_ms)
+        # setInputFiles 후 input/change 이벤트 수동 dispatch
+        # React/Vue 등 프레임워크 호환성 보장
+        await locator.dispatch_event("input", {"bubbles": True})
+        await locator.dispatch_event("change", {"bubbles": True})
         return
     raise ValueError(f"Unsupported ref action: {action}")
 
@@ -3507,18 +3623,8 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
                 action_name = "select"
                 action_value = field.get("values") if isinstance(field.get("values"), list) else field_value
             elif field_type in {"checkbox", "radio", "toggle", "switch"}:
-                truthy = bool(field_value)
-                if not truthy:
-                    field_results.append(
-                        {
-                            "index": idx,
-                            "ref_id": field_ref,
-                            "skipped": True,
-                            "reason": "falsy target for checkbox/radio",
-                        }
-                    )
-                    continue
-                action_name = "click"
+                # setChecked 사용: 이미 해당 상태면 skip, 토글 오류 방지
+                action_name = "setChecked"
                 action_value = field_value
             else:
                 action_name = "fill"

@@ -696,22 +696,43 @@ def _run_ai(
     max_actions: int = 50,
     *,
     time_budget_seconds: int | None = None,
-) -> int:
+) -> tuple[int, dict]:
     if not _ensure_mcp_host_running():
         sink.error("MCP host를 시작할 수 없습니다. /health 확인 후 다시 시도하세요.")
-        return 1
+        return 1, {
+            "goal": "autonomous_exploration",
+            "status": "failed",
+            "steps": 0,
+            "reason": "mcp_host_unavailable",
+            "duration_seconds": 0.0,
+            "reason_code_summary": {},
+            "validation_summary": {},
+            "validation_checks": [],
+            "verification_report": {},
+        }
 
     runtime = "terminal" if context.control_channel == "telegram" else context.runtime
     if runtime == "gui":
         if time_budget_seconds and int(time_budget_seconds) > 0:
             runtime = "terminal"
         else:
-            return _run_gui("--mode", "ai", "--url", context.url, "--max-actions", str(max_actions))
+            code = _run_gui("--mode", "ai", "--url", context.url, "--max-actions", str(max_actions))
+            return code, {
+                "goal": "autonomous_exploration",
+                "status": "success" if code == 0 else "failed",
+                "steps": 0,
+                "reason": "gui mode completed",
+                "duration_seconds": 0.0,
+                "reason_code_summary": {},
+                "validation_summary": {},
+                "validation_checks": [],
+                "verification_report": {},
+            }
 
-    from gaia.terminal import run_ai_terminal
+    from gaia.terminal import run_ai_terminal_with_summary
 
     intervention_cb = _build_ai_intervention_callback(context, sink=sink)
-    return run_ai_terminal(
+    return run_ai_terminal_with_summary(
         url=context.url,
         max_actions=max_actions,
         session_id=context.session_id,
@@ -1070,6 +1091,11 @@ def dispatch_command(
                 "steps": detail.get("steps"),
                 "reason": detail.get("reason") or "",
                 "duration": duration_value,
+                "step_timeline": (
+                    detail.get("step_timeline")
+                    if isinstance(detail.get("step_timeline"), list)
+                    else []
+                ),
                 "reason_code_summary": reason_summary,
                 "validation_summary": validation_summary,
                 "validation_checks": validation_checks,
@@ -1090,7 +1116,7 @@ def dispatch_command(
         elif len(parts) >= 3 and parts[1].strip().lower() in {"time", "auto", "autonomous"} and parts[2].strip().isdigit():
             time_budget_seconds = max(60, int(parts[2].strip()))
         t0 = time.time()
-        code = _run_ai(
+        code, ai_summary = _run_ai(
             context,
             sink=sink,
             max_actions=max_actions,
@@ -1116,11 +1142,35 @@ def dispatch_command(
             output=f"실행 종료 코드: {code}",
             data={
                 "goal": "autonomous_exploration",
-                "status": "success" if code == 0 else "failed",
-                "steps": 0,
-                "reason": "",
-                "duration": time.time() - t0,
-                "reason_code_summary": {},
+                "status": str(ai_summary.get("status") or ("success" if code == 0 else "failed")),
+                "steps": _as_int(ai_summary.get("steps")),
+                "reason": str(ai_summary.get("reason") or ""),
+                "duration": _as_float(ai_summary.get("duration_seconds") or (time.time() - t0)),
+                "step_timeline": (
+                    ai_summary.get("step_timeline")
+                    if isinstance(ai_summary.get("step_timeline"), list)
+                    else []
+                ),
+                "reason_code_summary": (
+                    ai_summary.get("reason_code_summary")
+                    if isinstance(ai_summary.get("reason_code_summary"), dict)
+                    else {}
+                ),
+                "validation_summary": (
+                    ai_summary.get("validation_summary")
+                    if isinstance(ai_summary.get("validation_summary"), dict)
+                    else {}
+                ),
+                "validation_checks": (
+                    ai_summary.get("validation_checks")
+                    if isinstance(ai_summary.get("validation_checks"), list)
+                    else []
+                ),
+                "verification_report": (
+                    ai_summary.get("verification_report")
+                    if isinstance(ai_summary.get("verification_report"), dict)
+                    else {}
+                ),
             },
         )
 
@@ -1131,7 +1181,7 @@ def dispatch_command(
             minutes = max(1, int(parts[1].strip()))
         time_budget_seconds = max(60, minutes * 60)
         t0 = time.time()
-        code = _run_ai(
+        code, ai_summary = _run_ai(
             context,
             sink=sink,
             max_actions=10_000_000,
@@ -1159,11 +1209,35 @@ def dispatch_command(
             ),
             data={
                 "goal": "time_budget_autonomous_validation",
-                "status": "success" if code == 0 else "failed",
-                "steps": 0,
-                "reason": "",
-                "duration": time.time() - t0,
-                "reason_code_summary": {},
+                "status": str(ai_summary.get("status") or ("success" if code == 0 else "failed")),
+                "steps": _as_int(ai_summary.get("steps")),
+                "reason": str(ai_summary.get("reason") or ""),
+                "duration": _as_float(ai_summary.get("duration_seconds") or (time.time() - t0)),
+                "step_timeline": (
+                    ai_summary.get("step_timeline")
+                    if isinstance(ai_summary.get("step_timeline"), list)
+                    else []
+                ),
+                "reason_code_summary": (
+                    ai_summary.get("reason_code_summary")
+                    if isinstance(ai_summary.get("reason_code_summary"), dict)
+                    else {}
+                ),
+                "validation_summary": (
+                    ai_summary.get("validation_summary")
+                    if isinstance(ai_summary.get("validation_summary"), dict)
+                    else {}
+                ),
+                "validation_checks": (
+                    ai_summary.get("validation_checks")
+                    if isinstance(ai_summary.get("validation_checks"), list)
+                    else []
+                ),
+                "verification_report": (
+                    ai_summary.get("verification_report")
+                    if isinstance(ai_summary.get("verification_report"), dict)
+                    else {}
+                ),
             },
         )
 

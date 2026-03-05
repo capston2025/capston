@@ -252,6 +252,7 @@ class _TelegramBridge:
     ) -> None:
         if not attachments:
             return
+        photo_items: list[tuple[io.BytesIO, str]] = []
         for attachment in attachments:
             if not isinstance(attachment, dict):
                 continue
@@ -267,13 +268,39 @@ class _TelegramBridge:
                 continue
             photo = io.BytesIO(binary)
             photo.name = "gaia_result.png"
-            kwargs = {"chat_id": chat_id, "photo": photo}
-            if reply_to_message_id is not None:
-                kwargs["reply_to_message_id"] = reply_to_message_id
             caption = str(attachment.get("caption") or "").strip()
-            if caption:
-                kwargs["caption"] = caption
-            await bot.send_photo(**kwargs)
+            photo_items.append((photo, caption))
+
+        if not photo_items:
+            return
+
+        # Telegram media-group limit: up to 10 items.
+        # Prefer grouped delivery for better mobile readability.
+        async def _send_group(items: list[tuple[io.BytesIO, str]], is_first_group: bool) -> None:
+            try:
+                from telegram import InputMediaPhoto  # type: ignore
+
+                media = []
+                for idx, (photo, caption) in enumerate(items):
+                    cap = caption if idx == 0 else ""
+                    media.append(InputMediaPhoto(media=photo, caption=cap or None))
+                kwargs: Dict[str, Any] = {"chat_id": chat_id, "media": media}
+                if reply_to_message_id is not None and is_first_group:
+                    kwargs["reply_to_message_id"] = reply_to_message_id
+                await bot.send_media_group(**kwargs)
+            except Exception:
+                # Fallback: sequential photo sends.
+                for idx, (photo, caption) in enumerate(items):
+                    kwargs: Dict[str, Any] = {"chat_id": chat_id, "photo": photo}
+                    if caption:
+                        kwargs["caption"] = caption
+                    if reply_to_message_id is not None and is_first_group and idx == 0:
+                        kwargs["reply_to_message_id"] = reply_to_message_id
+                    await bot.send_photo(**kwargs)
+
+        for start in range(0, len(photo_items), 10):
+            group = photo_items[start : start + 10]
+            await _send_group(group, is_first_group=(start == 0))
 
     @staticmethod
     def _sanitize_payload_for_text(payload_obj: Dict[str, Any]) -> Dict[str, Any]:
@@ -390,11 +417,34 @@ class _TelegramBridge:
                 break
         return compact
 
+    @staticmethod
+    def _compact_step_timeline(rows: Any, limit: int = 12) -> list[Dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        compact: list[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            compact.append(
+                {
+                    "step": row.get("step"),
+                    "action": row.get("action"),
+                    "duration_seconds": row.get("duration_seconds"),
+                    "success": row.get("success"),
+                    "reasoning": row.get("reasoning") or "",
+                    "error": row.get("error") or "",
+                }
+            )
+            if len(compact) >= limit:
+                break
+        return compact
+
     @classmethod
     def _build_compact_report_payload(cls, payload_obj: Dict[str, Any]) -> Dict[str, Any]:
         payload = payload_obj if isinstance(payload_obj, dict) else {}
         validation_summary = payload.get("validation_summary")
         checks = cls._compact_validation_checks(payload.get("validation_checks"), limit=50)
+        step_timeline = cls._compact_step_timeline(payload.get("step_timeline"), limit=20)
         reason_codes = payload.get("reason_code_summary")
         attachments = payload.get("attachments")
 
@@ -408,6 +458,9 @@ class _TelegramBridge:
                 "duration": payload.get("duration"),
                 "reason": payload.get("reason"),
                 "exit_code": payload.get("exit_code"),
+            },
+            "timeline": {
+                "steps": step_timeline,
             },
             "validation": {
                 "summary": validation_summary if isinstance(validation_summary, dict) else {},
@@ -461,12 +514,30 @@ class _TelegramBridge:
             f"  {reason}",
         ]
 
+        step_timeline = payload.get("step_timeline")
+        if isinstance(step_timeline, list) and step_timeline:
+            lines.extend(["", "  단계별 실행"])
+            for row in step_timeline[:6]:
+                if not isinstance(row, dict):
+                    continue
+                step_no = row.get("step")
+                action = cls._truncate(row.get("action"), 20)
+                try:
+                    sec = float(row.get("duration_seconds") or 0.0)
+                    sec_text = f"{sec:.2f}초"
+                except Exception:
+                    sec_text = "-"
+                reasoning = cls._truncate(row.get("reasoning"), 90)
+                lines.append(f"    - {step_no}단계 | {action} | {sec_text}")
+                lines.append(f"      {reasoning}")
+
         validation_summary = payload.get("validation_summary")
         if isinstance(validation_summary, dict) and validation_summary:
             total = validation_summary.get("total_checks", 0)
             passed = validation_summary.get("passed_checks", 0)
             failed = validation_summary.get("failed_checks", 0)
             success_rate = validation_summary.get("success_rate", 0)
+            goal_satisfied = validation_summary.get("goal_satisfied")
             lines.extend(
                 [
                     "",
@@ -477,6 +548,8 @@ class _TelegramBridge:
                     f"    - 성공률 {success_rate}%",
                 ]
             )
+            if goal_satisfied is not None:
+                lines.append(f"    - 목표 충족 {'예' if bool(goal_satisfied) else '아니오'}")
         if mode == "summary_with_json":
             lines.extend(
                 [

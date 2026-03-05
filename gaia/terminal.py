@@ -481,7 +481,15 @@ def _action_label(action_name: str, goal_type: str, reasoning: str) -> str:
     return mapping.get(action, f"{action or 'unknown'} 동작 검증")
 
 
-def _build_validation_report(query_text: str, result: Any) -> Dict[str, Any]:
+def _build_validation_report(
+    query_text: str,
+    result: Any,
+    *,
+    semantic_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if isinstance(semantic_report, dict) and str(semantic_report.get("mode") or "").strip():
+        return semantic_report
+
     goal_type = _infer_goal_type(query_text)
     filter_mode = goal_type == "filter_validation"
     filter_tokens = ("필터", "filter", "검색", "category", "분류")
@@ -567,6 +575,86 @@ def _build_validation_report(query_text: str, result: Any) -> Dict[str, Any]:
     }
 
 
+def _is_strict_validation_failed(report: Dict[str, Any]) -> bool:
+    if not isinstance(report, dict):
+        return False
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        return False
+    if bool(summary.get("strict_failed")):
+        return True
+    try:
+        return int(summary.get("failed_mandatory_checks") or 0) > 0
+    except Exception:
+        return False
+
+
+def _is_goal_satisfaction_failed(report: Dict[str, Any]) -> bool:
+    if not isinstance(report, dict):
+        return False
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        return False
+    goal_type = str(summary.get("goal_type") or "").strip().lower()
+    if goal_type != "filter_validation_semantic":
+        return False
+    if "goal_satisfied" not in summary:
+        return False
+    return not bool(summary.get("goal_satisfied"))
+
+
+def _build_step_timeline(result: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    steps = list(getattr(result, "steps_taken", []) or [])
+    for step in steps[: max(1, int(limit))]:
+        try:
+            step_no = int(getattr(step, "step_number", len(rows) + 1) or (len(rows) + 1))
+        except Exception:
+            step_no = len(rows) + 1
+        action_obj = getattr(step, "action", None)
+        action_raw = getattr(action_obj, "action", "")
+        action_name = str(getattr(action_raw, "value", "") or action_raw or "").strip().lower()
+        reasoning = str(getattr(action_obj, "reasoning", "") or "").strip()
+        duration_ms = getattr(step, "duration_ms", None)
+        duration_seconds: float = 0.0
+        try:
+            if duration_ms is not None:
+                duration_seconds = round(float(duration_ms) / 1000.0, 2)
+        except Exception:
+            duration_seconds = 0.0
+        rows.append(
+            {
+                "step": step_no,
+                "action": action_name or "unknown",
+                "reasoning": reasoning,
+                "duration_seconds": duration_seconds,
+                "success": bool(getattr(step, "success", False)),
+                "error": str(getattr(step, "error_message", "") or "").strip(),
+            }
+        )
+    return rows
+
+
+def _merge_reason_code_summary(
+    base: Dict[str, Any],
+    extra: Dict[str, Any],
+) -> Dict[str, int]:
+    merged: Dict[str, int] = {}
+    for source in (base, extra):
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            try:
+                count = int(value)
+            except Exception:
+                continue
+            merged[name] = int(merged.get(name, 0)) + count
+    return merged
+
+
 def _print_llm_failure_help(reason: str) -> None:
     text = (reason or "").lower()
     if "insufficient_quota" not in text:
@@ -594,26 +682,63 @@ def _run_single_chat_goal(
     )
     print(f"목표 실행: {goal.description}")
     result = agent.execute_goal(goal)
+    goal_type = _infer_goal_type(goal.description)
+    semantic_report: Optional[Dict[str, Any]] = None
+    if goal_type == "filter_validation":
+        cached_report = getattr(agent, "_last_filter_semantic_report", None)
+        if isinstance(cached_report, dict) and cached_report.get("summary"):
+            semantic_report = cached_report
+        else:
+            semantic_report = agent.run_filter_semantic_validation(
+                goal_text=goal.description,
+                max_pages=2,
+                max_cases=3,
+            )
+    validation_report = _build_validation_report(
+        goal.description,
+        result,
+        semantic_report=semantic_report,
+    )
+    validation_failed = _is_strict_validation_failed(validation_report)
+    goal_unsatisfied = _is_goal_satisfaction_failed(validation_report)
+    effective_success = bool(result.success) and not validation_failed and not goal_unsatisfied
+    effective_reason = str(result.final_reason or "")
+    if validation_failed:
+        effective_reason = (
+            "필터 의미 검증에서 필수 항목 실패가 발생했습니다. "
+            + (effective_reason or "검증 리포트를 확인하세요.")
+        ).strip()
+    elif goal_unsatisfied:
+        effective_reason = (
+            "필터 의미 검증에서 목표 커버리지가 충족되지 않았습니다. "
+            + (effective_reason or "검증 리포트를 확인하세요.")
+        ).strip()
+
     print("\n실행 결과")
     print(f"goal: {result.goal_name}")
-    print(f"status: {'success' if result.success else 'failed'}")
+    print(f"status: {'success' if effective_success else 'failed'}")
     print(f"steps: {result.total_steps}")
-    print(f"reason: {result.final_reason}")
+    print(f"reason: {effective_reason}")
     print(f"duration: {result.duration_seconds:.2f}s")
-    if not result.success:
-        _print_llm_failure_help(result.final_reason)
-    validation_report = _build_validation_report(goal.description, result)
+    if not effective_success:
+        _print_llm_failure_help(effective_reason)
+    report_reason_summary = (
+        validation_report.get("reason_code_summary")
+        if isinstance(validation_report.get("reason_code_summary"), dict)
+        else {}
+    )
+    reason_summary = _merge_reason_code_summary(
+        dict(getattr(agent, "_reason_code_counts", {}) or {}),
+        report_reason_summary,
+    )
     summary = {
         "goal": result.goal_name,
-        "status": "success" if result.success else "failed",
+        "status": "success" if effective_success else "failed",
         "steps": result.total_steps,
-        "reason": result.final_reason,
+        "reason": effective_reason,
         "duration_seconds": round(float(result.duration_seconds), 2),
-        "reason_code_summary": (
-            dict(getattr(agent, "_reason_code_counts", {}) or {})
-            if isinstance(getattr(agent, "_reason_code_counts", {}), dict)
-            else {}
-        ),
+        "step_timeline": _build_step_timeline(result),
+        "reason_code_summary": reason_summary,
         "validation_summary": validation_report.get("summary", {}),
         "validation_checks": validation_report.get("checks", []),
         "verification_report": validation_report,
@@ -634,7 +759,7 @@ def _run_single_chat_goal(
                 auth_payload[key] = value
         if auth_payload:
             summary["auth"] = auth_payload
-    return (0 if result.success else 1), summary
+    return (0 if effective_success else 1), summary
 
 
 def run_chat_terminal_once(
@@ -720,17 +845,27 @@ def run_chat_terminal(
             print(f"Terminal chat failed: {exc}", file=sys.stderr)
 
 
-def run_ai_terminal(
+def _run_ai_terminal_impl(
     *,
     url: str,
     max_actions: int = 50,
     session_id: str = WORKSPACE_DEFAULT,
     time_budget_seconds: int | None = None,
     intervention_callback: Optional[Callable[[str, str], Any]] = None,
-) -> int:
+) -> Tuple[int, Dict[str, Any]]:
     if not url:
         print("URL is required for terminal ai mode.", file=sys.stderr)
-        return 2
+        return 2, {
+            "goal": "autonomous_exploration",
+            "status": "failed",
+            "steps": 0,
+            "reason": "url_required",
+            "duration_seconds": 0.0,
+            "reason_code_summary": {},
+            "validation_summary": {},
+            "validation_checks": [],
+            "verification_report": {},
+        }
 
     actions = max(1, int(max_actions))
     budget = int(time_budget_seconds or 0)
@@ -766,16 +901,117 @@ def run_ai_terminal(
             print(f"screenshots_dir: {result.screenshots_dir}")
         if result.recording_gif_path:
             print(f"gif: {result.recording_gif_path}")
-        _print_llm_failure_help(result.completion_reason)
-        if "insufficient_quota" in (result.completion_reason or "").lower():
-            return 1
-        return 0
+        validation_summary = (
+            dict(result.validation_summary)
+            if isinstance(result.validation_summary, dict)
+            else {}
+        )
+        validation_checks = (
+            list(result.validation_checks)
+            if isinstance(result.validation_checks, list)
+            else []
+        )
+        verification_report = (
+            dict(result.verification_report)
+            if isinstance(result.verification_report, dict)
+            else {}
+        )
+        strict_failed = False
+        try:
+            strict_failed = bool(validation_summary.get("strict_failed")) or int(
+                validation_summary.get("failed_mandatory_checks") or 0
+            ) > 0
+        except Exception:
+            strict_failed = False
+
+        completion_reason = str(result.completion_reason or "")
+        _print_llm_failure_help(completion_reason)
+        code = 0
+        if "insufficient_quota" in completion_reason.lower() or strict_failed:
+            code = 1
+        reason = completion_reason
+        if strict_failed:
+            reason = (
+                "필터 의미 검증 필수 항목 실패가 감지되었습니다. "
+                + (completion_reason or "")
+            ).strip()
+        summary = {
+            "goal": "autonomous_exploration",
+            "status": "success" if code == 0 else "failed",
+            "steps": int(result.total_actions or 0),
+            "reason": reason,
+            "duration_seconds": round(float(result.duration_seconds), 2),
+            "reason_code_summary": (
+                verification_report.get("reason_code_summary")
+                if isinstance(verification_report.get("reason_code_summary"), dict)
+                else {}
+            ),
+            "validation_summary": validation_summary,
+            "validation_checks": validation_checks,
+            "verification_report": verification_report,
+        }
+        return code, summary
     except KeyboardInterrupt:
         print("\n중단되었습니다.")
-        return 130
+        return 130, {
+            "goal": "autonomous_exploration",
+            "status": "failed",
+            "steps": 0,
+            "reason": "keyboard_interrupt",
+            "duration_seconds": 0.0,
+            "reason_code_summary": {},
+            "validation_summary": {},
+            "validation_checks": [],
+            "verification_report": {},
+        }
     except Exception as exc:
         print(f"Terminal AI failed: {exc}", file=sys.stderr)
-        return 1
+        return 1, {
+            "goal": "autonomous_exploration",
+            "status": "failed",
+            "steps": 0,
+            "reason": str(exc),
+            "duration_seconds": 0.0,
+            "reason_code_summary": {},
+            "validation_summary": {},
+            "validation_checks": [],
+            "verification_report": {},
+        }
+
+
+def run_ai_terminal(
+    *,
+    url: str,
+    max_actions: int = 50,
+    session_id: str = WORKSPACE_DEFAULT,
+    time_budget_seconds: int | None = None,
+    intervention_callback: Optional[Callable[[str, str], Any]] = None,
+) -> int:
+    code, _ = _run_ai_terminal_impl(
+        url=url,
+        max_actions=max_actions,
+        session_id=session_id,
+        time_budget_seconds=time_budget_seconds,
+        intervention_callback=intervention_callback,
+    )
+    return code
+
+
+def run_ai_terminal_with_summary(
+    *,
+    url: str,
+    max_actions: int = 50,
+    session_id: str = WORKSPACE_DEFAULT,
+    time_budget_seconds: int | None = None,
+    intervention_callback: Optional[Callable[[str, str], Any]] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    return _run_ai_terminal_impl(
+        url=url,
+        max_actions=max_actions,
+        session_id=session_id,
+        time_budget_seconds=time_budget_seconds,
+        intervention_callback=intervention_callback,
+    )
 
 
 __all__ = [
@@ -783,6 +1019,7 @@ __all__ = [
     "run_chat_terminal",
     "run_chat_terminal_once",
     "run_ai_terminal",
+    "run_ai_terminal_with_summary",
     "build_run_context",
     "_build_summary",
 ]

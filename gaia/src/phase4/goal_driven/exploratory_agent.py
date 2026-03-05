@@ -47,6 +47,104 @@ from .exploratory_models import (
 from .models import DOMElement
 
 
+class _ExploratoryFilterValidationAdapter:
+    """Filter validation adapter for ExploratoryAgent."""
+
+    def __init__(self, agent: "ExploratoryAgent"):
+        self.agent = agent
+
+    def analyze_dom(self) -> List[DOMElement]:
+        return self.agent._analyze_dom()
+
+    def apply_select(self, element_id: int, value: str) -> Dict[str, Any]:
+        selector = self.agent._element_full_selectors.get(element_id) or self.agent._element_selectors.get(element_id)
+        ref_id = self.agent._element_ref_ids.get(element_id)
+        success, error = self.agent._execute_action(
+            "select",
+            selector=selector or None,
+            ref_id=ref_id or None,
+            value=value,
+        )
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+        }
+
+    def click_element(self, element_id: int) -> Dict[str, Any]:
+        selector = self.agent._element_full_selectors.get(element_id) or self.agent._element_selectors.get(element_id)
+        ref_id = self.agent._element_ref_ids.get(element_id)
+        before_url = self.current_url()
+        success, error = self.agent._execute_action(
+            "click",
+            selector=selector or None,
+            ref_id=ref_id or None,
+            value=None,
+        )
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+            "before_url": before_url,
+            "after_url": self.current_url(),
+        }
+
+    def scroll_for_pagination(self, anchor_element_id: int) -> Dict[str, Any]:
+        selector = self.agent._element_full_selectors.get(anchor_element_id) or self.agent._element_selectors.get(anchor_element_id)
+        ref_id = self.agent._element_ref_ids.get(anchor_element_id)
+        success, error = self.agent._execute_action(
+            "scroll",
+            selector=selector or None,
+            ref_id=ref_id or None,
+            value="bottom",
+        )
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+        }
+
+    def wait_for_pagination_probe(self, wait_ms: int = 900) -> Dict[str, Any]:
+        success, error = self.agent._execute_action(
+            "wait",
+            value={"timeMs": int(max(100, wait_ms))},
+        )
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+        }
+
+    def resolve_ref(self, element_id: int) -> str:
+        return str(self.agent._element_ref_ids.get(element_id) or "")
+
+    def current_url(self) -> str:
+        return self.agent._get_current_url()
+
+    def record_reason(self, code: str) -> None:
+        key = str(code or "").strip()
+        if not key:
+            return
+        counts = self.agent._validation_reason_counts
+        counts[key] = int(counts.get(key, 0)) + 1
+        self.agent._validation_reason_counts = counts
+
+    def log(self, message: str) -> None:
+        self.agent._log(message)
+
+
 class ExploratoryAgent:
     """
     완전 자율 탐색 에이전트
@@ -145,6 +243,10 @@ class ExploratoryAgent:
         self._forced_completion_reason: str = ""
         self._auth_intervention_asked: bool = False
         self._auth_input_values: Dict[str, str] = {}
+        self._validation_checks: List[Dict[str, Any]] = []
+        self._validation_summary: Dict[str, Any] = {}
+        self._verification_report: Dict[str, Any] = {}
+        self._validation_reason_counts: Dict[str, int] = {}
 
     def _log(self, message: str):
         """로그 출력"""
@@ -1274,6 +1376,20 @@ class ExploratoryAgent:
                             )
                         )
 
+            step_validation_checks: List[Dict[str, Any]] = []
+            if (
+                success
+                and decision.selected_action
+                and str(decision.selected_action.action_type or "").strip().lower() == "select"
+            ):
+                goal_text = (
+                    str(decision.selected_action.description or "").strip()
+                    or str(decision.reasoning or "").strip()
+                    or "filter validation"
+                )
+                report = self._run_filter_semantic_validation(goal_text)
+                step_validation_checks = self._append_validation_report(report, action_count)
+
             # 12-1. 기능 중심 설명 생성
             feature_info = self._generate_feature_description(
                 decision.selected_action if decision else None
@@ -1290,6 +1406,7 @@ class ExploratoryAgent:
                 test_scenario=feature_info["test_scenario"],
                 business_impact=feature_info["business_impact"],
                 issues_found=issues,
+                validation_checks=step_validation_checks,
                 new_pages_found=new_pages,
                 screenshot_before=screenshot_before,
                 screenshot_after=screenshot_after,
@@ -1345,6 +1462,9 @@ class ExploratoryAgent:
 
         # 테스트 시나리오 그룹화
         test_scenarios = self._group_steps_into_scenarios(steps)
+        if self._verification_report:
+            self._verification_report = dict(self._verification_report)
+            self._verification_report["reason_code_summary"] = dict(self._validation_reason_counts or {})
 
         # 최종 결과 생성
         result = ExplorationResult(
@@ -1360,6 +1480,9 @@ class ExploratoryAgent:
             recording_gif_path=gif_path,
             screenshots_dir=str(screenshots_dir) if screenshots_dir else None,
             test_scenarios_summary=test_scenarios,
+            validation_summary=dict(self._validation_summary or {}),
+            validation_checks=list(self._validation_checks or []),
+            verification_report=dict(self._verification_report or {}),
             completed_at=datetime.now(),
             duration_seconds=duration,
         )
@@ -1564,6 +1687,14 @@ class ExploratoryAgent:
             elements = []
             for idx, el in enumerate(raw_elements):
                 attrs = el.get("attributes", {})
+                disabled_attr = attrs.get("disabled")
+                disabled_flag = (
+                    disabled_attr is not None
+                    and str(disabled_attr).strip().lower() not in {"false", "0", "none"}
+                )
+                aria_disabled_flag = str(attrs.get("aria-disabled") or "").strip().lower() == "true"
+                gaia_disabled_flag = str(attrs.get("gaia-disabled") or "").strip().lower() == "true"
+                is_enabled = not (disabled_flag or aria_disabled_flag or gaia_disabled_flag)
 
                 # 셀렉터 저장
                 selector = el.get("selector", "")
@@ -1595,16 +1726,9 @@ class ExploratoryAgent:
                         href=attrs.get("href"),
                         bounding_box=el.get("bounding_box"),
                         options=attrs.get("options"),
+                        selected_value=str(attrs.get("selected_value") or ""),
                         is_visible=bool(el.get("is_visible", True)),
-                        is_enabled=not (
-                            (
-                                attrs.get("disabled") is not None
-                                and str(attrs.get("disabled")).strip().lower()
-                                not in {"false", "0", "none"}
-                            )
-                            or str(attrs.get("aria-disabled") or "").strip().lower()
-                            == "true"
-                        ),
+                        is_enabled=is_enabled,
                     )
                 )
 
@@ -2935,6 +3059,9 @@ JSON 응답:"""
                     ref_id=resolved_ref_id or None,
                     value=select_value,
                 )
+                if success:
+                    self._last_exec_meta = dict(self._last_exec_meta or {})
+                    self._last_exec_meta["selected_value"] = select_value
             elif action.action_type == "hover":
                 success, error = self._execute_action(
                     "hover",
@@ -3826,6 +3953,90 @@ JSON 응답:"""
             return False, "URL/DOM 변화가 감지되지 않음"
 
         return True, None
+
+    def _run_filter_semantic_validation(self, goal_text: str) -> Dict[str, Any]:
+        try:
+            from .filter_validation_engine import run_filter_validation
+
+            adapter = _ExploratoryFilterValidationAdapter(self)
+            forced_selected = str((self._last_exec_meta or {}).get("selected_value") or "").strip()
+            report = run_filter_validation(
+                adapter=adapter,
+                goal_text=goal_text,
+                config={
+                    "max_pages": 2,
+                    "max_cases": 1,
+                    "strict_mandatory": True,
+                    "use_current_selection_only": True,
+                    "forced_selected_value": forced_selected,
+                },
+            )
+            return report if isinstance(report, dict) else {}
+        except Exception as exc:
+            self._log(f"⚠️ filter semantic validation 실패: {exc}")
+            return {}
+
+    def _append_validation_report(self, report: Dict[str, Any], step_number: int) -> List[Dict[str, Any]]:
+        if not isinstance(report, dict):
+            return []
+        raw_checks = report.get("checks")
+        if not isinstance(raw_checks, list):
+            return []
+        step_rows: List[Dict[str, Any]] = []
+        for row in raw_checks:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item["source_step"] = int(step_number)
+            step_rows.append(item)
+        if not step_rows:
+            return []
+        self._validation_checks.extend(step_rows)
+
+        summary = report.get("summary")
+        if isinstance(summary, dict):
+            self._verification_report = {
+                "mode": str(report.get("mode") or "filter_semantic_v2"),
+                "summary": dict(summary),
+                "rules_used": list(report.get("rules_used") or []),
+                "pages_checked": int(report.get("pages_checked") or 1),
+                "cases": list(report.get("cases") or []),
+                "reason_code_summary": dict(self._validation_reason_counts or {}),
+            }
+        self._validation_summary = self._aggregate_validation_summary(self._validation_checks)
+        return step_rows
+
+    @staticmethod
+    def _aggregate_validation_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        total = len(rows or [])
+        passed = 0
+        failed = 0
+        skipped = 0
+        failed_mandatory = 0
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            mandatory = bool(row.get("mandatory"))
+            if status == "passed":
+                passed += 1
+            elif status == "failed":
+                failed += 1
+                if mandatory:
+                    failed_mandatory += 1
+            elif status == "skipped":
+                skipped += 1
+        success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
+        return {
+            "goal_type": "filter_validation_semantic",
+            "total_checks": total,
+            "passed_checks": passed,
+            "failed_checks": failed,
+            "skipped_checks": skipped,
+            "failed_mandatory_checks": failed_mandatory,
+            "strict_failed": bool(failed_mandatory > 0),
+            "success_rate": success_rate,
+        }
 
     def _find_element_by_selector(
         self, selector: Optional[str], page_state: PageState
