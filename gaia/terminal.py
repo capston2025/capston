@@ -672,12 +672,80 @@ def _run_single_chat_goal(
     url: str,
     query: str,
     session_id: str = WORKSPACE_DEFAULT,
+    steering_policy: Optional[Dict[str, Any]] = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
+    def _default_intervention_callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        kind = str((payload or {}).get("kind") or "").strip().lower()
+        if kind in {"clarification", "no_progress"}:
+            question = str((payload or {}).get("question") or "").strip()
+            return {
+                "action": "continue",
+                "proceed": True,
+                "instruction": question or "현재 목표 범위에서 계속 진행하세요.",
+            }
+        if kind == "auth":
+            username = (
+                os.getenv("GAIA_TEST_USERNAME")
+                or os.getenv("GAIA_AUTH_USERNAME")
+                or ""
+            ).strip()
+            password = (
+                os.getenv("GAIA_TEST_PASSWORD")
+                or os.getenv("GAIA_AUTH_PASSWORD")
+                or ""
+            ).strip()
+            email = (
+                os.getenv("GAIA_TEST_EMAIL")
+                or os.getenv("GAIA_AUTH_EMAIL")
+                or ""
+            ).strip()
+            if username and password:
+                response: Dict[str, Any] = {
+                    "action": "continue",
+                    "proceed": True,
+                    "username": username,
+                    "password": password,
+                }
+                if email:
+                    response["email"] = email
+                return response
+            return {"action": "cancel", "proceed": False}
+        return {"action": "cancel", "proceed": False}
+
+    if intervention_callback is None:
+        intervention_callback = _default_intervention_callback
+
     goal = _build_test_goal(url=url, query=query)
+    if isinstance(steering_policy, dict) and steering_policy:
+        if not isinstance(goal.test_data, dict):
+            goal.test_data = {}
+        goal.test_data["steering_policy"] = dict(steering_policy)
+    captured_shots: list[str] = []
+    captured_hashes: set[str] = set()
+
+    def _on_screenshot(base64_image: str) -> None:
+        if not isinstance(base64_image, str):
+            return
+        payload = base64_image.strip()
+        if not payload:
+            return
+        marker = payload[:96]
+        if marker in captured_hashes:
+            return
+        captured_hashes.add(marker)
+        captured_shots.append(payload)
+        if len(captured_shots) > 8:
+            removed = captured_shots.pop(0)
+            try:
+                captured_hashes.discard(removed[:96])
+            except Exception:
+                pass
+
     agent = GoalDrivenAgent(
         mcp_host_url=CONFIG.mcp.host_url,
         session_id=session_id or WORKSPACE_DEFAULT,
+        screenshot_callback=_on_screenshot,
         intervention_callback=intervention_callback,
     )
     print(f"목표 실행: {goal.description}")
@@ -742,7 +810,25 @@ def _run_single_chat_goal(
         "validation_summary": validation_report.get("summary", {}),
         "validation_checks": validation_report.get("checks", []),
         "verification_report": validation_report,
+        "attachments": (
+            validation_report.get("attachments")
+            if isinstance(validation_report.get("attachments"), list)
+            else []
+        ),
     }
+    if not summary["attachments"] and captured_shots:
+        # 범용 증거 첨부: 실행 중 캡처된 스냅샷 중 최근 3장을 전달
+        sample = captured_shots[-3:]
+        summary["attachments"] = [
+            {
+                "kind": "image_base64",
+                "mime": "image/png",
+                "data": shot,
+                "label": f"실행 스냅샷 {idx + 1}/{len(sample)}",
+            }
+            for idx, shot in enumerate(sample)
+            if isinstance(shot, str) and shot.strip()
+        ]
     if isinstance(goal.test_data, dict):
         auth_payload = {}
         for key in (
@@ -767,12 +853,14 @@ def run_chat_terminal_once(
     url: str,
     query: str,
     session_id: str = WORKSPACE_DEFAULT,
+    steering_policy: Optional[Dict[str, Any]] = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     return _run_single_chat_goal(
         url=url,
         query=query,
         session_id=session_id,
+        steering_policy=steering_policy,
         intervention_callback=intervention_callback,
     )
 

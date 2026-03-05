@@ -144,6 +144,17 @@ class _ExploratoryFilterValidationAdapter:
     def log(self, message: str) -> None:
         self.agent._log(message)
 
+    def capture_case_attachment(self, label: str) -> Optional[Dict[str, Any]]:
+        shot = self.agent._capture_screenshot()
+        if not isinstance(shot, str) or not shot.strip():
+            return None
+        return {
+            "kind": "image_base64",
+            "mime": "image/png",
+            "data": shot,
+            "label": str(label or "").strip(),
+        }
+
 
 class ExploratoryAgent:
     """

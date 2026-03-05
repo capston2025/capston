@@ -170,6 +170,17 @@ class _GoalFilterValidationAdapter:
     def log(self, message: str) -> None:
         self.agent._log(message)
 
+    def capture_case_attachment(self, label: str) -> Optional[Dict[str, Any]]:
+        shot = self.agent._capture_screenshot()
+        if not isinstance(shot, str) or not shot.strip():
+            return None
+        return {
+            "kind": "image_base64",
+            "mime": "image/png",
+            "data": shot,
+            "label": str(label or "").strip(),
+        }
+
 
 class GoalDrivenAgent:
     """
@@ -245,6 +256,8 @@ class GoalDrivenAgent:
         self._goal_constraints: Dict[str, Any] = {}
         self._goal_metric_value: Optional[float] = None
         self._goal_tokens: set[str] = set()
+        self._steering_policy: Dict[str, Any] = {}
+        self._steering_remaining_steps: int = 0
         self._reason_code_counts: Dict[str, int] = {}
         self._recovery_retry_streaks: Dict[str, int] = {}
         self._overlay_intercept_pending: bool = False
@@ -272,7 +285,7 @@ class GoalDrivenAgent:
 
     def _log(self, message: str):
         """로그 출력"""
-        print(f"[GoalAgent] {message}")
+        print(message)
         if self._log_callback:
             self._log_callback(message)
 
@@ -628,7 +641,456 @@ class GoalDrivenAgent:
                 "\n   - 목표가 '페이지 이동 없이' 검증이므로 URL이 바뀌는 내비게이션 액션은 금지합니다."
                 "\n   - 링크 이동보다 현재 페이지의 row/panel/modal/open/expand 계열 상호작용을 우선 선택하세요."
             )
+        steering_rule = self._build_steering_prompt()
+        if steering_rule:
+            lines.append(steering_rule)
         return "".join(lines)
+
+    def _build_steering_prompt(self) -> str:
+        policy = self._steering_policy if isinstance(self._steering_policy, dict) else {}
+        if not policy or self._steering_remaining_steps <= 0:
+            return ""
+        rules = policy.get("rules") if isinstance(policy.get("rules"), list) else []
+        assertions = policy.get("assertions") if isinstance(policy.get("assertions"), list) else []
+        if not rules and not assertions:
+            return ""
+        lines: List[str] = []
+        lines.append("\n11. **사용자 스티어링 정책(우선 적용)**")
+        lines.append(f"\n   - 남은 TTL: {int(self._steering_remaining_steps)} steps")
+        for row in rules[:8]:
+            if not isinstance(row, dict):
+                continue
+            rule_type = str(row.get("type") or "").strip()
+            enforcement = str(row.get("enforcement") or "soft").strip().lower()
+            tag = str(row.get("tag") or "").strip()
+            need = row.get("need")
+            if isinstance(need, list):
+                need_text = ",".join(str(x) for x in need if str(x).strip())
+            else:
+                need_text = str(need or "").strip()
+            body = tag or need_text
+            if not rule_type or not body:
+                continue
+            lines.append(f"\n   - {enforcement.upper()} {rule_type}: {body}")
+        for row in assertions[:4]:
+            if not isinstance(row, dict):
+                continue
+            a_type = str(row.get("type") or "").strip()
+            need = row.get("need")
+            if isinstance(need, list):
+                need_text = ",".join(str(x) for x in need if str(x).strip())
+            else:
+                need_text = str(need or "").strip()
+            if not a_type:
+                continue
+            lines.append(f"\n   - ASSERT {a_type}: {need_text}")
+        lines.append(
+            "\n   - HARD 규칙은 반드시 준수하고, SOFT 규칙은 가능한 경우 우선 적용하세요."
+        )
+        return "".join(lines)
+
+    def _activate_steering_policy(self, goal: TestGoal) -> None:
+        self._steering_policy = {}
+        self._steering_remaining_steps = 0
+        data = goal.test_data if isinstance(goal.test_data, dict) else {}
+        policy = data.get("steering_policy")
+        if not isinstance(policy, dict):
+            return
+        rules = policy.get("rules") if isinstance(policy.get("rules"), list) else []
+        assertions = policy.get("assertions") if isinstance(policy.get("assertions"), list) else []
+        if not rules and not assertions:
+            return
+        try:
+            ttl = int(policy.get("ttl_steps") or 8)
+        except Exception:
+            ttl = 8
+        ttl = max(1, min(20, ttl))
+        scope = str(policy.get("scope") or "next_n_steps").strip().lower() or "next_n_steps"
+        bound_goal_id = str(policy.get("bound_goal_id") or "").strip()
+        bound_phase = str(policy.get("bound_phase") or "").strip().upper()
+        bound_origin = str(policy.get("bound_origin") or "").strip()
+
+        if scope in {"current_goal", "goal"} and not bound_goal_id:
+            bound_goal_id = str(goal.id)
+        if scope in {"current_phase", "phase"} and not bound_phase:
+            bound_phase = str(self._runtime_phase or "").strip().upper()
+        if scope in {"current_origin", "origin"} and not bound_origin:
+            try:
+                parsed = urlparse(str(goal.start_url or ""))
+                if parsed.scheme and parsed.netloc:
+                    bound_origin = f"{parsed.scheme}://{parsed.netloc}"
+            except Exception:
+                bound_origin = ""
+
+        self._steering_policy = {
+            "version": str(policy.get("version") or "steering.v1"),
+            "raw_text": str(policy.get("raw_text") or ""),
+            "scope": scope,
+            "ttl_steps": ttl,
+            "ttl_remaining": ttl,
+            "priority": str(policy.get("priority") or "normal").strip().lower() or "normal",
+            "rules": list(rules),
+            "assertions": list(assertions),
+            "bound_origin": bound_origin,
+            "bound_goal_id": bound_goal_id,
+            "bound_phase": bound_phase,
+            "compile_confidence": policy.get("compile_confidence"),
+        }
+        self._steering_remaining_steps = ttl
+
+    def _expire_steering_policy(self, code: str = "steering_expired") -> None:
+        if not self._steering_policy and self._steering_remaining_steps <= 0:
+            return
+        self._steering_policy = {}
+        self._steering_remaining_steps = 0
+        self._record_reason_code(code)
+
+    def _is_steering_context_valid(self, goal: TestGoal) -> bool:
+        policy = self._steering_policy if isinstance(self._steering_policy, dict) else {}
+        if not policy:
+            return False
+        scope = str(policy.get("scope") or "next_n_steps").strip().lower() or "next_n_steps"
+        if scope in {"current_goal", "goal"} and str(policy.get("bound_goal_id") or "").strip() == "":
+            return False
+        if scope in {"current_phase", "phase"} and str(policy.get("bound_phase") or "").strip() == "":
+            return False
+        if scope in {"current_origin", "origin"} and str(policy.get("bound_origin") or "").strip() == "":
+            return False
+        bound_goal_id = str(policy.get("bound_goal_id") or "").strip()
+        if bound_goal_id and bound_goal_id != str(goal.id):
+            return False
+        bound_phase = str(policy.get("bound_phase") or "").strip().upper()
+        if bound_phase and bound_phase != str(self._runtime_phase or "").upper():
+            return False
+        bound_origin = str(policy.get("bound_origin") or "").strip().lower()
+        if bound_origin:
+            goal_origin = ""
+            try:
+                parsed = urlparse(str(goal.start_url or ""))
+                if parsed.scheme and parsed.netloc:
+                    goal_origin = f"{parsed.scheme}://{parsed.netloc}".lower()
+            except Exception:
+                goal_origin = ""
+            if goal_origin and goal_origin != bound_origin:
+                return False
+        return True
+
+    def _element_steering_tags(self, element: DOMElement) -> set[str]:
+        fields = [
+            element.text,
+            element.aria_label,
+            getattr(element, "title", None),
+            self._element_full_selectors.get(element.id),
+            self._element_selectors.get(element.id),
+            element.class_name,
+        ]
+        blob = " ".join(self._normalize_text(v) for v in fields if v)
+        tags: set[str] = set()
+        if any(token in blob for token in ("바로추가", "바로 추가", "quick add", "add now")):
+            tags.add("intent.quick_add")
+        if any(token in blob for token in ("제거", "삭제", "remove", "delete", "비우", "clear", "empty")):
+            tags.add("intent.remove_item")
+        if any(token in blob for token in ("위시리스트", "wishlist")):
+            tags.add("target.wishlist")
+        return tags
+
+    def _decision_steering_tags(
+        self,
+        decision: ActionDecision,
+        selected_element: Optional[DOMElement],
+    ) -> set[str]:
+        tags: set[str] = set()
+        action_to_tag = {
+            ActionType.CLICK: "intent.click",
+            ActionType.SELECT: "intent.select",
+            ActionType.FILL: "intent.fill",
+            ActionType.PRESS: "intent.press",
+            ActionType.SCROLL: "intent.scroll",
+            ActionType.WAIT: "intent.wait",
+            ActionType.NAVIGATE: "intent.navigate",
+            ActionType.HOVER: "intent.hover",
+        }
+        action_tag = action_to_tag.get(decision.action)
+        if action_tag:
+            tags.add(action_tag)
+        if selected_element is not None:
+            tags.update(self._element_steering_tags(selected_element))
+        reasoning_blob = self._normalize_text(decision.reasoning)
+        if any(token in reasoning_blob for token in ("바로추가", "바로 추가", "quick add")):
+            tags.add("intent.quick_add")
+        if any(token in reasoning_blob for token in ("제거", "삭제", "remove", "비우", "clear")):
+            tags.add("intent.remove_item")
+        return tags
+
+    def _steering_assertion_haystack(self, dom_elements: List[DOMElement]) -> str:
+        chunks: List[str] = []
+        for el in dom_elements[:260]:
+            chunks.append(str(el.text or ""))
+            chunks.append(str(el.aria_label or ""))
+            chunks.append(str(getattr(el, "title", "") or ""))
+            selector = self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id)
+            if selector:
+                chunks.append(str(selector))
+        return self._normalize_text(" ".join(chunks))
+
+    def _evaluate_steering_assertions(
+        self,
+        assertions: List[Dict[str, Any]],
+        dom_elements: List[DOMElement],
+    ) -> Tuple[bool, str]:
+        if not assertions:
+            return True, ""
+
+        haystack = self._steering_assertion_haystack(dom_elements)
+        evidence = self._last_snapshot_evidence if isinstance(self._last_snapshot_evidence, dict) else {}
+        modal_open_now = bool(evidence.get("modal_open"))
+
+        for row in assertions:
+            if not isinstance(row, dict):
+                continue
+            assertion_type = str(row.get("type") or "").strip().lower()
+            if assertion_type == "text_any":
+                needs = row.get("need") if isinstance(row.get("need"), list) else []
+                tokens = [self._normalize_text(str(v or "")) for v in needs if str(v or "").strip()]
+                if tokens and not any(token in haystack for token in tokens):
+                    return False, f"text_any:{'/'.join(tokens[:3])}"
+                continue
+            if assertion_type == "text_all":
+                needs = row.get("need") if isinstance(row.get("need"), list) else []
+                tokens = [self._normalize_text(str(v or "")) for v in needs if str(v or "").strip()]
+                if any(token not in haystack for token in tokens):
+                    return False, f"text_all:{'/'.join(tokens[:3])}"
+                continue
+            if assertion_type == "regex":
+                pattern = str(row.get("pattern") or "").strip()
+                if not pattern:
+                    return False, "regex:empty_pattern"
+                try:
+                    if not re.search(pattern, haystack, flags=re.IGNORECASE):
+                        return False, f"regex:{pattern}"
+                except re.error:
+                    return False, "regex:invalid_pattern"
+                continue
+            if assertion_type == "modal_open":
+                expected = bool(row.get("value"))
+                if modal_open_now != expected:
+                    return False, f"modal_open:{modal_open_now}!={expected}"
+                continue
+
+            self._record_reason_code("steering_assertion_unsupported")
+            return False, f"unsupported:{assertion_type or 'unknown'}"
+
+        return True, ""
+
+    def _apply_steering_assertions_on_decision(
+        self,
+        decision: ActionDecision,
+        policy: Dict[str, Any],
+        dom_elements: List[DOMElement],
+    ) -> ActionDecision:
+        if not bool(decision.is_goal_achieved):
+            return decision
+        assertions = policy.get("assertions") if isinstance(policy.get("assertions"), list) else []
+        if not assertions:
+            return decision
+        ok, failed = self._evaluate_steering_assertions(assertions, dom_elements)
+        if ok:
+            self._record_reason_code("steering_assertion_met")
+            return decision
+        self._record_reason_code("steering_assertion_not_met")
+        return ActionDecision(
+            action=decision.action,
+            element_id=decision.element_id,
+            value=decision.value,
+            reasoning=(
+                "스티어링 assertion 검증 미충족으로 완료 판정을 보류했습니다"
+                + (f" ({failed})" if failed else "")
+                + ". "
+                + str(decision.reasoning or "")
+            ).strip(),
+            confidence=max(float(decision.confidence or 0.0) - 0.05, 0.0),
+            is_goal_achieved=False,
+            goal_achievement_reason=None,
+        )
+
+    def _pick_steering_candidate(
+        self,
+        dom_elements: List[DOMElement],
+        *,
+        prefer_tags: set[str],
+        forbid_tags: set[str],
+        target_tokens: List[str],
+    ) -> Optional[int]:
+        candidates: List[Tuple[float, int]] = []
+        for el in dom_elements:
+            if not bool(el.is_visible) or not bool(el.is_enabled):
+                continue
+            if self._normalize_text(el.tag) not in {"button", "a", "input", "div", "span"}:
+                continue
+            ref_id = self._element_ref_ids.get(el.id)
+            if not ref_id or self._is_ref_temporarily_blocked(ref_id):
+                continue
+            tags = self._element_steering_tags(el)
+            if any(tag in forbid_tags for tag in tags):
+                continue
+            score = 0.0
+            if prefer_tags and any(tag in prefer_tags for tag in tags):
+                score += 5.0
+            blob = " ".join(
+                self._normalize_text(v)
+                for v in [
+                    el.text,
+                    el.aria_label,
+                    getattr(el, "title", None),
+                    self._element_full_selectors.get(el.id),
+                    self._element_selectors.get(el.id),
+                ]
+                if v
+            )
+            for token in target_tokens:
+                if token and token in blob:
+                    score += 1.5
+            if score <= 0.0:
+                continue
+            candidates.append((score, int(el.id)))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return int(candidates[0][1])
+
+    def _apply_steering_policy_on_decision(
+        self,
+        *,
+        goal: TestGoal,
+        decision: ActionDecision,
+        dom_elements: List[DOMElement],
+    ) -> ActionDecision:
+        policy = self._steering_policy if isinstance(self._steering_policy, dict) else {}
+        if not policy:
+            return decision
+        if not self._is_steering_context_valid(goal):
+            self._expire_steering_policy("steering_expired")
+            return decision
+        if self._steering_remaining_steps <= 0:
+            self._expire_steering_policy("steering_expired")
+            return decision
+
+        self._steering_remaining_steps -= 1
+        self._steering_policy["ttl_remaining"] = int(self._steering_remaining_steps)
+
+        rules = policy.get("rules") if isinstance(policy.get("rules"), list) else []
+        hard_forbid: set[str] = set()
+        soft_prefer: set[str] = set()
+        target_tokens: List[str] = []
+        for row in rules:
+            if not isinstance(row, dict):
+                continue
+            rule_type = str(row.get("type") or "").strip()
+            enforcement = str(row.get("enforcement") or "soft").strip().lower()
+            if rule_type == "forbid_action_tag" and enforcement == "hard":
+                tag = str(row.get("tag") or "").strip()
+                if tag:
+                    hard_forbid.add(tag)
+            elif rule_type == "prefer_action_tag":
+                tag = str(row.get("tag") or "").strip()
+                if tag:
+                    soft_prefer.add(tag)
+            elif rule_type == "prefer_target_text":
+                need = row.get("need")
+                if isinstance(need, list):
+                    for token in need:
+                        normalized = self._normalize_text(str(token or ""))
+                        if normalized:
+                            target_tokens.append(normalized)
+
+        if not hard_forbid and not soft_prefer and not target_tokens:
+            decision = self._apply_steering_assertions_on_decision(decision, policy, dom_elements)
+            if self._steering_remaining_steps <= 0:
+                self._expire_steering_policy("steering_expired")
+            return decision
+
+        selected_element: Optional[DOMElement] = None
+        if decision.element_id is not None:
+            selected_element = next((el for el in dom_elements if int(el.id) == int(decision.element_id)), None)
+        decision_tags = self._decision_steering_tags(decision, selected_element)
+        blocked = bool(decision_tags and any(tag in hard_forbid for tag in decision_tags))
+
+        if blocked:
+            self._record_reason_code("steering_blocked")
+            replacement = self._pick_steering_candidate(
+                dom_elements,
+                prefer_tags=(soft_prefer or {"intent.remove_item"}),
+                forbid_tags=hard_forbid,
+                target_tokens=target_tokens,
+            )
+            if replacement is None:
+                replacement = self._pick_steering_candidate(
+                    dom_elements,
+                    prefer_tags=set(),
+                    forbid_tags=hard_forbid,
+                    target_tokens=target_tokens,
+                )
+                if replacement is not None:
+                    self._record_reason_code("steering_infeasible")
+                    self._record_reason_code("steering_relaxed")
+                    return ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=int(replacement),
+                        value=None,
+                        reasoning=(
+                            "사용자 스티어링 적용 중 후보 부족으로 soft 선호를 완화하고 "
+                            "hard 금지 규칙만 유지한 안전 후보를 선택했습니다. "
+                            + str(decision.reasoning or "")
+                        ).strip(),
+                        confidence=max(float(decision.confidence or 0.0), 0.7),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                self._record_reason_code("steering_infeasible")
+                self._record_reason_code("steering_conflict")
+                self._expire_steering_policy("steering_expired")
+                return decision
+            self._record_reason_code("steering_applied")
+            return ActionDecision(
+                action=ActionType.CLICK,
+                element_id=int(replacement),
+                value=None,
+                reasoning=(
+                    "사용자 스티어링(HARD forbid) 적용으로 금지된 후보를 제외하고 대체 액션을 선택했습니다. "
+                    + str(decision.reasoning or "")
+                ).strip(),
+                confidence=max(float(decision.confidence or 0.0), 0.78),
+                is_goal_achieved=False,
+                goal_achievement_reason=None,
+            )
+
+        if soft_prefer and decision.action in {ActionType.CLICK, ActionType.SELECT, ActionType.PRESS}:
+            if not any(tag in soft_prefer for tag in decision_tags):
+                replacement = self._pick_steering_candidate(
+                    dom_elements,
+                    prefer_tags=soft_prefer,
+                    forbid_tags=hard_forbid,
+                    target_tokens=target_tokens,
+                )
+                if replacement is not None and int(replacement) != int(decision.element_id or -1):
+                    self._record_reason_code("steering_applied")
+                    return ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=int(replacement),
+                        value=None,
+                        reasoning=(
+                            "사용자 스티어링(SOFT prefer) 적용으로 선호 후보를 우선 선택했습니다. "
+                            + str(decision.reasoning or "")
+                        ).strip(),
+                        confidence=max(float(decision.confidence or 0.0), 0.72),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+
+        decision = self._apply_steering_assertions_on_decision(decision, policy, dom_elements)
+        if self._steering_remaining_steps <= 0:
+            self._expire_steering_policy("steering_expired")
+        return decision
 
     def _enforce_goal_constraints_on_decision(
         self,
@@ -1067,8 +1529,12 @@ class GoalDrivenAgent:
             "결제",
             "구매",
             "삭제",
+            "비우",
+            "제거",
             "수정",
             "추가",
+            "담기",
+            "담아",
             "등록",
             "signup",
             "register",
@@ -1076,6 +1542,9 @@ class GoalDrivenAgent:
             "checkout",
             "purchase",
             "submit",
+            "clear",
+            "empty",
+            "remove",
         )
         has_verify_hint = any(hint in text for hint in verify_hints)
         has_operation_hint = any(hint in text for hint in operation_hints)
@@ -2521,6 +2990,7 @@ class GoalDrivenAgent:
         self._last_dom_top_ids = []
         self._goal_tokens = self._derive_goal_tokens(goal)
         self._goal_constraints = self._derive_goal_constraints(goal)
+        self._activate_steering_policy(goal)
         self._goal_metric_value = None
         self._last_filter_semantic_report = None
         self._filter_validation_contract = None
@@ -2690,7 +3160,6 @@ class GoalDrivenAgent:
             self._runtime_phase = detected_phase
             master_orchestrator.set_phase(detected_phase)
 
-            self._log(f"📊 DOM 요소 {len(dom_elements)}개 발견")
             before_signature = self._dom_progress_signature(dom_elements)
             heuristic_login_gate = self._is_login_gate(dom_elements)
             modal_open_hint = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
@@ -2857,7 +3326,7 @@ class GoalDrivenAgent:
                 screenshot=screenshot,
                 memory_context=memory_context,
             )
-            self._log(f"🤖 LLM 결정: {decision.action.value} - {decision.reasoning}")
+            self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
 
             if decision.action == ActionType.SCROLL:
                 scroll_streak += 1
@@ -2884,6 +3353,11 @@ class GoalDrivenAgent:
                 )
 
             decision = self._enforce_goal_constraints_on_decision(decision, dom_elements)
+            decision = self._apply_steering_policy_on_decision(
+                goal=goal,
+                decision=decision,
+                dom_elements=dom_elements,
+            )
 
             # 4. 목표 달성 확인
             if decision.is_goal_achieved:
