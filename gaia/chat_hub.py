@@ -586,6 +586,13 @@ def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
             _notify_session_update(context)
             return response
         kind = str(payload.get("kind") or "").strip().lower()
+        if kind == "no_progress":
+            sink.info(
+                "상태 변화가 반복 감지되어 진행 전략을 조정합니다. "
+                "기본값으로 계속 진행(proceed=true)합니다. "
+                "중단하려면 /cancel 을 사용하세요."
+            )
+            return {"action": "continue", "proceed": True}
         if kind == "auth":
             sink.info(
                 "추가 입력 필요: 로그인/인증 정보가 필요합니다.\n"
@@ -1077,7 +1084,12 @@ def dispatch_command(
                 lines.append(f"  grade_year: {auth.get('grade_year')}")
         lines.append(f"exit_code: {code}")
         attachments: list[dict] = []
-        if context.control_channel == "telegram":
+        detail_attachments = detail.get("attachments")
+        if isinstance(detail_attachments, list):
+            for item in detail_attachments:
+                if isinstance(item, dict):
+                    attachments.append(item)
+        if context.control_channel == "telegram" and not attachments:
             shot = _capture_session_screenshot_attachment(context.session_id)
             if shot is not None:
                 attachments.append(shot)

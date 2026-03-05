@@ -87,6 +87,7 @@ class FilterValidationReport:
     pages_checked: int
     cases: List[Dict[str, Any]]
     reason_code_summary: Dict[str, int]
+    attachments: List[Dict[str, Any]]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -100,6 +101,7 @@ class FilterValidationReport:
             "cases": list(self.cases),
             "failed_mandatory_count": int(self.summary.failed_mandatory_checks),
             "reason_code_summary": dict(self.reason_code_summary),
+            "attachments": list(self.attachments or []),
         }
 
 
@@ -129,6 +131,9 @@ class FilterValidationAdapter(Protocol):
         ...
 
     def log(self, message: str) -> None:
+        ...
+
+    def capture_case_attachment(self, label: str) -> Optional[Dict[str, Any]]:
         ...
 
 
@@ -258,12 +263,15 @@ def run_filter_validation(
     use_current_selection_only = bool(cfg.get("use_current_selection_only", False))
     forced_selected_value = str(cfg.get("forced_selected_value") or "").strip()
     validation_contract = cfg.get("validation_contract")
+    capture_case_screenshots = bool(cfg.get("capture_case_screenshots", True))
+    max_case_attachments = max(0, int(cfg.get("max_case_attachments", max_cases)))
 
     reason_counter: Dict[str, int] = {}
     checks: List[FilterCheckRow] = []
     cases: List[Dict[str, Any]] = []
     rules_used: List[str] = []
     pages_checked = 1
+    attachments: List[Dict[str, Any]] = []
 
     def _record_reason(code: str) -> None:
         key = str(code or "").strip()
@@ -277,6 +285,33 @@ def run_filter_validation(
 
     def _add_check(row: FilterCheckRow) -> None:
         checks.append(row)
+
+    def _capture_case_attachment(case_no: int, selected_label: str) -> None:
+        if not capture_case_screenshots:
+            return
+        if max_case_attachments <= 0 or len(attachments) >= max_case_attachments:
+            return
+        try:
+            shot = adapter.capture_case_attachment(
+                f"필터 케이스 {case_no}: {selected_label}"
+            )
+        except Exception:
+            shot = None
+        if not isinstance(shot, dict):
+            return
+        kind = str(shot.get("kind") or "").strip().lower()
+        if kind != "image_base64":
+            return
+        data = shot.get("data")
+        if not isinstance(data, str) or not data.strip():
+            return
+        item = {
+            "kind": "image_base64",
+            "mime": str(shot.get("mime") or "image/png"),
+            "data": data,
+            "label": str(shot.get("label") or f"case_{case_no}"),
+        }
+        attachments.append(item)
 
     dom = adapter.analyze_dom()
     control = _pick_filter_control(dom, goal_text)
@@ -304,6 +339,7 @@ def run_filter_validation(
             strict_mandatory=strict_mandatory,
             required_option_count=0,
             covered_option_count=0,
+            attachments=attachments,
         ).to_dict()
 
     options = _collect_option_cases(control)
@@ -370,6 +406,7 @@ def run_filter_validation(
             strict_mandatory=strict_mandatory,
             required_option_count=len(required_map),
             covered_option_count=0,
+            attachments=attachments,
         ).to_dict()
 
     for case_idx, option in enumerate(options[:max_cases], start=1):
@@ -497,6 +534,7 @@ def run_filter_validation(
                 error="" if row_ok1 else row_msg1,
             )
         )
+        _capture_case_attachment(case_idx, selected_text or selected_value)
         if row_ok1:
             _record_reason("filter_case_passed")
         else:
@@ -708,6 +746,7 @@ def run_filter_validation(
         strict_mandatory=strict_mandatory,
         required_option_count=len(required_map),
         covered_option_count=len(covered_required),
+        attachments=attachments,
     )
     report_dict = report.to_dict()
     report_dict["required_options"] = [{"value": k, "text": v} for k, v in required_map.items()]
@@ -729,6 +768,7 @@ def _build_report(
     strict_mandatory: bool,
     required_option_count: int,
     covered_option_count: int,
+    attachments: List[Dict[str, Any]],
 ) -> FilterValidationReport:
     rows = [row.to_dict(step=i + 1) for i, row in enumerate(checks)]
     total = len(rows)
@@ -769,6 +809,7 @@ def _build_report(
         pages_checked=max(1, int(pages_checked)),
         cases=cases,
         reason_code_summary=dict(reason_counter),
+        attachments=list(attachments or []),
     )
 
 

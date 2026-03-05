@@ -170,6 +170,17 @@ class _GoalFilterValidationAdapter:
     def log(self, message: str) -> None:
         self.agent._log(message)
 
+    def capture_case_attachment(self, label: str) -> Optional[Dict[str, Any]]:
+        shot = self.agent._capture_screenshot()
+        if not isinstance(shot, str) or not shot.strip():
+            return None
+        return {
+            "kind": "image_base64",
+            "mime": "image/png",
+            "data": shot,
+            "label": str(label or "").strip(),
+        }
+
 
 class GoalDrivenAgent:
     """
@@ -272,7 +283,7 @@ class GoalDrivenAgent:
 
     def _log(self, message: str):
         """로그 출력"""
-        print(f"[GoalAgent] {message}")
+        print(message)
         if self._log_callback:
             self._log_callback(message)
 
@@ -1067,8 +1078,12 @@ class GoalDrivenAgent:
             "결제",
             "구매",
             "삭제",
+            "비우",
+            "제거",
             "수정",
             "추가",
+            "담기",
+            "담아",
             "등록",
             "signup",
             "register",
@@ -1076,6 +1091,9 @@ class GoalDrivenAgent:
             "checkout",
             "purchase",
             "submit",
+            "clear",
+            "empty",
+            "remove",
         )
         has_verify_hint = any(hint in text for hint in verify_hints)
         has_operation_hint = any(hint in text for hint in operation_hints)
@@ -2690,7 +2708,6 @@ class GoalDrivenAgent:
             self._runtime_phase = detected_phase
             master_orchestrator.set_phase(detected_phase)
 
-            self._log(f"📊 DOM 요소 {len(dom_elements)}개 발견")
             before_signature = self._dom_progress_signature(dom_elements)
             heuristic_login_gate = self._is_login_gate(dom_elements)
             modal_open_hint = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
@@ -2857,7 +2874,7 @@ class GoalDrivenAgent:
                 screenshot=screenshot,
                 memory_context=memory_context,
             )
-            self._log(f"🤖 LLM 결정: {decision.action.value} - {decision.reasoning}")
+            self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
 
             if decision.action == ActionType.SCROLL:
                 scroll_streak += 1

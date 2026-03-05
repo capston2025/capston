@@ -675,9 +675,31 @@ def _run_single_chat_goal(
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     goal = _build_test_goal(url=url, query=query)
+    captured_shots: list[str] = []
+    captured_hashes: set[str] = set()
+
+    def _on_screenshot(base64_image: str) -> None:
+        if not isinstance(base64_image, str):
+            return
+        payload = base64_image.strip()
+        if not payload:
+            return
+        marker = payload[:96]
+        if marker in captured_hashes:
+            return
+        captured_hashes.add(marker)
+        captured_shots.append(payload)
+        if len(captured_shots) > 8:
+            removed = captured_shots.pop(0)
+            try:
+                captured_hashes.discard(removed[:96])
+            except Exception:
+                pass
+
     agent = GoalDrivenAgent(
         mcp_host_url=CONFIG.mcp.host_url,
         session_id=session_id or WORKSPACE_DEFAULT,
+        screenshot_callback=_on_screenshot,
         intervention_callback=intervention_callback,
     )
     print(f"목표 실행: {goal.description}")
@@ -742,7 +764,25 @@ def _run_single_chat_goal(
         "validation_summary": validation_report.get("summary", {}),
         "validation_checks": validation_report.get("checks", []),
         "verification_report": validation_report,
+        "attachments": (
+            validation_report.get("attachments")
+            if isinstance(validation_report.get("attachments"), list)
+            else []
+        ),
     }
+    if not summary["attachments"] and captured_shots:
+        # 범용 증거 첨부: 실행 중 캡처된 스냅샷 중 최근 3장을 전달
+        sample = captured_shots[-3:]
+        summary["attachments"] = [
+            {
+                "kind": "image_base64",
+                "mime": "image/png",
+                "data": shot,
+                "label": f"실행 스냅샷 {idx + 1}/{len(sample)}",
+            }
+            for idx, shot in enumerate(sample)
+            if isinstance(shot, str) and shot.strip()
+        ]
     if isinstance(goal.test_data, dict):
         auth_payload = {}
         for key in (
