@@ -74,6 +74,72 @@ from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 
+
+class _GoalFilterValidationAdapter:
+    """Filter validation adapter for GoalDrivenAgent."""
+
+    def __init__(self, agent: "GoalDrivenAgent"):
+        self.agent = agent
+
+    def analyze_dom(self) -> List[DOMElement]:
+        return self.agent._analyze_dom()
+
+    def apply_select(self, element_id: int, value: str) -> Dict[str, Any]:
+        selector = self.agent._element_selectors.get(element_id)
+        full_selector = self.agent._element_full_selectors.get(element_id) or selector
+        ref_id = self.agent._element_ref_ids.get(element_id)
+        exec_result = self.agent._execute_action(
+            "select",
+            selector=selector,
+            full_selector=full_selector,
+            ref_id=ref_id,
+            value=value,
+        )
+        self.agent._last_exec_result = exec_result
+        return {
+            "success": bool(exec_result.success),
+            "effective": bool(exec_result.effective),
+            "reason_code": str(exec_result.reason_code or ""),
+            "reason": str(exec_result.reason or ""),
+            "state_change": dict(exec_result.state_change or {}),
+        }
+
+    def click_element(self, element_id: int) -> Dict[str, Any]:
+        selector = self.agent._element_selectors.get(element_id)
+        full_selector = self.agent._element_full_selectors.get(element_id) or selector
+        ref_id = self.agent._element_ref_ids.get(element_id)
+        before_url = str(self.agent._active_url or "")
+        exec_result = self.agent._execute_action(
+            "click",
+            selector=selector,
+            full_selector=full_selector,
+            ref_id=ref_id,
+            value=None,
+        )
+        self.agent._last_exec_result = exec_result
+        return {
+            "success": bool(exec_result.success),
+            "effective": bool(exec_result.effective),
+            "reason_code": str(exec_result.reason_code or ""),
+            "reason": str(exec_result.reason or ""),
+            "state_change": dict(exec_result.state_change or {}),
+            "before_url": before_url,
+            "after_url": str(self.agent._active_url or ""),
+        }
+
+    def resolve_ref(self, element_id: int) -> str:
+        return str(self.agent._element_ref_ids.get(element_id) or "")
+
+    def current_url(self) -> str:
+        return str(self.agent._active_url or "")
+
+    def record_reason(self, code: str) -> None:
+        self.agent._record_reason_code(code)
+
+    def log(self, message: str) -> None:
+        self.agent._log(message)
+
+
 class GoalDrivenAgent:
     """
     Goal-Driven 테스트 에이전트
@@ -128,6 +194,7 @@ class GoalDrivenAgent:
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
+        self._active_url: str = ""
         self._last_snapshot_evidence: Dict[str, Any] = {}
         self._last_exec_result: Optional[ActionExecResult] = None
         self._active_goal_text: str = ""
@@ -983,6 +1050,32 @@ class GoalDrivenAgent:
         has_operation_hint = any(hint in text for hint in operation_hints)
         return bool(has_verify_hint and not has_operation_hint)
 
+    def _is_filter_style_goal(self, goal: TestGoal) -> bool:
+        text = self._normalize_text(
+            " ".join(
+                [
+                    str(goal.name or ""),
+                    str(goal.description or ""),
+                    " ".join(str(item or "") for item in (goal.success_criteria or [])),
+                ]
+            )
+        )
+        if not text:
+            return False
+        filter_hints = (
+            "필터",
+            "filter",
+            "학점",
+            "credit",
+            "분류",
+            "category",
+            "정렬",
+            "sort",
+            "검색",
+            "search",
+        )
+        return any(hint in text for hint in filter_hints)
+
     def _can_finish_by_verification_transition(
         self,
         *,
@@ -999,6 +1092,10 @@ class GoalDrivenAgent:
         if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.NAVIGATE, ActionType.SELECT}:
             return False
         if not self._is_verification_style_goal(goal):
+            return False
+        if self._is_filter_style_goal(goal):
+            # 필터 검증 목표는 단순 전이 신호로 조기 성공 처리하지 않고
+            # semantic filter validation 엔진 결과로 최종 판정한다.
             return False
         goal_text = self._normalize_text(
             " ".join(
@@ -2394,6 +2491,15 @@ class GoalDrivenAgent:
         self._goal_tokens = self._derive_goal_tokens(goal)
         self._goal_constraints = self._derive_goal_constraints(goal)
         self._goal_metric_value = None
+        self._last_filter_semantic_report = None
+        filter_goal_active = self._is_filter_style_goal(goal)
+        filter_semantic_attempts = 0
+        filter_semantic_attempt_limit = self._env_int(
+            "GAIA_FILTER_SEMANTIC_SELECT_LIMIT",
+            3,
+            low=1,
+            high=20,
+        )
 
         collect_min = self._goal_constraints.get("collect_min")
         apply_target = self._goal_constraints.get("apply_target")
@@ -3051,6 +3157,85 @@ class GoalDrivenAgent:
             if terminal_result is not None:
                 return terminal_result
 
+            if filter_goal_active and decision.action == ActionType.SELECT and bool(success):
+                filter_semantic_attempts += 1
+                selected_value_hint = str(decision.value or "").strip()
+                semantic_report = self.run_filter_semantic_validation(
+                    goal_text=goal.description,
+                    max_pages=2,
+                    max_cases=1,
+                    use_current_selection_only=True,
+                    forced_selected_value=selected_value_hint,
+                )
+                if isinstance(semantic_report, dict):
+                    self._last_filter_semantic_report = semantic_report
+                    rc_summary = semantic_report.get("reason_code_summary")
+                    if isinstance(rc_summary, dict):
+                        for code, count in rc_summary.items():
+                            try:
+                                repeats = int(count)
+                            except Exception:
+                                repeats = 0
+                            repeats = max(0, min(repeats, 50))
+                            for _ in range(repeats):
+                                self._record_reason_code(str(code))
+
+                    summary = semantic_report.get("summary")
+                    summary_dict = summary if isinstance(summary, dict) else {}
+                    strict_failed = bool(summary_dict.get("strict_failed"))
+                    semantic_success = bool(semantic_report.get("success"))
+
+                    if strict_failed or not semantic_success:
+                        failed_mandatory = int(summary_dict.get("failed_mandatory_checks") or 0)
+                        reason = (
+                            "필터 의미 검증 실패: "
+                            f"필수 체크 실패 {failed_mandatory}건"
+                        )
+                        self._log(f"❌ {reason}")
+                        return self._build_failure_result(
+                            goal=goal,
+                            steps=steps,
+                            step_count=step_count,
+                            start_time=start_time,
+                            reason=reason,
+                        )
+
+                    passed_checks = int(summary_dict.get("passed_checks") or 0)
+                    total_checks = int(summary_dict.get("total_checks") or 0)
+                    success_reason = f"필터 의미 검증 통과 ({passed_checks}/{total_checks})"
+                    self._log(f"✅ {success_reason}")
+                    result = GoalResult(
+                        goal_id=goal.id,
+                        goal_name=goal.name,
+                        success=True,
+                        steps_taken=steps,
+                        total_steps=step_count,
+                        final_reason=success_reason,
+                        duration_seconds=time.time() - start_time,
+                    )
+                    self._record_goal_summary(
+                        goal=goal,
+                        status="success",
+                        reason=result.final_reason,
+                        step_count=step_count,
+                        duration_seconds=result.duration_seconds,
+                    )
+                    return result
+
+                if filter_semantic_attempts >= filter_semantic_attempt_limit:
+                    reason = (
+                        "필터 의미 검증 결과를 확보하지 못해 중단합니다. "
+                        f"(select 시도 {filter_semantic_attempts}회)"
+                    )
+                    self._log(f"❌ {reason}")
+                    return self._build_failure_result(
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=reason,
+                    )
+
             if changed:
                 self._progress_counter += 1
                 self._no_progress_counter = 0
@@ -3243,6 +3428,7 @@ class GoalDrivenAgent:
             self._active_snapshot_id = str(data.get("snapshot_id") or "")
             self._active_dom_hash = str(data.get("dom_hash") or "")
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
+            self._active_url = str(data.get("url") or self._active_url or "")
             evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
             self._last_snapshot_evidence = evidence
 
@@ -3284,6 +3470,7 @@ class GoalDrivenAgent:
                         href=attrs.get("href"),
                         bounding_box=el.get("bounding_box"),
                         options=attrs.get("options"),
+                        selected_value=str(attrs.get("selected_value") or ""),
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=bool(el.get("is_enabled", True)),
                     )
@@ -3326,6 +3513,72 @@ class GoalDrivenAgent:
         except Exception as e:
             self._log(f"스크린샷 캡처 실패: {e}")
             return None
+
+    def run_filter_semantic_validation(
+        self,
+        goal_text: str,
+        *,
+        max_pages: int = 2,
+        max_cases: int = 3,
+        use_current_selection_only: bool = False,
+        forced_selected_value: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Deterministic semantic validation for filter-style goals."""
+        try:
+            from .filter_validation_engine import run_filter_validation
+
+            adapter = _GoalFilterValidationAdapter(self)
+            report = run_filter_validation(
+                adapter=adapter,
+                goal_text=goal_text,
+                config={
+                    "max_pages": max(1, int(max_pages)),
+                    "max_cases": max(1, int(max_cases)),
+                    "strict_mandatory": True,
+                    "use_current_selection_only": bool(use_current_selection_only),
+                    "forced_selected_value": str(forced_selected_value or "").strip(),
+                },
+            )
+            if isinstance(report, dict):
+                return report
+        except Exception as exc:
+            self._log(f"⚠️ semantic filter validation 실패: {exc}")
+        return {
+            "mode": "filter_semantic_v2",
+            "success": False,
+            "summary": {
+                "goal_type": "filter_validation_semantic",
+                "total_checks": 1,
+                "passed_checks": 0,
+                "failed_checks": 1,
+                "skipped_checks": 0,
+                "failed_mandatory_checks": 1,
+                "success_rate": 0.0,
+                "strict_failed": True,
+            },
+            "checks": [
+                {
+                    "check_id": "filter_engine_error",
+                    "name": "필터 의미 검증 엔진 실행",
+                    "status": "failed",
+                    "step": 1,
+                    "action": "verify",
+                    "input_value": "-",
+                    "error": "semantic filter validation failed",
+                    "check_type": "engine_error",
+                    "mandatory": True,
+                    "scope": "global",
+                    "expected": "엔진 정상 실행",
+                    "observed": "실패",
+                    "evidence": {},
+                }
+            ],
+            "rules_used": [],
+            "pages_checked": 1,
+            "cases": [],
+            "failed_mandatory_count": 1,
+            "reason_code_summary": {"filter_case_failed": 1},
+        }
 
     def _decide_next_action(
         self,

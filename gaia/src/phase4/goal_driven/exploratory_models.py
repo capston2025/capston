@@ -205,6 +205,10 @@ class ExplorationStep(BaseModel):
 
     # 발견된 이슈
     issues_found: List[FoundIssue] = Field(default_factory=list)
+    validation_checks: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="해당 스텝에서 수행된 검증 체크 결과",
+    )
 
     # 새로운 요소 발견
     new_elements_found: int = 0
@@ -256,6 +260,18 @@ class ExplorationResult(BaseModel):
     test_scenarios_summary: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="테스트된 기능 시나리오 요약 (예: [{name: '로그인 테스트', steps: [1,2,3], result: 'pass'}])",
+    )
+    validation_summary: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="검증 요약(total/passed/failed/success_rate 등)",
+    )
+    validation_checks: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="검증 체크 상세",
+    )
+    verification_report: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="검증 엔진 상세 리포트",
     )
 
     # 메타데이터
