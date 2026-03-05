@@ -95,6 +95,38 @@ class _ExploratoryFilterValidationAdapter:
             "after_url": self.current_url(),
         }
 
+    def scroll_for_pagination(self, anchor_element_id: int) -> Dict[str, Any]:
+        selector = self.agent._element_full_selectors.get(anchor_element_id) or self.agent._element_selectors.get(anchor_element_id)
+        ref_id = self.agent._element_ref_ids.get(anchor_element_id)
+        success, error = self.agent._execute_action(
+            "scroll",
+            selector=selector or None,
+            ref_id=ref_id or None,
+            value="bottom",
+        )
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+        }
+
+    def wait_for_pagination_probe(self, wait_ms: int = 900) -> Dict[str, Any]:
+        success, error = self.agent._execute_action(
+            "wait",
+            value={"timeMs": int(max(100, wait_ms))},
+        )
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+        }
+
     def resolve_ref(self, element_id: int) -> str:
         return str(self.agent._element_ref_ids.get(element_id) or "")
 
@@ -1655,6 +1687,14 @@ class ExploratoryAgent:
             elements = []
             for idx, el in enumerate(raw_elements):
                 attrs = el.get("attributes", {})
+                disabled_attr = attrs.get("disabled")
+                disabled_flag = (
+                    disabled_attr is not None
+                    and str(disabled_attr).strip().lower() not in {"false", "0", "none"}
+                )
+                aria_disabled_flag = str(attrs.get("aria-disabled") or "").strip().lower() == "true"
+                gaia_disabled_flag = str(attrs.get("gaia-disabled") or "").strip().lower() == "true"
+                is_enabled = not (disabled_flag or aria_disabled_flag or gaia_disabled_flag)
 
                 # 셀렉터 저장
                 selector = el.get("selector", "")
@@ -1688,15 +1728,7 @@ class ExploratoryAgent:
                         options=attrs.get("options"),
                         selected_value=str(attrs.get("selected_value") or ""),
                         is_visible=bool(el.get("is_visible", True)),
-                        is_enabled=not (
-                            (
-                                attrs.get("disabled") is not None
-                                and str(attrs.get("disabled")).strip().lower()
-                                not in {"false", "0", "none"}
-                            )
-                            or str(attrs.get("aria-disabled") or "").strip().lower()
-                            == "true"
-                        ),
+                        is_enabled=is_enabled,
                     )
                 )
 

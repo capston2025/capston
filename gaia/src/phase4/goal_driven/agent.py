@@ -127,6 +127,37 @@ class _GoalFilterValidationAdapter:
             "after_url": str(self.agent._active_url or ""),
         }
 
+    def scroll_for_pagination(self, anchor_element_id: int) -> Dict[str, Any]:
+        selector = self.agent._element_selectors.get(anchor_element_id)
+        full_selector = self.agent._element_full_selectors.get(anchor_element_id) or selector
+        ref_id = self.agent._element_ref_ids.get(anchor_element_id)
+        exec_result = self.agent._execute_action(
+            "scroll",
+            selector=selector,
+            full_selector=full_selector,
+            ref_id=ref_id,
+            value="bottom",
+        )
+        self.agent._last_exec_result = exec_result
+        return {
+            "success": bool(exec_result.success),
+            "effective": bool(exec_result.effective),
+            "reason_code": str(exec_result.reason_code or ""),
+            "reason": str(exec_result.reason or ""),
+            "state_change": dict(exec_result.state_change or {}),
+        }
+
+    def wait_for_pagination_probe(self, wait_ms: int = 900) -> Dict[str, Any]:
+        exec_result = self.agent._execute_action("wait", value={"timeMs": int(max(100, wait_ms))})
+        self.agent._last_exec_result = exec_result
+        return {
+            "success": bool(exec_result.success),
+            "effective": bool(exec_result.effective),
+            "reason_code": str(exec_result.reason_code or ""),
+            "reason": str(exec_result.reason or ""),
+            "state_change": dict(exec_result.state_change or {}),
+        }
+
     def resolve_ref(self, element_id: int) -> str:
         return str(self.agent._element_ref_ids.get(element_id) or "")
 
@@ -2492,13 +2523,28 @@ class GoalDrivenAgent:
         self._goal_constraints = self._derive_goal_constraints(goal)
         self._goal_metric_value = None
         self._last_filter_semantic_report = None
+        self._filter_validation_contract = None
         filter_goal_active = self._is_filter_style_goal(goal)
         filter_semantic_attempts = 0
         filter_semantic_attempt_limit = self._env_int(
             "GAIA_FILTER_SEMANTIC_SELECT_LIMIT",
-            3,
+            12,
+            low=3,
+            high=200,
+        )
+        filter_semantic_max_cases = self._env_int(
+            "GAIA_FILTER_SEMANTIC_MAX_CASES",
+            20,
             low=1,
-            high=20,
+            high=50,
+        )
+        filter_semantic_current_only = bool(
+            self._env_int(
+                "GAIA_FILTER_SEMANTIC_CURRENT_ONLY",
+                0,
+                low=0,
+                high=1,
+            )
         )
 
         collect_min = self._goal_constraints.get("collect_min")
@@ -3160,12 +3206,26 @@ class GoalDrivenAgent:
             if filter_goal_active and decision.action == ActionType.SELECT and bool(success):
                 filter_semantic_attempts += 1
                 selected_value_hint = str(decision.value or "").strip()
+                if self._filter_validation_contract is None:
+                    try:
+                        self._filter_validation_contract = self._build_filter_validation_contract(
+                            goal=goal,
+                            dom_elements=post_dom if isinstance(post_dom, list) and post_dom else dom_elements,
+                        )
+                    except Exception as contract_exc:
+                        self._log(f"⚠️ 필터 검증 계약 생성 실패: {contract_exc}")
+                        self._filter_validation_contract = None
                 semantic_report = self.run_filter_semantic_validation(
                     goal_text=goal.description,
                     max_pages=2,
-                    max_cases=1,
-                    use_current_selection_only=True,
+                    max_cases=filter_semantic_max_cases,
+                    use_current_selection_only=filter_semantic_current_only,
                     forced_selected_value=selected_value_hint,
+                    validation_contract=(
+                        self._filter_validation_contract
+                        if isinstance(self._filter_validation_contract, dict)
+                        else None
+                    ),
                 )
                 if isinstance(semantic_report, dict):
                     self._last_filter_semantic_report = semantic_report
@@ -3183,9 +3243,9 @@ class GoalDrivenAgent:
                     summary = semantic_report.get("summary")
                     summary_dict = summary if isinstance(summary, dict) else {}
                     strict_failed = bool(summary_dict.get("strict_failed"))
-                    semantic_success = bool(semantic_report.get("success"))
+                    goal_satisfied = bool(summary_dict.get("goal_satisfied", semantic_report.get("success")))
 
-                    if strict_failed or not semantic_success:
+                    if strict_failed:
                         failed_mandatory = int(summary_dict.get("failed_mandatory_checks") or 0)
                         reason = (
                             "필터 의미 검증 실패: "
@@ -3200,27 +3260,50 @@ class GoalDrivenAgent:
                             reason=reason,
                         )
 
-                    passed_checks = int(summary_dict.get("passed_checks") or 0)
-                    total_checks = int(summary_dict.get("total_checks") or 0)
-                    success_reason = f"필터 의미 검증 통과 ({passed_checks}/{total_checks})"
-                    self._log(f"✅ {success_reason}")
-                    result = GoalResult(
-                        goal_id=goal.id,
-                        goal_name=goal.name,
-                        success=True,
-                        steps_taken=steps,
-                        total_steps=step_count,
-                        final_reason=success_reason,
-                        duration_seconds=time.time() - start_time,
-                    )
-                    self._record_goal_summary(
-                        goal=goal,
-                        status="success",
-                        reason=result.final_reason,
-                        step_count=step_count,
-                        duration_seconds=result.duration_seconds,
-                    )
-                    return result
+                    if goal_satisfied:
+                        passed_checks = int(summary_dict.get("passed_checks") or 0)
+                        total_checks = int(summary_dict.get("total_checks") or 0)
+                        success_reason = f"필터 의미 검증 통과 ({passed_checks}/{total_checks})"
+                        self._log(f"✅ {success_reason}")
+                        result = GoalResult(
+                            goal_id=goal.id,
+                            goal_name=goal.name,
+                            success=True,
+                            steps_taken=steps,
+                            total_steps=step_count,
+                            final_reason=success_reason,
+                            duration_seconds=time.time() - start_time,
+                        )
+                        self._record_goal_summary(
+                            goal=goal,
+                            status="success",
+                            reason=result.final_reason,
+                            step_count=step_count,
+                            duration_seconds=result.duration_seconds,
+                        )
+                        return result
+                    else:
+                        required_count = int(summary_dict.get("required_option_count") or 0)
+                        covered_count = int(summary_dict.get("covered_option_count") or 0)
+                        self._log(
+                            "🧪 필터 의미 검증 진행 중: "
+                            f"옵션 커버리지 {covered_count}/{required_count}"
+                        )
+                        missing_options = semantic_report.get("missing_required_options")
+                        if isinstance(missing_options, list) and missing_options:
+                            labels: List[str] = []
+                            for row in missing_options[:6]:
+                                if not isinstance(row, dict):
+                                    continue
+                                label = str(row.get("text") or row.get("value") or "").strip()
+                                if label:
+                                    labels.append(label)
+                            if labels:
+                                self._action_feedback.append(
+                                    "아직 검증되지 않은 필터 옵션: " + ", ".join(labels)
+                                )
+                                if len(self._action_feedback) > 10:
+                                    self._action_feedback = self._action_feedback[-10:]
 
                 if filter_semantic_attempts >= filter_semantic_attempt_limit:
                     reason = (
@@ -3436,6 +3519,14 @@ class GoalDrivenAgent:
             elements = []
             for idx, el in enumerate(raw_elements):
                 attrs = el.get("attributes", {})
+                disabled_attr = attrs.get("disabled")
+                disabled_flag = (
+                    disabled_attr is not None
+                    and str(disabled_attr).strip().lower() not in {"false", "0", "none"}
+                )
+                aria_disabled_flag = str(attrs.get("aria-disabled") or "").strip().lower() == "true"
+                gaia_disabled_flag = str(attrs.get("gaia-disabled") or "").strip().lower() == "true"
+                is_enabled = not (disabled_flag or aria_disabled_flag or gaia_disabled_flag)
 
                 # 셀렉터 저장
                 selector = el.get("selector", "")
@@ -3472,7 +3563,7 @@ class GoalDrivenAgent:
                         options=attrs.get("options"),
                         selected_value=str(attrs.get("selected_value") or ""),
                         is_visible=bool(el.get("is_visible", True)),
-                        is_enabled=bool(el.get("is_enabled", True)),
+                        is_enabled=is_enabled,
                     )
                 )
 
@@ -3522,6 +3613,7 @@ class GoalDrivenAgent:
         max_cases: int = 3,
         use_current_selection_only: bool = False,
         forced_selected_value: Optional[str] = None,
+        validation_contract: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Deterministic semantic validation for filter-style goals."""
         try:
@@ -3537,6 +3629,7 @@ class GoalDrivenAgent:
                     "strict_mandatory": True,
                     "use_current_selection_only": bool(use_current_selection_only),
                     "forced_selected_value": str(forced_selected_value or "").strip(),
+                    "validation_contract": dict(validation_contract or {}),
                 },
             )
             if isinstance(report, dict):
@@ -3578,6 +3671,127 @@ class GoalDrivenAgent:
             "cases": [],
             "failed_mandatory_count": 1,
             "reason_code_summary": {"filter_case_failed": 1},
+        }
+
+    def _build_filter_validation_contract(
+        self,
+        *,
+        goal: TestGoal,
+        dom_elements: List[DOMElement],
+    ) -> Dict[str, Any]:
+        option_rows: List[Dict[str, Any]] = []
+        best_select_options: List[Dict[str, str]] = []
+        best_score = -1.0
+        for el in dom_elements:
+            if self._normalize_text(el.tag) != "select":
+                continue
+            if not isinstance(el.options, list) or len(el.options) < 2:
+                continue
+            local_rows: List[Dict[str, str]] = []
+            for item in el.options:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("value") or "").strip()
+                text = str(item.get("text") or "").strip()
+                if not value:
+                    continue
+                lowered = self._normalize_text(f"{value} {text}")
+                if any(tok in lowered for tok in ("전체", "all", "선택", "default")):
+                    continue
+                local_rows.append({"value": value, "text": text})
+            if not local_rows:
+                continue
+            blob = self._normalize_text(
+                " ".join(
+                    [
+                        str(el.text or ""),
+                        str(el.aria_label or ""),
+                        str(el.title or ""),
+                        str(el.class_name or ""),
+                        " ".join(str(x.get("text") or "") for x in local_rows[:8]),
+                    ]
+                )
+            )
+            score = float(len(local_rows))
+            if "학점" in blob or "credit" in blob:
+                score += 100.0
+            if score > best_score:
+                best_score = score
+                best_select_options = local_rows
+
+        option_rows = list(best_select_options)
+
+        if not option_rows:
+            return {
+                "source": "fallback_empty",
+                "required_options": [],
+                "require_pagination_if_available": True,
+            }
+
+        prompt = f"""당신은 테스트 목표를 검증 계약(JSON)으로 변환하는 엔진입니다.
+아래 목표를 보고, 검증해야 할 필터 옵션만 deterministic JSON으로 반환하세요.
+
+목표:
+{goal.description}
+
+사용 가능한 옵션 목록(JSON):
+{json.dumps(option_rows, ensure_ascii=False)}
+
+반드시 다음 스키마만 반환:
+{{
+  "required_options": [{{"value":"...", "text":"..."}}],
+  "require_pagination_if_available": true
+}}
+
+규칙:
+1) required_options는 반드시 위 옵션 목록에 있는 값만 사용
+2) 목표가 특정 옵션 집합(예: 1,2,3학점)을 요구하면 그 집합만 포함
+3) 목표가 '전체/전부/모두/자세히 검증'이면 가능한 옵션을 모두 포함
+4) 설명 문장/마크다운 없이 JSON만 반환
+"""
+
+        try:
+            raw = self._call_llm_text_only(prompt)
+            text = str(raw or "").strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            if not text.startswith("{"):
+                first = text.find("{")
+                last = text.rfind("}")
+                if first != -1 and last != -1 and last > first:
+                    text = text[first : last + 1].strip()
+            data = json.loads(text)
+            if isinstance(data, dict):
+                raw_required = data.get("required_options")
+                sanitized: List[Dict[str, str]] = []
+                value_allow = {str(row.get("value") or "").strip(): str(row.get("text") or "").strip() for row in option_rows}
+                if isinstance(raw_required, list):
+                    for item in raw_required:
+                        if not isinstance(item, dict):
+                            continue
+                        val = str(item.get("value") or "").strip()
+                        txt = str(item.get("text") or "").strip()
+                        if val in value_allow:
+                            sanitized.append({"value": val, "text": value_allow.get(val) or txt})
+                if not sanitized:
+                    sanitized = [{"value": str(row.get("value") or ""), "text": str(row.get("text") or "")} for row in option_rows]
+                return {
+                    "source": "llm_contract",
+                    "required_options": sanitized,
+                    "require_pagination_if_available": bool(data.get("require_pagination_if_available", True)),
+                }
+        except Exception as exc:
+            self._log(f"⚠️ LLM 계약 파싱 실패, fallback 사용: {exc}")
+
+        return {
+            "source": "fallback_all_options",
+            "required_options": [{"value": str(row.get("value") or ""), "text": str(row.get("text") or "")} for row in option_rows],
+            "require_pagination_if_available": True,
         }
 
     def _decide_next_action(

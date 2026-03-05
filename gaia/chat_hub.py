@@ -1091,6 +1091,11 @@ def dispatch_command(
                 "steps": detail.get("steps"),
                 "reason": detail.get("reason") or "",
                 "duration": duration_value,
+                "step_timeline": (
+                    detail.get("step_timeline")
+                    if isinstance(detail.get("step_timeline"), list)
+                    else []
+                ),
                 "reason_code_summary": reason_summary,
                 "validation_summary": validation_summary,
                 "validation_checks": validation_checks,
@@ -1141,6 +1146,11 @@ def dispatch_command(
                 "steps": _as_int(ai_summary.get("steps")),
                 "reason": str(ai_summary.get("reason") or ""),
                 "duration": _as_float(ai_summary.get("duration_seconds") or (time.time() - t0)),
+                "step_timeline": (
+                    ai_summary.get("step_timeline")
+                    if isinstance(ai_summary.get("step_timeline"), list)
+                    else []
+                ),
                 "reason_code_summary": (
                     ai_summary.get("reason_code_summary")
                     if isinstance(ai_summary.get("reason_code_summary"), dict)
@@ -1203,6 +1213,11 @@ def dispatch_command(
                 "steps": _as_int(ai_summary.get("steps")),
                 "reason": str(ai_summary.get("reason") or ""),
                 "duration": _as_float(ai_summary.get("duration_seconds") or (time.time() - t0)),
+                "step_timeline": (
+                    ai_summary.get("step_timeline")
+                    if isinstance(ai_summary.get("step_timeline"), list)
+                    else []
+                ),
                 "reason_code_summary": (
                     ai_summary.get("reason_code_summary")
                     if isinstance(ai_summary.get("reason_code_summary"), dict)

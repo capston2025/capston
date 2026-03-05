@@ -589,6 +589,52 @@ def _is_strict_validation_failed(report: Dict[str, Any]) -> bool:
         return False
 
 
+def _is_goal_satisfaction_failed(report: Dict[str, Any]) -> bool:
+    if not isinstance(report, dict):
+        return False
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        return False
+    goal_type = str(summary.get("goal_type") or "").strip().lower()
+    if goal_type != "filter_validation_semantic":
+        return False
+    if "goal_satisfied" not in summary:
+        return False
+    return not bool(summary.get("goal_satisfied"))
+
+
+def _build_step_timeline(result: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    steps = list(getattr(result, "steps_taken", []) or [])
+    for step in steps[: max(1, int(limit))]:
+        try:
+            step_no = int(getattr(step, "step_number", len(rows) + 1) or (len(rows) + 1))
+        except Exception:
+            step_no = len(rows) + 1
+        action_obj = getattr(step, "action", None)
+        action_raw = getattr(action_obj, "action", "")
+        action_name = str(getattr(action_raw, "value", "") or action_raw or "").strip().lower()
+        reasoning = str(getattr(action_obj, "reasoning", "") or "").strip()
+        duration_ms = getattr(step, "duration_ms", None)
+        duration_seconds: float = 0.0
+        try:
+            if duration_ms is not None:
+                duration_seconds = round(float(duration_ms) / 1000.0, 2)
+        except Exception:
+            duration_seconds = 0.0
+        rows.append(
+            {
+                "step": step_no,
+                "action": action_name or "unknown",
+                "reasoning": reasoning,
+                "duration_seconds": duration_seconds,
+                "success": bool(getattr(step, "success", False)),
+                "error": str(getattr(step, "error_message", "") or "").strip(),
+            }
+        )
+    return rows
+
+
 def _merge_reason_code_summary(
     base: Dict[str, Any],
     extra: Dict[str, Any],
@@ -654,11 +700,17 @@ def _run_single_chat_goal(
         semantic_report=semantic_report,
     )
     validation_failed = _is_strict_validation_failed(validation_report)
-    effective_success = bool(result.success) and not validation_failed
+    goal_unsatisfied = _is_goal_satisfaction_failed(validation_report)
+    effective_success = bool(result.success) and not validation_failed and not goal_unsatisfied
     effective_reason = str(result.final_reason or "")
     if validation_failed:
         effective_reason = (
             "필터 의미 검증에서 필수 항목 실패가 발생했습니다. "
+            + (effective_reason or "검증 리포트를 확인하세요.")
+        ).strip()
+    elif goal_unsatisfied:
+        effective_reason = (
+            "필터 의미 검증에서 목표 커버리지가 충족되지 않았습니다. "
             + (effective_reason or "검증 리포트를 확인하세요.")
         ).strip()
 
@@ -685,6 +737,7 @@ def _run_single_chat_goal(
         "steps": result.total_steps,
         "reason": effective_reason,
         "duration_seconds": round(float(result.duration_seconds), 2),
+        "step_timeline": _build_step_timeline(result),
         "reason_code_summary": reason_summary,
         "validation_summary": validation_report.get("summary", {}),
         "validation_checks": validation_report.get("checks", []),

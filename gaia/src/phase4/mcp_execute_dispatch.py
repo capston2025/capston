@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Dict
 from fastapi import HTTPException
 
 from gaia.src.phase4.mcp_action_aliases import ACTION_ALIASES
+from gaia.src.phase4.mcp_error_converter import to_ai_friendly_error
 
 
 BrowserHandler = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
@@ -70,10 +71,11 @@ async def execute_action_dispatch(
         ) from exc
     except Exception as exc:
         traceback.print_exc()
+        friendly_msg = to_ai_friendly_error(exc)
         raise HTTPException(
             status_code=500,
             detail={
                 "reason_code": "http_5xx",
-                "message": f"{type(exc).__name__}: {exc}",
+                "message": friendly_msg,
             },
         ) from exc

@@ -562,6 +562,11 @@ async def execute_simple_action_impl(
                 await element.set_input_files(value, timeout=30000)
             else:
                 raise ValueError(f"Invalid value type for uploadFile: {type(value)}")
+            # setInputFiles 후 input/change 이벤트 수동 dispatch
+            # 일부 프레임워크(React, Vue 등)에서 Playwright setInputFiles()가
+            # 네이티브 이벤트를 발화하지 않아 파일 업로드가 감지되지 않는 문제 방지
+            await element.dispatch_event("input", {"bubbles": True})
+            await element.dispatch_event("change", {"bubbles": True})
 
         elif action == "expectCSSChanged":
             # 저장된 CSS 값과 현재 값을 비교하여 변경 여부 확인

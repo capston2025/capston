@@ -57,6 +57,9 @@ class FilterValidationSummary:
     failed_mandatory_checks: int
     success_rate: float
     strict_failed: bool
+    goal_satisfied: bool
+    required_option_count: int
+    covered_option_count: int
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -68,6 +71,9 @@ class FilterValidationSummary:
             "failed_mandatory_checks": self.failed_mandatory_checks,
             "success_rate": self.success_rate,
             "strict_failed": self.strict_failed,
+            "goal_satisfied": self.goal_satisfied,
+            "required_option_count": self.required_option_count,
+            "covered_option_count": self.covered_option_count,
         }
 
 
@@ -86,6 +92,7 @@ class FilterValidationReport:
         return {
             "mode": self.mode,
             "success": self.success,
+            "goal_satisfied": self.summary.goal_satisfied,
             "summary": self.summary.to_dict(),
             "checks": list(self.checks),
             "rules_used": list(self.rules_used),
@@ -104,6 +111,12 @@ class FilterValidationAdapter(Protocol):
         ...
 
     def click_element(self, element_id: int) -> Dict[str, Any]:
+        ...
+
+    def scroll_for_pagination(self, anchor_element_id: int) -> Dict[str, Any]:
+        ...
+
+    def wait_for_pagination_probe(self, wait_ms: int = 900) -> Dict[str, Any]:
         ...
 
     def resolve_ref(self, element_id: int) -> str:
@@ -165,6 +178,8 @@ class CreditFilterRule:
         mismatch_rows = 0
         mismatch_examples: List[str] = []
         for row in row_texts:
+            if _is_noise_row_for_credit(row):
+                continue
             row_credits = _extract_row_credits(row)
             if not row_credits:
                 continue
@@ -242,6 +257,7 @@ def run_filter_validation(
     strict_mandatory = bool(cfg.get("strict_mandatory", True))
     use_current_selection_only = bool(cfg.get("use_current_selection_only", False))
     forced_selected_value = str(cfg.get("forced_selected_value") or "").strip()
+    validation_contract = cfg.get("validation_contract")
 
     reason_counter: Dict[str, int] = {}
     checks: List[FilterCheckRow] = []
@@ -286,9 +302,35 @@ def run_filter_validation(
             pages_checked=1,
             reason_counter=reason_counter,
             strict_mandatory=strict_mandatory,
+            required_option_count=0,
+            covered_option_count=0,
         ).to_dict()
 
     options = _collect_option_cases(control)
+    required_map: Dict[str, str] = _build_required_map_from_contract(validation_contract, options)
+    if not required_map:
+        required_map = _derive_required_options(goal_text, options)
+    required_credit_set: set[int] = set()
+    for rv, rt in required_map.items():
+        credit = _extract_credit(rt) or _extract_credit(rv)
+        if credit is not None:
+            required_credit_set.add(int(credit))
+    covered_required: set[str] = set()
+
+    def _mark_coverage(selected_value: str, selected_text: str, passed: bool) -> None:
+        if not passed:
+            return
+        selected_credit = _extract_credit(selected_text) or _extract_credit(selected_value)
+        if selected_value in required_map:
+            covered_required.add(selected_value)
+            return
+        if selected_credit is not None and int(selected_credit) in required_credit_set:
+            # value 표현(예: "3" vs "3학점")이 달라도 학점 의미가 같으면 커버로 인정
+            for rv, rt in required_map.items():
+                rv_credit = _extract_credit(rt) or _extract_credit(rv)
+                if rv_credit is not None and int(rv_credit) == int(selected_credit):
+                    covered_required.add(rv)
+                    return
     if use_current_selection_only:
         current_val = forced_selected_value or str(control.selected_value or "").strip()
         current_text = ""
@@ -326,6 +368,8 @@ def run_filter_validation(
             pages_checked=1,
             reason_counter=reason_counter,
             strict_mandatory=strict_mandatory,
+            required_option_count=len(required_map),
+            covered_option_count=0,
         ).to_dict()
 
     for case_idx, option in enumerate(options[:max_cases], start=1):
@@ -335,6 +379,14 @@ def run_filter_validation(
             continue
 
         _record_reason("filter_case_started")
+        dom_before_case = adapter.analyze_dom()
+        control_for_case = _pick_filter_control_for_option(
+            dom=dom_before_case,
+            goal_text=goal_text,
+            selected_value=selected_value,
+            selected_text=selected_text,
+            required_map=required_map,
+        ) or control
         case_info: Dict[str, Any] = {
             "case_index": case_idx,
             "selected_value": selected_value,
@@ -343,14 +395,41 @@ def run_filter_validation(
         }
 
         if not use_current_selection_only:
-            apply_result = adapter.apply_select(control.id, selected_value)
+            apply_result = adapter.apply_select(control_for_case.id, selected_value)
             apply_ok = bool(apply_result.get("success")) and bool(apply_result.get("effective", True))
+            if not apply_ok:
+                # select는 비동기 반영으로 인해 reason_code=not_actionable로 떨어져도
+                # 실제 selected_value가 반영되는 경우가 있어 후속 DOM으로 보정한다.
+                dom_after_apply = adapter.analyze_dom()
+                control_after_apply = _pick_filter_control_for_option(
+                    dom=dom_after_apply,
+                    goal_text=goal_text,
+                    selected_value=selected_value,
+                    selected_text=selected_text,
+                    required_map=required_map,
+                )
+                if control_after_apply is not None:
+                    reflected_ok, reflected_obs = _selection_reflected(
+                        control_after_apply,
+                        selected_value,
+                        selected_text,
+                    )
+                    if reflected_ok:
+                        apply_ok = True
+                        apply_result = {
+                            **dict(apply_result or {}),
+                            "success": True,
+                            "effective": True,
+                            "reason_code": str(apply_result.get("reason_code") or "ok")
+                            + "|selection_reflected_fallback",
+                            "reason": reflected_obs,
+                        }
             _add_check(
                 FilterCheckRow(
                     check_id=f"case_{case_idx}_selection_apply",
                     name=f"필터 적용 실행(case {case_idx})",
                     status="passed" if apply_ok else "failed",
-                    mandatory=True,
+                    mandatory=False,
                     scope="global",
                     check_type="selection_apply",
                     expected=f"value={selected_value}",
@@ -366,13 +445,9 @@ def run_filter_validation(
             )
             if not apply_ok:
                 _record_reason("filter_selection_mismatch")
-                _record_reason("filter_case_failed")
-                case_info["status"] = "failed"
-                cases.append(case_info)
-                continue
 
         page1_dom = adapter.analyze_dom()
-        control_page1 = _pick_filter_control(page1_dom, goal_text) or control
+        control_page1 = _pick_filter_control(page1_dom, goal_text) or control_for_case
         selected_ok, selected_obs = _selection_reflected(control_page1, selected_value, selected_text)
         _add_check(
             FilterCheckRow(
@@ -429,11 +504,55 @@ def run_filter_validation(
 
         if max_pages <= 1:
             case_info["status"] = "passed" if (selected_ok and row_ok1) else "failed"
+            _mark_coverage(selected_value, selected_text, case_info["status"] == "passed")
             cases.append(case_info)
             continue
 
+        wait_probe_info: Dict[str, Any] = {}
+        scroll_probe_info: Dict[str, Any] = {}
         next_el = _pick_next_pagination(page1_dom)
         if next_el is None:
+            wait_result = adapter.wait_for_pagination_probe(900)
+            wait_ok = bool(wait_result.get("success")) and bool(wait_result.get("effective", True))
+            wait_probe_info = {
+                "attempted": True,
+                "success": bool(wait_result.get("success")),
+                "effective": bool(wait_result.get("effective", False)),
+                "reason_code": str(wait_result.get("reason_code") or ""),
+                "reason": str(wait_result.get("reason") or ""),
+            }
+            if wait_ok:
+                page1_dom_after_wait = adapter.analyze_dom()
+                if page1_dom_after_wait:
+                    page1_dom = page1_dom_after_wait
+                    control_after_wait = _pick_filter_control(page1_dom, goal_text)
+                    if control_after_wait is not None:
+                        control_page1 = control_after_wait
+                    next_el = _pick_next_pagination(page1_dom)
+        if next_el is None:
+            scroll_anchor = _pick_scroll_anchor(page1_dom) or control_page1
+            scroll_result = adapter.scroll_for_pagination(scroll_anchor.id)
+            scroll_ok = bool(scroll_result.get("success")) and bool(scroll_result.get("effective", True))
+            scroll_probe_info = {
+                "attempted": True,
+                "anchor_id": int(scroll_anchor.id),
+                "success": bool(scroll_result.get("success")),
+                "effective": bool(scroll_result.get("effective", False)),
+                "reason_code": str(scroll_result.get("reason_code") or ""),
+                "reason": str(scroll_result.get("reason") or ""),
+            }
+            if scroll_ok:
+                page1_dom_after_scroll = adapter.analyze_dom()
+                if page1_dom_after_scroll:
+                    page1_dom = page1_dom_after_scroll
+                    control_after_scroll = _pick_filter_control(page1_dom, goal_text)
+                    if control_after_scroll is not None:
+                        control_page1 = control_after_scroll
+                    next_el = _pick_next_pagination(page1_dom)
+        if next_el is None:
+            pagination_diag = _collect_pagination_diagnostics(page1_dom)
+            pagination_diag["wait_probe"] = wait_probe_info or {"attempted": False}
+            pagination_diag["scroll_probe"] = scroll_probe_info or {"attempted": False}
             _add_check(
                 FilterCheckRow(
                     check_id=f"case_{case_idx}_pagination_persistence",
@@ -444,7 +563,7 @@ def run_filter_validation(
                     check_type="pagination_persistence",
                     expected="다음 페이지 이동 후 선택 유지",
                     observed="페이지네이션 컨트롤 없음",
-                    evidence={},
+                    evidence=pagination_diag,
                     action="click",
                     input_value="다음 페이지",
                 )
@@ -466,6 +585,7 @@ def run_filter_validation(
             )
             _record_reason("filter_pagination_not_available")
             case_info["status"] = "passed" if (selected_ok and row_ok1) else "failed"
+            _mark_coverage(selected_value, selected_text, case_info["status"] == "passed")
             cases.append(case_info)
             continue
 
@@ -533,11 +653,51 @@ def run_filter_validation(
             if row.check_id.startswith(f"case_{case_idx}_")
         )
         case_info["status"] = "failed" if mandatory_failed else "passed"
+        _mark_coverage(selected_value, selected_text, case_info["status"] == "passed")
         if case_info["status"] == "passed":
             _record_reason("filter_case_passed")
         else:
             _record_reason("filter_case_failed")
         cases.append(case_info)
+
+    missing_required = [val for val in required_map.keys() if val not in covered_required]
+    if missing_required:
+        _record_reason("filter_goal_incomplete")
+        _add_check(
+            FilterCheckRow(
+                check_id="goal_option_coverage",
+                name="목표 옵션 커버리지",
+                status="skipped",
+                mandatory=False,
+                scope="global",
+                check_type="goal_coverage",
+                expected=f"{len(required_map)}개 옵션 검증 완료",
+                observed=f"{len(covered_required)}/{len(required_map)} 완료",
+                evidence={
+                    "required": [{"value": v, "text": required_map.get(v, "")} for v in required_map.keys()],
+                    "covered": sorted(list(covered_required)),
+                    "missing": missing_required,
+                },
+            )
+        )
+    else:
+        _add_check(
+            FilterCheckRow(
+                check_id="goal_option_coverage",
+                name="목표 옵션 커버리지",
+                status="passed",
+                mandatory=False,
+                scope="global",
+                check_type="goal_coverage",
+                expected=f"{len(required_map)}개 옵션 검증 완료",
+                observed=f"{len(covered_required)}/{len(required_map)} 완료",
+                evidence={
+                    "required": [{"value": v, "text": required_map.get(v, "")} for v in required_map.keys()],
+                    "covered": sorted(list(covered_required)),
+                    "missing": [],
+                },
+            )
+        )
 
     report = _build_report(
         checks=checks,
@@ -546,8 +706,17 @@ def run_filter_validation(
         pages_checked=pages_checked,
         reason_counter=reason_counter,
         strict_mandatory=strict_mandatory,
+        required_option_count=len(required_map),
+        covered_option_count=len(covered_required),
     )
-    return report.to_dict()
+    report_dict = report.to_dict()
+    report_dict["required_options"] = [{"value": k, "text": v} for k, v in required_map.items()]
+    report_dict["missing_required_options"] = [
+        {"value": v, "text": required_map.get(v, "")}
+        for v in missing_required
+    ]
+    report_dict["contract_used"] = bool(isinstance(validation_contract, dict))
+    return report_dict
 
 
 def _build_report(
@@ -558,6 +727,8 @@ def _build_report(
     pages_checked: int,
     reason_counter: Dict[str, int],
     strict_mandatory: bool,
+    required_option_count: int,
+    covered_option_count: int,
 ) -> FilterValidationReport:
     rows = [row.to_dict(step=i + 1) for i, row in enumerate(checks)]
     total = len(rows)
@@ -571,6 +742,11 @@ def _build_report(
     )
     success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
     strict_failed = bool(strict_mandatory and failed_mandatory > 0)
+    goal_satisfied = bool(
+        (not strict_failed)
+        and int(required_option_count) > 0
+        and int(covered_option_count) >= int(required_option_count)
+    )
     summary = FilterValidationSummary(
         goal_type="filter_validation_semantic",
         total_checks=total,
@@ -580,10 +756,13 @@ def _build_report(
         failed_mandatory_checks=failed_mandatory,
         success_rate=success_rate,
         strict_failed=strict_failed,
+        goal_satisfied=goal_satisfied,
+        required_option_count=int(required_option_count),
+        covered_option_count=int(covered_option_count),
     )
     return FilterValidationReport(
         mode="filter_semantic_v2",
-        success=not strict_failed,
+        success=goal_satisfied,
         summary=summary,
         checks=rows,
         rules_used=sorted(set(rules_used)),
@@ -625,6 +804,67 @@ def _pick_filter_control(dom: List[DOMElement], goal_text: str) -> Optional[DOME
     return best[1] if best else None
 
 
+def _pick_filter_control_for_option(
+    *,
+    dom: List[DOMElement],
+    goal_text: str,
+    selected_value: str,
+    selected_text: str,
+    required_map: Dict[str, str],
+) -> Optional[DOMElement]:
+    goal_norm = _normalize(goal_text)
+    selected_value_norm = _normalize(selected_value)
+    selected_text_norm = _normalize(selected_text)
+    required_values = {_normalize(k) for k in required_map.keys() if str(k or "").strip()}
+    required_texts = {_normalize(v) for v in required_map.values() if str(v or "").strip()}
+    best: Optional[Tuple[float, DOMElement]] = None
+    for el in dom:
+        if _normalize(el.tag) != "select":
+            continue
+        options = el.options if isinstance(el.options, list) else []
+        if len(options) < 2:
+            continue
+        if not bool(el.is_visible) or not bool(el.is_enabled):
+            continue
+        value_set: set[str] = set()
+        text_set: set[str] = set()
+        for item in options:
+            if not isinstance(item, dict):
+                continue
+            value_set.add(_normalize(item.get("value")))
+            text_set.add(_normalize(item.get("text")))
+        if not value_set and not text_set:
+            continue
+
+        blob = " ".join(
+            [
+                _normalize(el.text),
+                _normalize(el.aria_label),
+                _normalize(el.title),
+                _normalize(el.class_name),
+                _normalize(el.placeholder),
+            ]
+        )
+        score = 0.0
+        if any(token in blob for token in ("필터", "filter", "분류", "category", "정렬", "sort", "학점", "credit")):
+            score += 2.0
+        if any(token in goal_norm for token in ("필터", "filter", "학점", "credit")):
+            score += 1.2
+        if selected_value_norm and selected_value_norm in value_set:
+            score += 4.5
+        if selected_text_norm and selected_text_norm in text_set:
+            score += 4.5
+        if required_values:
+            score += 1.2 * float(len(value_set & required_values))
+        if required_texts:
+            score += 1.2 * float(len(text_set & required_texts))
+        if any("학점" in str(opt.get("text") or "") for opt in options if isinstance(opt, dict)):
+            score += 1.8
+        if best is None or score > best[0]:
+            best = (score, el)
+    return best[1] if best else None
+
+
 def _collect_option_cases(control: DOMElement) -> List[Dict[str, str]]:
     out: List[Dict[str, str]] = []
     seen: set[str] = set()
@@ -642,6 +882,123 @@ def _collect_option_cases(control: DOMElement) -> List[Dict[str, str]]:
         if any(token in lowered for token in ("전체", "all", "선택", "default")):
             continue
         out.append({"value": value, "text": text})
+    return out
+
+
+def _derive_required_options(goal_text: str, options: List[Dict[str, str]]) -> Dict[str, str]:
+    required: Dict[str, str] = {}
+    goal_norm = _normalize(goal_text)
+    if not options:
+        return required
+
+    # explicit target values in goal text (e.g., "1,2,3 학점")
+    # 케이스 1) "1학점 2학점 3학점"
+    explicit_credits = {int(m.group(1)) for m in re.finditer(r"(\d{1,2})\s*학점", goal_text or "")}
+    # 케이스 2) "1,2,3 학점", "1/2/3 학점"
+    for seq in re.finditer(r"((?:\d{1,2}\s*[,/]\s*)+\d{1,2})\s*학점", goal_text or ""):
+        chunk = str(seq.group(1) or "")
+        for n in re.findall(r"\d{1,2}", chunk):
+            try:
+                explicit_credits.add(int(n))
+            except Exception:
+                continue
+    if not explicit_credits:
+        explicit_credits = {int(m.group(1)) for m in re.finditer(r"(?<!\d)([1-9]|1\d|2\d)(?!\d)", goal_text or "")}
+
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not value:
+            continue
+        if explicit_credits:
+            credit = _extract_credit(text) or _extract_credit(value)
+            if credit is not None and credit in explicit_credits:
+                required[value] = text
+
+    if required:
+        return required
+
+    # credit filter goal이면 발견된 학점 옵션 전체를 요구
+    if "학점" in goal_norm or "credit" in goal_norm:
+        for item in options:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            text = str(item.get("text") or "").strip()
+            if value and (_extract_credit(text) is not None or _extract_credit(value) is not None):
+                required[value] = text
+        if required:
+            return required
+
+    # generic fallback: 기본적으로 현재 옵션 풀 전체 검증
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if value:
+            required[value] = text
+    return required
+
+
+def _build_required_map_from_contract(
+    contract: Any,
+    options: List[Dict[str, str]],
+) -> Dict[str, str]:
+    if not isinstance(contract, dict):
+        return {}
+    raw_required = contract.get("required_options")
+    if not isinstance(raw_required, list):
+        return {}
+    option_rows: List[Tuple[str, str]] = []
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if value:
+            option_rows.append((value, text))
+    if not option_rows:
+        return {}
+
+    out: Dict[str, str] = {}
+    for item in raw_required:
+        if not isinstance(item, dict):
+            continue
+        req_val = str(item.get("value") or "").strip()
+        req_text = str(item.get("text") or "").strip()
+        req_credit = _extract_credit(str(item.get("credit") or "")) or _extract_credit(req_text) or _extract_credit(req_val)
+
+        # 1) value exact match
+        if req_val:
+            for val, txt in option_rows:
+                if val == req_val:
+                    out[val] = txt
+                    break
+            if req_val in out:
+                continue
+
+        # 2) text exact/contains match
+        if req_text:
+            req_norm = _normalize(req_text)
+            for val, txt in option_rows:
+                txt_norm = _normalize(txt)
+                if txt_norm == req_norm or req_norm in txt_norm or txt_norm in req_norm:
+                    out[val] = txt
+                    break
+            if any(_normalize(v) == req_norm for v in out.values()):
+                continue
+
+        # 3) semantic credit match
+        if req_credit is not None:
+            for val, txt in option_rows:
+                credit = _extract_credit(txt) or _extract_credit(val)
+                if credit is not None and int(credit) == int(req_credit):
+                    out[val] = txt
+                    break
+
     return out
 
 
@@ -714,6 +1071,9 @@ def _collect_result_rows(dom: List[DOMElement]) -> List[str]:
 
 def _pick_next_pagination(dom: List[DOMElement]) -> Optional[DOMElement]:
     candidates: List[Tuple[float, DOMElement]] = []
+    numeric_candidates: List[Tuple[int, float, DOMElement]] = []
+    icon_geo_candidates: List[Tuple[float, DOMElement]] = []
+    current_numeric_pages: set[int] = set()
     for el in dom:
         if not bool(el.is_visible) or not bool(el.is_enabled):
             continue
@@ -735,8 +1095,131 @@ def _pick_next_pagination(dom: List[DOMElement]) -> Optional[DOMElement]:
             score += 0.8
         if score > 0.5:
             candidates.append((score, el))
+
+        # Fallback: 숫자 페이지 버튼(예: 1,2,3) 기반 추론
+        raw_text = str(el.text or "").strip()
+        m = re.fullmatch(r"\s*(\d{1,3})\s*", raw_text)
+        if m:
+            try:
+                page_num = int(m.group(1))
+            except Exception:
+                page_num = -1
+            if page_num > 0:
+                local_score = 0.5
+                if "page" in blob or "pagination" in blob:
+                    local_score += 1.0
+                numeric_candidates.append((page_num, local_score, el))
+                if any(tok in blob for tok in ("active", "current", "selected", "aria-current", "현재", "선택")):
+                    current_numeric_pages.add(page_num)
+
+        # Icon-only pagination fallback (mobile/compact UIs)
+        box = el.bounding_box if isinstance(el.bounding_box, dict) else {}
+        try:
+            cx = float(box.get("center_x", 0.0) or 0.0)
+            cy = float(box.get("center_y", 0.0) or 0.0)
+            w = float(box.get("width", 0.0) or 0.0)
+            h = float(box.get("height", 0.0) or 0.0)
+        except Exception:
+            cx = cy = w = h = 0.0
+        if cx > 0 and cy > 0 and w >= 20 and h >= 20 and w <= 140 and h <= 100:
+            raw_text = str(el.text or "").strip()
+            raw_text_norm = _normalize(raw_text)
+            looks_like_next_icon = (
+                raw_text_norm in {"", ">", "›", "»", "→", "다음", "next"}
+                or any(tok in blob for tok in ("next", "다음", "chevron-right", "arrow-right", "paginate", "pagination"))
+            )
+            looks_like_prev = (
+                raw_text_norm in {"<", "‹", "«", "←", "이전", "prev", "previous", "back"}
+                or any(tok in blob for tok in ("prev", "previous", "back", "이전", "chevron-left", "arrow-left"))
+            )
+            if looks_like_next_icon and not looks_like_prev:
+                # bottom-right preference
+                geo_score = (cy * 2.0) + (cx * 0.35)
+                icon_geo_candidates.append((geo_score, el))
     candidates.sort(key=lambda x: x[0], reverse=True)
-    return candidates[0][1] if candidates else None
+    if candidates:
+        return candidates[0][1]
+
+    if not numeric_candidates:
+        return None
+
+    # 현재 페이지 추정치가 있으면 그 다음 숫자를 우선
+    if current_numeric_pages:
+        current = max(current_numeric_pages)
+        forward = [item for item in numeric_candidates if item[0] > current]
+        if forward:
+            forward.sort(key=lambda x: (x[0], -x[1]))
+            return forward[0][2]
+
+    # 현재 페이지를 모르면 2페이지를 우선(없으면 가장 작은 숫자 다음 값)
+    numeric_candidates.sort(key=lambda x: (x[0], -x[1]))
+    for page_num, _, el in numeric_candidates:
+        if page_num == 2:
+            return el
+    if len(numeric_candidates) >= 2:
+        return numeric_candidates[1][2]
+    if icon_geo_candidates:
+        icon_geo_candidates.sort(key=lambda x: x[0], reverse=True)
+        return icon_geo_candidates[0][1]
+    return None
+
+
+def _pick_scroll_anchor(dom: List[DOMElement]) -> Optional[DOMElement]:
+    best: Optional[Tuple[float, DOMElement]] = None
+    for el in dom:
+        box = el.bounding_box if isinstance(el.bounding_box, dict) else {}
+        try:
+            cy = float(box.get("center_y", 0.0) or 0.0)
+            h = float(box.get("height", 0.0) or 0.0)
+        except Exception:
+            continue
+        if cy <= 0.0 or h <= 0.0:
+            continue
+        blob = _normalize(" ".join([el.tag or "", el.role or "", el.class_name or "", el.text or ""]))
+        score = cy
+        if any(tok in blob for tok in ("row", "listitem", "card", "item", "subject", "course", "lecture", "li", "tr")):
+            score += 120.0
+        if best is None or score > best[0]:
+            best = (score, el)
+    return best[1] if best else None
+
+
+def _collect_pagination_diagnostics(dom: List[DOMElement]) -> Dict[str, Any]:
+    button_like = 0
+    next_keyword = 0
+    numeric_pages = 0
+    samples: List[Dict[str, Any]] = []
+    for el in dom:
+        tag = _normalize(el.tag)
+        role = _normalize(el.role)
+        if tag not in {"a", "button"} and role not in {"button", "link", "tab"}:
+            continue
+        button_like += 1
+        text = str(el.text or "").strip()
+        aria = str(el.aria_label or "").strip()
+        title = str(el.title or "").strip()
+        blob = _normalize(" ".join([text, aria, title, el.class_name or ""]))
+        if any(tok in blob for tok in ("다음", "next", "다음페이지", "next page", "›", "»", "arrow-right", "chevron-right")):
+            next_keyword += 1
+        if re.fullmatch(r"\s*\d{1,3}\s*", text):
+            numeric_pages += 1
+        if len(samples) < 8:
+            samples.append(
+                {
+                    "id": int(el.id),
+                    "tag": tag,
+                    "role": role,
+                    "text": text[:60],
+                    "enabled": bool(el.is_enabled),
+                    "visible": bool(el.is_visible),
+                }
+            )
+    return {
+        "button_like_count": button_like,
+        "next_keyword_count": next_keyword,
+        "numeric_page_count": numeric_pages,
+        "samples": samples,
+    }
 
 
 def _normalize(value: Any) -> str:
@@ -771,3 +1254,19 @@ def _extract_row_credits(text: str) -> List[int]:
             continue
     return out
 
+
+def _is_noise_row_for_credit(text: str) -> bool:
+    row = str(text or "").strip()
+    if not row:
+        return True
+    norm = _normalize(row)
+    # wishlist/summary/target-credit controls are not subject result rows
+    if any(token in norm for token in ("위시리스트", "목표 학점", "총 0학점", "권장")):
+        return True
+    if "총 " in norm and "학점" in norm and "강의" not in norm and "교과" not in norm:
+        return True
+    credits = _extract_row_credits(row)
+    if len(set(credits)) >= 4:
+        # option list-like rows (e.g., 12~24학점 selector text) should be excluded
+        return True
+    return False
