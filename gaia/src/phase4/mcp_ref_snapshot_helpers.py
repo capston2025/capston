@@ -89,40 +89,41 @@ def _is_close_intent_ref(meta: Dict[str, Any]) -> bool:
     if not isinstance(meta, dict):
         return False
     attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
-    text = " ".join(
-        [
-            str(meta.get("text") or ""),
-            str(meta.get("selector") or ""),
-            str(meta.get("full_selector") or ""),
-            str(attrs.get("aria-label") or ""),
-            str(attrs.get("title") or ""),
-            str(attrs.get("class") or ""),
-            str(attrs.get("role") or ""),
-            str(attrs.get("type") or ""),
-        ]
-    ).strip().lower()
-    if not text:
-        return False
-    close_tokens = [
-        "close",
-        "dismiss",
-        "cancel",
-        "modal-close",
-        "dialog-close",
-        "aria-label=\"close\"",
-        "aria-label='close'",
-        "닫기",
-        "취소",
-        "나가기",
-    ]
     visible = str(meta.get("text") or "").strip()
+    visible_l = visible.lower()
+    aria_label = str(attrs.get("aria-label") or "").strip()
+    aria_l = aria_label.lower()
+    title = str(attrs.get("title") or "").strip()
+    title_l = title.lower()
+    class_name = str(attrs.get("class") or "").strip().lower()
+    element_id = str(attrs.get("id") or meta.get("id") or "").strip().lower()
     is_x_like_text = visible in {"x", "X", "✕", "✖", "×"}
-    if any(token in text for token in close_tokens):
+
+    # 닫기 라벨/타이틀의 명시 신호
+    explicit_korean_close = any(
+        token in f"{visible} {aria_label} {title}"
+        for token in ("닫기", "취소", "나가기")
+    )
+    explicit_english_close = bool(
+        re.search(r"\b(close|dismiss|cancel|exit)\b", f"{visible_l} {aria_l} {title_l}")
+    )
+    class_close_hint = bool(
+        re.search(
+            r"(^|[-_\\s])(close|dismiss|modal-close|dialog-close|btn-close|icon-close)($|[-_\\s])",
+            class_name,
+        )
+        or re.search(
+            r"(^|[-_\\s])(close|dismiss|modal-close|dialog-close)($|[-_\\s])",
+            element_id,
+        )
+    )
+
+    if explicit_korean_close or explicit_english_close or class_close_hint:
         if is_x_like_text:
             # "X" 텍스트 + class/selector에 close 토큰 → soft close
             # aria-label/title이 명시적으로 close를 포함할 때만 hard close
-            explicit_label = str(attrs.get("aria-label") or "").strip().lower()
-            explicit_title = str(attrs.get("title") or "").strip().lower()
+            explicit_label = aria_l
+            explicit_title = title_l
             has_explicit_close = (
                 any(kw in explicit_label for kw in ("close", "닫기", "dismiss"))
                 or any(kw in explicit_title for kw in ("close", "닫기", "dismiss"))

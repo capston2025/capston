@@ -52,6 +52,13 @@ class _PendingIntervention:
     response_text: str = ""
 
 
+@dataclass(slots=True)
+class _ActiveRun:
+    chat_id: int
+    raw_command: str
+    started_at: float
+
+
 class _BufferedSink:
     def __init__(self) -> None:
         self.lines: list[str] = []
@@ -218,6 +225,9 @@ class _TelegramBridge:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._pending_interventions: dict[int, _PendingIntervention] = {}
         self._pending_lock = threading.Lock()
+        self._active_runs: dict[int, _ActiveRun] = {}
+        self._queued_count_by_chat: dict[int, int] = {}
+        self._state_lock = threading.Lock()
         self.pairing = _PairingState(
             path=Path(config.pairing_file),
             configured_admins=config.allowlist,
@@ -727,11 +737,78 @@ class _TelegramBridge:
 
         return _callback
 
+    @staticmethod
+    def _looks_like_live_status_query(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
+        if not normalized:
+            return False
+        tokens = (
+            "지금뭐하고있어",
+            "뭐하고있어",
+            "현재뭐해",
+            "현재상태",
+            "진행상황",
+            "어디까지했어",
+            "상태어때",
+            "whatyoudoing",
+            "currentstatus",
+        )
+        return any(token in normalized for token in tokens)
+
+    def _format_live_status(self, chat_id: int) -> str:
+        with self._pending_lock:
+            pending = self._pending_interventions.get(chat_id)
+
+        if pending is not None:
+            kind = pending.kind or "input"
+            question = str(pending.question or "추가 입력 대기 중")
+            return (
+                "현재 상태\n"
+                f"- 추가 입력 대기 중 ({kind})\n"
+                f"- 요청 내용: {question}\n"
+                "- 응답을 보내면 실행이 계속됩니다."
+            )
+
+        with self._state_lock:
+            active = self._active_runs.get(chat_id)
+            queued = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
+
+        if active is not None:
+            elapsed = max(0, int(time.time() - active.started_at))
+            cmd = (active.raw_command or "").strip()
+            if len(cmd) > 120:
+                cmd = cmd[:117] + "..."
+            return (
+                "현재 상태\n"
+                "- 실행 중\n"
+                f"- 요청: {cmd}\n"
+                f"- 경과: {elapsed}초\n"
+                f"- 대기열: {queued}건"
+            )
+
+        if queued > 0:
+            return (
+                "현재 상태\n"
+                "- 대기 중\n"
+                f"- 대기열: {queued}건"
+            )
+
+        return "현재 상태\n- 실행 중인 작업이 없습니다."
+
     async def _worker_loop(self, application) -> None:
         while True:
             item = await self.queue.get()
             if item is None:
                 return
+            with self._state_lock:
+                queued_now = int(self._queued_count_by_chat.get(item.chat_id, 0) or 0)
+                if queued_now > 0:
+                    self._queued_count_by_chat[item.chat_id] = queued_now - 1
+                self._active_runs[item.chat_id] = _ActiveRun(
+                    chat_id=item.chat_id,
+                    raw_command=item.raw_command,
+                    started_at=time.time(),
+                )
             sink = _BufferedSink()
             try:
                 intervention_cb = self._build_intervention_callback(
@@ -801,6 +878,9 @@ class _TelegramBridge:
                     f"명령 실행 중 오류: {exc}",
                     item.reply_to_message_id,
                 )
+            finally:
+                with self._state_lock:
+                    self._active_runs.pop(item.chat_id, None)
 
     async def _normalize_document_command(self, message, context) -> str:
         raw = (message.text or message.caption or "").strip()
@@ -1000,6 +1080,9 @@ class _TelegramBridge:
         with self._pending_lock:
             pending = self._pending_interventions.get(chat_id)
         if pending is not None:
+            if self._looks_like_live_status_query(raw):
+                await message.reply_text(self._format_live_status(chat_id))
+                return
             lowered = raw.strip().lower()
             if lowered.startswith("/pair"):
                 await message.reply_text("현재 실행이 추가 입력을 기다리는 중입니다. 응답 텍스트 또는 /cancel을 보내주세요.")
@@ -1022,7 +1105,14 @@ class _TelegramBridge:
             )
             return
 
+        if self._looks_like_live_status_query(raw):
+            await message.reply_text(self._format_live_status(chat_id))
+            return
+
         position = self.queue.qsize() + 1
+        with self._state_lock:
+            queued_now = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
+            self._queued_count_by_chat[chat_id] = queued_now + 1
         await self.queue.put(
             _CommandEnvelope(
                 chat_id=chat_id,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -36,6 +37,7 @@ class HubContext:
     session_id: str = WORKSPACE_DEFAULT
     session_new: bool = False
     last_snapshot_id: str = ""
+    steering_policy: Dict[str, Any] = field(default_factory=dict)
     pending_user_input: Dict[str, Any] = field(default_factory=dict)
     pending_user_response: Dict[str, Any] = field(default_factory=dict)
     on_session_update: Optional[Callable[["HubContext"], None]] = None
@@ -69,6 +71,7 @@ class TerminalSink:
 _MCP_HOST_PROCESS: Optional[subprocess.Popen[str]] = None
 _MCP_HOST_LOG_FILE: Optional[TextIO] = None
 _MCP_HOST_CLEANUP_REGISTERED = False
+_CHAT_ROUTER_CLIENT: Any | None = None
 
 
 def _help_text() -> str:
@@ -99,6 +102,10 @@ def _help_text() -> str:
         "/session reuse <key>             세션 키 재사용/전환\n"
         "/handoff                         pending 사용자 요청 조회\n"
         "/handoff key=value ...           pending 요청 응답 등록\n"
+        "/steer <자연어 지시>             자연어 스티어링 정책 설정\n"
+        "/steer status                    현재 스티어링 정책 조회\n"
+        "/steer clear                     스티어링 정책 해제\n"
+        "/cancel                          pending 개입 요청 취소 응답 등록\n"
         "/status                          현재 세션 상태\n"
         "/stop                            실행 중단 요청 플래그 설정\n"
         "/memory stats                    도메인 KB 통계\n"
@@ -332,6 +339,19 @@ def _as_int(value: Any) -> int:
         return 0
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _build_reason_code_summary(detail: Dict[str, Any]) -> Dict[str, int]:
     summary = detail.get("reason_code_summary")
     if isinstance(summary, dict):
@@ -482,6 +502,408 @@ def _parse_kv_tokens(raw: str) -> Dict[str, str]:
     return out
 
 
+def _looks_like_steering_text(text: str) -> bool:
+    norm = str(text or "").strip().lower()
+    if not norm:
+        return False
+    hard_tokens = (
+        "하지마",
+        "하지 말",
+        "금지",
+        "누르지마",
+        "누르지 말",
+        "제외",
+        "빼고",
+    )
+    soft_tokens = (
+        "우선",
+        "먼저",
+        "만 진행",
+        "만 해",
+        "prefer",
+        "forbid",
+        "스텝 안",
+        "단계 안",
+    )
+    return any(token in norm for token in hard_tokens) or any(token in norm for token in soft_tokens)
+
+
+def _extract_step_budget(text: str, default: int = 8) -> int:
+    value = int(default)
+    patterns = (
+        r"(\d+)\s*(?:스텝|단계|step|steps)",
+        r"(?:within|in)\s+(\d+)\s*(?:steps?)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            value = int(match.group(1))
+        except Exception:
+            continue
+        break
+    return max(3, min(20, int(value)))
+
+
+def _detect_steering_scope(text: str) -> str:
+    norm = str(text or "").strip().lower()
+    if not norm:
+        return "next_n_steps"
+    if any(token in norm for token in ("이번 목표", "이 목표", "current goal", "for this goal")):
+        return "current_goal"
+    if any(token in norm for token in ("이번 단계", "현재 단계", "current phase", "this phase")):
+        return "current_phase"
+    if any(token in norm for token in ("이 사이트", "이 도메인", "same origin", "same site")):
+        return "current_origin"
+    return "next_n_steps"
+
+
+def _compile_steering_policy(raw_text: str, context: HubContext) -> Dict[str, Any]:
+    text = str(raw_text or "").strip()
+    norm = text.lower()
+    ttl_steps = _extract_step_budget(norm, default=8)
+    scope = _detect_steering_scope(text)
+
+    neg_tokens = ("하지마", "하지 말", "금지", "누르지마", "누르지 말", "말고", "제외", "빼고", "하지말")
+    remove_tokens = ("제거", "삭제", "비우", "remove", "delete", "clear", "empty")
+    quick_add_tokens = ("바로추가", "바로 추가", "quick add", "add now")
+    wishlist_tokens = ("위시리스트", "wishlist")
+
+    rules: list[Dict[str, Any]] = []
+    assertions: list[Dict[str, Any]] = []
+
+    if any(token in norm for token in quick_add_tokens) and any(token in norm for token in neg_tokens):
+        rules.append(
+            {
+                "type": "forbid_action_tag",
+                "tag": "intent.quick_add",
+                "enforcement": "hard",
+            }
+        )
+
+    if any(token in norm for token in remove_tokens):
+        rules.append(
+            {
+                "type": "prefer_action_tag",
+                "tag": "intent.remove_item",
+                "enforcement": "soft",
+            }
+        )
+
+    if any(token in norm for token in wishlist_tokens):
+        rules.append(
+            {
+                "type": "prefer_target_text",
+                "need": ["위시리스트", "wishlist"],
+                "enforcement": "soft",
+            }
+        )
+
+    # 간단 DSL: "금지: 바로추가, 클릭" / "우선: 제거"
+    action_tag_map: Dict[str, str] = {
+        "바로추가": "intent.quick_add",
+        "quickadd": "intent.quick_add",
+        "quick add": "intent.quick_add",
+        "제거": "intent.remove_item",
+        "삭제": "intent.remove_item",
+        "비우기": "intent.remove_item",
+        "click": "intent.click",
+        "클릭": "intent.click",
+        "select": "intent.select",
+        "선택": "intent.select",
+        "입력": "intent.fill",
+        "fill": "intent.fill",
+        "scroll": "intent.scroll",
+        "스크롤": "intent.scroll",
+        "wait": "intent.wait",
+        "대기": "intent.wait",
+    }
+    for pattern, enforcement in (
+        (r"(?:금지|forbid)\s*[:=]\s*([^\n]+)", "hard"),
+        (r"(?:우선|prefer)\s*[:=]\s*([^\n]+)", "soft"),
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw_items = str(match.group(1) or "")
+        for part in re.split(r"[,/|]+", raw_items):
+            token = str(part or "").strip().lower()
+            if not token:
+                continue
+            tag = action_tag_map.get(token)
+            if not tag:
+                continue
+            rule_type = "forbid_action_tag" if enforcement == "hard" else "prefer_action_tag"
+            rules.append(
+                {
+                    "type": rule_type,
+                    "tag": tag,
+                    "enforcement": enforcement,
+                }
+            )
+
+    if "0개" in norm or "0 학점" in norm or "0학점" in norm or any(token in norm for token in ("비우", "empty", "clear")):
+        assertions.append(
+            {
+                "type": "text_any",
+                "need": ["총 0개", "0학점", "위시리스트가 비어있어요"],
+                "where": "page",
+            }
+        )
+    if re.search(r"count\s*==\s*0", norm):
+        assertions.append(
+            {
+                "type": "text_any",
+                "need": ["총 0개", "0개 과목", "0학점"],
+                "where": "page",
+            }
+        )
+    if re.search(r"(modal_open|모달)\s*==\s*(false|0)", norm):
+        assertions.append(
+            {
+                "type": "modal_open",
+                "value": False,
+            }
+        )
+
+    # 중복 제거
+    if rules:
+        uniq_rules: list[Dict[str, Any]] = []
+        seen_rules: set[str] = set()
+        for row in rules:
+            key = json.dumps(
+                {
+                    "type": row.get("type"),
+                    "tag": row.get("tag"),
+                    "need": row.get("need"),
+                    "enforcement": row.get("enforcement"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if key in seen_rules:
+                continue
+            seen_rules.add(key)
+            uniq_rules.append(row)
+        rules = uniq_rules
+
+    if assertions:
+        uniq_assertions: list[Dict[str, Any]] = []
+        seen_assertions: set[str] = set()
+        for row in assertions:
+            key = json.dumps(
+                {
+                    "type": row.get("type"),
+                    "need": row.get("need"),
+                    "where": row.get("where"),
+                    "value": row.get("value"),
+                    "pattern": row.get("pattern"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if key in seen_assertions:
+                continue
+            seen_assertions.add(key)
+            uniq_assertions.append(row)
+        assertions = uniq_assertions
+
+    confidence = 0.55
+    if rules:
+        confidence += min(0.35, 0.1 * len(rules))
+    if assertions:
+        confidence += 0.1
+    confidence = max(0.2, min(0.95, round(confidence, 2)))
+
+    bound_origin = ""
+    if scope == "current_origin":
+        parsed = urlparse(context.url or "")
+        if parsed.scheme and parsed.netloc:
+            bound_origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    policy = {
+        "version": "steering.v1",
+        "raw_text": text,
+        "scope": scope,
+        "ttl_steps": ttl_steps,
+        "ttl_remaining": ttl_steps,
+        "priority": "normal",
+        "rules": rules,
+        "assertions": assertions,
+        "bound_goal_id": "",
+        "bound_phase": "",
+        "bound_origin": bound_origin,
+        "compile_confidence": confidence,
+        "compiled_at": int(time.time()),
+    }
+    return policy
+
+
+def _format_steering_status(policy: Dict[str, Any]) -> str:
+    if not isinstance(policy, dict) or not policy:
+        return "활성 스티어링 정책이 없습니다."
+    lines: list[str] = []
+    lines.append("활성 스티어링 정책")
+    lines.append(f"- scope: {policy.get('scope') or '-'}")
+    lines.append(f"- ttl_steps: {policy.get('ttl_steps')}")
+    lines.append(f"- ttl_remaining: {policy.get('ttl_remaining')}")
+    lines.append(f"- priority: {policy.get('priority') or '-'}")
+    lines.append(f"- confidence: {policy.get('compile_confidence')}")
+    lines.append(f"- raw: {policy.get('raw_text') or '-'}")
+    rules = policy.get("rules") if isinstance(policy.get("rules"), list) else []
+    assertions = policy.get("assertions") if isinstance(policy.get("assertions"), list) else []
+    lines.append(f"- rules: {len(rules)}")
+    for row in rules[:6]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            f"  - {row.get('type')} ({row.get('enforcement')}) "
+            f"{row.get('tag') or row.get('need') or ''}"
+        )
+    lines.append(f"- assertions: {len(assertions)}")
+    for row in assertions[:4]:
+        if not isinstance(row, dict):
+            continue
+        lines.append(f"  - {row.get('type')} {row.get('need') or ''}")
+    return "\n".join(lines)
+
+
+def _get_chat_router_client() -> Any | None:
+    global _CHAT_ROUTER_CLIENT
+    if _CHAT_ROUTER_CLIENT is not None:
+        return _CHAT_ROUTER_CLIENT
+    try:
+        from gaia.src.phase4.llm_vision_client import get_vision_client
+        _CHAT_ROUTER_CLIENT = get_vision_client()
+        return _CHAT_ROUTER_CLIENT
+    except Exception:
+        return None
+
+
+def _extract_json_object(text: str) -> str:
+    raw = str(text or "").strip()
+    if raw.startswith("```json"):
+        raw = raw[7:]
+    if raw.startswith("```"):
+        raw = raw[3:]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    raw = raw.strip()
+    if raw.startswith("{") and raw.endswith("}"):
+        return raw
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first != -1 and last != -1 and last > first:
+        return raw[first:last + 1].strip()
+    return raw
+
+
+def _interpret_user_message_with_llm(
+    context: HubContext,
+    text: str,
+    *,
+    pending_kind: str = "",
+) -> Dict[str, Any]:
+    if os.getenv("GAIA_CHAT_ROUTER_LLM", "1").strip().lower() in {"0", "false", "off", "no"}:
+        return {}
+    client = _get_chat_router_client()
+    if client is None:
+        return {}
+    user_text = str(text or "").strip()
+    if not user_text:
+        return {}
+    prompt = (
+        "당신은 GAIA 채팅 라우터입니다. 사용자 자연어를 실행 의도로 분류하세요.\n"
+        "반드시 JSON만 출력하세요.\n\n"
+        f"현재 pending_kind: {pending_kind or 'none'}\n"
+        f"사용자 입력: {user_text}\n\n"
+        "JSON 스키마:\n"
+        "{\n"
+        '  "intent": "run_test|steer|handoff_reply|cancel|unknown",\n'
+        '  "confidence": 0.0,\n'
+        '  "goal_text": "",\n'
+        '  "steering_text": "",\n'
+        '  "handoff": {\n'
+        '    "proceed": true,\n'
+        '    "instruction": "",\n'
+        '    "auth_mode": "",\n'
+        '    "manual_done": false,\n'
+        '    "username": "",\n'
+        '    "email": "",\n'
+        '    "password": ""\n'
+        "  }\n"
+        "}\n\n"
+        "규칙:\n"
+        "1) pending_kind가 auth/no_progress/clarification이면 기본 intent는 handoff_reply.\n"
+        "2) 중단/취소 의도면 cancel.\n"
+        "3) 사용자가 실행 지시면 run_test.\n"
+        "4) 정책 지시(금지/우선/제외/몇 스텝 안에)면 steer.\n"
+        "5) 확신이 낮으면 intent=unknown.\n"
+    )
+    try:
+        response = client.analyze_text(prompt, max_completion_tokens=700, temperature=0.0)
+        normalized = _extract_json_object(response)
+        data = json.loads(normalized)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    intent = str(data.get("intent") or "").strip().lower()
+    if intent not in {"run_test", "steer", "handoff_reply", "cancel", "unknown"}:
+        return {}
+    try:
+        confidence = float(data.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    handoff = data.get("handoff") if isinstance(data.get("handoff"), dict) else {}
+    return {
+        "intent": intent,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "goal_text": str(data.get("goal_text") or "").strip(),
+        "steering_text": str(data.get("steering_text") or "").strip(),
+        "handoff": {
+            "proceed": handoff.get("proceed"),
+            "instruction": str(handoff.get("instruction") or "").strip(),
+            "auth_mode": str(handoff.get("auth_mode") or "").strip(),
+            "manual_done": handoff.get("manual_done"),
+            "username": str(handoff.get("username") or "").strip(),
+            "email": str(handoff.get("email") or "").strip(),
+            "password": str(handoff.get("password") or "").strip(),
+        },
+    }
+
+
+def _handle_steer_command(context: HubContext, raw: str) -> CommandResult:
+    parts = raw.split(maxsplit=1)
+    if len(parts) == 1:
+        return CommandResult(
+            code=0,
+            output=(
+                "형식:\n"
+                "/steer <자연어 지시>\n"
+                "/steer status\n"
+                "/steer clear"
+            ),
+        )
+
+    arg = str(parts[1] or "").strip()
+    if not arg:
+        return CommandResult(code=2, status="error", output="스티어링 문장을 입력해주세요.")
+
+    if arg.lower() == "status":
+        return CommandResult(code=0, output=_format_steering_status(context.steering_policy))
+    if arg.lower() == "clear":
+        context.steering_policy = {}
+        _notify_session_update(context)
+        return CommandResult(code=0, output="스티어링 정책을 해제했습니다.")
+
+    policy = _compile_steering_policy(arg, context)
+    context.steering_policy = dict(policy)
+    _notify_session_update(context)
+    return CommandResult(code=0, output=_format_steering_status(policy))
+
+
 def _build_hub_intervention_callback(context: HubContext, sink: HubSink):
     def _callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         context.pending_user_input = dict(payload or {})
@@ -523,6 +945,7 @@ def _handle_session_command(context: HubContext, raw: str) -> CommandResult:
         context.session_id = allocate_session_id(context.session_key or context.workspace or WORKSPACE_DEFAULT)
         context.session_new = True
         context.last_snapshot_id = ""
+        context.steering_policy = {}
         context.pending_user_input = {}
         context.pending_user_response = {}
         _notify_session_update(context)
@@ -538,6 +961,7 @@ def _handle_session_command(context: HubContext, raw: str) -> CommandResult:
         context.session_id = loaded.mcp_session_id if loaded and loaded.mcp_session_id else key
         context.session_new = False
         context.last_snapshot_id = str(loaded.last_snapshot_id or "") if loaded else ""
+        context.steering_policy = {}
         context.pending_user_input = dict(loaded.pending_user_input) if loaded else {}
         context.pending_user_response = {}
         _notify_session_update(context)
@@ -688,12 +1112,49 @@ def _run_test(
             cb = _build_telegram_intervention_callback(context, sink)
         else:
             cb = _build_hub_intervention_callback(context, sink)
-    code, summary = run_chat_terminal_once(
-        url=context.url,
-        query=query,
-        session_id=context.session_id,
-        intervention_callback=cb,
-    )
+    prev_provider = os.getenv("GAIA_LLM_PROVIDER")
+    prev_model = os.getenv("GAIA_LLM_MODEL")
+    if str(context.provider or "").strip():
+        os.environ["GAIA_LLM_PROVIDER"] = str(context.provider).strip()
+    if str(context.model or "").strip():
+        os.environ["GAIA_LLM_MODEL"] = str(context.model).strip()
+    try:
+        code, summary = run_chat_terminal_once(
+            url=context.url,
+            query=query,
+            session_id=context.session_id,
+            steering_policy=(context.steering_policy if isinstance(context.steering_policy, dict) else None),
+            intervention_callback=cb,
+        )
+    finally:
+        if prev_provider is None:
+            os.environ.pop("GAIA_LLM_PROVIDER", None)
+        else:
+            os.environ["GAIA_LLM_PROVIDER"] = prev_provider
+        if prev_model is None:
+            os.environ.pop("GAIA_LLM_MODEL", None)
+        else:
+            os.environ["GAIA_LLM_MODEL"] = prev_model
+    if isinstance(context.steering_policy, dict) and context.steering_policy:
+        try:
+            steps_used = int(summary.get("steps") or 0) if isinstance(summary, dict) else 0
+        except Exception:
+            steps_used = 0
+        try:
+            ttl_remaining = int(
+                context.steering_policy.get("ttl_remaining")
+                if context.steering_policy.get("ttl_remaining") is not None
+                else context.steering_policy.get("ttl_steps")
+                or 0
+            )
+        except Exception:
+            ttl_remaining = 0
+        ttl_remaining = max(0, ttl_remaining - max(0, steps_used))
+        if ttl_remaining <= 0:
+            context.steering_policy = {}
+        else:
+            context.steering_policy["ttl_remaining"] = ttl_remaining
+        _notify_session_update(context)
     return code, summary
 
 
@@ -777,6 +1238,100 @@ def dispatch_command(
     line = (raw_line or "").strip()
     if not line:
         return CommandResult(code=0, status="empty")
+
+    if not line.startswith("/"):
+        pending_kind = str((context.pending_user_input or {}).get("kind") or "").strip().lower()
+        nlu = _interpret_user_message_with_llm(context, line, pending_kind=pending_kind)
+        nlu_intent = str(nlu.get("intent") or "").strip().lower()
+        try:
+            nlu_conf = float(nlu.get("confidence") or 0.0)
+        except Exception:
+            nlu_conf = 0.0
+        nlu_handoff = nlu.get("handoff") if isinstance(nlu.get("handoff"), dict) else {}
+
+        if nlu_intent == "cancel" and nlu_conf >= 0.45:
+            context.pending_user_response = {"action": "cancel", "proceed": "false"}
+            _notify_session_update(context)
+            return CommandResult(code=0, output="개입 응답을 취소로 저장했습니다.")
+
+        # pending 개입 상태에서는 자연어를 우선 handoff 응답으로 처리한다.
+        if context.pending_user_input:
+            kind = pending_kind
+            if nlu_intent == "handoff_reply" and nlu_conf >= 0.45:
+                response: Dict[str, Any] = {
+                    "action": "continue",
+                    "proceed": str(_as_bool(nlu_handoff.get("proceed"), default=True)).lower(),
+                }
+                instruction_text = str(nlu_handoff.get("instruction") or line).strip()
+                if instruction_text:
+                    response["instruction"] = instruction_text
+
+                auth_mode = str(nlu_handoff.get("auth_mode") or "").strip()
+                username = str(nlu_handoff.get("username") or "").strip()
+                email = str(nlu_handoff.get("email") or "").strip()
+                password = str(nlu_handoff.get("password") or "").strip()
+                manual_done = nlu_handoff.get("manual_done")
+                if auth_mode:
+                    response["auth_mode"] = auth_mode
+                if username:
+                    response["username"] = username
+                if email:
+                    response["email"] = email
+                if password:
+                    response["password"] = password
+                if manual_done is not None:
+                    response["manual_done"] = str(_as_bool(manual_done, default=False)).lower()
+
+                if kind in {"no_progress", "clarification"}:
+                    steer_text = str(nlu.get("steering_text") or "").strip()
+                    if steer_text or _looks_like_steering_text(line):
+                        policy = _compile_steering_policy(steer_text or line, context)
+                        context.steering_policy = dict(policy)
+                        _notify_session_update(context)
+
+                context.pending_user_response = response
+                _notify_session_update(context)
+                return CommandResult(code=0, output="개입 응답을 저장했습니다. 다음 실행에서 반영됩니다.")
+
+            lowered = line.lower()
+            if any(token in lowered for token in ("중단", "취소", "멈춰", "stop", "cancel")):
+                context.pending_user_response = {"action": "cancel", "proceed": "false"}
+                _notify_session_update(context)
+                return CommandResult(code=0, output="개입 응답을 취소로 저장했습니다.")
+
+            response: Dict[str, Any] = {"action": "continue", "proceed": "true"}
+            if kind in {"no_progress", "clarification"}:
+                response["instruction"] = line
+                if _looks_like_steering_text(line):
+                    policy = _compile_steering_policy(line, context)
+                    context.steering_policy = dict(policy)
+                    _notify_session_update(context)
+            elif kind == "auth":
+                response["instruction"] = line
+            else:
+                response["instruction"] = line
+            context.pending_user_response = response
+            _notify_session_update(context)
+            return CommandResult(code=0, output="개입 응답을 저장했습니다. 다음 실행에서 반영됩니다.")
+
+        if nlu_intent == "steer" and nlu_conf >= 0.45:
+            steer_text = str(nlu.get("steering_text") or "").strip() or line
+            policy = _compile_steering_policy(steer_text, context)
+            context.steering_policy = dict(policy)
+            _notify_session_update(context)
+            return CommandResult(code=0, output=_format_steering_status(policy))
+
+        if nlu_intent == "run_test" and nlu_conf >= 0.35:
+            goal_text = str(nlu.get("goal_text") or "").strip()
+            line = f"/test {goal_text or line}"
+
+        # 일반 입력도 스티어링 문장 패턴이면 /steer 없이 정책으로 적용
+        if not line.startswith("/") and _looks_like_steering_text(line):
+            policy = _compile_steering_policy(line, context)
+            context.steering_policy = dict(policy)
+            _notify_session_update(context)
+            return CommandResult(code=0, output=_format_steering_status(policy))
+
     if not line.startswith("/"):
         line = f"/test {line}"
 
@@ -785,6 +1340,13 @@ def dispatch_command(
     if line == "/help":
         return CommandResult(code=0, output=_help_text())
     if line == "/status":
+        steering_policy = context.steering_policy if isinstance(context.steering_policy, dict) else {}
+        ttl_steps = steering_policy.get("ttl_steps") if steering_policy else None
+        ttl_remaining = (
+            steering_policy.get("ttl_remaining")
+            if steering_policy and steering_policy.get("ttl_remaining") is not None
+            else ttl_steps
+        )
         payload = {
             "provider": context.provider,
             "model": context.model,
@@ -797,13 +1359,22 @@ def dispatch_command(
             "stop_requested": context.stop_requested,
             "session_id": context.session_id,
             "last_snapshot_id": context.last_snapshot_id,
+            "steering_active": bool(steering_policy),
+            "steering_ttl_steps": ttl_steps,
+            "steering_ttl_remaining": ttl_remaining,
             "pending_user_input": bool(context.pending_user_input),
         }
         return CommandResult(code=0, output=json.dumps(payload, ensure_ascii=False, indent=2))
     if line.startswith("/session"):
         return _handle_session_command(context, line)
+    if line.startswith("/steer"):
+        return _handle_steer_command(context, line)
     if line.startswith("/handoff"):
         return _handle_handoff_command(context, line)
+    if line == "/cancel":
+        context.pending_user_response = {"action": "cancel", "proceed": "false"}
+        _notify_session_update(context)
+        return CommandResult(code=0, output="대기 중인 개입 요청에 cancel 응답을 등록했습니다.")
     if line == "/stop":
         context.stop_requested = True
         return CommandResult(

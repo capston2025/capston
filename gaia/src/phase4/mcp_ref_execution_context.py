@@ -158,24 +158,38 @@ async def prepare_ref_action_execution_context(
         requested_snapshot if isinstance(requested_snapshot, dict) else None
     )
     value_text = str(value or "").strip().lower()
-    close_like_click = bool(
+    explicit_close_marker = bool(
         action == "click"
-        and (
-            value_text in {"__close_intent__", "close_intent", "intent:close"}
-            or
-            is_close_intent_ref_fn(requested_meta)
-            or is_modal_corner_close_candidate_fn(
-                requested_meta,
-                modal_regions_for_requested,
-            )
+        and value_text in {"__close_intent__", "close_intent", "intent:close"}
+    )
+    explicit_close_intent = bool(
+        action == "click"
+        and (explicit_close_marker or is_close_intent_ref_fn(requested_meta))
+    )
+    modal_corner_close_intent = bool(
+        action == "click"
+        and is_modal_corner_close_candidate_fn(
+            requested_meta,
+            modal_regions_for_requested,
         )
     )
-    if (
-        action == "click"
-        and (not close_like_click)
-        and _is_relaxed_modal_corner_candidate(requested_meta, modal_regions_for_requested)
-    ):
-        close_like_click = True
+    close_like_click = bool(explicit_close_intent or modal_corner_close_intent)
+    close_gate_evidence_prefetched: Optional[Dict[str, Any]] = None
+    if action == "click" and (not close_like_click):
+        relaxed_modal_corner = _is_relaxed_modal_corner_candidate(
+            requested_meta,
+            modal_regions_for_requested,
+        )
+        if relaxed_modal_corner:
+            # Relaxed corner-close는 실제 modal_open이 관측된 경우에만 승격한다.
+            # 그렇지 않으면 일반 CTA(예: 담기)가 close intent로 오분류되어
+            # modal_not_open 프리체크에 걸릴 수 있다.
+            try:
+                close_gate_evidence_prefetched = await collect_page_evidence_fn(page)
+            except Exception:
+                close_gate_evidence_prefetched = {}
+            if bool((close_gate_evidence_prefetched or {}).get("modal_open")):
+                close_like_click = True
     probe_wait_schedule: Tuple[int, ...] = (
         (350, 800, 1500, 3000, 5000) if submit_like_click else (350, 700, 1500)
     )
@@ -189,49 +203,58 @@ async def prepare_ref_action_execution_context(
         requested_meta.get("_soft_close")
         or visible_text_raw in {"x", "X", "✕", "✖", "×"}
     )
-    if close_like_click and not is_soft_close:
+    if close_like_click and not is_soft_close and explicit_close_marker:
         close_gate_evidence: Dict[str, Any]
-        try:
-            close_gate_evidence = await collect_page_evidence_fn(page)
-        except Exception:
-            close_gate_evidence = {}
+        if isinstance(close_gate_evidence_prefetched, dict):
+            close_gate_evidence = close_gate_evidence_prefetched
+        else:
+            try:
+                close_gate_evidence = await collect_page_evidence_fn(page)
+            except Exception:
+                close_gate_evidence = {}
         if not bool(close_gate_evidence.get("modal_open")):
-            reason_code = "modal_not_open"
-            attempt_logs.append(
-                {
-                    "attempt": 0,
-                    "mode": "precheck",
+            # 휴리스틱(코너 후보/완화 후보)으로만 분류된 close는
+            # modal_open이 없으면 일반 클릭으로 강등한다.
+            if not explicit_close_intent:
+                close_like_click = False
+                retry_path.append("close_demoted:modal_not_open")
+            else:
+                reason_code = "modal_not_open"
+                attempt_logs.append(
+                    {
+                        "attempt": 0,
+                        "mode": "precheck",
+                        "reason_code": reason_code,
+                        "error": "close intent requested but modal_open=false",
+                        "state_change": {
+                            "modal_open": bool(close_gate_evidence.get("modal_open")),
+                            "modal_count": int(close_gate_evidence.get("modal_count") or 0),
+                            "backdrop_count": int(
+                                close_gate_evidence.get("backdrop_count") or 0
+                            ),
+                            "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
+                        },
+                    }
+                )
+                precheck_response = {
+                    "success": False,
+                    "effective": False,
                     "reason_code": reason_code,
-                    "error": "close intent requested but modal_open=false",
+                    "reason": "닫기 대상 모달이 열려있지 않습니다. 최신 snapshot으로 재계획하세요.",
+                    "snapshot_id_used": snapshot_id,
+                    "ref_id_used": ref_id,
+                    "retry_path": retry_path,
+                    "attempt_count": 0,
                     "state_change": {
                         "modal_open": bool(close_gate_evidence.get("modal_open")),
                         "modal_count": int(close_gate_evidence.get("modal_count") or 0),
-                        "backdrop_count": int(
-                            close_gate_evidence.get("backdrop_count") or 0
-                        ),
+                        "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
                         "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
                     },
+                    "attempt_logs": attempt_logs,
+                    "current_url": page.url,
+                    "stale_recovered": stale_recovered,
                 }
-            )
-            precheck_response = {
-                "success": False,
-                "effective": False,
-                "reason_code": reason_code,
-                "reason": "닫기 대상 모달이 열려있지 않습니다. 최신 snapshot으로 재계획하세요.",
-                "snapshot_id_used": snapshot_id,
-                "ref_id_used": ref_id,
-                "retry_path": retry_path,
-                "attempt_count": 0,
-                "state_change": {
-                    "modal_open": bool(close_gate_evidence.get("modal_open")),
-                    "modal_count": int(close_gate_evidence.get("modal_count") or 0),
-                    "backdrop_count": int(close_gate_evidence.get("backdrop_count") or 0),
-                    "dialog_count": int(close_gate_evidence.get("dialog_count") or 0),
-                },
-                "attempt_logs": attempt_logs,
-                "current_url": page.url,
-                "stale_recovered": stale_recovered,
-            }
     return {
         "state_change": state_change,
         "submit_like_click": submit_like_click,

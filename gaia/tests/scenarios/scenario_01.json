@@ -1,7 +1,7 @@
 {
   "id": "SCN_001_LOGIN_MODAL_CLOSE",
   "url": "https://inuu-timetable.vercel.app/",
-  "goal": "담기 버튼 클릭 후 로그인 모달이 나타나면 닫기 동작을 검증한다.",
+  "goal": "과목 카드의 담기 버튼을 1회 클릭하고, 로그인 모달이 나타나면 X 또는 닫기 버튼으로 닫아 modal_open이 true에서 false로 바뀌는지 검증해줘. 페이지 이동은 하지마.",
   "constraints": {
     "allow_navigation": false,
     "require_ref_only": true,
