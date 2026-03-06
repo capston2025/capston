@@ -262,6 +262,11 @@ class _TelegramBridge:
     ) -> None:
         if not attachments:
             return
+        max_images = 3
+        try:
+            max_images = max(1, min(10, int(os.getenv("GAIA_TG_MAX_IMAGES_PER_RUN", "3"))))
+        except Exception:
+            max_images = 3
         photo_items: list[tuple[io.BytesIO, str]] = []
         for attachment in attachments:
             if not isinstance(attachment, dict):
@@ -278,8 +283,10 @@ class _TelegramBridge:
                 continue
             photo = io.BytesIO(binary)
             photo.name = "gaia_result.png"
-            caption = str(attachment.get("caption") or "").strip()
+            caption = str(attachment.get("caption") or attachment.get("label") or "").strip()
             photo_items.append((photo, caption))
+            if len(photo_items) >= max_images:
+                break
 
         if not photo_items:
             return
@@ -370,6 +377,10 @@ class _TelegramBridge:
     @staticmethod
     def _status_label_ko(status: Any) -> str:
         token = str(status or "").strip().lower()
+        if token in {"blocked_user_action", "blocked"}:
+            return "사용자 개입 필요"
+        if token in {"skipped_not_applicable", "skipped"}:
+            return "적용 불가"
         if token in {"ok", "success"}:
             return "성공"
         if token in {"failed", "error"}:
@@ -453,6 +464,8 @@ class _TelegramBridge:
     def _build_compact_report_payload(cls, payload_obj: Dict[str, Any]) -> Dict[str, Any]:
         payload = payload_obj if isinstance(payload_obj, dict) else {}
         validation_summary = payload.get("validation_summary")
+        validation_rail_summary = payload.get("validation_rail_summary")
+        validation_rail_cases = payload.get("validation_rail_cases")
         checks = cls._compact_validation_checks(payload.get("validation_checks"), limit=50)
         step_timeline = cls._compact_step_timeline(payload.get("step_timeline"), limit=20)
         reason_codes = payload.get("reason_code_summary")
@@ -463,6 +476,7 @@ class _TelegramBridge:
             "generated_at": int(time.time()),
             "result": {
                 "status": payload.get("status"),
+                "final_status": payload.get("final_status"),
                 "goal": payload.get("goal") or payload.get("command"),
                 "steps": payload.get("steps"),
                 "duration": payload.get("duration"),
@@ -475,6 +489,18 @@ class _TelegramBridge:
             "validation": {
                 "summary": validation_summary if isinstance(validation_summary, dict) else {},
                 "checks": checks,
+            },
+            "validation_rail": {
+                "summary": (
+                    validation_rail_summary
+                    if isinstance(validation_rail_summary, dict)
+                    else {}
+                ),
+                "cases": (
+                    validation_rail_cases[:50]
+                    if isinstance(validation_rail_cases, list)
+                    else []
+                ),
             },
             "diagnostics": {
                 "reason_code_summary": reason_codes if isinstance(reason_codes, dict) else {},
@@ -499,7 +525,7 @@ class _TelegramBridge:
             return ""
         goal = cls._truncate(payload.get("goal") or payload.get("command"), 130)
         reason = cls._truncate(payload.get("reason"), 180)
-        status_label = cls._status_label_ko(payload.get("status"))
+        status_label = cls._status_label_ko(payload.get("final_status") or payload.get("status"))
 
         steps = payload.get("steps")
         steps_text = f"{steps}단계" if steps is not None else "-"
@@ -541,6 +567,24 @@ class _TelegramBridge:
                 lines.append(f"    - {step_no}단계 | {action} | {sec_text}")
                 lines.append(f"      {reasoning}")
 
+        attachments = payload.get("attachments")
+        proof_labels: list[str] = []
+        if isinstance(attachments, list):
+            for item in attachments:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("kind") or "").strip().lower() != "image_base64":
+                    continue
+                label = cls._truncate(item.get("label") or item.get("caption"), 60)
+                if label == "-":
+                    label = "대표 실행 화면"
+                proof_labels.append(label)
+        if proof_labels:
+            lines.extend(["", "  대표 증빙"])
+            lines.append(f"    - 이미지 {len(proof_labels)}건 첨부")
+            for label in proof_labels[:3]:
+                lines.append(f"    - {label}")
+
         validation_summary = payload.get("validation_summary")
         if isinstance(validation_summary, dict) and validation_summary:
             total = validation_summary.get("total_checks", 0)
@@ -560,6 +604,30 @@ class _TelegramBridge:
             )
             if goal_satisfied is not None:
                 lines.append(f"    - 목표 충족 {'예' if bool(goal_satisfied) else '아니오'}")
+        rail_summary = payload.get("validation_rail_summary")
+        if isinstance(rail_summary, dict) and rail_summary:
+            lines.extend(
+                [
+                    "",
+                    "  검증 레일",
+                    f"    - 범위 {rail_summary.get('scope', '-')}",
+                    f"    - 모드 {rail_summary.get('mode', '-')}",
+                    f"    - 상태 {rail_summary.get('status', '-')}",
+                    f"    - 통과 {rail_summary.get('passed', 0)}건",
+                    f"    - 실패 {rail_summary.get('failed', 0)}건",
+                    f"    - 스킵 {rail_summary.get('skipped', 0)}건",
+                ]
+            )
+            failed_cases = payload.get("validation_rail_cases")
+            if isinstance(failed_cases, list) and failed_cases:
+                top_failed = [
+                    row for row in failed_cases
+                    if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"failed", "timedout", "timeout", "error"}
+                ][:3]
+                if top_failed:
+                    lines.append("    - 실패 케이스 상위 3개")
+                    for row in top_failed:
+                        lines.append(f"      · {cls._truncate(row.get('title') or row.get('id'), 80)}")
         if mode == "summary_with_json":
             lines.extend(
                 [

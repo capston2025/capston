@@ -47,10 +47,10 @@ class LLMVisionClient:
         configured_model = (
             os.getenv("GAIA_LLM_MODEL")
             or os.getenv("VISION_MODEL")
-            or "gpt-5.2"
+            or "gpt-5.4"
         ).strip()
         if configured_model.lower().startswith("gemini-"):
-            configured_model = "gpt-5.2"
+            configured_model = "gpt-5.4"
         self.model = configured_model
         self._auth_source = self._load_auth_source()
         model_prefers_codex = "codex" in self.model.lower()
@@ -90,7 +90,17 @@ class LLMVisionClient:
     @staticmethod
     def _is_quota_error(error_text: str) -> bool:
         lowered = (error_text or "").lower()
-        return "insufficient_quota" in lowered or "quota" in lowered
+        strong_markers = (
+            "insufficient_quota",
+            "billing_hard_limit_reached",
+            "exceeded your current quota",
+            "429 insufficient_quota",
+            "not supported when using codex with a chatgpt account",
+            "billing",
+        )
+        if any(marker in lowered for marker in strong_markers):
+            return True
+        return "429" in lowered and "quota" in lowered
 
     @staticmethod
     def _decode_image_to_file(image_b64: str, path: Path) -> None:
@@ -514,7 +524,7 @@ JSON response:"""
         except Exception as e:
             if self._is_quota_error(str(e)) and shutil.which("codex"):
                 try:
-                    print("ℹ️ OpenAI API quota 제한 감지: Codex CLI 경로로 재시도합니다.")
+                    print("ℹ️ OpenAI direct API 경로를 사용할 수 없어 Codex CLI 경로로 전환합니다.")
                     return self._strip_code_fences(
                         self._run_codex_exec(prompt, [screenshot_base64])
                     )

@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecord
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, wait_for_mcp_ready
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from gaia.src.phase4.tool_loop_detector import ToolLoopDetector
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
@@ -127,6 +128,26 @@ class _ExploratoryFilterValidationAdapter:
             "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
         }
 
+    def reload_page(self, wait_ms: int = 900) -> Dict[str, Any]:
+        current_url = self.current_url()
+        success, error = self.agent._execute_action(
+            "goto",
+            url=current_url,
+        )
+        if wait_ms > 0:
+            try:
+                self.agent._execute_action("wait", value={"timeMs": int(max(100, wait_ms))})
+            except Exception:
+                pass
+        meta = dict(self.agent._last_exec_meta or {})
+        return {
+            "success": bool(success),
+            "effective": bool(meta.get("effective", success)),
+            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
+            "reason": str(meta.get("reason") or error or ""),
+            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
+        }
+
     def resolve_ref(self, element_id: int) -> str:
         return str(self.agent._element_ref_ids.get(element_id) or "")
 
@@ -166,7 +187,7 @@ class ExploratoryAgent:
 
     def __init__(
         self,
-        mcp_host_url: str = "http://localhost:8000",
+        mcp_host_url: Optional[str] = None,
         gemini_api_key: Optional[str] = None,
         llm_api_key: Optional[str] = None,
         session_id: str = "exploratory",
@@ -175,7 +196,12 @@ class ExploratoryAgent:
         screenshot_callback: Optional[Callable[[str], None]] = None,
         user_intervention_callback: Optional[Callable[[str, str], bool]] = None,
     ):
-        self.mcp_host_url = mcp_host_url
+        self.mcp_host_url = (
+            mcp_host_url
+            or os.getenv("GAIA_MCP_HOST_URL")
+            or os.getenv("MCP_HOST_URL")
+            or "http://127.0.0.1:8001"
+        ).rstrip("/")
         self.session_id = session_id
         self.config = config or ExplorationConfig()
         self._log_callback = log_callback
@@ -245,6 +271,7 @@ class ExploratoryAgent:
         self._runtime_phase: str = "COLLECT"
         self._progress_counter: int = 0
         self._no_progress_counter: int = 0
+        self._auth_completed_fields: Set[str] = set()
         self._tool_loop_detector = ToolLoopDetector(
             warning_threshold=2,
             critical_threshold=3,
@@ -1213,10 +1240,30 @@ class ExploratoryAgent:
                     screenshot_paths.append(before_path)
 
             # 8. 액션 실행
+            pre_action_phase = str(self._runtime_phase or "").upper()
+            auth_submit_trace = bool(
+                decision.selected_action
+                and decision.selected_action.action_type == "click"
+                and pre_action_phase == "AUTH"
+                and any(
+                    token in str(decision.selected_action.description or "").lower()
+                    for token in ("로그인", "login", "sign in", "회원가입", "sign up", "register")
+                )
+            )
+            auth_submit_trace_enabled = str(os.getenv("GAIA_TRACE_AUTH_SUBMIT", "0")).strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+            action_started_at = time.perf_counter()
             success, error, issues = self._execute_exploration_action(
                 decision=decision,
                 page_state=page_state,
             )
+            action_elapsed_ms = int((time.perf_counter() - action_started_at) * 1000)
+            if auth_submit_trace and auth_submit_trace_enabled:
+                self._log(
+                    f"⏱️ auth_submit trace: execute_action={action_elapsed_ms}ms "
+                    f"success={success} reason_code={self._last_exec_meta.get('reason_code')}"
+                )
             reason_code = str(
                 self._last_exec_meta.get("reason_code")
                 or ("ok" if success else "unknown_error")
@@ -1327,7 +1374,9 @@ class ExploratoryAgent:
 
             # 11. 스크린샷 (액션 실행 후) - 결과 확인용 (GIF에는 포함 안함)
             time.sleep(1)  # UI 변화 대기
+            screenshot_started_at = time.perf_counter()
             screenshot_after = self._capture_screenshot()
+            screenshot_elapsed_ms = int((time.perf_counter() - screenshot_started_at) * 1000)
             after_path = ""
             if screenshots_dir and screenshot_after:
                 after_path = self._save_screenshot_to_file(
@@ -1338,12 +1387,53 @@ class ExploratoryAgent:
                 )
 
             # 12. 새로운 페이지 발견 확인
+            current_url_started_at = time.perf_counter()
             new_url = self._get_current_url()
+            current_url_elapsed_ms = int((time.perf_counter() - current_url_started_at) * 1000)
             new_pages = 1 if new_url != page_state.url else 0
             if new_pages:
                 self._log(f"🆕 새 페이지 발견: {new_url}")
 
+            after_state_started_at = time.perf_counter()
             after_state = self._analyze_current_page()
+            after_state_elapsed_ms = int((time.perf_counter() - after_state_started_at) * 1000)
+            if auth_submit_trace and auth_submit_trace_enabled:
+                self._log(
+                    "⏱️ auth_submit trace: "
+                    f"capture_screenshot={screenshot_elapsed_ms}ms "
+                    f"get_current_url={current_url_elapsed_ms}ms "
+                    f"analyze_current_page={after_state_elapsed_ms}ms"
+                )
+            if (
+                not success
+                and decision.selected_action
+                and decision.selected_action.action_type == "click"
+                and pre_action_phase == "AUTH"
+                and after_state
+            ):
+                err_lower = str(error or "").lower()
+                desc_lower = str(decision.selected_action.description or "").lower()
+                is_auth_submit_timeout = (
+                    ("로그인" in desc_lower or "login" in desc_lower)
+                    and "read timed out" in err_lower
+                )
+                auth_resolved = (
+                    str(self._runtime_phase or "").upper() != "AUTH"
+                    or not self._has_login_form(after_state)
+                )
+                if is_auth_submit_timeout and auth_resolved:
+                    success = True
+                    error = None
+                    self._last_exec_meta = dict(self._last_exec_meta or {})
+                    self._last_exec_meta["reason_code"] = "ok"
+                    self._last_exec_meta["reason"] = "auth_submit_timeout_but_effective"
+                    self._last_exec_meta["effective"] = True
+                    issues = [
+                        issue
+                        for issue in issues
+                        if "액션 실행 실패" not in str(getattr(issue, "title", ""))
+                    ]
+                    self._log("♻️ 로그인 제출 timeout 발생했지만 후속 상태 검증으로 성공 처리")
             if success and decision.selected_action and after_state:
                 expected_input = None
                 before_select_state = None
@@ -1386,6 +1476,15 @@ class ExploratoryAgent:
                                 screenshot_after=screenshot_after,
                             )
                         )
+                if (
+                    success
+                    and decision.selected_action.action_type == "fill"
+                    and str(self._runtime_phase or "").upper() == "AUTH"
+                    and intent_ok
+                ):
+                    bucket = self._auth_field_bucket(decision.selected_action)
+                    if bucket:
+                        self._auth_completed_fields.add(bucket)
 
             step_validation_checks: List[Dict[str, Any]] = []
             if (
@@ -1647,15 +1746,33 @@ class ExploratoryAgent:
 
     def _analyze_dom(self) -> List[DOMElement]:
         """MCP Host를 통해 DOM 분석"""
+        payload = {
+            "action": "browser_snapshot",
+            "params": {"session_id": self.session_id},
+        }
         try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={
-                    "action": "browser_snapshot",
-                    "params": {"session_id": self.session_id},
-                },
-                timeout=30,
-            )
+            response = None
+            last_exc: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        f"{self.mcp_host_url}/execute",
+                        json=payload,
+                        timeout=(5, 25),
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if (
+                        attempt == 0
+                        and self._is_mcp_transport_error(str(exc))
+                        and self._recover_mcp_host(context="browser_snapshot")
+                    ):
+                        continue
+                    raise
+            if response is None and last_exc is not None:
+                raise last_exc
             try:
                 data = response.json()
             except Exception:
@@ -1748,6 +1865,30 @@ class ExploratoryAgent:
         except Exception as e:
             self._log(f"DOM 분석 실패: {e}")
             return []
+
+    @staticmethod
+    def _is_mcp_transport_error(error_text: str) -> bool:
+        lowered = str(error_text or "").lower()
+        transport_markers = (
+            "read timed out",
+            "connection refused",
+            "failed to establish a new connection",
+            "max retries exceeded",
+            "remote end closed connection",
+            "connection aborted",
+            "connection reset",
+        )
+        return any(marker in lowered for marker in transport_markers)
+
+    def _recover_mcp_host(self, *, context: str) -> bool:
+        if wait_for_mcp_ready(self.mcp_host_url, timeout_sec=1.2):
+            return True
+        recovered = ensure_mcp_host_running(self.mcp_host_url, startup_timeout=8.0)
+        if recovered:
+            self._log(f"♻️ MCP host 연결 복구 성공 ({context})")
+        else:
+            self._log(f"⚠️ MCP host 연결 복구 실패 ({context})")
+        return recovered
 
     def _normalize_bbox(self, bbox: Optional[dict]) -> Optional[Tuple[float, float, float, float]]:
         if not isinstance(bbox, dict):
@@ -1858,14 +1999,32 @@ class ExploratoryAgent:
     def _capture_screenshot(self) -> Optional[str]:
         """스크린샷 캡처"""
         try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={
-                    "action": "capture_screenshot",
-                    "params": {"session_id": self.session_id},
-                },
-                timeout=30,
-            )
+            response = None
+            last_exc: Optional[Exception] = None
+            payload = {
+                "action": "capture_screenshot",
+                "params": {"session_id": self.session_id},
+            }
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        f"{self.mcp_host_url}/execute",
+                        json=payload,
+                        timeout=(5, 25),
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if (
+                        attempt == 0
+                        and self._is_mcp_transport_error(str(exc))
+                        and self._recover_mcp_host(context="capture_screenshot")
+                    ):
+                        continue
+                    raise
+            if response is None and last_exc is not None:
+                raise last_exc
             data = response.json()
             screenshot = data.get("screenshot")
 
@@ -1881,14 +2040,32 @@ class ExploratoryAgent:
     def _check_console_errors(self) -> List[str]:
         """콘솔 에러 확인"""
         try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={
-                    "action": "get_console_logs",
-                    "params": {"session_id": self.session_id, "type": "error"},
-                },
-                timeout=10,
-            )
+            response = None
+            last_exc: Optional[Exception] = None
+            payload = {
+                "action": "get_console_logs",
+                "params": {"session_id": self.session_id, "type": "error"},
+            }
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        f"{self.mcp_host_url}/execute",
+                        json=payload,
+                        timeout=(3, 10),
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if (
+                        attempt == 0
+                        and self._is_mcp_transport_error(str(exc))
+                        and self._recover_mcp_host(context="console_logs")
+                    ):
+                        continue
+                    raise
+            if response is None and last_exc is not None:
+                raise last_exc
             data = response.json()
             logs = data.get("logs", [])
             if not isinstance(logs, list):
@@ -1911,14 +2088,32 @@ class ExploratoryAgent:
     def _get_current_url(self) -> str:
         """현재 URL 가져오기"""
         try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={
-                    "action": "get_current_url",
-                    "params": {"session_id": self.session_id},
-                },
-                timeout=10,
-            )
+            response = None
+            last_exc: Optional[Exception] = None
+            payload = {
+                "action": "get_current_url",
+                "params": {"session_id": self.session_id},
+            }
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        f"{self.mcp_host_url}/execute",
+                        json=payload,
+                        timeout=(3, 10),
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if (
+                        attempt == 0
+                        and self._is_mcp_transport_error(str(exc))
+                        and self._recover_mcp_host(context="current_url")
+                    ):
+                        continue
+                    raise
+            if response is None and last_exc is not None:
+                raise last_exc
             data = response.json()
             return data.get("url", self._current_url)
 
@@ -1985,8 +2180,16 @@ class ExploratoryAgent:
                 if a.action_type == "fill"
                 and any(k in _auth_haystack(a) for k in auth_fill_keywords)
             ]
+            auth_fill_actions = [
+                a for a in auth_fill_actions if self._auth_field_needs_input(a, page_state)
+            ]
             if auth_fill_actions:
-                auth_fill_actions.sort(key=lambda x: float(x.priority), reverse=True)
+                auth_fill_actions.sort(
+                    key=lambda x: (
+                        self._auth_field_order(self._auth_field_bucket(x)),
+                        -float(x.priority),
+                    )
+                )
                 return ExplorationDecision(
                     should_continue=True,
                     selected_action=auth_fill_actions[0],
@@ -2589,6 +2792,42 @@ class ExploratoryAgent:
                 has_user_input = True
         return has_password and has_user_input
 
+    @staticmethod
+    def _auth_field_order(bucket: Optional[str]) -> int:
+        return {"username": 0, "password": 1, "otp": 2}.get(str(bucket or ""), 9)
+
+    def _auth_field_bucket(self, action: TestableAction) -> Optional[str]:
+        haystack = " ".join(
+            [str(action.description or ""), str(action.element_id or "")]
+        ).lower()
+        if any(token in haystack for token in ("password", "비밀번호", "passwd", "pwd")):
+            return "password"
+        if any(token in haystack for token in ("username", "user id", "userid", "email", "이메일", "아이디", "사용자")):
+            return "username"
+        if any(token in haystack for token in ("otp", "2fa", "인증코드", "verification code")):
+            return "otp"
+        return None
+
+    def _auth_field_needs_input(
+        self,
+        action: TestableAction,
+        page_state: PageState,
+    ) -> bool:
+        bucket = self._auth_field_bucket(action)
+        selector = self._find_selector_by_element_id(action.element_id, page_state)
+        current_value = ""
+        if selector:
+            observed = self._evaluate_selector(
+                selector, "el => (el.value ?? '').toString()"
+            )
+            current_value = str(observed or "").strip()
+        if bucket and current_value:
+            self._auth_completed_fields.add(bucket)
+            return False
+        if bucket and bucket in self._auth_completed_fields:
+            return False
+        return True
+
     def _is_high_priority_element(self, element: ElementState) -> bool:
         label = self._element_label(element).lower()
         selector = (element.selector or "").lower()
@@ -3016,11 +3255,13 @@ JSON 응답:"""
                     "scrollIntoView",
                     selector=selector or None,
                     ref_id=resolved_ref_id or None,
+                    hint_text=action.description,
                 )
                 success, error = self._execute_action(
                     "click",
                     selector=selector or None,
                     ref_id=resolved_ref_id or None,
+                    hint_text=action.description,
                 )
                 if did_open_menu:
                     close_selector = self._find_close_menu_selector(page_state)
@@ -3034,6 +3275,7 @@ JSON 응답:"""
                     selector=selector or None,
                     ref_id=resolved_ref_id or None,
                     value=value,
+                    hint_text=action.description,
                 )
 
                 # 셀렉터 실패 시 좌표 기반 입력 fallback
@@ -3069,6 +3311,7 @@ JSON 응답:"""
                     selector=selector or None,
                     ref_id=resolved_ref_id or None,
                     value=select_value,
+                    hint_text=action.description,
                 )
                 if success:
                     self._last_exec_meta = dict(self._last_exec_meta or {})
@@ -3078,6 +3321,7 @@ JSON 응답:"""
                     "hover",
                     selector=selector or None,
                     ref_id=resolved_ref_id or None,
+                    hint_text=action.description,
                 )
             else:
                 success, error = False, f"지원하지 않는 액션: {action.action_type}"
@@ -3171,13 +3415,32 @@ JSON 응답:"""
         ref_id: Optional[str] = None,
         value: Optional[object] = None,
         url: Optional[str] = None,
+        hint_text: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         """MCP Host를 통해 액션 실행"""
         self._last_exec_meta = {}
-        request_timeout = float(self.config.action_timeout)
-        if action in {"click", "fill", "select"}:
-            request_timeout = max(request_timeout, 60.0)
-
+        try:
+            request_timeout = float(
+                os.getenv("GAIA_MCP_REQUEST_TIMEOUT_SEC", str(self.config.action_timeout))
+            )
+        except Exception:
+            request_timeout = float(self.config.action_timeout)
+        request_timeout = max(20.0, min(request_timeout, 45.0))
+        selector_text = " ".join(
+            part for part in [str(selector or ""), str(hint_text or "")]
+            if part
+        ).lower()
+        auth_submit_action = bool(
+            action == "click"
+            and (
+                "로그인" in selector_text
+                or "login" in selector_text
+                or "sign in" in selector_text
+                or "회원가입" in selector_text
+                or "sign up" in selector_text
+                or "register" in selector_text
+            )
+        )
         resolved_ref_id = ref_id
         is_element_action = action in {
             "click",
@@ -3219,8 +3482,8 @@ JSON 응답:"""
                 "ref_id": resolved_ref_id,
                 "action": action,
                 "url": url or "",
-                "verify": True,
-                "selector_hint": selector or "",
+                "verify": False if auth_submit_action else True,
+                "selector_hint": hint_text or selector or "",
             }
             if value is not None:
                 ref_params["value"] = value
@@ -3228,7 +3491,7 @@ JSON 응답:"""
                 response = requests.post(
                     f"{self.mcp_host_url}/execute",
                     json={"action": "browser_act", "params": ref_params},
-                    timeout=request_timeout,
+                    timeout=(10, request_timeout),
                 )
                 data = response.json()
                 success = bool(data.get("success"))
@@ -3284,7 +3547,7 @@ JSON 응답:"""
                         retry_response = requests.post(
                             f"{self.mcp_host_url}/execute",
                             json={"action": "browser_act", "params": retry_params},
-                            timeout=request_timeout,
+                            timeout=(10, request_timeout),
                         )
                         retry_data = retry_response.json()
                         retry_success = bool(retry_data.get("success"))
@@ -3319,6 +3582,8 @@ JSON 응답:"""
                 self._log(f"❌ Ref action failed: [{reason_code}] {reason}")
                 return False, f"[{reason_code}] {reason}"
             except Exception as exc:
+                if self._is_mcp_transport_error(str(exc)):
+                    self._recover_mcp_host(context="ref_action")
                 self._last_exec_meta = {
                     "reason_code": "request_exception",
                     "reason": add_no_retry_hint(str(exc)),
@@ -3348,7 +3613,7 @@ JSON 응답:"""
             response = requests.post(
                 f"{self.mcp_host_url}/execute",
                 json={"action": "browser_act", "params": params},
-                timeout=request_timeout,
+                timeout=(10, request_timeout),
             )
 
             # HTTP 상태 코드 로깅
@@ -3383,6 +3648,8 @@ JSON 응답:"""
                 return False, error_msg
 
         except Exception as e:
+            if self._is_mcp_transport_error(str(e)):
+                self._recover_mcp_host(context=f"action:{action}")
             self._last_exec_meta = {
                 "reason_code": "request_exception",
                 "reason": add_no_retry_hint(str(e)),
@@ -3507,11 +3774,29 @@ JSON 응답:"""
             "fn": wrapped_fn,
         }
         try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={"action": "browser_act", "params": params},
-                timeout=self.config.action_timeout,
-            )
+            response = None
+            last_exc: Optional[Exception] = None
+            request_timeout = max(10.0, min(float(self.config.action_timeout), 30.0))
+            for attempt in range(2):
+                try:
+                    response = requests.post(
+                        f"{self.mcp_host_url}/execute",
+                        json={"action": "browser_act", "params": params},
+                        timeout=(5, request_timeout),
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if (
+                        attempt == 0
+                        and self._is_mcp_transport_error(str(exc))
+                        and self._recover_mcp_host(context="evaluate_selector")
+                    ):
+                        continue
+                    raise
+            if response is None and last_exc is not None:
+                raise last_exc
             data = response.json()
             if not data.get("success"):
                 return None
@@ -3967,20 +4252,19 @@ JSON 응답:"""
 
     def _run_filter_semantic_validation(self, goal_text: str) -> Dict[str, Any]:
         try:
-            from .filter_validation_engine import run_filter_validation
+            from .filter_validation_engine import build_filter_validation_config, run_filter_validation
 
             adapter = _ExploratoryFilterValidationAdapter(self)
             forced_selected = str((self._last_exec_meta or {}).get("selected_value") or "").strip()
             report = run_filter_validation(
                 adapter=adapter,
                 goal_text=goal_text,
-                config={
-                    "max_pages": 2,
-                    "max_cases": 1,
-                    "strict_mandatory": True,
-                    "use_current_selection_only": True,
-                    "forced_selected_value": forced_selected,
-                },
+                config=build_filter_validation_config(
+                    max_pages=2,
+                    max_cases=3,
+                    use_current_selection_only=False,
+                    forced_selected_value=forced_selected,
+                ),
             )
             return report if isinstance(report, dict) else {}
         except Exception as exc:
@@ -4024,19 +4308,22 @@ JSON 응답:"""
         failed = 0
         skipped = 0
         failed_mandatory = 0
+        skipped_mandatory = 0
         for row in rows or []:
             if not isinstance(row, dict):
                 continue
             status = str(row.get("status") or "").strip().lower()
             mandatory = bool(row.get("mandatory"))
-            if status == "passed":
+            if status in {"pass", "passed"}:
                 passed += 1
-            elif status == "failed":
+            elif status in {"fail", "failed"}:
                 failed += 1
                 if mandatory:
                     failed_mandatory += 1
-            elif status == "skipped":
+            elif status.startswith("skipped") or status == "skipped":
                 skipped += 1
+                if mandatory:
+                    skipped_mandatory += 1
         success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
         return {
             "goal_type": "filter_validation_semantic",
@@ -4045,7 +4332,8 @@ JSON 응답:"""
             "failed_checks": failed,
             "skipped_checks": skipped,
             "failed_mandatory_checks": failed_mandatory,
-            "strict_failed": bool(failed_mandatory > 0),
+            "skipped_mandatory_checks": skipped_mandatory,
+            "strict_failed": bool((failed_mandatory + skipped_mandatory) > 0),
             "success_rate": success_rate,
         }
 

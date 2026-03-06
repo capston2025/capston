@@ -110,6 +110,7 @@ async def prepare_ref_action_execution_context(
     *,
     action: str,
     value: Any = None,
+    selector_hint: str = "",
     verify: bool,
     requested_meta: Dict[str, Any],
     requested_snapshot: Optional[Dict[str, Any]],
@@ -136,22 +137,29 @@ async def prepare_ref_action_execution_context(
             str(requested_meta.get("selector") or ""),
             str(requested_meta.get("full_selector") or ""),
             str(requested_meta.get("text") or ""),
+            str(selector_hint or ""),
             str((ref_attrs or {}).get("type") or ""),
             str((ref_attrs or {}).get("role") or ""),
             str((ref_attrs or {}).get("aria-label") or ""),
         ]
     ).lower()
-    submit_like_click = bool(
+    auth_submit_like_click = bool(
         action == "click"
         and (
-            str((ref_attrs or {}).get("type") or "").lower() == "submit"
-            or "submit" in ref_selector_text
-            or "로그인" in ref_selector_text
+            "로그인" in ref_selector_text
             or "회원가입" in ref_selector_text
             or "sign in" in ref_selector_text
             or "log in" in ref_selector_text
             or "sign up" in ref_selector_text
             or "register" in ref_selector_text
+        )
+    )
+    submit_like_click = bool(
+        action == "click"
+        and (
+            str((ref_attrs or {}).get("type") or "").lower() == "submit"
+            or "submit" in ref_selector_text
+            or auth_submit_like_click
         )
     )
     modal_regions_for_requested = collect_modal_regions_from_snapshot_fn(
@@ -191,10 +199,14 @@ async def prepare_ref_action_execution_context(
             if bool((close_gate_evidence_prefetched or {}).get("modal_open")):
                 close_like_click = True
     probe_wait_schedule: Tuple[int, ...] = (
-        (350, 800, 1500, 3000, 5000) if submit_like_click else (350, 700, 1500)
+        (150, 350, 700, 1200)
+        if auth_submit_like_click
+        else ((350, 800, 1500, 3000, 5000) if submit_like_click else (350, 700, 1500))
     )
     verify_for_action = bool(verify)
     adjusted_max_action_seconds = max_action_seconds
+    if auth_submit_like_click:
+        adjusted_max_action_seconds = min(max_action_seconds, 18.0)
     precheck_response: Optional[Dict[str, Any]] = None
     # soft_close 판단: "X" 텍스트만으로 감지된 경우 modal precheck 건너뛰기
     # _is_close_intent_ref 에서 설정한 마커 또는 visible text가 단일 닫기 문자인 경우
@@ -257,6 +269,7 @@ async def prepare_ref_action_execution_context(
                 }
     return {
         "state_change": state_change,
+        "auth_submit_like_click": auth_submit_like_click,
         "submit_like_click": submit_like_click,
         "close_like_click": close_like_click,
         "modal_regions_for_requested": modal_regions_for_requested,

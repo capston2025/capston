@@ -366,6 +366,11 @@ def get_token_source(provider: str) -> tuple[str | None, str | None]:
 
     token = get_stored_token(provider)
     if token:
+        profile = _openid_state_profile(provider)
+        if isinstance(profile, dict):
+            source = str(profile.get("source") or "").strip()
+            if source:
+                return token, source
         return token, "stored"
     return None, None
 
