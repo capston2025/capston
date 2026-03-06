@@ -13,12 +13,32 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from .models import DOMElement
 
+DEFAULT_FILTER_VALIDATION_PROFILE: Dict[str, Any] = {
+    "max_pages": 2,
+    "max_cases": 3,
+    "strict_mandatory": True,
+    "page2_strict": False,
+    "page1_sample_n": 8,
+    "page1_match_ratio": 0.60,
+    "selection_probe_schedule_ms": [200, 500, 1000, 1500, 1800],
+    "pagination_persistence_page2_topk": 5,
+    "pagination_persistence_page2_min_match": 1,
+    "capture_case_screenshots": True,
+}
+
+
+def build_filter_validation_config(**overrides: Any) -> Dict[str, Any]:
+    config = dict(DEFAULT_FILTER_VALIDATION_PROFILE)
+    for key, value in overrides.items():
+        config[key] = value
+    return config
+
 
 @dataclass
 class FilterCheckRow:
     check_id: str
     name: str
-    status: str  # passed | failed | skipped
+    status: str  # pass | fail | skipped_not_applicable | skipped_error | skipped_timeout
     mandatory: bool
     scope: str  # global | page1 | page2
     check_type: str
@@ -30,10 +50,11 @@ class FilterCheckRow:
     error: str = ""
 
     def to_dict(self, step: int) -> Dict[str, Any]:
+        normalized_status = _normalize_check_status(self.status)
         return {
             "check_id": self.check_id,
             "name": self.name,
-            "status": self.status,
+            "status": normalized_status,
             "step": step,
             "action": self.action,
             "input_value": self.input_value,
@@ -55,6 +76,7 @@ class FilterValidationSummary:
     failed_checks: int
     skipped_checks: int
     failed_mandatory_checks: int
+    skipped_mandatory_checks: int
     success_rate: float
     strict_failed: bool
     goal_satisfied: bool
@@ -69,6 +91,7 @@ class FilterValidationSummary:
             "failed_checks": self.failed_checks,
             "skipped_checks": self.skipped_checks,
             "failed_mandatory_checks": self.failed_mandatory_checks,
+            "skipped_mandatory_checks": self.skipped_mandatory_checks,
             "success_rate": self.success_rate,
             "strict_failed": self.strict_failed,
             "goal_satisfied": self.goal_satisfied,
@@ -121,6 +144,9 @@ class FilterValidationAdapter(Protocol):
     def wait_for_pagination_probe(self, wait_ms: int = 900) -> Dict[str, Any]:
         ...
 
+    def reload_page(self, wait_ms: int = 900) -> Dict[str, Any]:
+        ...
+
     def resolve_ref(self, element_id: int) -> str:
         ...
 
@@ -154,6 +180,13 @@ class CreditFilterRule:
     _credit_token = re.compile(r"(\d{1,2})\s*학점")
     _number_token = re.compile(r"(?<!\d)(\d{1,2})(?!\d)")
 
+    def __init__(self, match_ratio: float = 0.60) -> None:
+        try:
+            ratio = float(match_ratio)
+        except Exception:
+            ratio = 0.60
+        self._match_ratio = max(0.10, min(1.0, ratio))
+
     def supports(self, *, goal_text: str, control: DOMElement, option_text: str, option_value: str) -> bool:
         blob = " ".join(
             [
@@ -179,6 +212,7 @@ class CreditFilterRule:
             return False, "선택된 학점 값을 파싱하지 못했습니다.", {"target": None, "rows_with_credit": 0}
 
         extracted: List[int] = []
+        sampled_rows = 0
         matched_rows = 0
         mismatch_rows = 0
         mismatch_examples: List[str] = []
@@ -188,27 +222,39 @@ class CreditFilterRule:
             row_credits = _extract_row_credits(row)
             if not row_credits:
                 continue
-            matched_rows += 1
+            sampled_rows += 1
             extracted.extend(row_credits)
-            if any(v != target for v in row_credits):
+            if all(v == target for v in row_credits):
+                matched_rows += 1
+            else:
                 mismatch_rows += 1
                 if len(mismatch_examples) < 3:
                     mismatch_examples.append(row[:120])
 
-        if matched_rows == 0:
+        if sampled_rows == 0:
             return (
                 False,
                 "페이지 결과에서 학점 표본을 찾지 못했습니다.",
                 {"target": target, "rows_with_credit": 0, "row_total": len(row_texts)},
             )
 
-        if mismatch_rows > 0:
+        required_matches = max(1, int((sampled_rows * self._match_ratio) + 0.999))
+        if sampled_rows >= 3:
+            required_matches = max(required_matches, 2)
+        pass_ratio = float(matched_rows) / float(sampled_rows) if sampled_rows > 0 else 0.0
+        if matched_rows < required_matches:
             return (
                 False,
-                f"학점 불일치 행이 {mismatch_rows}개 감지되었습니다.",
+                (
+                    "학점 정합성 기준 미달: "
+                    f"{matched_rows}/{sampled_rows} 매칭(요구 {required_matches}, 비율 {pass_ratio:.2f})"
+                ),
                 {
                     "target": target,
-                    "rows_with_credit": matched_rows,
+                    "rows_with_credit": sampled_rows,
+                    "matched_rows": matched_rows,
+                    "required_matches": required_matches,
+                    "pass_ratio": round(pass_ratio, 3),
                     "mismatch_rows": mismatch_rows,
                     "mismatch_examples": mismatch_examples,
                     "observed_credits": sorted(set(extracted)),
@@ -217,10 +263,16 @@ class CreditFilterRule:
 
         return (
             True,
-            "모든 학점 표본이 선택 값과 일치합니다.",
+            (
+                "학점 표본 기준 통과: "
+                f"{matched_rows}/{sampled_rows} 매칭(요구 {required_matches})"
+            ),
             {
                 "target": target,
-                "rows_with_credit": matched_rows,
+                "rows_with_credit": sampled_rows,
+                "matched_rows": matched_rows,
+                "required_matches": required_matches,
+                "pass_ratio": round(pass_ratio, 3),
                 "observed_credits": sorted(set(extracted)),
             },
         )
@@ -256,14 +308,31 @@ def run_filter_validation(
     goal_text: str,
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    cfg = dict(config or {})
-    max_cases = max(1, int(cfg.get("max_cases", 3)))
-    max_pages = max(1, int(cfg.get("max_pages", 2)))
-    strict_mandatory = bool(cfg.get("strict_mandatory", True))
+    cfg = build_filter_validation_config(**dict(config or {}))
+    max_cases = max(1, int(cfg.get("max_cases", DEFAULT_FILTER_VALIDATION_PROFILE["max_cases"])))
+    max_pages = max(1, int(cfg.get("max_pages", DEFAULT_FILTER_VALIDATION_PROFILE["max_pages"])))
+    strict_mandatory = bool(cfg.get("strict_mandatory", DEFAULT_FILTER_VALIDATION_PROFILE["strict_mandatory"]))
+    page2_strict = bool(cfg.get("page2_strict", DEFAULT_FILTER_VALIDATION_PROFILE["page2_strict"]))
+    page1_sample_n = max(3, int(cfg.get("page1_sample_n", DEFAULT_FILTER_VALIDATION_PROFILE["page1_sample_n"])))
+    try:
+        page1_match_ratio = float(cfg.get("page1_match_ratio", DEFAULT_FILTER_VALIDATION_PROFILE["page1_match_ratio"]))
+    except Exception:
+        page1_match_ratio = float(DEFAULT_FILTER_VALIDATION_PROFILE["page1_match_ratio"])
+    page1_match_ratio = max(0.10, min(1.0, page1_match_ratio))
+    selection_probe_schedule = cfg.get("selection_probe_schedule_ms")
+    if not isinstance(selection_probe_schedule, list) or not selection_probe_schedule:
+        selection_probe_schedule = list(DEFAULT_FILTER_VALIDATION_PROFILE["selection_probe_schedule_ms"])
+    selection_probe_schedule = [
+        max(100, int(v))
+        for v in selection_probe_schedule
+        if str(v).strip()
+    ][:8] or [200, 500, 1000, 1500, 1800]
+    page2_topk = max(1, int(cfg.get("pagination_persistence_page2_topk", DEFAULT_FILTER_VALIDATION_PROFILE["pagination_persistence_page2_topk"])))
+    page2_min_match = max(1, int(cfg.get("pagination_persistence_page2_min_match", DEFAULT_FILTER_VALIDATION_PROFILE["pagination_persistence_page2_min_match"])))
     use_current_selection_only = bool(cfg.get("use_current_selection_only", False))
     forced_selected_value = str(cfg.get("forced_selected_value") or "").strip()
     validation_contract = cfg.get("validation_contract")
-    capture_case_screenshots = bool(cfg.get("capture_case_screenshots", True))
+    capture_case_screenshots = bool(cfg.get("capture_case_screenshots", DEFAULT_FILTER_VALIDATION_PROFILE["capture_case_screenshots"]))
     max_case_attachments = max(0, int(cfg.get("max_case_attachments", max_cases)))
 
     reason_counter: Dict[str, int] = {}
@@ -483,14 +552,34 @@ def run_filter_validation(
             if not apply_ok:
                 _record_reason("filter_selection_mismatch")
 
-        page1_dom = adapter.analyze_dom()
-        control_page1 = _pick_filter_control(page1_dom, goal_text) or control_for_case
-        selected_ok, selected_obs = _selection_reflected(control_page1, selected_value, selected_text)
+        page1_dom: List[DOMElement] = []
+        control_page1: Optional[DOMElement] = None
+        selected_ok = False
+        selected_obs = ""
+        for wait_ms in [0, *selection_probe_schedule]:
+            if wait_ms > 0:
+                try:
+                    adapter.wait_for_pagination_probe(int(wait_ms))
+                except Exception:
+                    pass
+            page1_dom = adapter.analyze_dom()
+            control_page1 = _pick_filter_control_for_option(
+                dom=page1_dom,
+                goal_text=goal_text,
+                selected_value=selected_value,
+                selected_text=selected_text,
+                required_map=required_map,
+            ) or _pick_filter_control(page1_dom, goal_text) or control_for_case
+            selected_ok, selected_obs = _selection_reflected(control_page1, selected_value, selected_text)
+            if selected_ok:
+                break
+        if control_page1 is None:
+            control_page1 = control_for_case
         _add_check(
             FilterCheckRow(
                 check_id=f"case_{case_idx}_selection_reflected",
                 name=f"필터 선택 상태 반영(case {case_idx})",
-                status="passed" if selected_ok else "failed",
+                status="pass" if selected_ok else "fail",
                 mandatory=True,
                 scope="page1",
                 check_type="selection_reflected",
@@ -510,9 +599,15 @@ def run_filter_validation(
         else:
             _record_reason("filter_selection_mismatch")
 
-        active_rule = _pick_rule(goal_text, control_page1, selected_text, selected_value)
+        active_rule = _pick_rule(
+            goal_text,
+            control_page1,
+            selected_text,
+            selected_value,
+            page1_match_ratio=page1_match_ratio,
+        )
         rules_used.append(active_rule.name)
-        row_texts_page1 = _collect_result_rows(page1_dom)
+        row_texts_page1 = _collect_result_rows(page1_dom)[:page1_sample_n]
         row_ok1, row_msg1, row_ev1 = active_rule.evaluate_rows(
             selected_text=selected_text,
             selected_value=selected_value,
@@ -522,8 +617,8 @@ def run_filter_validation(
             FilterCheckRow(
                 check_id=f"case_{case_idx}_result_consistency_page1",
                 name=f"결과 정합성(page1, case {case_idx})",
-                status="passed" if row_ok1 else "failed",
-                mandatory=bool(active_rule.mandatory_row_consistency),
+                status="pass" if row_ok1 else "fail",
+                mandatory=True,
                 scope="page1",
                 check_type="result_consistency_page1",
                 expected=f"선택 옵션={selected_text or selected_value}",
@@ -541,8 +636,8 @@ def run_filter_validation(
             _record_reason("filter_result_mismatch")
 
         if max_pages <= 1:
-            case_info["status"] = "passed" if (selected_ok and row_ok1) else "failed"
-            _mark_coverage(selected_value, selected_text, case_info["status"] == "passed")
+            case_info["status"] = "pass" if (selected_ok and row_ok1) else "fail"
+            _mark_coverage(selected_value, selected_text, case_info["status"] == "pass")
             cases.append(case_info)
             continue
 
@@ -595,7 +690,7 @@ def run_filter_validation(
                 FilterCheckRow(
                     check_id=f"case_{case_idx}_pagination_persistence",
                     name=f"페이지네이션 유지성(case {case_idx})",
-                    status="skipped",
+                    status="skipped_not_applicable",
                     mandatory=False,
                     scope="page2",
                     check_type="pagination_persistence",
@@ -610,7 +705,7 @@ def run_filter_validation(
                 FilterCheckRow(
                     check_id=f"case_{case_idx}_result_consistency_page2",
                     name=f"결과 정합성(page2, case {case_idx})",
-                    status="skipped",
+                    status="skipped_not_applicable",
                     mandatory=False,
                     scope="page2",
                     check_type="result_consistency_page2",
@@ -622,8 +717,63 @@ def run_filter_validation(
                 )
             )
             _record_reason("filter_pagination_not_available")
-            case_info["status"] = "passed" if (selected_ok and row_ok1) else "failed"
-            _mark_coverage(selected_value, selected_text, case_info["status"] == "passed")
+            reload_result = adapter.reload_page(900)
+            reload_ok = bool(reload_result.get("success")) and bool(reload_result.get("effective", True))
+            reload_dom = adapter.analyze_dom() if reload_ok else []
+            reload_blocked_code = _blocked_reason_code_from_result(reload_result) or _blocked_reason_code_from_dom(reload_dom)
+            if reload_blocked_code:
+                _record_reason("blocked_user_action")
+                _record_reason(reload_blocked_code)
+            reload_control = _pick_filter_control_for_option(
+                dom=reload_dom,
+                goal_text=goal_text,
+                selected_value=selected_value,
+                selected_text=selected_text,
+                required_map=required_map,
+            ) or _pick_filter_control(reload_dom, goal_text) or control_page1
+            reload_selected_ok, reload_selected_obs = _selection_reflected(
+                reload_control,
+                selected_value,
+                selected_text,
+            )
+            reload_row_ok, reload_row_msg, reload_row_ev = active_rule.evaluate_rows(
+                selected_text=selected_text,
+                selected_value=selected_value,
+                row_texts=_collect_result_rows(reload_dom)[:page1_sample_n],
+            ) if reload_dom else (False, "reload 후 결과 행을 수집하지 못했습니다.", {})
+            reload_persistence_ok = bool(reload_ok and reload_selected_ok and reload_row_ok)
+            _add_check(
+                FilterCheckRow(
+                    check_id=f"case_{case_idx}_reload_persistence",
+                    name=f"리로드 유지성(case {case_idx})",
+                    status="pass" if reload_persistence_ok else "fail",
+                    mandatory=True,
+                    scope="page2",
+                    check_type="reload_persistence",
+                    expected=f"{selected_text or selected_value} 유지 + page1 정합성 유지",
+                    observed=reload_selected_obs if reload_selected_ok else str(reload_result.get("reason_code") or "reload_fail"),
+                    evidence={
+                        "reload_result": reload_result,
+                        "blocked_reason_code": reload_blocked_code,
+                        "selection_observed": reload_selected_obs,
+                        "row_message": reload_row_msg,
+                        "row_evidence": reload_row_ev,
+                    },
+                    action="navigate",
+                    input_value="reload",
+                    error="" if reload_persistence_ok else (
+                        ("사용자 개입 필요: " + reload_blocked_code)
+                        if reload_blocked_code
+                        else (reload_row_msg or str(reload_result.get("reason") or "reload persistence failed"))
+                    ),
+                )
+            )
+            if not reload_persistence_ok:
+                _record_reason("filter_reload_persistence_failed")
+            else:
+                _record_reason("filter_reload_persistence_passed")
+            case_info["status"] = "pass" if (selected_ok and row_ok1 and reload_persistence_ok) else "fail"
+            _mark_coverage(selected_value, selected_text, case_info["status"] == "pass")
             cases.append(case_info)
             continue
 
@@ -631,33 +781,54 @@ def run_filter_validation(
         click_result = adapter.click_element(next_el.id)
         click_ok = bool(click_result.get("success")) and bool(click_result.get("effective", True))
         page2_dom = adapter.analyze_dom() if click_ok else []
+        click_blocked_code = _blocked_reason_code_from_result(click_result) or _blocked_reason_code_from_dom(page2_dom)
+        if click_blocked_code:
+            _record_reason("blocked_user_action")
+            _record_reason(click_blocked_code)
         control_page2 = _pick_filter_control(page2_dom, goal_text) if page2_dom else None
         persisted_ok = bool(click_ok and control_page2 and _selection_reflected(control_page2, selected_value, selected_text)[0])
+        page2_row_texts_for_persist = _collect_result_rows(page2_dom)[:page2_topk] if page2_dom else []
+        page2_weak_ok = _page2_min_match_ok(
+            rule=active_rule,
+            selected_text=selected_text,
+            selected_value=selected_value,
+            row_texts=page2_row_texts_for_persist,
+            min_match=page2_min_match,
+        ) if persisted_ok else False
+        persistence_ok = bool(persisted_ok and page2_weak_ok)
         _add_check(
             FilterCheckRow(
                 check_id=f"case_{case_idx}_pagination_persistence",
                 name=f"페이지네이션 유지성(case {case_idx})",
-                status="passed" if persisted_ok else "failed",
+                status="pass" if persistence_ok else "fail",
                 mandatory=True,
                 scope="page2",
                 check_type="pagination_persistence",
                 expected=f"{selected_text or selected_value} 유지",
-                observed=str(click_result.get("reason_code") or ("ok" if persisted_ok else "failed")),
+                observed=str(click_result.get("reason_code") or ("ok" if persistence_ok else "fail")),
                 evidence={
                     "from_url": click_result.get("before_url", ""),
                     "to_url": adapter.current_url(),
                     "next_ref": adapter.resolve_ref(next_el.id),
+                    "blocked_reason_code": click_blocked_code,
+                    "persisted_ok": persisted_ok,
+                    "page2_weak_ok": page2_weak_ok,
+                    "page2_sample_topk": page2_topk,
                 },
                 action="click",
                 input_value="다음 페이지",
-                error="" if persisted_ok else str(click_result.get("reason") or "선택 유지 실패"),
+                error="" if persistence_ok else (
+                    ("사용자 개입 필요: " + click_blocked_code)
+                    if click_blocked_code
+                    else str(click_result.get("reason") or "선택 유지/약한 정합성 실패")
+                ),
             )
         )
 
         row_ok2 = False
         row_msg2 = "page2 미검증"
         row_ev2: Dict[str, Any] = {}
-        if persisted_ok and page2_dom:
+        if persistence_ok and page2_dom:
             row_texts_page2 = _collect_result_rows(page2_dom)
             row_ok2, row_msg2, row_ev2 = active_rule.evaluate_rows(
                 selected_text=selected_text,
@@ -668,8 +839,8 @@ def run_filter_validation(
             FilterCheckRow(
                 check_id=f"case_{case_idx}_result_consistency_page2",
                 name=f"결과 정합성(page2, case {case_idx})",
-                status="passed" if row_ok2 else "failed",
-                mandatory=bool(active_rule.mandatory_row_consistency),
+                status="pass" if row_ok2 else "fail",
+                mandatory=bool(page2_strict),
                 scope="page2",
                 check_type="result_consistency_page2",
                 expected=f"선택 옵션={selected_text or selected_value}",
@@ -680,19 +851,24 @@ def run_filter_validation(
                 error="" if row_ok2 else row_msg2,
             )
         )
-        if not persisted_ok:
+        if not persistence_ok:
             _record_reason("filter_persistence_lost")
         if not row_ok2:
             _record_reason("filter_result_mismatch")
 
         mandatory_failed = any(
-            row.mandatory and row.status == "failed"
+            row.mandatory and _normalize_check_status(row.status) == "fail"
             for row in checks
             if row.check_id.startswith(f"case_{case_idx}_")
         )
-        case_info["status"] = "failed" if mandatory_failed else "passed"
-        _mark_coverage(selected_value, selected_text, case_info["status"] == "passed")
-        if case_info["status"] == "passed":
+        mandatory_skipped = any(
+            row.mandatory and _normalize_check_status(row.status).startswith("skipped")
+            for row in checks
+            if row.check_id.startswith(f"case_{case_idx}_")
+        )
+        case_info["status"] = "fail" if (mandatory_failed or mandatory_skipped) else "pass"
+        _mark_coverage(selected_value, selected_text, case_info["status"] == "pass")
+        if case_info["status"] == "pass":
             _record_reason("filter_case_passed")
         else:
             _record_reason("filter_case_failed")
@@ -705,7 +881,7 @@ def run_filter_validation(
             FilterCheckRow(
                 check_id="goal_option_coverage",
                 name="목표 옵션 커버리지",
-                status="skipped",
+                status="skipped_not_applicable",
                 mandatory=False,
                 scope="global",
                 check_type="goal_coverage",
@@ -723,7 +899,7 @@ def run_filter_validation(
             FilterCheckRow(
                 check_id="goal_option_coverage",
                 name="목표 옵션 커버리지",
-                status="passed",
+                status="pass",
                 mandatory=False,
                 scope="global",
                 check_type="goal_coverage",
@@ -772,16 +948,21 @@ def _build_report(
 ) -> FilterValidationReport:
     rows = [row.to_dict(step=i + 1) for i, row in enumerate(checks)]
     total = len(rows)
-    passed = sum(1 for r in rows if str(r.get("status")) == "passed")
-    failed = sum(1 for r in rows if str(r.get("status")) == "failed")
-    skipped = sum(1 for r in rows if str(r.get("status")) == "skipped")
+    passed = sum(1 for r in rows if str(r.get("status")) == "pass")
+    failed = sum(1 for r in rows if str(r.get("status")) == "fail")
+    skipped = sum(1 for r in rows if str(r.get("status")).startswith("skipped"))
     failed_mandatory = sum(
         1
         for r in rows
-        if str(r.get("status")) == "failed" and bool(r.get("mandatory"))
+        if str(r.get("status")) == "fail" and bool(r.get("mandatory"))
+    )
+    skipped_mandatory = sum(
+        1
+        for r in rows
+        if str(r.get("status")).startswith("skipped") and bool(r.get("mandatory"))
     )
     success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
-    strict_failed = bool(strict_mandatory and failed_mandatory > 0)
+    strict_failed = bool(strict_mandatory and (failed_mandatory > 0 or skipped_mandatory > 0))
     goal_satisfied = bool(
         (not strict_failed)
         and int(required_option_count) > 0
@@ -794,6 +975,7 @@ def _build_report(
         failed_checks=failed,
         skipped_checks=skipped,
         failed_mandatory_checks=failed_mandatory,
+        skipped_mandatory_checks=skipped_mandatory,
         success_rate=success_rate,
         strict_failed=strict_failed,
         goal_satisfied=goal_satisfied,
@@ -802,7 +984,7 @@ def _build_report(
     )
     return FilterValidationReport(
         mode="filter_semantic_v2",
-        success=goal_satisfied,
+        success=bool(goal_satisfied and not strict_failed),
         summary=summary,
         checks=rows,
         rules_used=sorted(set(rules_used)),
@@ -843,6 +1025,111 @@ def _pick_filter_control(dom: List[DOMElement], goal_text: str) -> Optional[DOME
         if best is None or score > best[0]:
             best = (score, el)
     return best[1] if best else None
+
+
+def _normalize_check_status(status: Any) -> str:
+    token = str(status or "").strip().lower()
+    if token in {"pass", "passed", "ok", "success"}:
+        return "pass"
+    if token in {"fail", "failed", "error"}:
+        return "fail"
+    if token in {"skipped_not_applicable", "skip_not_applicable"}:
+        return "skipped_not_applicable"
+    if token in {"skipped_error", "skip_error"}:
+        return "skipped_error"
+    if token in {"skipped_timeout", "skip_timeout", "timeout"}:
+        return "skipped_timeout"
+    if token in {"skipped", "skip"}:
+        return "skipped_not_applicable"
+    return "skipped_error"
+
+
+def _page2_min_match_ok(
+    *,
+    rule: FilterRule,
+    selected_text: str,
+    selected_value: str,
+    row_texts: List[str],
+    min_match: int,
+) -> bool:
+    top_rows = list(row_texts or [])
+    if not top_rows:
+        return False
+    min_match = max(1, int(min_match))
+    if isinstance(rule, CreditFilterRule):
+        target = _extract_credit(selected_text) or _extract_credit(selected_value)
+        if target is None:
+            return False
+        matched = 0
+        for row in top_rows:
+            credits = _extract_row_credits(row)
+            if not credits:
+                continue
+            if all(v == target for v in credits):
+                matched += 1
+            if matched >= min_match:
+                return True
+        return False
+
+    tokens = _tokenize(selected_text or selected_value)
+    if not tokens:
+        return False
+    matched = 0
+    for row in top_rows:
+        row_norm = _normalize(row)
+        if all(tok in row_norm for tok in tokens[:2]):
+            matched += 1
+        if matched >= min_match:
+            return True
+    return False
+
+
+def _blocked_reason_code_from_result(result: Dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    code = _normalize(str(result.get("reason_code") or ""))
+    reason = _normalize(str(result.get("reason") or ""))
+    if code in {"auth_required", "login_required", "captcha_detected", "2fa_required", "permission_prompt_detected", "blocked_timeout"}:
+        return code
+    if any(tok in f"{code} {reason}" for tok in ("captcha", "2fa", "auth required", "login required", "permission prompt")):
+        if "captcha" in f"{code} {reason}":
+            return "captcha_detected"
+        if "2fa" in f"{code} {reason}":
+            return "2fa_required"
+        if "permission" in f"{code} {reason}":
+            return "permission_prompt_detected"
+        return "auth_required"
+    return ""
+
+
+def _blocked_reason_code_from_dom(dom: List[DOMElement]) -> str:
+    if not isinstance(dom, list) or not dom:
+        return ""
+    blob = " ".join(
+        _normalize(
+            " ".join(
+                [
+                    str(el.text or ""),
+                    str(el.aria_label or ""),
+                    str(el.title or ""),
+                    str(el.class_name or ""),
+                ]
+            )
+        )
+        for el in dom[:200]
+        if isinstance(el, DOMElement)
+    )
+    if not blob:
+        return ""
+    if any(tok in blob for tok in ("captcha", "recaptcha", "로봇이 아닙니다", "보안 문자")):
+        return "captcha_detected"
+    if any(tok in blob for tok in ("2fa", "otp", "인증 코드", "verification code")):
+        return "2fa_required"
+    if any(tok in blob for tok in ("로그인 필요", "login required", "sign in required", "authentication required")):
+        return "login_required"
+    if any(tok in blob for tok in ("permission", "권한 허용", "allow location", "allow notifications")):
+        return "permission_prompt_detected"
+    return ""
 
 
 def _pick_filter_control_for_option(
@@ -1064,8 +1351,15 @@ def _selection_reflected(control: DOMElement, selected_value: str, selected_text
     return False, f"observed={observed[:80]}"
 
 
-def _pick_rule(goal_text: str, control: DOMElement, option_text: str, option_value: str) -> FilterRule:
-    rules: List[FilterRule] = [CreditFilterRule(), GenericOptionTokenRule()]
+def _pick_rule(
+    goal_text: str,
+    control: DOMElement,
+    option_text: str,
+    option_value: str,
+    *,
+    page1_match_ratio: float = 0.60,
+) -> FilterRule:
+    rules: List[FilterRule] = [CreditFilterRule(match_ratio=page1_match_ratio), GenericOptionTokenRule()]
     for rule in rules:
         if rule.supports(
             goal_text=goal_text,

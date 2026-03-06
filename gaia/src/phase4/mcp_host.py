@@ -3480,6 +3480,10 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
+    trace_started_at = time.perf_counter()
+    trace_auth_submit_enabled = str(os.getenv("GAIA_TRACE_AUTH_SUBMIT", "0")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
 
     def pick(key: str, default: Any = None) -> Any:
@@ -3528,6 +3532,10 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
         or pick("selectorHint")
         or pick("selector")
         or ""
+    )
+    trace_auth_submit = any(
+        token in selector_hint.lower()
+        for token in ("로그인", "login", "sign in", "회원가입", "sign up", "register")
     )
     action_options: Dict[str, Any] = {}
     for option_key in ("timeoutMs", "timeout_ms", "doubleClick", "double_click", "button", "modifiers"):
@@ -3685,6 +3693,12 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
                     "message": "snapshot_id + ref_id are required for element actions",
                 },
             )
+        if trace_auth_submit and trace_auth_submit_enabled:
+            print(
+                f"[trace_browser_act] start action={action} verify={verify} "
+                f"ref_id={ref_id} selector_hint={selector_hint!r}"
+            )
+        ref_dispatch_started_at = time.perf_counter()
         result = await execute_ref_action_with_snapshot(
             session_id=session_id,
             snapshot_id=snapshot_id,
@@ -3697,6 +3711,12 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
             verify=verify,
             tab_id=tab_id,
         )
+        if trace_auth_submit and trace_auth_submit_enabled:
+            print(
+                f"[trace_browser_act] ref_dispatch_ms={int((time.perf_counter() - ref_dispatch_started_at) * 1000)} "
+                f"success={bool(result.get('success'))} effective={bool(result.get('effective', False))} "
+                f"reason_code={result.get('reason_code')}"
+            )
         if type_submit and bool(result.get("success")) and bool(result.get("effective")):
             press_result = await execute_ref_action_with_snapshot(
                 session_id=session_id,
@@ -3719,6 +3739,11 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
         result.setdefault("attempt_logs", [])
         result.setdefault("attempt_count", len(result.get("attempt_logs", [])))
         result.setdefault("state_change", {})
+        if trace_auth_submit and trace_auth_submit_enabled:
+            print(
+                f"[trace_browser_act] total_ms={int((time.perf_counter() - trace_started_at) * 1000)} "
+                f"return_reason={result.get('reason_code')}"
+            )
         return result
 
     session, page = await _resolve_session_page(session_id, tab_id=tab_id)

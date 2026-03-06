@@ -1,0 +1,16 @@
+{
+  "name": "gaia-playwright-rail",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic validation rail for GAIA",
+  "scripts": {
+    "test:smoke": "playwright test tests/smoke --config=playwright.config.ts",
+    "test:full": "playwright test tests/full --config=playwright.config.ts",
+    "install:browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.7.0",
+    "typescript": "^5.9.3"
+  }
+}

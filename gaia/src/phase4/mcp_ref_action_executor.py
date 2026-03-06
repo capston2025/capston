@@ -64,6 +64,10 @@ async def execute_ref_action_with_snapshot_impl(
     tab_id: Optional[Any] = None,
     ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    trace_started_at = time.perf_counter()
+    trace_auth_submit_enabled = str(os.getenv("GAIA_TRACE_AUTH_SUBMIT", "0")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     if isinstance(ctx, dict):
         globals().update(ctx)
     if not playwright_instance:
@@ -283,6 +287,7 @@ async def execute_ref_action_with_snapshot_impl(
     context_prep = await prepare_ref_action_execution_context(
         action=action,
         value=value,
+        selector_hint=selector_hint,
         verify=verify,
         requested_meta=requested_meta,
         requested_snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
@@ -301,6 +306,9 @@ async def execute_ref_action_with_snapshot_impl(
     state_change = context_prep.get("state_change") if isinstance(context_prep, dict) else {}
     if not isinstance(state_change, dict):
         state_change = {}
+    auth_submit_like_click = bool(
+        context_prep.get("auth_submit_like_click")
+    ) if isinstance(context_prep, dict) else False
     submit_like_click = bool(context_prep.get("submit_like_click")) if isinstance(context_prep, dict) else False
     close_like_click = bool(context_prep.get("close_like_click")) if isinstance(context_prep, dict) else False
     modal_regions_for_requested = (
@@ -438,7 +446,13 @@ async def execute_ref_action_with_snapshot_impl(
             )
 
         try:
+            locator_action_started_at = time.perf_counter()
             await _execute_action_on_locator(action, page, locator, value, options=options)
+            if auth_submit_like_click and trace_auth_submit_enabled:
+                print(
+                    f"[trace_ref_action] locator_action_ms={int((time.perf_counter() - locator_action_started_at) * 1000)} "
+                    f"action={action} selector_hint={selector_hint!r}"
+                )
             interaction_success = True
         except Exception as action_exc:
             friendly_msg = to_ai_friendly_error(action_exc, ref_id=ref_id)
@@ -495,60 +509,85 @@ async def execute_ref_action_with_snapshot_impl(
             await page.wait_for_timeout(250)
 
         effective = False
-        for probe_wait_ms in probe_wait_schedule:
-            if _deadline_exceeded():
-                reason_code = "action_timeout"
-                break
-            await page.wait_for_timeout(probe_wait_ms)
-            state_change = await _collect_state_change_probe(
-                probe_wait_ms=probe_wait_ms,
-                probe_scroll="none",
-            )
-            effective = bool(state_change.get("effective", True)) if verify_for_action else True
-            if effective:
-                break
+        if auth_submit_like_click and not verify_for_action:
+            effective = True
+            if isinstance(state_change, dict):
+                state_change["effective"] = True
+                state_change["auth_submit_fast_path"] = True
+            if auth_submit_like_click and trace_auth_submit_enabled:
+                print("[trace_ref_action] verify_loop_ms=0 effective=True auth_state_changed=False skipped=auth_submit_verify_false")
+        else:
+            verify_started_at = time.perf_counter()
+            for probe_wait_ms in probe_wait_schedule:
+                if _deadline_exceeded():
+                    reason_code = "action_timeout"
+                    break
+                await page.wait_for_timeout(probe_wait_ms)
+                state_change = await _collect_state_change_probe(
+                    probe_wait_ms=probe_wait_ms,
+                    probe_scroll="none",
+                )
+                effective = bool(state_change.get("effective", True)) if verify_for_action else True
+                if auth_submit_like_click and bool(state_change.get("auth_state_changed")):
+                    effective = True
+                    state_change["effective"] = True
+                    state_change["auth_submit_fast_path"] = True
+                if effective:
+                    break
+            if auth_submit_like_click and trace_auth_submit_enabled:
+                print(
+                    f"[trace_ref_action] verify_loop_ms={int((time.perf_counter() - verify_started_at) * 1000)} "
+                    f"effective={effective} auth_state_changed={bool(state_change.get('auth_state_changed')) if isinstance(state_change, dict) else False}"
+                )
 
-        verify_fallback_result = await run_verify_fallback_chain(
-            verify_for_action=verify_for_action,
-            effective=effective,
-            action=action,
-            close_like_click=close_like_click,
-            page=page,
-            locator=locator,
-            requested_meta=requested_meta if isinstance(requested_meta, dict) else None,
-            requested_snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
-            modal_regions=modal_regions_for_requested if isinstance(modal_regions_for_requested, list) else None,
-            ref_id=ref_id,
-            attempt_idx=attempt_idx,
-            mode=mode,
-            resolved_selector=resolved_selector,
-            frame_index=frame_index,
-            state_change=state_change,
-            attempt_logs=attempt_logs,
-            deadline_exceeded_fn=_deadline_exceeded,
-            collect_state_change_probe_fn=_collect_state_change_probe,
-            capture_close_diagnostic_fn=_capture_close_diagnostic,
-            attempt_close_ref_fallbacks_fn=attempt_close_ref_fallbacks,
-            attempt_backdrop_close_fn=attempt_backdrop_close,
-            attempt_modal_corner_close_fn=attempt_modal_corner_close,
-            try_click_hit_target_from_point_fn=_try_click_hit_target_from_point,
-            try_click_container_ancestor_fn=_try_click_container_ancestor,
-            collect_close_ref_candidates_fn=_collect_close_ref_candidates,
-            build_ref_candidates_fn=_build_ref_candidates,
-            resolve_locator_from_ref_fn=_resolve_locator_from_ref,
+        auth_fast_path = bool(
+            auth_submit_like_click
+            and effective
+            and isinstance(state_change, dict)
+            and bool(state_change.get("auth_state_changed"))
         )
-        effective = bool(verify_fallback_result.get("effective"))
-        state_change = verify_fallback_result.get("state_change") or state_change
-        if isinstance(state_change, dict) and bool(state_change.get("resnapshot_required")):
-            post_click_snapshot_id = await _maybe_resnapshot("verify_fallback")
-            if post_click_snapshot_id:
-                state_change["post_click_snapshot_id"] = post_click_snapshot_id
-        ref_id = str(verify_fallback_result.get("ref_id") or ref_id)
-        updated_meta = verify_fallback_result.get("requested_meta")
-        if isinstance(updated_meta, dict):
-            requested_meta = updated_meta
-        if bool(verify_fallback_result.get("timed_out")):
-            reason_code = "action_timeout"
+        if not auth_fast_path:
+            verify_fallback_result = await run_verify_fallback_chain(
+                verify_for_action=verify_for_action,
+                effective=effective,
+                action=action,
+                close_like_click=close_like_click,
+                page=page,
+                locator=locator,
+                requested_meta=requested_meta if isinstance(requested_meta, dict) else None,
+                requested_snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
+                modal_regions=modal_regions_for_requested if isinstance(modal_regions_for_requested, list) else None,
+                ref_id=ref_id,
+                attempt_idx=attempt_idx,
+                mode=mode,
+                resolved_selector=resolved_selector,
+                frame_index=frame_index,
+                state_change=state_change,
+                attempt_logs=attempt_logs,
+                deadline_exceeded_fn=_deadline_exceeded,
+                collect_state_change_probe_fn=_collect_state_change_probe,
+                capture_close_diagnostic_fn=_capture_close_diagnostic,
+                attempt_close_ref_fallbacks_fn=attempt_close_ref_fallbacks,
+                attempt_backdrop_close_fn=attempt_backdrop_close,
+                attempt_modal_corner_close_fn=attempt_modal_corner_close,
+                try_click_hit_target_from_point_fn=_try_click_hit_target_from_point,
+                try_click_container_ancestor_fn=_try_click_container_ancestor,
+                collect_close_ref_candidates_fn=_collect_close_ref_candidates,
+                build_ref_candidates_fn=_build_ref_candidates,
+                resolve_locator_from_ref_fn=_resolve_locator_from_ref,
+            )
+            effective = bool(verify_fallback_result.get("effective"))
+            state_change = verify_fallback_result.get("state_change") or state_change
+            if isinstance(state_change, dict) and bool(state_change.get("resnapshot_required")):
+                post_click_snapshot_id = await _maybe_resnapshot("verify_fallback")
+                if post_click_snapshot_id:
+                    state_change["post_click_snapshot_id"] = post_click_snapshot_id
+            ref_id = str(verify_fallback_result.get("ref_id") or ref_id)
+            updated_meta = verify_fallback_result.get("requested_meta")
+            if isinstance(updated_meta, dict):
+                requested_meta = updated_meta
+            if bool(verify_fallback_result.get("timed_out")):
+                reason_code = "action_timeout"
 
         if reason_code == "action_timeout":
             attempt_logs.append(
@@ -580,6 +619,11 @@ async def execute_ref_action_with_snapshot_impl(
             screenshot_bytes = await page.screenshot(full_page=False)
             screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
             tab_id_value = _get_tab_index(page)
+            if auth_submit_like_click and trace_auth_submit_enabled:
+                print(
+                    f"[trace_ref_action] total_ms={int((time.perf_counter() - trace_started_at) * 1000)} "
+                    f"result=success reason_code={reason_code}"
+                )
             return build_full_success_response(
                 reason="ref action executed and state changed",
                 snapshot_id=snapshot_id,
@@ -606,6 +650,11 @@ async def execute_ref_action_with_snapshot_impl(
 
     session.current_url = page.url
     tab_id_value = _get_tab_index(page)
+    if auth_submit_like_click and trace_auth_submit_enabled:
+        print(
+            f"[trace_ref_action] total_ms={int((time.perf_counter() - trace_started_at) * 1000)} "
+            f"result=failure reason_code={reason_code}"
+        )
     return build_full_failure_response(
         reason_code=reason_code,
         snapshot_id=snapshot_id,

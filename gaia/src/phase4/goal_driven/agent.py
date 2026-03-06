@@ -158,6 +158,23 @@ class _GoalFilterValidationAdapter:
             "state_change": dict(exec_result.state_change or {}),
         }
 
+    def reload_page(self, wait_ms: int = 900) -> Dict[str, Any]:
+        current_url = str(self.agent._active_url or "")
+        exec_result = self.agent._execute_action("goto", url=current_url)
+        self.agent._last_exec_result = exec_result
+        if wait_ms > 0:
+            try:
+                self.agent._execute_action("wait", value={"timeMs": int(max(100, wait_ms))})
+            except Exception:
+                pass
+        return {
+            "success": bool(exec_result.success),
+            "effective": bool(exec_result.effective),
+            "reason_code": str(exec_result.reason_code or ""),
+            "reason": str(exec_result.reason or ""),
+            "state_change": dict(exec_result.state_change or {}),
+        }
+
     def resolve_ref(self, element_id: int) -> str:
         return str(self.agent._element_ref_ids.get(element_id) or "")
 
@@ -249,6 +266,7 @@ class GoalDrivenAgent:
         self._runtime_phase: str = "COLLECT"
         self._progress_counter: int = 0
         self._no_progress_counter: int = 0
+        self._weak_progress_streak: int = 0
         self._handoff_state: Dict[str, Any] = {}
         self._memory_selector_bias: Dict[str, float] = {}
         self._recent_click_element_ids: List[int] = []
@@ -258,6 +276,7 @@ class GoalDrivenAgent:
         self._goal_tokens: set[str] = set()
         self._steering_policy: Dict[str, Any] = {}
         self._steering_remaining_steps: int = 0
+        self._steering_infeasible_block: bool = False
         self._reason_code_counts: Dict[str, int] = {}
         self._recovery_retry_streaks: Dict[str, int] = {}
         self._overlay_intercept_pending: bool = False
@@ -268,6 +287,10 @@ class GoalDrivenAgent:
             "no_progress_context_shift_min": self._env_int("GAIA_LOOP_NO_PROGRESS_CONTEXT_SHIFT_MIN", 2, low=0, high=50),
             "ineffective_action_shift_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_SHIFT_LIMIT", 3, low=1, high=30),
             "ineffective_action_stop_limit": self._env_int("GAIA_LOOP_INEFFECTIVE_ACTION_STOP_LIMIT", 8, low=2, high=80),
+            "weak_progress_streak_limit": self._env_int("GAIA_LOOP_WEAK_PROGRESS_STREAK_LIMIT", 3, low=1, high=20),
+            "oscillation_window": self._env_int("GAIA_LOOP_OSCILLATION_WINDOW", 6, low=4, high=20),
+            "oscillation_block_steps": self._env_int("GAIA_LOOP_OSCILLATION_BLOCK_STEPS", 2, low=1, high=10),
+            "close_phase_budget_steps": self._env_int("GAIA_LOOP_CLOSE_PHASE_BUDGET_STEPS", 6, low=1, high=40),
             "context_shift_fail_limit": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_FAIL_LIMIT", 3, low=1, high=20),
             "context_shift_cooldown_steps": self._env_int("GAIA_LOOP_CONTEXT_SHIFT_COOLDOWN_STEPS", 4, low=0, high=60),
             "transient_retry_limit": self._env_int("GAIA_LOOP_TRANSIENT_RETRY_LIMIT", 2, low=1, high=20),
@@ -704,7 +727,7 @@ class GoalDrivenAgent:
             ttl = int(policy.get("ttl_steps") or 8)
         except Exception:
             ttl = 8
-        ttl = max(1, min(20, ttl))
+        ttl = max(3, min(15, ttl))
         scope = str(policy.get("scope") or "next_n_steps").strip().lower() or "next_n_steps"
         bound_goal_id = str(policy.get("bound_goal_id") or "").strip()
         bound_phase = str(policy.get("bound_phase") or "").strip().upper()
@@ -735,6 +758,7 @@ class GoalDrivenAgent:
             "bound_goal_id": bound_goal_id,
             "bound_phase": bound_phase,
             "compile_confidence": policy.get("compile_confidence"),
+            "_soft_relaxed_once": bool(policy.get("_soft_relaxed_once", False)),
         }
         self._steering_remaining_steps = ttl
 
@@ -1024,32 +1048,43 @@ class GoalDrivenAgent:
                 target_tokens=target_tokens,
             )
             if replacement is None:
-                replacement = self._pick_steering_candidate(
-                    dom_elements,
-                    prefer_tags=set(),
-                    forbid_tags=hard_forbid,
-                    target_tokens=target_tokens,
-                )
-                if replacement is not None:
-                    self._record_reason_code("steering_infeasible")
-                    self._record_reason_code("steering_relaxed")
-                    return ActionDecision(
-                        action=ActionType.CLICK,
-                        element_id=int(replacement),
-                        value=None,
-                        reasoning=(
-                            "사용자 스티어링 적용 중 후보 부족으로 soft 선호를 완화하고 "
-                            "hard 금지 규칙만 유지한 안전 후보를 선택했습니다. "
-                            + str(decision.reasoning or "")
-                        ).strip(),
-                        confidence=max(float(decision.confidence or 0.0), 0.7),
-                        is_goal_achieved=False,
-                        goal_achievement_reason=None,
+                soft_relaxed_once = bool(policy.get("_soft_relaxed_once", False))
+                if not soft_relaxed_once:
+                    replacement = self._pick_steering_candidate(
+                        dom_elements,
+                        prefer_tags=set(),
+                        forbid_tags=hard_forbid,
+                        target_tokens=target_tokens,
                     )
+                    if replacement is not None:
+                        self._record_reason_code("steering_relaxed_soft")
+                        self._steering_policy["_soft_relaxed_once"] = True
+                        return ActionDecision(
+                            action=ActionType.CLICK,
+                            element_id=int(replacement),
+                            value=None,
+                            reasoning=(
+                                "스티어링 soft 규칙을 1회 완화해 hard 금지 규칙만 유지한 대체 액션을 선택했습니다. "
+                                + str(decision.reasoning or "")
+                            ).strip(),
+                            confidence=max(float(decision.confidence or 0.0), 0.7),
+                            is_goal_achieved=False,
+                            goal_achievement_reason=None,
+                        )
                 self._record_reason_code("steering_infeasible")
-                self._record_reason_code("steering_conflict")
-                self._expire_steering_policy("steering_expired")
-                return decision
+                self._action_feedback.append(
+                    "스티어링 HARD 규칙으로 실행 가능한 후보가 없습니다. /steer clear 또는 /handoff로 정책을 수정하세요."
+                )
+                if len(self._action_feedback) > 10:
+                    self._action_feedback = self._action_feedback[-10:]
+                self._steering_infeasible_block = True
+                return ActionDecision(
+                    action=ActionType.WAIT,
+                    reasoning="스티어링 정책 충돌(steering_infeasible)로 사용자 수정이 필요합니다.",
+                    confidence=0.2,
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
             self._record_reason_code("steering_applied")
             return ActionDecision(
                 action=ActionType.CLICK,
@@ -1471,19 +1506,11 @@ class GoalDrivenAgent:
     def _state_change_indicates_progress(state_change: Optional[Dict[str, Any]]) -> bool:
         if not isinstance(state_change, dict):
             return False
-        if bool(state_change.get("effective")):
-            return True
         strong_progress_keys = (
             "url_changed",
-            "dom_changed",
             "target_visibility_changed",
             "target_value_changed",
             "target_value_matches",
-            "counter_changed",
-            "number_tokens_changed",
-            "status_text_changed",
-            "list_count_changed",
-            "interactive_count_changed",
             "modal_count_changed",
             "backdrop_count_changed",
             "dialog_count_changed",
@@ -1495,6 +1522,26 @@ class GoalDrivenAgent:
             "dialog_detected",
         )
         return any(bool(state_change.get(key)) for key in strong_progress_keys)
+
+    @staticmethod
+    def _state_change_is_weak(state_change: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(state_change, dict):
+            return False
+        if GoalDrivenAgent._state_change_indicates_progress(state_change):
+            return False
+        weak_keys = (
+            "effective",
+            "dom_changed",
+            "text_digest_changed",
+            "interactive_count_changed",
+            "list_count_changed",
+            "counter_changed",
+            "number_tokens_changed",
+            "status_text_changed",
+            "focus_changed",
+            "scroll_changed",
+        )
+        return any(bool(state_change.get(key)) for key in weak_keys)
 
     def _is_verification_style_goal(self, goal: TestGoal) -> bool:
         text = self._normalize_text(
@@ -1561,6 +1608,8 @@ class GoalDrivenAgent:
             )
         )
         if not text:
+            return False
+        if not self._is_verification_style_goal(goal):
             return False
         filter_hints = (
             "필터",
@@ -2133,7 +2182,9 @@ class GoalDrivenAgent:
         }
         callback_resp = self._request_user_intervention(callback_payload)
         if callback_resp is not None:
+            callback_reason_code = str(callback_resp.get("reason_code") or "").strip().lower()
             if str(callback_resp.get("action") or "").lower() in {"cancel", "deny", "no"}:
+                self._record_reason_code(callback_reason_code or "user_intervention_missing")
                 return False
 
             goal_text = str(callback_resp.get("goal_text") or "").strip()
@@ -2165,6 +2216,8 @@ class GoalDrivenAgent:
                 "phase": self._runtime_phase,
                 "timestamp": int(time.time()),
             }
+            if callback_reason_code:
+                self._record_reason_code(callback_reason_code)
             proceed = callback_resp.get("proceed")
             if isinstance(proceed, bool):
                 return proceed
@@ -2185,6 +2238,7 @@ class GoalDrivenAgent:
                 "requested": True,
                 "timestamp": int(time.time()),
             }
+            self._record_reason_code("user_intervention_missing")
             self._log(
                 "⏸️ 비대화 실행이라 추가 입력을 받을 수 없습니다. "
                 "실행을 일시 중지하고 사용자 응답(/handoff 또는 재실행 인자) 대기 상태로 전환합니다."
@@ -2193,6 +2247,7 @@ class GoalDrivenAgent:
         try:
             refined = input("구체 목표를 입력하세요 (비우면 기존 목표 유지): ").strip()
         except (EOFError, KeyboardInterrupt):
+            self._record_reason_code("user_intervention_missing")
             self._log("사용자 입력이 중단되었습니다.")
             return False
         if refined:
@@ -2971,6 +3026,7 @@ class GoalDrivenAgent:
         self._overlay_intercept_pending = False
         steps: List[StepResult] = []
         self._active_goal_text = f"{goal.name} {goal.description}".strip().lower()
+        self._steering_infeasible_block = False
         self._ineffective_ref_counts = {}
         self._last_success_click_intent = ""
         self._success_click_intent_streak = 0
@@ -3358,6 +3414,34 @@ class GoalDrivenAgent:
                 decision=decision,
                 dom_elements=dom_elements,
             )
+            if bool(self._steering_infeasible_block):
+                self._steering_infeasible_block = False
+                callback_payload = {
+                    "kind": "clarification",
+                    "reason_code": "steering_infeasible",
+                    "question": (
+                        "스티어링 HARD 규칙으로 실행 후보가 없습니다. "
+                        "/steer clear 또는 /handoff로 수정 후 /resume 하시겠습니까?"
+                    ),
+                    "fields": ["proceed", "instruction"],
+                    "current_url": self._active_url,
+                    "step": int(step_count),
+                }
+                callback_resp = self._request_user_intervention(callback_payload)
+                proceed = self._to_bool(
+                    (callback_resp or {}).get("proceed"),
+                    default=False,
+                ) if isinstance(callback_resp, dict) else False
+                if proceed:
+                    self._expire_steering_policy("steering_expired")
+                    continue
+                return self._build_failure_result(
+                    goal=goal,
+                    steps=steps,
+                    step_count=step_count,
+                    start_time=start_time,
+                    reason="스티어링 정책 충돌로 사용자 개입이 필요합니다.",
+                )
 
             # 4. 목표 달성 확인
             if decision.is_goal_achieved:
@@ -3673,6 +3757,8 @@ class GoalDrivenAgent:
             post_dom = progress_eval.get("post_dom") or []
             state_change = progress_eval.get("state_change")
             changed = bool(progress_eval.get("changed"))
+            if isinstance(state_change, dict):
+                changed = self._state_change_indicates_progress(state_change)
             terminal_result = progress_eval.get("terminal_result")
             if terminal_result is not None:
                 return terminal_result
@@ -3793,11 +3879,21 @@ class GoalDrivenAgent:
                         reason=reason,
                     )
 
+            weak_only = (not changed) and self._state_change_is_weak(state_change)
             if changed:
                 self._progress_counter += 1
                 self._no_progress_counter = 0
+                self._weak_progress_streak = 0
             else:
                 self._no_progress_counter += 1
+                if weak_only:
+                    self._weak_progress_streak += 1
+                    weak_limit = max(1, self._loop_policy_value("weak_progress_streak_limit", 3))
+                    if self._weak_progress_streak >= weak_limit:
+                        self._record_reason_code("weak_progress_only")
+                        force_context_shift = True
+                else:
+                    self._weak_progress_streak = 0
             master_orchestrator.record_progress(
                 changed=changed,
                 signal={
@@ -4091,20 +4187,19 @@ class GoalDrivenAgent:
     ) -> Dict[str, Any]:
         """Deterministic semantic validation for filter-style goals."""
         try:
-            from .filter_validation_engine import run_filter_validation
+            from .filter_validation_engine import build_filter_validation_config, run_filter_validation
 
             adapter = _GoalFilterValidationAdapter(self)
             report = run_filter_validation(
                 adapter=adapter,
                 goal_text=goal_text,
-                config={
-                    "max_pages": max(1, int(max_pages)),
-                    "max_cases": max(1, int(max_cases)),
-                    "strict_mandatory": True,
-                    "use_current_selection_only": bool(use_current_selection_only),
-                    "forced_selected_value": str(forced_selected_value or "").strip(),
-                    "validation_contract": dict(validation_contract or {}),
-                },
+                config=build_filter_validation_config(
+                    max_pages=max(1, int(max_pages)),
+                    max_cases=max(1, int(max_cases)),
+                    use_current_selection_only=bool(use_current_selection_only),
+                    forced_selected_value=str(forced_selected_value or "").strip(),
+                    validation_contract=dict(validation_contract or {}),
+                ),
             )
             if isinstance(report, dict):
                 return report
@@ -4127,7 +4222,7 @@ class GoalDrivenAgent:
                 {
                     "check_id": "filter_engine_error",
                     "name": "필터 의미 검증 엔진 실행",
-                    "status": "failed",
+                    "status": "fail",
                     "step": 1,
                     "action": "verify",
                     "input_value": "-",

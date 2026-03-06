@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter
@@ -20,6 +21,7 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
+from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
@@ -513,7 +515,7 @@ def _build_validation_report(
             continue
 
         success = bool(getattr(step, "success", False))
-        status = "passed" if success else "failed"
+        status = "pass" if success else "fail"
         element_id = getattr(action_obj, "element_id", None)
         input_value = getattr(action_obj, "value", None)
         error_message = str(getattr(step, "error_message", "") or "").strip()
@@ -556,8 +558,8 @@ def _build_validation_report(
             )
 
     total = len(checks)
-    passed = sum(1 for c in checks if str(c.get("status")) == "passed")
-    failed = sum(1 for c in checks if str(c.get("status")) == "failed")
+    passed = sum(1 for c in checks if str(c.get("status")).lower() in {"pass", "passed"})
+    failed = sum(1 for c in checks if str(c.get("status")).lower() in {"fail", "failed"})
     skipped = max(0, total - passed - failed)
     success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
 
@@ -584,7 +586,9 @@ def _is_strict_validation_failed(report: Dict[str, Any]) -> bool:
     if bool(summary.get("strict_failed")):
         return True
     try:
-        return int(summary.get("failed_mandatory_checks") or 0) > 0
+        failed_mandatory = int(summary.get("failed_mandatory_checks") or 0)
+        skipped_mandatory = int(summary.get("skipped_mandatory_checks") or 0)
+        return (failed_mandatory + skipped_mandatory) > 0
     except Exception:
         return False
 
@@ -601,6 +605,61 @@ def _is_goal_satisfaction_failed(report: Dict[str, Any]) -> bool:
     if "goal_satisfied" not in summary:
         return False
     return not bool(summary.get("goal_satisfied"))
+
+
+def _detect_blocked_user_action(
+    reason: str,
+    reason_summary: Dict[str, int],
+) -> bool:
+    reason_text = str(reason or "").strip().lower()
+    blocked_codes = {
+        "auth_required",
+        "login_required",
+        "captcha_detected",
+        "2fa_required",
+        "permission_prompt_detected",
+        "blocked_timeout",
+        "blocked_user_action",
+        "steering_infeasible",
+        "user_intervention_missing",
+        "clarification_required",
+        "clarification_timeout",
+        "intervention_timeout",
+    }
+    for code in blocked_codes:
+        if int(reason_summary.get(code) or 0) > 0:
+            return True
+    blocked_terms = (
+        "captcha",
+        "2fa",
+        "권한 허용",
+        "사용자 요청으로 실행을 중단",
+        "추가 입력",
+        "사용자 개입",
+        "resume",
+        "목표 명확화",
+        "명확화가 필요",
+        "사용자 입력이 제공되지 않아 중단",
+    )
+    return any(term in reason_text for term in blocked_terms)
+
+
+def _derive_final_status(
+    *,
+    result_success: bool,
+    reason: str,
+    validation_report: Dict[str, Any],
+    reason_summary: Dict[str, int],
+) -> str:
+    if result_success:
+        return "SUCCESS"
+    if _detect_blocked_user_action(reason, reason_summary):
+        return "BLOCKED_USER_ACTION"
+    if _is_strict_validation_failed(validation_report):
+        return "FAIL"
+    if _is_goal_satisfaction_failed(validation_report):
+        return "FAIL"
+    return "FAIL"
 
 
 def _build_step_timeline(result: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
@@ -633,6 +692,37 @@ def _build_step_timeline(result: Any, *, limit: int = 12) -> List[Dict[str, Any]
             }
         )
     return rows
+
+
+def _limit_attachments_for_status(
+    attachments: Any,
+    *,
+    final_status: str,
+) -> List[Dict[str, Any]]:
+    if not isinstance(attachments, list):
+        return []
+    max_images_per_run = 3
+    status_key = str(final_status or "").strip().upper()
+    per_status_limit = {
+        "SUCCESS": 1,
+        "FAIL": 1,
+        "BLOCKED_USER_ACTION": 1,
+    }
+    keep_limit = int(per_status_limit.get(status_key, 1))
+    keep_limit = max(1, min(max_images_per_run, keep_limit))
+    images: List[Dict[str, Any]] = []
+    for row in attachments:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("kind") or "").strip().lower() != "image_base64":
+            continue
+        data = row.get("data")
+        if not isinstance(data, str) or not data.strip():
+            continue
+        images.append(row)
+        if len(images) >= keep_limit:
+            break
+    return images
 
 
 def _merge_reason_code_summary(
@@ -781,15 +871,28 @@ def _run_single_chat_goal(
             "필터 의미 검증에서 목표 커버리지가 충족되지 않았습니다. "
             + (effective_reason or "검증 리포트를 확인하세요.")
         ).strip()
+    rail_result = run_validation_rail(
+        target_url=url,
+        run_id=session_id or WORKSPACE_DEFAULT,
+    )
+    rail_summary = rail_result.get("summary") if isinstance(rail_result, dict) else {}
+    rail_cases = rail_result.get("cases") if isinstance(rail_result, dict) else []
+    rail_artifacts = rail_result.get("artifacts") if isinstance(rail_result, dict) else {}
+    if not isinstance(rail_summary, dict):
+        rail_summary = {}
+    if not isinstance(rail_cases, list):
+        rail_cases = []
+    if not isinstance(rail_artifacts, dict):
+        rail_artifacts = {}
+    rail_mode = str(rail_summary.get("mode") or "soft").strip().lower()
+    rail_status = str(rail_summary.get("status") or "").strip().lower()
+    if rail_mode == "hard" and rail_status in {"failed", "timeout", "error"}:
+        effective_success = False
+        effective_reason = (
+            "검증 레일 실패가 감지되었습니다. "
+            + (effective_reason or str(rail_summary.get("reason") or "validation rail failed"))
+        ).strip()
 
-    print("\n실행 결과")
-    print(f"goal: {result.goal_name}")
-    print(f"status: {'success' if effective_success else 'failed'}")
-    print(f"steps: {result.total_steps}")
-    print(f"reason: {effective_reason}")
-    print(f"duration: {result.duration_seconds:.2f}s")
-    if not effective_success:
-        _print_llm_failure_help(effective_reason)
     report_reason_summary = (
         validation_report.get("reason_code_summary")
         if isinstance(validation_report.get("reason_code_summary"), dict)
@@ -799,9 +902,34 @@ def _run_single_chat_goal(
         dict(getattr(agent, "_reason_code_counts", {}) or {}),
         report_reason_summary,
     )
+    rail_reason_code = str(rail_summary.get("reason_code") or "").strip()
+    if rail_reason_code:
+        try:
+            reason_summary[rail_reason_code] = int(reason_summary.get(rail_reason_code) or 0) + 1
+        except Exception:
+            reason_summary[rail_reason_code] = 1
+    final_status = _derive_final_status(
+        result_success=bool(effective_success),
+        reason=effective_reason,
+        validation_report=validation_report,
+        reason_summary=reason_summary,
+    )
+    effective_success = final_status == "SUCCESS"
+
+    print("\n실행 결과")
+    print(f"goal: {result.goal_name}")
+    print(f"status: {'success' if effective_success else 'failed'}")
+    print(f"final_status: {final_status}")
+    print(f"steps: {result.total_steps}")
+    print(f"reason: {effective_reason}")
+    print(f"duration: {result.duration_seconds:.2f}s")
+    if not effective_success:
+        _print_llm_failure_help(effective_reason)
+
     summary = {
         "goal": result.goal_name,
         "status": "success" if effective_success else "failed",
+        "final_status": final_status,
         "steps": result.total_steps,
         "reason": effective_reason,
         "duration_seconds": round(float(result.duration_seconds), 2),
@@ -810,6 +938,9 @@ def _run_single_chat_goal(
         "validation_summary": validation_report.get("summary", {}),
         "validation_checks": validation_report.get("checks", []),
         "verification_report": validation_report,
+        "validation_rail_summary": rail_summary,
+        "validation_rail_cases": rail_cases,
+        "validation_rail_artifacts": rail_artifacts,
         "attachments": (
             validation_report.get("attachments")
             if isinstance(validation_report.get("attachments"), list)
@@ -817,7 +948,6 @@ def _run_single_chat_goal(
         ),
     }
     if not summary["attachments"] and captured_shots:
-        # 범용 증거 첨부: 실행 중 캡처된 스냅샷 중 최근 3장을 전달
         sample = captured_shots[-3:]
         summary["attachments"] = [
             {
@@ -829,6 +959,10 @@ def _run_single_chat_goal(
             for idx, shot in enumerate(sample)
             if isinstance(shot, str) and shot.strip()
         ]
+    summary["attachments"] = _limit_attachments_for_status(
+        summary.get("attachments"),
+        final_status=final_status,
+    )
     if isinstance(goal.test_data, dict):
         auth_payload = {}
         for key in (
@@ -969,6 +1103,37 @@ def _run_ai_terminal_impl(
     else:
         config = ExplorationConfig(max_actions=actions, non_stop_mode=True)
     try:
+        if intervention_callback is None:
+            def _default_ai_intervention_callback(reason: str, current_url: str) -> Dict[str, Any]:
+                _ = reason
+                _ = current_url
+                username = (
+                    os.getenv("GAIA_TEST_USERNAME")
+                    or os.getenv("GAIA_AUTH_USERNAME")
+                    or ""
+                ).strip()
+                password = (
+                    os.getenv("GAIA_TEST_PASSWORD")
+                    or os.getenv("GAIA_AUTH_PASSWORD")
+                    or ""
+                ).strip()
+                email = (
+                    os.getenv("GAIA_TEST_EMAIL")
+                    or os.getenv("GAIA_AUTH_EMAIL")
+                    or ""
+                ).strip()
+                if username and password:
+                    payload: Dict[str, Any] = {
+                        "proceed": True,
+                        "username": username,
+                        "password": password,
+                    }
+                    if email:
+                        payload["email"] = email
+                    return payload
+                return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
+
+            intervention_callback = _default_ai_intervention_callback
         agent = ExploratoryAgent(
             mcp_host_url=CONFIG.mcp.host_url,
             session_id=session_id or WORKSPACE_DEFAULT,

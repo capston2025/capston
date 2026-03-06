@@ -102,9 +102,11 @@ def _help_text() -> str:
         "/session reuse <key>             세션 키 재사용/전환\n"
         "/handoff                         pending 사용자 요청 조회\n"
         "/handoff key=value ...           pending 요청 응답 등록\n"
+        "/resume [otp=123456]             pending 개입을 proceed=true로 재개\n"
         "/steer <자연어 지시>             자연어 스티어링 정책 설정\n"
         "/steer status                    현재 스티어링 정책 조회\n"
         "/steer clear                     스티어링 정책 해제\n"
+        "/rail smoke|full|status          Playwright 검증 레일 실행/조회\n"
         "/cancel                          pending 개입 요청 취소 응답 등록\n"
         "/status                          현재 세션 상태\n"
         "/stop                            실행 중단 요청 플래그 설정\n"
@@ -320,7 +322,7 @@ def _normalize_result_status(result: CommandResult) -> str:
     status = str(result.status or "").strip().lower()
     if status in {"exit", "empty"}:
         return status
-    if status in {"error", "failed", "success"}:
+    if status in {"error", "failed", "success", "blocked_user_action", "skipped_not_applicable"}:
         return status
     return "success" if int(result.code or 0) == 0 else "failed"
 
@@ -378,11 +380,11 @@ def _short_cell(value: Any, limit: int = 52) -> str:
 
 def _check_status_label(value: Any) -> str:
     token = str(value or "").strip().lower()
-    if token == "passed":
+    if token in {"pass", "passed"}:
         return "PASS"
-    if token == "failed":
+    if token in {"fail", "failed"}:
         return "FAIL"
-    if token == "skipped":
+    if token.startswith("skipped") or token == "skipped":
         return "SKIP"
     if token:
         return token.upper()
@@ -445,6 +447,7 @@ def build_command_payload(
     payload: Dict[str, Any] = {
         "command": command,
         "status": str(data.get("status") or status),
+        "final_status": str(data.get("final_status") or ""),
         "goal": str(data.get("goal") or ""),
         "steps": _as_int(data.get("steps")),
         "reason": str(data.get("reason") or ""),
@@ -474,6 +477,15 @@ def build_command_payload(
     verification_report = data.get("verification_report")
     if isinstance(verification_report, dict):
         payload["verification_report"] = verification_report
+    rail_summary = data.get("validation_rail_summary")
+    if isinstance(rail_summary, dict):
+        payload["validation_rail_summary"] = rail_summary
+    rail_cases = data.get("validation_rail_cases")
+    if isinstance(rail_cases, list):
+        payload["validation_rail_cases"] = rail_cases
+    rail_artifacts = data.get("validation_rail_artifacts")
+    if isinstance(rail_artifacts, dict):
+        payload["validation_rail_artifacts"] = rail_artifacts
     if not payload["goal"] and command.startswith("/test "):
         payload["goal"] = command[6:].strip()
     return payload
@@ -543,7 +555,7 @@ def _extract_step_budget(text: str, default: int = 8) -> int:
         except Exception:
             continue
         break
-    return max(3, min(20, int(value)))
+    return max(3, min(15, int(value)))
 
 
 def _detect_steering_scope(text: str) -> str:
@@ -735,6 +747,9 @@ def _compile_steering_policy(raw_text: str, context: HubContext) -> Dict[str, An
         "bound_phase": "",
         "bound_origin": bound_origin,
         "compile_confidence": confidence,
+        "auto_relax_soft_once": True,
+        "never_auto_relax_hard": True,
+        "_soft_relaxed_once": False,
         "compiled_at": int(time.time()),
     }
     return policy
@@ -924,7 +939,7 @@ def _build_hub_intervention_callback(context: HubContext, sink: HubSink):
             "응답: /handoff key=value ...\n"
             "예시: /handoff username=user123 password=pass123 proceed=true"
         )
-        return {"action": "cancel", "proceed": False}
+        return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
 
     return _callback
 
@@ -1032,7 +1047,7 @@ def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
             )
         else:
             sink.info("추가 입력 필요: 실행에 필요한 정보가 부족합니다.")
-        return {"action": "cancel", "proceed": False}
+        return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
 
     return _callback
 
@@ -1068,7 +1083,7 @@ def _build_ai_intervention_callback(context: HubContext, sink: HubSink):
             "또는 /handoff proceed=true auth_mode=signup\n"
             "또는 수동 로그인 후 /handoff proceed=true manual_done=true"
         )
-        return {"action": "cancel", "proceed": False}
+        return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
 
     return _callback
 
@@ -1371,6 +1386,20 @@ def dispatch_command(
         return _handle_steer_command(context, line)
     if line.startswith("/handoff"):
         return _handle_handoff_command(context, line)
+    if line.startswith("/resume"):
+        otp = ""
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            kv = _parse_kv_tokens(parts[1])
+            otp = str(kv.get("otp") or "").strip()
+        if not context.pending_user_input:
+            return CommandResult(code=0, output="대기 중인 개입 요청이 없어 /resume 대상이 없습니다.")
+        response: Dict[str, Any] = {"action": "continue", "proceed": "true"}
+        if otp:
+            response["otp"] = otp
+        context.pending_user_response = response
+        _notify_session_update(context)
+        return CommandResult(code=0, output="개입 완료 응답을 저장했습니다. 다음 실행에서 재개됩니다.")
     if line == "/cancel":
         context.pending_user_response = {"action": "cancel", "proceed": "false"}
         _notify_session_update(context)
@@ -1589,6 +1618,7 @@ def dispatch_command(
         t0 = time.time()
         code, detail = _run_test(context, query, sink, intervention_callback=intervention_callback)
         status_text = str(detail.get("status") or ("success" if code == 0 else "failed"))
+        final_status = str(detail.get("final_status") or "").strip()
         duration_value = _as_float(detail.get("duration_seconds"))
         reason_summary = _build_reason_code_summary(detail)
         _record_summary(
@@ -1604,6 +1634,8 @@ def dispatch_command(
             f"goal: {detail.get('goal') or query}",
             f"status: {detail.get('status') or ('success' if code == 0 else 'failed')}",
         ]
+        if final_status:
+            lines.append(f"final_status: {final_status}")
         if detail.get("steps") is not None:
             lines.append(f"steps: {detail.get('steps')}")
         if detail.get("reason"):
@@ -1626,13 +1658,53 @@ def dispatch_command(
             lines.append(f"  passed: {validation_summary.get('passed_checks', 0)}")
             lines.append(f"  failed: {validation_summary.get('failed_checks', 0)}")
             lines.append(f"  success_rate: {validation_summary.get('success_rate', 0)}%")
+        rail_summary = (
+            detail.get("validation_rail_summary")
+            if isinstance(detail.get("validation_rail_summary"), dict)
+            else {}
+        )
+        rail_cases = (
+            detail.get("validation_rail_cases")
+            if isinstance(detail.get("validation_rail_cases"), list)
+            else []
+        )
+        rail_artifacts = (
+            detail.get("validation_rail_artifacts")
+            if isinstance(detail.get("validation_rail_artifacts"), dict)
+            else {}
+        )
+        if rail_summary:
+            lines.append("validation_rail:")
+            lines.append(f"  scope: {rail_summary.get('scope') or '-'}")
+            lines.append(f"  mode: {rail_summary.get('mode') or '-'}")
+            lines.append(f"  status: {rail_summary.get('status') or '-'}")
+            lines.append(f"  total: {rail_summary.get('total', 0)}")
+            lines.append(f"  passed: {rail_summary.get('passed', 0)}")
+            lines.append(f"  failed: {rail_summary.get('failed', 0)}")
+            lines.append(f"  skipped: {rail_summary.get('skipped', 0)}")
+            lines.append(f"  duration: {rail_summary.get('duration_seconds', 0)}s")
+            top_failed = [
+                row for row in rail_cases
+                if isinstance(row, dict) and str(row.get("status") or "").strip().lower() in {"failed", "timedout", "timeout", "error"}
+            ][:3]
+            if top_failed:
+                lines.append("  top_failed:")
+                for row in top_failed:
+                    lines.append(f"    - {row.get('title') or row.get('id') or 'unknown'}")
+            summary_path = rail_artifacts.get("summary_path")
+            if summary_path:
+                lines.append(f"  summary_path: {summary_path}")
         if validation_checks:
             lines.append("checks:")
             for check in validation_checks[:8]:
                 if not isinstance(check, dict):
                     continue
                 status_token = str(check.get("status") or "").strip().lower()
-                status_label = "PASS" if status_token == "passed" else ("FAIL" if status_token == "failed" else "SKIP")
+                status_label = (
+                    "PASS"
+                    if status_token in {"pass", "passed"}
+                    else ("FAIL" if status_token in {"fail", "failed"} else "SKIP")
+                )
                 name = str(check.get("name") or "unnamed_check").strip()
                 step_no = check.get("step")
                 lines.append(f"  - [{status_label}] step={step_no} {name}")
@@ -1671,6 +1743,7 @@ def dispatch_command(
             data={
                 "goal": detail.get("goal") or query,
                 "status": status_text,
+                "final_status": final_status,
                 "steps": detail.get("steps"),
                 "reason": detail.get("reason") or "",
                 "duration": duration_value,
@@ -1687,6 +1760,78 @@ def dispatch_command(
                     if isinstance(detail.get("verification_report"), dict)
                     else {}
                 ),
+                "validation_rail_summary": rail_summary,
+                "validation_rail_cases": rail_cases,
+                "validation_rail_artifacts": rail_artifacts,
+            },
+        )
+
+    if line.startswith("/rail"):
+        parts = line.split(maxsplit=1)
+        mode_token = parts[1].strip().lower() if len(parts) == 2 else "smoke"
+        if mode_token not in {"smoke", "full", "status"}:
+            return CommandResult(code=2, status="error", output="형식: /rail smoke|full|status")
+        from gaia.src.phase4.validation_rail import run_validation_rail
+
+        if mode_token == "status":
+            data = {
+                "enabled": str(os.getenv("GAIA_RAIL_ENABLED", "1")).strip(),
+                "scope_default": str(os.getenv("GAIA_RAIL_SCOPE_DEFAULT", "smoke")).strip(),
+                "mode": str(os.getenv("GAIA_RAIL_MODE", "soft")).strip(),
+                "timeout_sec": str(os.getenv("GAIA_RAIL_TIMEOUT_SEC", "300")).strip(),
+                "target_url": context.url,
+            }
+            return CommandResult(code=0, output=json.dumps(data, ensure_ascii=False, indent=2), data=data)
+
+        started = time.time()
+        rail_result = run_validation_rail(
+            target_url=context.url,
+            run_id=context.session_id,
+            scope=mode_token,
+        )
+        elapsed = round(time.time() - started, 2)
+        rail_summary = rail_result.get("summary") if isinstance(rail_result, dict) else {}
+        rail_cases = rail_result.get("cases") if isinstance(rail_result, dict) else []
+        rail_artifacts = rail_result.get("artifacts") if isinstance(rail_result, dict) else {}
+        if not isinstance(rail_summary, dict):
+            rail_summary = {}
+        if not isinstance(rail_cases, list):
+            rail_cases = []
+        if not isinstance(rail_artifacts, dict):
+            rail_artifacts = {}
+        output_lines = [
+            f"rail_scope: {mode_token}",
+            f"status: {rail_summary.get('status')}",
+            f"reason: {rail_summary.get('reason')}",
+            f"total: {rail_summary.get('total', 0)}",
+            f"passed: {rail_summary.get('passed', 0)}",
+            f"failed: {rail_summary.get('failed', 0)}",
+            f"skipped: {rail_summary.get('skipped', 0)}",
+            f"duration: {rail_summary.get('duration_seconds', elapsed)}s",
+        ]
+        summary_path = rail_artifacts.get("summary_path")
+        if summary_path:
+            output_lines.append(f"summary_path: {summary_path}")
+        _record_summary(
+            memory_store,
+            context=context,
+            command="/rail",
+            status="success" if str(rail_summary.get("status") or "") in {"passed", "skipped"} else "failed",
+            summary=f"scope={mode_token}, result={rail_summary}",
+            metadata={"scope": mode_token, "result": rail_result},
+        )
+        return CommandResult(
+            code=0 if str(rail_summary.get("status") or "") in {"passed", "skipped"} else 1,
+            output="\n".join(output_lines),
+            data={
+                "goal": f"validation_rail_{mode_token}",
+                "status": "success" if str(rail_summary.get("status") or "") in {"passed", "skipped"} else "failed",
+                "steps": rail_summary.get("total", 0),
+                "reason": rail_summary.get("reason", ""),
+                "duration": rail_summary.get("duration_seconds", elapsed),
+                "validation_rail_summary": rail_summary,
+                "validation_rail_cases": rail_cases,
+                "validation_rail_artifacts": rail_artifacts,
             },
         )
 

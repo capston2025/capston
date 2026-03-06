@@ -43,6 +43,7 @@ TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
 DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
 
 OPENAI_MODEL_CHOICES = (
+    "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2",
@@ -67,6 +68,7 @@ GEMINI_MODEL_CHOICES = (
 )
 
 OPENAI_MODEL_PRIORITY = (
+    "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2",
@@ -301,7 +303,7 @@ def _persist_session_state(
 
 
 def _default_model(provider: str) -> str:
-    return "gpt-5.2" if provider == "openai" else "gemini-2.5-pro"
+    return "gpt-5.4" if provider == "openai" else "gemini-2.5-pro"
 
 
 def _prompt(prompt: str, default: str | None = None) -> str:
