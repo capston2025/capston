@@ -21,6 +21,7 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
 from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
 from gaia.src.tracker.checklist import ChecklistTracker
@@ -447,7 +448,14 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
 
 def _infer_goal_type(query_text: str) -> str:
     text = str(query_text or "").lower()
-    if any(token in text for token in ("필터", "filter", "검색", "category", "분류")):
+    explicit_filter_tokens = ("필터", "filter", "학점", "credit", "정렬", "sort")
+    category_like_tokens = ("category", "분류")
+    readonly_tokens = ("현재", "이미", "보이는지", "확인", "추가 조작 없이", "visible", "already")
+    if any(token in text for token in explicit_filter_tokens):
+        return "filter_validation"
+    if any(token in text for token in category_like_tokens) and not any(
+        token in text for token in readonly_tokens
+    ):
         return "filter_validation"
     if any(token in text for token in ("로그인", "login", "auth", "인증")):
         return "auth_validation"
@@ -494,7 +502,7 @@ def _build_validation_report(
 
     goal_type = _infer_goal_type(query_text)
     filter_mode = goal_type == "filter_validation"
-    filter_tokens = ("필터", "filter", "검색", "category", "분류")
+    filter_tokens = ("필터", "filter", "학점", "credit", "category", "분류", "정렬", "sort")
     steps = list(getattr(result, "steps_taken", []) or [])
     checks: list[Dict[str, Any]] = []
 
@@ -992,6 +1000,7 @@ def run_chat_terminal_once(
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
+    ensure_mcp_host_running(CONFIG.mcp.host_url, startup_timeout=10.0)
     return _run_single_chat_goal(
         url=url,
         query=query,

@@ -38,9 +38,11 @@ def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
     return f"""
 import contextlib, io, json, sys
 from gaia.terminal import run_chat_terminal_once
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
 payload = json.loads({payload!r})
 scenario = payload['scenario']
 session_id = payload['session_id']
+ensure_mcp_host_running(None, startup_timeout=10.0)
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
     code, summary = run_chat_terminal_once(
@@ -155,6 +157,120 @@ def _compute_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]
     }
 
 
+def _summary_reason_code_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    summary = row.get("summary")
+    if not isinstance(summary, dict):
+        return {}
+    data = summary.get("reason_code_summary")
+    return data if isinstance(data, dict) else {}
+
+
+def _is_blocked_user_action(row: Dict[str, Any]) -> bool:
+    summary = row.get("summary")
+    if isinstance(summary, dict) and str(summary.get("final_status") or "").strip().upper() == "BLOCKED_USER_ACTION":
+        return True
+    reason = str(row.get("reason") or "")
+    return "사용자 개입" in reason or "captcha" in reason.lower() or "login required" in reason.lower()
+
+
+def _is_progress_stop_failure(row: Dict[str, Any]) -> bool:
+    if str(row.get("status") or "").strip().upper() == "SUCCESS":
+        return False
+    if _is_blocked_user_action(row):
+        return False
+    reason = str(row.get("reason") or "").lower()
+    stop_markers = (
+        "benchmark_timeout",
+        "timeout",
+        "중단",
+        "반복",
+        "stuck",
+        "no progress",
+        "observe_no_dom",
+        "dom 요소를 반복적으로 읽지 못해",
+        "화면 상태가 반복되어",
+    )
+    if any(marker in reason for marker in stop_markers):
+        return True
+    rc_summary = _summary_reason_code_summary(row)
+    return any(
+        str(code or "").strip().lower()
+        in {
+            "blocked_timeout",
+            "clarification_timeout",
+            "user_intervention_missing",
+            "dom_snapshot_retry_exhausted",
+            "observe_no_dom",
+        }
+        for code in rc_summary.keys()
+    )
+
+
+def _has_recovery_event(row: Dict[str, Any]) -> bool:
+    rc_summary = _summary_reason_code_summary(row)
+    recovery_prefixes = (
+        "stale_",
+        "resnapshot",
+        "fallback_",
+        "request_exception",
+        "auth_submit_timeout_recovered",
+        "dom_snapshot_retry",
+    )
+    for code in rc_summary.keys():
+        normalized = str(code or "").strip().lower()
+        if any(normalized.startswith(prefix) for prefix in recovery_prefixes):
+            return True
+    return False
+
+
+def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]:
+    total = max(1, len(rows))
+    success_count = sum(1 for row in rows if str(row.get("status") or "").strip().upper() == "SUCCESS")
+    blocked_count = sum(1 for row in rows if _is_blocked_user_action(row))
+    stop_failure_count = sum(1 for row in rows if _is_progress_stop_failure(row))
+    recovery_rows = [row for row in rows if _has_recovery_event(row)]
+    recovery_success = sum(
+        1
+        for row in recovery_rows
+        if str(row.get("status") or "").strip().upper() == "SUCCESS"
+    )
+
+    per_case: Dict[str, List[str]] = defaultdict(list)
+    for row in rows:
+        per_case[str(row.get("scenario_id") or "unknown")].append(str(row.get("status") or "FAIL").upper())
+    reproducible = 0
+    observed = 0
+    if repeats > 1:
+        for statuses in per_case.values():
+            if len(statuses) != repeats:
+                continue
+            observed += 1
+            if set(statuses) == {"SUCCESS"}:
+                reproducible += 1
+
+    return {
+        "scenario_success_rate": round(success_count / total, 4),
+        "reproducibility_rate": round((reproducible / observed), 4) if observed else None,
+        "progress_stop_failure_rate": round(stop_failure_count / total, 4),
+        "self_recovery_rate": round((recovery_success / len(recovery_rows)), 4) if recovery_rows else None,
+        "intervention_rate": round(blocked_count / total, 4),
+        "counts": {
+            "success": success_count,
+            "blocked": blocked_count,
+            "progress_stop_failures": stop_failure_count,
+            "recovery_runs": len(recovery_rows),
+            "recovery_success": recovery_success,
+        },
+        "targets": {
+            "reproducibility_rate": 0.80,
+            "progress_stop_failure_rate": 0.10,
+            "self_recovery_rate": 0.60,
+            "scenario_success_rate": 0.70,
+            "intervention_rate": 0.20,
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run GAIA benchmark suite from scenario JSON.")
     parser.add_argument("--suite", required=True, help="Path to suite JSON")
@@ -202,6 +318,7 @@ def main() -> int:
             rows.append(row)
 
     metrics = _compute_metrics(rows, repeats)
+    kpi_metrics = _compute_kpi_metrics(rows, repeats)
     status_counts = Counter(str(r.get("status") or "UNKNOWN") for r in rows)
     summary = {
         "schema_version": "gaia.benchmark.v1",
@@ -212,6 +329,7 @@ def main() -> int:
         "scenario_count": len(scenarios),
         "model": args.model,
         "metrics": metrics,
+        "kpi_metrics": kpi_metrics,
         "status_counts": dict(status_counts),
         "failures": [
             {
@@ -235,6 +353,11 @@ def main() -> int:
     md.write(f"- model: {args.model}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")
     md.write(f"- avg_time_seconds: {metrics['avg_time_seconds']}\n")
+    md.write(f"- KPI scenario_success_rate: {kpi_metrics['scenario_success_rate']}\n")
+    md.write(f"- KPI reproducibility_rate: {kpi_metrics['reproducibility_rate']}\n")
+    md.write(f"- KPI progress_stop_failure_rate: {kpi_metrics['progress_stop_failure_rate']}\n")
+    md.write(f"- KPI self_recovery_rate: {kpi_metrics['self_recovery_rate']}\n")
+    md.write(f"- KPI intervention_rate: {kpi_metrics['intervention_rate']}\n")
     md.write(f"- status_counts: {dict(status_counts)}\n\n")
     if summary["failures"]:
         md.write("## Failures\n\n")

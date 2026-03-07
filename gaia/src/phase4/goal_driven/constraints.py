@@ -39,6 +39,18 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
             return {"require_no_navigation": True}
         return {}
 
+    if len(numeric_values) == 1:
+        only_value = int(numeric_values[0])
+        id_like_patterns = (
+            rf"(?<!\d){only_value}\s*(?:번|번문제|번 문제)",
+            rf"(?:problem|문제)\s*{only_value}(?!\d)",
+            rf"(?<!\d){only_value}\s*(?:id|번호)",
+        )
+        if any(re.search(pattern, text) for pattern in id_like_patterns):
+            if require_no_navigation:
+                return {"require_no_navigation": True}
+            return {}
+
     collect_min: Optional[int] = None
     apply_target: Optional[int] = None
 
