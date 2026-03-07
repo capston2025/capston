@@ -16,6 +16,8 @@ from typing import Any, Dict, Optional
 from gaia.chat_hub import HubContext, build_command_payload, dispatch_command
 from gaia.src.phase4.memory.store import MemoryStore
 
+TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
+
 
 @dataclass(slots=True)
 class TelegramConfig:
@@ -235,12 +237,35 @@ class _TelegramBridge:
 
     async def post_init(self, _application) -> None:
         self.loop = asyncio.get_running_loop()
+        self._write_status("running")
         self.worker_task = asyncio.create_task(self._worker_loop(_application))
 
     async def post_shutdown(self, _application) -> None:
         await self.queue.put(None)
         if self.worker_task:
             await self.worker_task
+        self._write_status("stopped")
+
+    def _write_status(self, state: str) -> None:
+        try:
+            TELEGRAM_BRIDGE_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            TELEGRAM_BRIDGE_STATUS_FILE.write_text(
+                json.dumps(
+                    {
+                        "state": str(state or "").strip() or "unknown",
+                        "updated_at": int(time.time()),
+                        "mode": self.config.mode,
+                        "url": self.hub_context.url,
+                        "runtime": self.hub_context.runtime,
+                        "control_channel": self.hub_context.control_channel,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
     def _allowed(self, chat_id: int) -> bool:
         return self.pairing.is_approved(chat_id)

@@ -21,6 +21,19 @@ from gaia.src.utils.models import DomElement
 class LLMVisionClient:
     """Client for LLM-powered vision analysis of web pages."""
 
+    @staticmethod
+    def _load_profile_token() -> str | None:
+        profile_path = Path.home() / ".gaia" / "auth" / "profiles.json"
+        try:
+            raw = json.loads(profile_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        profile = raw.get("openai", {}) if isinstance(raw, dict) else {}
+        token = profile.get("token")
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+        return None
+
     def __init__(self, api_key: str | None = None) -> None:
         """
         Initialize the LLM vision client.
@@ -42,6 +55,10 @@ class LLMVisionClient:
                                 api_key = line.split("=", 1)[1].strip()
                                 os.environ["OPENAI_API_KEY"] = api_key
                                 break
+            if api_key is None:
+                api_key = self._load_profile_token()
+                if api_key:
+                    os.environ["OPENAI_API_KEY"] = api_key
 
         self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
         configured_model = (

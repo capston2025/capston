@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, List, Sequence
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QSizePolicy,
     QGridLayout,
+    QLayout,
 )
 
 from gaia.src.gui.screencast_client import ScreencastClient
@@ -431,6 +433,7 @@ class MainWindow(QMainWindow):
     startRequested = Signal()
     cancelRequested = Signal()
     urlSubmitted = Signal(str)
+    chatMessageSubmitted = Signal(str)
     planFileSelected = Signal(str)
     bugJsonSelected = Signal(str)
 
@@ -442,6 +445,7 @@ class MainWindow(QMainWindow):
 
         # 특정 기능 테스트 쿼리 저장
         self._current_feature_query = ""
+        self._result_screenshot_history: list[str] = []
 
         app_instance = QApplication.instance()
         self._available_geometry = None
@@ -562,8 +566,75 @@ class MainWindow(QMainWindow):
                 background: rgba(125, 135, 255, 0.12);
             }
 
+            QPushButton[modeButton="true"] {
+                background: transparent;
+                border: 1px solid rgba(125, 135, 255, 0.5);
+                color: #5b5ff7;
+            }
+
+            QPushButton[modeButton="true"][modeSelected="true"] {
+                background: rgba(91, 95, 247, 0.14);
+                border: 1.4px solid rgba(91, 95, 247, 0.85);
+                color: #3e43d6;
+            }
+
             QPushButton#DangerButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff6b8a, stop:1 #ff8f70);
+            }
+
+            QFrame#ResultSummaryCard {
+                background: rgba(255, 255, 255, 0.85);
+                border-radius: 22px;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+            }
+
+            QLabel#ResultSummaryStatus {
+                font-size: 18px;
+                font-weight: 700;
+                color: #181b3d;
+            }
+
+            QLabel#ResultSummaryMeta {
+                color: #4b4f73;
+                font-size: 13px;
+            }
+
+            QLabel#ResultSummaryReason {
+                color: #2c2f48;
+                font-size: 13px;
+            }
+
+            QLabel#ResultSummaryHint {
+                color: #636b86;
+                font-size: 12.5px;
+                font-weight: 600;
+            }
+
+            QLabel[role="stateLabel"] {
+                color: #252a46;
+                font-size: 13px;
+                font-weight: 600;
+            }
+
+            QTextEdit#ResultTimelineView {
+                background: rgba(247, 249, 255, 0.92);
+                border-radius: 16px;
+                border: 1px solid rgba(198, 205, 255, 0.85);
+                color: #1f2745;
+                padding: 12px;
+            }
+
+            QFrame#ResultScreenshotCard {
+                background: rgba(247, 249, 255, 0.92);
+                border-radius: 16px;
+                border: 1px solid rgba(198, 205, 255, 0.85);
+            }
+
+            QLabel#ResultScreenshotThumb {
+                background: rgba(255, 255, 255, 0.95);
+                border-radius: 12px;
+                border: 1px solid rgba(198, 205, 255, 0.85);
+                padding: 4px;
             }
 
             QSplitter::handle {
@@ -710,6 +781,8 @@ class MainWindow(QMainWindow):
         self._url_input: QLineEdit
         self._browser_view: QWidget
         self._workflow_stage: str
+        self._selected_run_mode: str = "quick"
+        self._control_channel: str = "local"
         self._full_execution_logs: List[str] = []
         self._log_mode: str = "summary"  # "summary" or "full"
         self._is_busy: bool
@@ -803,6 +876,8 @@ class MainWindow(QMainWindow):
         self._busy_overlay.raise_()
 
         self._last_plan_directory = Path.cwd() / "artifacts" / "plans"
+        self.set_selected_run_mode("quick")
+        self.set_control_channel("local")
         self.show_setup_stage()
 
     def _create_setup_stage(self, parent: QWidget) -> QWidget:
@@ -817,7 +892,7 @@ class MainWindow(QMainWindow):
 
         self._drop_area = DropArea(
             on_file_dropped=self._handle_file_drop,
-            title="체크리스트 PDF를 드래그하거나 선택해 주세요",
+            title="기획서 파일 또는 PRD 번들을 드래그하거나 선택해 주세요",
             parent=page,
         )
         layout.addWidget(self._drop_area)
@@ -839,30 +914,80 @@ class MainWindow(QMainWindow):
         url_row.addWidget(load_button)
         layout.addLayout(url_row)
 
-        button_row = QHBoxLayout()
-        button_row.setSpacing(12)
+        source_label = QLabel("1. 입력 소스 선택", page)
+        source_label.setObjectName("SectionLabel")
+        layout.addWidget(source_label)
 
-        select_button = QPushButton("PDF 선택", page)
+        source_row = QHBoxLayout()
+        source_row.setSpacing(12)
+
+        select_button = QPushButton("기획서 파일 선택", page)
         select_button.setObjectName("GhostButton")
         select_button.clicked.connect(self._open_file_dialog)
-        button_row.addWidget(select_button)
+        source_row.addWidget(select_button)
 
-        self._load_plan_button = QPushButton("이전 테스트 불러오기", page)
+        self._load_plan_button = QPushButton("기존 번들 열기", page)
         self._load_plan_button.setObjectName("GhostButton")
         self._load_plan_button.clicked.connect(self._open_plan_dialog)
-        button_row.addWidget(self._load_plan_button)
+        source_row.addWidget(self._load_plan_button)
+        source_row.addStretch()
+        layout.addLayout(source_row)
 
-        self._feature_test_button = QPushButton("특정 기능 테스트", page)
-        self._feature_test_button.setObjectName("GhostButton")
-        self._feature_test_button.clicked.connect(self._toggle_feature_input)
-        button_row.addWidget(self._feature_test_button)
+        source_hint = QLabel(
+            "PDF, DOCX, MD, TXT 기획서를 바로 분석하거나 저장된 JSON 번들을 다시 열 수 있습니다.",
+            page,
+        )
+        source_hint.setWordWrap(True)
+        layout.addWidget(source_hint)
 
-        self._start_button = QPushButton("자동화 시작", page)
+        mode_label = QLabel("2. 실행 모드", page)
+        mode_label.setObjectName("SectionLabel")
+        layout.addWidget(mode_label)
+
+        self._control_status_label = QLabel("제어 채널: 로컬", page)
+        self._control_status_label.setWordWrap(True)
+        layout.addWidget(self._control_status_label)
+
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(12)
+        self._run_mode_group = QButtonGroup(page)
+
+        self._quick_mode_button = QPushButton("빠른 목표 실행", page)
+        self._quick_mode_button.setCheckable(True)
+        self._quick_mode_button.setProperty("modeButton", True)
+        self._quick_mode_button.clicked.connect(lambda: self.set_selected_run_mode("quick"))
+        self._run_mode_group.addButton(self._quick_mode_button)
+        mode_row.addWidget(self._quick_mode_button)
+
+        self._ai_mode_button = QPushButton("완전 자율", page)
+        self._ai_mode_button.setCheckable(True)
+        self._ai_mode_button.setProperty("modeButton", True)
+        self._ai_mode_button.clicked.connect(lambda: self.set_selected_run_mode("ai"))
+        self._run_mode_group.addButton(self._ai_mode_button)
+        mode_row.addWidget(self._ai_mode_button)
+
+        self._bundle_mode_button = QPushButton("기획서/번들 실행", page)
+        self._bundle_mode_button.setCheckable(True)
+        self._bundle_mode_button.setProperty("modeButton", True)
+        self._bundle_mode_button.clicked.connect(lambda: self.set_selected_run_mode("bundle"))
+        self._run_mode_group.addButton(self._bundle_mode_button)
+        mode_row.addWidget(self._bundle_mode_button)
+        mode_row.addStretch()
+        layout.addLayout(mode_row)
+
+        action_label = QLabel("3. 실행 준비", page)
+        action_label.setObjectName("SectionLabel")
+        layout.addWidget(action_label)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(12)
+
+        self._start_button = QPushButton("테스트 실행", page)
         self._start_button.clicked.connect(self.startRequested.emit)
-        button_row.addWidget(self._start_button)
+        action_row.addWidget(self._start_button)
 
-        button_row.addStretch()
-        layout.addLayout(button_row)
+        action_row.addStretch()
+        layout.addLayout(action_row)
 
         # 탐색 결과 보기 버튼 행
         results_row = QHBoxLayout()
@@ -878,7 +1003,6 @@ class MainWindow(QMainWindow):
         # 특정 기능 테스트 입력창 (처음엔 숨김)
         self._feature_input_container = QFrame(page)
         self._feature_input_container.setObjectName("FeatureInputContainer")
-        self._feature_input_container.hide()
         feature_input_layout = QVBoxLayout(self._feature_input_container)
         feature_input_layout.setContentsMargins(12, 12, 12, 12)
         feature_input_layout.setSpacing(8)
@@ -891,12 +1015,37 @@ class MainWindow(QMainWindow):
 
         self._feature_input = QLineEdit(self._feature_input_container)
         self._feature_input.setPlaceholderText(
-            "예: 로그인 기능, 장바구니 추가, 검색 기능"
+            "예: 로그인 버튼이 보이는지, 학점 필터링이 작동하는지"
         )
         self._feature_input.setObjectName("FeatureInput")
+        self._feature_input.textChanged.connect(self._sync_feature_query)
         feature_input_layout.addWidget(self._feature_input)
 
         layout.addWidget(self._feature_input_container)
+
+        chat_label = QLabel("4. 대화형 입력", page)
+        chat_label.setObjectName("SectionLabel")
+        layout.addWidget(chat_label)
+
+        self._chat_transcript = QTextEdit(page)
+        self._chat_transcript.setReadOnly(True)
+        self._chat_transcript.setMinimumHeight(160)
+        self._chat_transcript.setPlaceholderText("여기에 실행 대화 기록이 표시됩니다.")
+        layout.addWidget(self._chat_transcript)
+
+        chat_row = QHBoxLayout()
+        chat_row.setSpacing(12)
+        self._chat_input = QLineEdit(page)
+        self._chat_input.setPlaceholderText("예: 로그인 버튼이 보이는지 확인해줘 / 지금 뭐하고 있어?")
+        self._chat_input.returnPressed.connect(self._emit_chat_message)
+        chat_row.addWidget(self._chat_input)
+
+        self._chat_send_button = QPushButton("보내기", page)
+        self._chat_send_button.setObjectName("GhostButton")
+        self._chat_send_button.clicked.connect(self._emit_chat_message)
+        chat_row.addWidget(self._chat_send_button)
+        layout.addLayout(chat_row)
+
         layout.addStretch(1)
 
         return page
@@ -915,6 +1064,81 @@ class MainWindow(QMainWindow):
         title_row.addStretch()
 
         layout.addLayout(title_row)
+
+        self._result_summary_card = QFrame(page)
+        self._result_summary_card.setObjectName("ResultSummaryCard")
+        result_summary_layout = QVBoxLayout(self._result_summary_card)
+        result_summary_layout.setContentsMargins(18, 18, 18, 18)
+        result_summary_layout.setSpacing(8)
+
+        self._result_summary_status = QLabel("실행 결과 대기 중", self._result_summary_card)
+        self._result_summary_status.setObjectName("ResultSummaryStatus")
+        result_summary_layout.addWidget(self._result_summary_status)
+
+        self._result_summary_meta = QLabel("모드와 검증 요약이 여기에 표시됩니다.", self._result_summary_card)
+        self._result_summary_meta.setObjectName("ResultSummaryMeta")
+        self._result_summary_meta.setWordWrap(True)
+        result_summary_layout.addWidget(self._result_summary_meta)
+
+        self._result_summary_reason = QLabel("실행이 시작되면 판정 사유가 표시됩니다.", self._result_summary_card)
+        self._result_summary_reason.setObjectName("ResultSummaryReason")
+        self._result_summary_reason.setWordWrap(True)
+        result_summary_layout.addWidget(self._result_summary_reason)
+
+        self._result_live_goal = QLabel("현재 목표: -", self._result_summary_card)
+        self._result_live_goal.setProperty("role", "stateLabel")
+        self._result_live_goal.setWordWrap(True)
+        result_summary_layout.addWidget(self._result_live_goal)
+
+        self._result_live_step = QLabel("현재 단계: -", self._result_summary_card)
+        self._result_live_step.setProperty("role", "stateLabel")
+        self._result_live_step.setWordWrap(True)
+        result_summary_layout.addWidget(self._result_live_step)
+
+        self._result_live_blocked = QLabel("차단 사유: 없음", self._result_summary_card)
+        self._result_live_blocked.setProperty("role", "stateLabel")
+        self._result_live_blocked.setWordWrap(True)
+        result_summary_layout.addWidget(self._result_live_blocked)
+
+        timeline_label = QLabel("단계별 실행", self._result_summary_card)
+        timeline_label.setObjectName("ResultSummaryHint")
+        result_summary_layout.addWidget(timeline_label)
+
+        self._result_timeline_view = QTextEdit(self._result_summary_card)
+        self._result_timeline_view.setObjectName("ResultTimelineView")
+        self._result_timeline_view.setReadOnly(True)
+        self._result_timeline_view.setMinimumHeight(150)
+        self._result_timeline_view.setPlaceholderText("실행이 시작되면 단계별 내역과 검증 근거가 여기에 표시됩니다.")
+        result_summary_layout.addWidget(self._result_timeline_view)
+
+        screenshot_label = QLabel("대표 캡처", self._result_summary_card)
+        screenshot_label.setObjectName("ResultSummaryHint")
+        result_summary_layout.addWidget(screenshot_label)
+
+        self._result_screenshot_card = QFrame(self._result_summary_card)
+        self._result_screenshot_card.setObjectName("ResultScreenshotCard")
+        screenshot_card_layout = QVBoxLayout(self._result_screenshot_card)
+        screenshot_card_layout.setContentsMargins(10, 10, 10, 10)
+        screenshot_card_layout.setSpacing(8)
+
+        self._result_screenshot_scroll = QScrollArea(self._result_screenshot_card)
+        self._result_screenshot_scroll.setWidgetResizable(True)
+        self._result_screenshot_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._result_screenshot_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._result_screenshot_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        self._result_screenshot_container = QWidget(self._result_screenshot_scroll)
+        self._result_screenshot_layout = QHBoxLayout(self._result_screenshot_container)
+        self._result_screenshot_layout.setContentsMargins(0, 0, 0, 0)
+        self._result_screenshot_layout.setSpacing(8)
+        self._result_screenshot_layout.addStretch()
+        self._result_screenshot_scroll.setWidget(self._result_screenshot_container)
+        screenshot_card_layout.addWidget(self._result_screenshot_scroll)
+
+        result_summary_layout.addWidget(self._result_screenshot_card)
+        self._render_result_screenshot_strip()
+
+        layout.addWidget(self._result_summary_card)
 
         # 상단 진행 현황 영역
         progress_container = QFrame(page)
@@ -1253,6 +1477,10 @@ class MainWindow(QMainWindow):
         )
         self._drop_area.setEnabled(not busy)
         self._url_input.setEnabled(not busy)
+        if hasattr(self, "_chat_input"):
+            self._chat_input.setEnabled(True)
+        if hasattr(self, "_chat_send_button"):
+            self._chat_send_button.setEnabled(True)
         if hasattr(self, "_load_plan_button"):
             self._load_plan_button.setEnabled(not busy)
         if busy:
@@ -1260,7 +1488,7 @@ class MainWindow(QMainWindow):
             # 로딩 오버레이는 표시하지 않음 - 실시간 미리보기가 제공됨
             # self.show_loading_overlay(message or "시나리오를 실행 중입니다…")
         else:
-            self._drop_area.setText("체크리스트 PDF를 드래그하거나 선택해 주세요")
+            self._drop_area.setText("기획서 파일 또는 PRD 번들을 드래그하거나 선택해 주세요")
             # self.hide_loading_overlay()
 
     def load_url(self, url: str) -> None:
@@ -1273,12 +1501,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_feature_input"):
             return
         self._feature_input.setText(query)
-        if query.strip():
-            self._feature_input_container.show()
-            self._current_feature_query = query.strip()
-        else:
-            self._feature_input_container.hide()
-            self._current_feature_query = ""
+        self._current_feature_query = query.strip()
+        self._feature_input_container.setVisible(self._selected_run_mode == "quick")
 
     def show_html_in_browser(self, html_content: str) -> None:
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
@@ -1392,8 +1616,83 @@ class MainWindow(QMainWindow):
             </html>
             """
             self._browser_view.setHtml(html)
+            self._record_result_screenshot(screenshot_base64)
         except Exception as e:
             print(f"Failed to update live preview: {e}")
+
+    def _clear_layout(self, layout: QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout(child_layout)
+
+    def _record_result_screenshot(self, screenshot_base64: str) -> None:
+        shot = str(screenshot_base64 or "").strip()
+        if not shot:
+            return
+        if self._result_screenshot_history and self._result_screenshot_history[-1] == shot:
+            return
+        self._result_screenshot_history.append(shot)
+        if len(self._result_screenshot_history) > 4:
+            self._result_screenshot_history = self._result_screenshot_history[-4:]
+        self._render_result_screenshot_strip()
+
+    def _render_result_screenshot_strip(self) -> None:
+        if not hasattr(self, "_result_screenshot_layout"):
+            return
+        import base64
+        from PySide6.QtCore import QByteArray
+
+        self._clear_layout(self._result_screenshot_layout)
+        shots = list(self._result_screenshot_history[-4:])
+        if not shots:
+            empty = QLabel("실행 중 캡처가 수집되면 여기에 표시됩니다.", self._result_screenshot_container)
+            empty.setObjectName("ResultSummaryHint")
+            empty.setWordWrap(True)
+            self._result_screenshot_layout.addWidget(empty)
+            self._result_screenshot_layout.addStretch()
+            return
+
+        for idx, shot in enumerate(shots, start=1):
+            pixmap = QPixmap()
+            try:
+                pixmap.loadFromData(QByteArray(base64.b64decode(shot)))
+            except Exception:
+                pixmap = QPixmap()
+            frame = QFrame(self._result_screenshot_container)
+            frame.setObjectName("ResultScreenshotCard")
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(6, 6, 6, 6)
+            frame_layout.setSpacing(4)
+
+            image_label = QLabel(frame)
+            image_label.setObjectName("ResultScreenshotThumb")
+            image_label.setFixedSize(180, 110)
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if not pixmap.isNull():
+                image_label.setPixmap(
+                    pixmap.scaled(
+                        172,
+                        102,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+            else:
+                image_label.setText("이미지 로드 실패")
+            frame_layout.addWidget(image_label)
+
+            caption = QLabel(f"캡처 {idx}", frame)
+            caption.setObjectName("ResultSummaryHint")
+            caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            frame_layout.addWidget(caption)
+            self._result_screenshot_layout.addWidget(frame)
+
+        self._result_screenshot_layout.addStretch()
 
     def show_loading_overlay(self, message: str) -> None:
         if self._busy_overlay:
@@ -1434,9 +1733,9 @@ class MainWindow(QMainWindow):
     def _open_file_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select checklist PDF",
+            "기획서 파일 선택",
             "",
-            "PDF Files (*.pdf)",
+            "Supported Files (*.pdf *.docx *.md *.txt *.json);;Documents (*.pdf *.docx *.md *.txt);;JSON Files (*.json);;All Files (*)",
         )
         if file_path:
             # feature_input에 값이 있으면 특정 기능 테스트 모드
@@ -1467,7 +1766,167 @@ class MainWindow(QMainWindow):
 
     def get_feature_query(self) -> str:
         """현재 설정된 feature query를 반환합니다."""
+        if hasattr(self, "_feature_input"):
+            self._current_feature_query = self._feature_input.text().strip()
         return self._current_feature_query
+
+    def _sync_feature_query(self, text: str) -> None:
+        self._current_feature_query = str(text or "").strip()
+
+    def set_selected_run_mode(self, mode: str) -> None:
+        normalized = mode if mode in {"quick", "ai", "bundle"} else "quick"
+        self._selected_run_mode = normalized
+        mapping = {
+            "quick": getattr(self, "_quick_mode_button", None),
+            "ai": getattr(self, "_ai_mode_button", None),
+            "bundle": getattr(self, "_bundle_mode_button", None),
+        }
+        for key, button in mapping.items():
+            if button is None:
+                continue
+            selected = key == normalized
+            button.setChecked(selected)
+            button.setProperty("modeSelected", selected)
+            button.style().unpolish(button)
+            button.style().polish(button)
+        if hasattr(self, "_feature_input_container"):
+            self._feature_input_container.setVisible(normalized == "quick")
+
+    def get_selected_run_mode(self) -> str:
+        return self._selected_run_mode
+
+    def set_control_channel(self, channel: str) -> None:
+        self._control_channel = "telegram" if str(channel or "").strip().lower() == "telegram" else "local"
+        if hasattr(self, "_control_status_label"):
+            if self._control_channel == "telegram":
+                self._control_status_label.setText("제어 채널: 텔레그램 선택됨. 실행 모드는 이 창에서 고릅니다.")
+            else:
+                self._control_status_label.setText("제어 채널: 로컬")
+
+    def set_bridge_status(self, text: str) -> None:
+        if hasattr(self, "_control_status_label"):
+            self._control_status_label.setText(str(text or "").strip() or "제어 채널 상태 없음")
+
+    def reset_result_summary(self) -> None:
+        self._result_screenshot_history = []
+        if hasattr(self, "_result_summary_status"):
+            self._result_summary_status.setText("실행 결과 대기 중")
+        if hasattr(self, "_result_summary_meta"):
+            self._result_summary_meta.setText("모드와 검증 요약이 여기에 표시됩니다.")
+        if hasattr(self, "_result_summary_reason"):
+            self._result_summary_reason.setText("실행이 시작되면 판정 사유가 표시됩니다.")
+        if hasattr(self, "_result_live_goal"):
+            self._result_live_goal.setText("현재 목표: -")
+        if hasattr(self, "_result_live_step"):
+            self._result_live_step.setText("현재 단계: -")
+        if hasattr(self, "_result_live_blocked"):
+            self._result_live_blocked.setText("차단 사유: 없음")
+        if hasattr(self, "_result_timeline_view"):
+            self._result_timeline_view.clear()
+        self._render_result_screenshot_strip()
+
+    def set_execution_status(
+        self,
+        *,
+        goal: str | None = None,
+        step: str | None = None,
+        blocked_reason: str | None = None,
+    ) -> None:
+        if hasattr(self, "_result_live_goal") and goal is not None:
+            self._result_live_goal.setText(f"현재 목표: {str(goal or '').strip() or '-'}")
+        if hasattr(self, "_result_live_step") and step is not None:
+            self._result_live_step.setText(f"현재 단계: {str(step or '').strip() or '-'}")
+        if hasattr(self, "_result_live_blocked") and blocked_reason is not None:
+            self._result_live_blocked.setText(f"차단 사유: {str(blocked_reason or '').strip() or '없음'}")
+
+    def show_result_summary(self, summary: dict[str, Any]) -> None:
+        mode = str(summary.get("mode") or "unknown")
+        status = str(summary.get("status") or "unknown").upper()
+        reason = str(summary.get("reason") or "-").strip()
+        if mode == "goal":
+            meta = (
+                f"Goal-Driven · 성공 {int(summary.get('successful_goals') or 0)}개"
+                f" / 실패 {int(summary.get('failed_goals') or 0)}개"
+                f" / 전체 {int(summary.get('total_goals') or 0)}개"
+            )
+        elif mode == "exploratory":
+            meta = (
+                f"Exploratory · 액션 {int(summary.get('total_actions') or 0)}회"
+                f" / 페이지 {int(summary.get('pages') or 0)}개"
+                f" / 이슈 {int(summary.get('issues') or 0)}개"
+            )
+        else:
+            meta = "실행 요약 정보가 아직 없습니다."
+        if hasattr(self, "_result_summary_status"):
+            self._result_summary_status.setText(f"실행 결과 {status}")
+        if hasattr(self, "_result_summary_meta"):
+            self._result_summary_meta.setText(meta)
+        if hasattr(self, "_result_summary_reason"):
+            self._result_summary_reason.setText(reason or "-")
+        self.set_execution_status(
+            goal=str(summary.get("current_goal") or summary.get("goal_name") or "-"),
+            step=str(summary.get("current_step") or "-"),
+            blocked_reason=str(summary.get("blocked_reason") or "없음"),
+        )
+        if hasattr(self, "_result_timeline_view"):
+            lines: list[str] = []
+            step_timeline = summary.get("step_timeline")
+            if isinstance(step_timeline, list):
+                for row in step_timeline[:12]:
+                    if not isinstance(row, dict):
+                        continue
+                    step_no = row.get("step")
+                    action = str(row.get("action") or "-").strip() or "-"
+                    try:
+                        sec_text = f"{float(row.get('duration_seconds') or 0.0):.2f}초"
+                    except Exception:
+                        sec_text = "-"
+                    lines.append(f"[{step_no}] {action} · {sec_text}")
+                    reasoning = str(row.get("reasoning") or "").strip()
+                    error = str(row.get("error") or "").strip()
+                    if reasoning:
+                        lines.append(f"  - {reasoning}")
+                    if error:
+                        lines.append(f"  - 오류: {error}")
+            proof_lines = summary.get("proof_lines")
+            if isinstance(proof_lines, list) and proof_lines:
+                if lines:
+                    lines.append("")
+                lines.append("근거")
+                for proof in proof_lines[:6]:
+                    proof_text = str(proof or "").strip()
+                    if proof_text:
+                        lines.append(f"- {proof_text}")
+            validation_summary = summary.get("validation_summary")
+            if isinstance(validation_summary, dict) and validation_summary:
+                if lines:
+                    lines.append("")
+                lines.append("검증 요약")
+                lines.append(
+                    f"- 총 {validation_summary.get('total_checks', 0)}건 / "
+                    f"성공 {validation_summary.get('passed_checks', 0)}건 / "
+                    f"실패 {validation_summary.get('failed_checks', 0)}건 / "
+                    f"성공률 {validation_summary.get('success_rate', 0)}%"
+                )
+            self._result_timeline_view.setPlainText("\n".join(lines).strip())
+
+    def append_chat_message(self, role: str, text: str) -> None:
+        if not hasattr(self, "_chat_transcript"):
+            return
+        safe_role = str(role or "").strip() or "GAIA"
+        safe_text = str(text or "").strip()
+        if not safe_text:
+            return
+        self._chat_transcript.append(f"[{safe_role}] {safe_text}")
+
+    def _emit_chat_message(self) -> None:
+        if not hasattr(self, "_chat_input"):
+            return
+        text = self._chat_input.text().strip()
+        if not text:
+            return
+        self._chat_input.clear()
+        self.chatMessageSubmitted.emit(text)
 
     def _open_plan_dialog(self) -> None:
         # 수동 생성 플랜은 mock_data를 먼저 확인하고, 없으면 plans 디렉터리를 확인
@@ -1486,9 +1945,9 @@ class MainWindow(QMainWindow):
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "이전 테스트 플랜 불러오기",
+            "PRD 번들 또는 이전 테스트 플랜 불러오기",
             initial_dir,
-            "Plan Files (*.json);;All Files (*)",
+            "JSON Files (*.json);;All Files (*)",
         )
         if file_path:
             self._last_plan_directory = Path(file_path).parent

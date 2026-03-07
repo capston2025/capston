@@ -1105,12 +1105,18 @@ def _run_test(
         }
 
     runtime = context.runtime
-    if context.control_channel == "telegram" and runtime == "gui":
-        runtime = "terminal"
-        sink.info("telegram 채널에서는 GUI 대신 terminal runtime으로 실행합니다.")
 
     if runtime == "gui":
-        code = _run_gui("--mode", "chat", "--url", context.url, "--feature-query", query)
+        code = _run_gui(
+            "--mode",
+            "chat",
+            "--url",
+            context.url,
+            "--feature-query",
+            query,
+            "--control",
+            str(context.control_channel or "local"),
+        )
         return code, {
             "goal": query,
             "status": "success" if code == 0 else "failed",
@@ -1194,12 +1200,21 @@ def _run_ai(
             "verification_report": {},
         }
 
-    runtime = "terminal" if context.control_channel == "telegram" else context.runtime
+    runtime = context.runtime
     if runtime == "gui":
         if time_budget_seconds and int(time_budget_seconds) > 0:
             runtime = "terminal"
         else:
-            code = _run_gui("--mode", "ai", "--url", context.url, "--max-actions", str(max_actions))
+            code = _run_gui(
+                "--mode",
+                "ai",
+                "--url",
+                context.url,
+                "--max-actions",
+                str(max_actions),
+                "--control",
+                str(context.control_channel or "local"),
+            )
             return code, {
                 "goal": "autonomous_exploration",
                 "status": "success" if code == 0 else "failed",

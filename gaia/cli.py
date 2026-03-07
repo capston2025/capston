@@ -5,6 +5,7 @@ import argparse
 import atexit
 import json
 import os
+import re
 import select
 import socket
 import subprocess
@@ -41,6 +42,8 @@ CONTROL_CHOICES = ("local", "telegram")
 TELEGRAM_MODE_CHOICES = ("polling", "webhook")
 TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
 DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
+TELEGRAM_BRIDGE_PID_FILE = Path.home() / ".gaia" / "telegram_bridge.pid"
+TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
 
 OPENAI_MODEL_CHOICES = (
     "gpt-5.4",
@@ -249,6 +252,133 @@ def _save_profile(profile: dict[str, str]) -> None:
         json.dumps(profile, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except Exception:
+        return False
+    return True
+
+
+def _run_telegram_bridge_bg_entry() -> int:
+    from gaia.chat_hub import HubContext
+    from gaia.telegram_bridge import TelegramConfig, run_telegram_bridge
+
+    provider = str(os.getenv("GAIA_BG_PROVIDER") or "openai").strip() or "openai"
+    model = str(os.getenv("GAIA_BG_MODEL") or "gpt-5.4").strip() or "gpt-5.4"
+    auth_strategy = str(os.getenv("GAIA_BG_AUTH_STRATEGY") or "reuse").strip() or "reuse"
+    url = str(os.getenv("GAIA_BG_URL") or "").strip()
+    runtime = str(os.getenv("GAIA_BG_RUNTIME") or "gui").strip() or "gui"
+    session_key = str(os.getenv("GAIA_BG_SESSION_KEY") or WORKSPACE_DEFAULT).strip() or WORKSPACE_DEFAULT
+    session_id = str(os.getenv("GAIA_BG_MCP_SESSION_ID") or session_key).strip() or session_key
+    session_new = str(os.getenv("GAIA_BG_SESSION_NEW") or "").strip().lower() in {"1", "true", "yes", "on"}
+    tg_mode = str(os.getenv("GAIA_BG_TG_MODE") or "polling").strip() or "polling"
+    tg_token_file = str(os.getenv("GAIA_BG_TG_TOKEN_FILE") or DEFAULT_TELEGRAM_TOKEN_FILE).strip()
+    tg_allowlist_raw = str(os.getenv("GAIA_BG_TG_ALLOWLIST") or "").strip()
+    tg_webhook_url = str(os.getenv("GAIA_BG_TG_WEBHOOK_URL") or "").strip()
+    tg_webhook_bind = str(os.getenv("GAIA_BG_TG_WEBHOOK_BIND") or "127.0.0.1:8088").strip() or "127.0.0.1:8088"
+
+    return run_telegram_bridge(
+        HubContext(
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            url=url,
+            runtime=runtime,
+            control_channel="telegram",
+            memory_enabled=True,
+            workspace=session_key,
+            session_key=session_key,
+            session_id=session_id,
+            session_new=session_new,
+            last_snapshot_id="",
+            pending_user_input={},
+            on_session_update=None,
+        ),
+        TelegramConfig(
+            mode=tg_mode,
+            token_file=tg_token_file,
+            allowlist=tuple(_parse_telegram_allowlist(tg_allowlist_raw)),
+            webhook_url=tg_webhook_url,
+            webhook_bind=tg_webhook_bind,
+        ),
+    )
+
+
+def _launch_telegram_bridge_background(
+    *,
+    provider: str,
+    model: str,
+    auth_strategy: str,
+    url: str,
+    runtime: str,
+    session_key: str,
+    mcp_session_id: str,
+    session_new: bool,
+    tg_mode: str,
+    tg_token_file: str,
+    tg_allowlist_raw: str,
+    tg_webhook_url: str,
+    tg_webhook_bind: str,
+) -> bool:
+    try:
+        if TELEGRAM_BRIDGE_PID_FILE.exists():
+            try:
+                existing_pid = int(TELEGRAM_BRIDGE_PID_FILE.read_text(encoding="utf-8").strip() or "0")
+            except Exception:
+                existing_pid = 0
+            if existing_pid > 0 and _pid_running(existing_pid):
+                return True
+            try:
+                TELEGRAM_BRIDGE_PID_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                TELEGRAM_BRIDGE_STATUS_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    log_dir = Path.home() / ".gaia" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "telegram_bridge.log"
+    env = os.environ.copy()
+    env.update(
+        {
+            "GAIA_BG_PROVIDER": provider,
+            "GAIA_BG_MODEL": model,
+            "GAIA_BG_AUTH_STRATEGY": auth_strategy,
+            "GAIA_BG_URL": url,
+            "GAIA_BG_RUNTIME": runtime,
+            "GAIA_BG_SESSION_KEY": session_key,
+            "GAIA_BG_MCP_SESSION_ID": mcp_session_id,
+            "GAIA_BG_SESSION_NEW": "1" if session_new else "0",
+            "GAIA_BG_TG_MODE": tg_mode,
+            "GAIA_BG_TG_TOKEN_FILE": tg_token_file,
+            "GAIA_BG_TG_ALLOWLIST": tg_allowlist_raw,
+            "GAIA_BG_TG_WEBHOOK_URL": tg_webhook_url,
+            "GAIA_BG_TG_WEBHOOK_BIND": tg_webhook_bind,
+        }
+    )
+    with log_file.open("a", encoding="utf-8") as log_fp:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "from gaia.cli import _run_telegram_bridge_bg_entry as e; raise SystemExit(e())",
+            ],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=env,
+        )
+    TELEGRAM_BRIDGE_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TELEGRAM_BRIDGE_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+    return True
 
 
 def _resolve_session_binding(
@@ -984,8 +1114,10 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--resume")
     parser.add_argument("--url")
     parser.add_argument("--plan")
+    parser.add_argument("--bundle")
     parser.add_argument("--spec")
     parser.add_argument("--mode", choices=("plan", "ai", "chat"))
+    parser.add_argument("--control", choices=CONTROL_CHOICES)
     parser.add_argument("--feature-query")
     parser.add_argument("--max-actions", type=int)
     parser.add_argument("--session-key")
@@ -1006,10 +1138,14 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
         forwarded += ["--url", str(args.url)]
     if args.plan:
         forwarded += ["--plan", str(args.plan)]
+    if args.bundle:
+        forwarded += ["--bundle", str(args.bundle)]
     if args.spec:
         forwarded += ["--spec", str(args.spec)]
     if args.mode:
         forwarded += ["--mode", str(args.mode)]
+    if args.control:
+        forwarded += ["--control", str(args.control)]
     if args.feature_query:
         forwarded += ["--feature-query", str(args.feature_query)]
     if args.max_actions is not None:
@@ -1073,6 +1209,7 @@ def _dispatch_ai(
 def _dispatch_plan(
     url: str | None,
     plan: str | None,
+    bundle: str | None,
     spec: str | None,
     resume: str | None,
     feature_query: str | None = None,
@@ -1082,6 +1219,8 @@ def _dispatch_plan(
         forwarded += ["--url", url]
     if plan:
         forwarded += ["--plan", plan]
+    if bundle:
+        forwarded += ["--bundle", bundle]
     if spec:
         forwarded += ["--spec", spec]
     if resume:
@@ -1168,6 +1307,7 @@ def run_autonomous(argv: Sequence[str] | None = None) -> int:
 def run_plan(argv: Sequence[str] | None = None) -> int:
     parser = _build_common_parser("gaia plan", "Run plan/spec/resume flow (GUI first).")
     parser.add_argument("--plan")
+    parser.add_argument("--bundle")
     parser.add_argument("--spec")
     parser.add_argument("--resume")
     parser.add_argument("--feature-query")
@@ -1179,13 +1319,178 @@ def run_plan(argv: Sequence[str] | None = None) -> int:
     _, _, _, url, runtime, _, _, _ = configured
     if runtime == "terminal":
         print("plan/spec 실행은 GUI를 사용합니다. GUI로 전환합니다.")
-    return _dispatch_plan(url, args.plan, args.spec, args.resume, args.feature_query)
+    return _dispatch_plan(url, args.plan, args.bundle, args.spec, args.resume, args.feature_query)
 
+
+
+def _slugify_filename(text: str) -> str:
+    base = re.sub(r"[^0-9A-Za-z가-힣]+", "-", str(text or "").strip().lower()).strip("-")
+    return base or "prd-bundle"
+
+
+def run_prd(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="gaia prd", description="PRD bundle utilities.")
+    subparsers = parser.add_subparsers(dest="prd_command")
+
+    ingest_parser = subparsers.add_parser("ingest", help="Normalize a PRD into a reusable bundle JSON.")
+    ingest_parser.add_argument("--input")
+    ingest_parser.add_argument("--text")
+    ingest_parser.add_argument("--url")
+    ingest_parser.add_argument("--output")
+
+    inspect_parser = subparsers.add_parser("inspect", help="Inspect a PRD bundle JSON.")
+    inspect_parser.add_argument("--bundle", required=True)
+    inspect_parser.add_argument("--format", choices=("text", "json"), default="text")
+
+    run_parser = subparsers.add_parser("run", help="Run generated goals from a PRD bundle.")
+    run_parser.add_argument("--llm-provider", choices=("openai", "gemini"))
+    run_parser.add_argument("--llm-model")
+    run_parser.add_argument("--auth", choices=AUTH_CHOICES)
+    run_parser.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
+    run_parser.add_argument("--url")
+    run_parser.add_argument("--runtime", choices=RUNTIME_CHOICES)
+    run_parser.add_argument("--gui", action="store_true", help="Force GUI runtime")
+    run_parser.add_argument("--terminal", action="store_true", help="Force terminal runtime")
+    run_parser.add_argument("--session", help=f"Session key (default: {WORKSPACE_DEFAULT})")
+    run_parser.add_argument("--new-session", action="store_true", help="Force new MCP session id")
+    run_parser.add_argument("--bundle", required=True)
+    run_parser.add_argument("--goal-id", action="append")
+    run_parser.add_argument("--format", choices=("text", "json"), default="text")
+    run_parser.add_argument("--output")
+
+    args = parser.parse_args(list(argv or []))
+
+    if args.prd_command == "ingest":
+        from gaia.src.phase1.prd_bundle_repository import PRDBundleRepository
+        from gaia.src.phase1.prd_ingest import ingest_prd_bundle
+
+        if not args.input and not args.text:
+            print("--input 또는 --text 중 하나는 필요합니다.", file=sys.stderr)
+            return 2
+        bundle = ingest_prd_bundle(
+            input_path=args.input,
+            raw_text=args.text,
+            base_url=args.url,
+        )
+        repository = PRDBundleRepository()
+        output_path = repository.save_bundle(bundle, args.output)
+        print(f"bundle_path: {output_path}")
+        print(f"project_name: {bundle.project_name}")
+        print(f"goals: {bundle.goal_count()}")
+        return 0
+
+    if args.prd_command == "inspect":
+        from gaia.src.phase1.prd_bundle_repository import PRDBundleRepository
+
+        bundle = PRDBundleRepository().load_bundle(args.bundle)
+        payload = {
+            "schema_version": bundle.schema_version,
+            "project_name": bundle.project_name,
+            "source_type": bundle.source.type,
+            "base_url": bundle.execution_profile.base_url,
+            "requirements": len(bundle.normalized_prd.requirements),
+            "flows": len(bundle.normalized_prd.user_flows),
+            "goals": [
+                {
+                    "id": goal.id,
+                    "title": goal.title,
+                    "priority": goal.priority,
+                    "contract": goal.success_contract,
+                    "enabled": goal.enabled,
+                }
+                for goal in bundle.generated_goals
+            ],
+        }
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"프로젝트: {bundle.project_name}")
+            print(f"소스: {bundle.source.type}")
+            print(f"기본 URL: {bundle.execution_profile.base_url or '-'}")
+            print(f"요구사항: {len(bundle.normalized_prd.requirements)}")
+            print(f"사용자 플로우: {len(bundle.normalized_prd.user_flows)}")
+            print(f"생성 목표: {len(bundle.generated_goals)}")
+            for goal in bundle.generated_goals:
+                marker = "ON" if goal.enabled else "OFF"
+                print(f"- [{marker}] {goal.id} | {goal.priority} | {goal.title} | {goal.success_contract}")
+        return 0
+
+    if args.prd_command == "run":
+        from gaia.src.phase1.prd_bundle_repository import PRDBundleRepository
+        from gaia.terminal import run_chat_terminal_once
+
+        configured = _configure_session(args, require_url=False)
+        if not configured:
+            return 1
+        _, _, _, override_url, runtime, _, mcp_session_id, _ = configured
+        bundle = PRDBundleRepository().load_bundle(args.bundle)
+        resolved_url = bundle.base_url(override_url)
+        if not resolved_url:
+            print("번들에 base_url이 없고 --url도 지정되지 않았습니다.", file=sys.stderr)
+            return 2
+        selected = [goal for goal in bundle.generated_goals if goal.enabled]
+        if args.goal_id:
+            wanted = {str(goal_id).strip() for goal_id in args.goal_id if str(goal_id).strip()}
+            selected = [goal for goal in selected if goal.id in wanted]
+        if not selected:
+            print("실행할 goal이 없습니다.", file=sys.stderr)
+            return 2
+        if runtime == "gui":
+            forwarded = ["--bundle", str(Path(args.bundle).expanduser()), "--url", resolved_url, "--mode", "plan"]
+            return run_gui(forwarded)
+
+        results: list[dict[str, object]] = []
+        failures = 0
+        for goal in selected:
+            prepared_goal = goal.to_test_goal(resolved_url)
+            code, summary = run_chat_terminal_once(
+                url=resolved_url,
+                query=prepared_goal.description,
+                session_id=mcp_session_id,
+                prepared_goal=prepared_goal,
+            )
+            if code != 0:
+                failures += 1
+            results.append(
+                {
+                    "goal_id": goal.id,
+                    "title": goal.title,
+                    "status": summary.get("status"),
+                    "final_status": summary.get("final_status"),
+                    "reason": summary.get("reason"),
+                    "duration_seconds": summary.get("duration_seconds"),
+                }
+            )
+        payload = {
+            "bundle": str(Path(args.bundle).expanduser()),
+            "project_name": bundle.project_name,
+            "url": resolved_url,
+            "results": results,
+            "status": "success" if failures == 0 else "failed",
+        }
+        if args.output:
+            Path(args.output).expanduser().write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"프로젝트: {bundle.project_name}")
+            print(f"실행 URL: {resolved_url}")
+            print(f"목표 수: {len(results)}")
+            for row in results:
+                print(f"- {row['goal_id']} | {row['status']} | {row['reason']}")
+        return 0 if failures == 0 else 1
+
+    parser.print_help()
+    return 2
 
 def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser = _build_common_parser("gaia", "GAIA quick launcher.")
     parser.add_argument("--mode", choices=MODE_CHOICES, help="Run selected mode directly.")
     parser.add_argument("--plan")
+    parser.add_argument("--bundle")
     parser.add_argument("--spec")
     parser.add_argument("--resume")
     parser.add_argument("--feature-query")
@@ -1221,10 +1526,42 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     profile = _load_profile()
     control = _resolve_control_channel(args, profile)
 
+    if runtime == "gui" and control != "telegram":
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel=control,
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
+        )
+        forwarded = ["--url", url, "--control", control]
+        if args.plan:
+            forwarded += ["--plan", str(args.plan)]
+        if args.bundle:
+            forwarded += ["--bundle", str(args.bundle)]
+        if args.spec:
+            forwarded += ["--spec", str(args.spec)]
+        if args.resume:
+            forwarded += ["--resume", str(args.resume)]
+        if args.mode:
+            forwarded += ["--mode", str(args.mode)]
+        if args.feature_query:
+            forwarded += ["--feature-query", str(args.feature_query)]
+        if args.max_actions is not None:
+            forwarded += ["--max-actions", str(max(1, int(args.max_actions)))]
+        if session_key:
+            forwarded += ["--session-key", str(session_key)]
+        if mcp_session_id:
+            forwarded += ["--mcp-session-id", str(mcp_session_id)]
+        return run_gui(forwarded)
+
     if control == "telegram":
-        if runtime != "terminal":
-            print("Telegram 제어 채널에서는 terminal runtime으로 고정합니다.")
-            runtime = "terminal"
         tg_setup = _resolve_telegram_setup_strategy(args, profile)
         tg_mode = ""
         tg_token_file = ""
@@ -1303,6 +1640,47 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             session_key=session_key,
             mcp_session_id=mcp_session_id,
         )
+
+        if runtime == "gui":
+            launched = _launch_telegram_bridge_background(
+                provider=provider,
+                model=model,
+                auth_strategy=auth_strategy,
+                url=url,
+                runtime=runtime,
+                session_key=session_key,
+                mcp_session_id=mcp_session_id,
+                session_new=session_new,
+                tg_mode=tg_mode,
+                tg_token_file=tg_token_file,
+                tg_allowlist_raw=tg_allowlist_raw,
+                tg_webhook_url=tg_webhook_url,
+                tg_webhook_bind=tg_webhook_bind,
+            )
+            if not launched:
+                print("Telegram bridge 백그라운드 실행에 실패했습니다.", file=sys.stderr)
+                return 1
+            forwarded = ["--url", url, "--control", "telegram"]
+            if args.plan:
+                forwarded += ["--plan", str(args.plan)]
+            if args.bundle:
+                forwarded += ["--bundle", str(args.bundle)]
+            if args.spec:
+                forwarded += ["--spec", str(args.spec)]
+            if args.resume:
+                forwarded += ["--resume", str(args.resume)]
+            if args.mode:
+                forwarded += ["--mode", str(args.mode)]
+            if args.feature_query:
+                forwarded += ["--feature-query", str(args.feature_query)]
+            if args.max_actions is not None:
+                forwarded += ["--max-actions", str(max(1, int(args.max_actions)))]
+            if session_key:
+                forwarded += ["--session-key", str(session_key)]
+            if mcp_session_id:
+                forwarded += ["--mcp-session-id", str(mcp_session_id)]
+            print("Telegram bridge를 백그라운드로 시작하고 GUI를 엽니다.")
+            return run_gui(forwarded)
 
         if args.mode:
             print("Telegram 제어 채널에서는 --mode direct 실행을 무시하고 Chat Hub 대기 상태로 시작합니다.")
@@ -1429,9 +1807,9 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             session_key=session_key,
             mcp_session_id=mcp_session_id,
         )
-        return _dispatch_plan(url, args.plan, args.spec, args.resume, args.feature_query)
+        return _dispatch_plan(url, args.plan, args.bundle, args.spec, args.resume, args.feature_query)
 
-    if control == "local" and sys.stdin.isatty():
+    if control == "local" and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
         quick_mode_map = {
             "specific": "특정 기능 테스트",
             "autonomous": "완전 자율",
@@ -1468,7 +1846,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 mcp_session_id=mcp_session_id,
             )
             return _dispatch_chat(
-                "terminal",
+                runtime,
                 url,
                 feature_query,
                 repl=False,
@@ -1764,6 +2142,7 @@ def _build_main_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("plan", help="Run plan/spec/resume flow")
     subparsers.add_parser("gui", help="Legacy GUI alias")
     subparsers.add_parser("terminal", help="Legacy terminal alias")
+    subparsers.add_parser("prd", help="PRD bundle ingest/inspect/run")
     subparsers.add_parser("auth", help="Manage GAIA auth tokens")
     subparsers.add_parser("help", help="Show help")
     return parser
@@ -1793,6 +2172,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_start(["gui", *args[1:]])
         if args[0] == "terminal":
             return run_terminal(args[1:])
+        if args[0] == "prd":
+            return run_prd(args[1:])
         if args[0] == "auth":
             return gaia_auth.run_auth(args[1:])
 

@@ -1571,31 +1571,73 @@ class GoalDrivenAgent:
             "working",
         )
         operation_hints = (
-            "회원가입",
-            "로그인",
-            "결제",
-            "구매",
-            "삭제",
+            "클릭해",
+            "눌러",
+            "입력해",
+            "채워",
+            "작성해",
+            "제출해",
+            "저장해",
+            "선택해",
+            "실행해",
+            "추가해",
+            "삭제해",
+            "제거해",
             "비우",
-            "제거",
-            "수정",
-            "추가",
             "담기",
             "담아",
-            "등록",
-            "signup",
-            "register",
-            "login",
-            "checkout",
+            "등록해",
+            "login해",
+            "로그인해",
+            "회원가입해",
             "purchase",
             "submit",
             "clear",
-            "empty",
             "remove",
+            "click",
+            "fill",
+            "type",
+            "select",
+            "press",
+        )
+        entity_hints = (
+            "회원가입",
+            "로그인",
+            "signup",
+            "register",
+            "login",
+            "결제",
+            "구매",
+            "checkout",
+            "purchase",
+        )
+        visibility_hints = (
+            "보이는지",
+            "표시",
+            "노출",
+            "존재",
+            "있는지",
+            "열려있는지",
+            "링크",
+            "버튼",
+            "이미",
+            "현재",
+            "visible",
+            "shown",
+            "exists",
+            "present",
         )
         has_verify_hint = any(hint in text for hint in verify_hints)
         has_operation_hint = any(hint in text for hint in operation_hints)
-        return bool(has_verify_hint and not has_operation_hint)
+        has_entity_hint = any(hint in text for hint in entity_hints)
+        has_visibility_hint = any(hint in text for hint in visibility_hints)
+        if not has_verify_hint:
+            return False
+        if has_operation_hint:
+            return False
+        if has_entity_hint and not has_visibility_hint:
+            return False
+        return True
 
     def _is_filter_style_goal(self, goal: TestGoal) -> bool:
         text = self._normalize_text(
@@ -1731,6 +1773,163 @@ class GoalDrivenAgent:
             + ", ".join(signals[:3])
             + "가 확인되어 기능 동작으로 판정했습니다."
         )
+
+    def _evaluate_static_verification_on_current_page(
+        self,
+        *,
+        goal: TestGoal,
+        dom_elements: List[DOMElement],
+    ) -> Optional[str]:
+        if not self._is_verification_style_goal(goal):
+            return None
+        if self._is_filter_style_goal(goal):
+            return None
+
+        goal_text = self._normalize_text(
+            " ".join(
+                [
+                    str(goal.name or ""),
+                    str(goal.description or ""),
+                    " ".join(str(item or "") for item in (goal.success_criteria or [])),
+                ]
+            )
+        )
+        if not goal_text:
+            return None
+
+        static_check_hints = (
+            "현재",
+            "이미",
+            "추가 조작 없이",
+            "보이는지",
+            "노출",
+            "표시",
+            "존재하는지",
+            "열려있는지",
+            "확인",
+            "visible",
+            "already",
+            "without interaction",
+        )
+        if not any(hint in goal_text for hint in static_check_hints):
+            return None
+
+        page_fragments: List[str] = [str(self._active_url or "")]
+        for el in dom_elements[:120]:
+            page_fragments.extend(
+                [
+                    str(el.text or ""),
+                    str(el.aria_label or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(el.placeholder or ""),
+                    str(el.href or ""),
+                    str(self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id) or ""),
+                ]
+            )
+        page_blob = self._normalize_text(" ".join(fragment for fragment in page_fragments if fragment))
+
+        def _matches_any(*needles: str) -> bool:
+            return any(str(needle or "").strip().lower() in page_blob for needle in needles if str(needle or "").strip())
+
+        evidence_labels: List[str] = []
+        matched_groups = 0
+
+        if any(token in goal_text for token in ("로그인", "login", "sign in")):
+            if not _matches_any("로그인", "login", "sign in", "/login"):
+                return None
+            matched_groups += 1
+            evidence_labels.append("로그인 신호")
+
+        if any(token in goal_text for token in ("문제 목록", "problemset", "문제집합", "문제 리스트")):
+            if not (_matches_any("problemset", "문제", "문제번호") or "/problemset" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("문제 목록 신호")
+
+        if any(token in goal_text for token in ("문제 상세", "problem detail", "문제 페이지")):
+            problem_number_match = re.search(r"(?<!\d)(\d{3,6})(?:번|번 문제)?", goal_text)
+            if problem_number_match is not None:
+                number = str(problem_number_match.group(1))
+                if number not in page_blob:
+                    return None
+                evidence_labels.append(f"문제 번호 {number}")
+                matched_groups += 1
+            if not (_matches_any("/problem/", "시간 제한", "메모리 제한", "제출", "맞힌 사람") or "/problem/" in page_blob):
+                return None
+            evidence_labels.append("문제 상세 신호")
+            matched_groups += 1
+
+        if any(token in goal_text for token in ("채점 현황", "status")):
+            if not (_matches_any("채점 현황", "status", "제출번호", "결과") or "/status" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("채점 현황 신호")
+
+        if any(token in goal_text for token in ("랭킹", "rank", "ranklist")):
+            if not (_matches_any("랭킹", "ranklist", "순위", "rating") or "/ranklist" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("랭킹 신호")
+
+        if any(token in goal_text for token in ("게시판", "board")):
+            if not (_matches_any("게시판", "board", "글쓴이", "제목") or "/board/" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("게시판 신호")
+
+        if any(token in goal_text for token in ("카테고리", "category")):
+            if not (_matches_any("category", "카테고리", "분류") or "/category" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("카테고리 신호")
+
+        if any(token in goal_text for token in ("단계", "step")):
+            if not (_matches_any("step", "단계", "난이도") or "/step" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("단계 신호")
+
+        if any(token in goal_text for token in ("태그", "tag")):
+            if not (_matches_any("tag", "태그") or "/tag" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("태그 신호")
+
+        if any(token in goal_text for token in ("워크북", "workbook")):
+            if not (_matches_any("workbook", "문제집") or "/workbook" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("워크북 신호")
+
+        if any(token in goal_text for token in ("대회", "contest")):
+            if not (_matches_any("contest", "대회") or "/contest" in page_blob):
+                return None
+            matched_groups += 1
+            evidence_labels.append("대회 신호")
+
+        if matched_groups == 0:
+            generic_stop_tokens = {
+                "현재", "이미", "추가", "조작", "없이", "보이는지", "표시", "존재하는지",
+                "열려있는지", "확인", "페이지", "화면", "되는지", "정상", "작동", "검증",
+                "visible", "already", "without", "interaction", "verify", "check", "page",
+            }
+            goal_tokens = [
+                token for token in self._tokenize_text(goal_text)
+                if token not in generic_stop_tokens
+            ]
+            matched_generic = []
+            for token in goal_tokens:
+                if len(token) < 2:
+                    continue
+                if token in page_blob:
+                    matched_generic.append(token)
+            if len(matched_generic) < 2:
+                return None
+            evidence_labels.extend(sorted(set(matched_generic[:4])))
+
+        self._record_reason_code("static_verification_pass")
+        labels = ", ".join(dict.fromkeys(evidence_labels)) if evidence_labels else "현재 페이지 신호"
+        return f"현재 페이지에서 목표 검증 신호를 바로 확인했습니다. ({labels})"
 
     @classmethod
     def _build_click_intent_key(
@@ -3298,6 +3497,30 @@ class GoalDrivenAgent:
                     f"⏭️ CAPTCHA solver cooldown 적용 중(step<{captcha_skip_until}) — 일반 실행 흐름 유지"
                 )
                 # no_captcha 또는 unsupported → 일반 흐름 계속
+
+            static_verification_reason = self._evaluate_static_verification_on_current_page(
+                goal=goal,
+                dom_elements=dom_elements,
+            )
+            if static_verification_reason:
+                self._log(f"✅ 목표 달성! 이유: {static_verification_reason}")
+                result = GoalResult(
+                    goal_id=goal.id,
+                    goal_name=goal.name,
+                    success=True,
+                    steps_taken=steps,
+                    total_steps=max(0, len(steps)),
+                    final_reason=static_verification_reason,
+                    duration_seconds=time.time() - start_time,
+                )
+                self._record_goal_summary(
+                    goal=goal,
+                    status="success",
+                    reason=result.final_reason,
+                    step_count=result.total_steps,
+                    duration_seconds=result.duration_seconds,
+                )
+                return result
 
             directive = orchestrator.next_directive(
                 login_gate_visible=login_gate_visible,
