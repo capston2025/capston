@@ -1653,17 +1653,42 @@ class GoalDrivenAgent:
             return False
         if not self._is_verification_style_goal(goal):
             return False
-        filter_hints = (
+        explicit_filter_hints = (
             "필터",
             "filter",
             "학점",
             "credit",
-            "분류",
-            "category",
             "정렬",
             "sort",
-            "검색",
-            "search",
+        )
+        category_like_hints = (
+            "분류",
+            "category",
+        )
+        readonly_verification_hints = (
+            "현재",
+            "이미",
+            "추가 조작 없이",
+            "보이는지",
+            "표시",
+            "존재",
+            "확인",
+            "visible",
+            "already",
+            "without interaction",
+        )
+        if any(hint in text for hint in category_like_hints) and not any(
+            hint in text for hint in explicit_filter_hints
+        ):
+            return False
+        if any(hint in text for hint in readonly_verification_hints) and not any(
+            hint in text for hint in explicit_filter_hints
+        ):
+            return False
+        filter_hints = (
+            *explicit_filter_hints,
+            "분류",
+            "category",
         )
         return any(hint in text for hint in filter_hints)
 
@@ -1832,104 +1857,293 @@ class GoalDrivenAgent:
             return any(str(needle or "").strip().lower() in page_blob for needle in needles if str(needle or "").strip())
 
         evidence_labels: List[str] = []
-        matched_groups = 0
+        visible_elements = [el for el in dom_elements if bool(el.is_visible)]
+        link_like_count = sum(
+            1
+            for el in visible_elements
+            if str(el.href or "").strip()
+            or self._normalize_text(el.tag) == "a"
+            or self._normalize_text(el.role) == "link"
+        )
+        collection_like_count = sum(
+            1
+            for el in visible_elements
+            if self._normalize_text(el.tag) in {"a", "li", "tr", "article"}
+            or self._normalize_text(el.role) in {"row", "listitem"}
+        )
+        title_like_count = sum(
+            1
+            for el in visible_elements
+            if len(str(el.text or "").strip()) >= 12
+        )
+        has_collection_evidence = bool(link_like_count >= 6 or collection_like_count >= 6 or title_like_count >= 8)
 
-        if any(token in goal_text for token in ("로그인", "login", "sign in")):
-            if not _matches_any("로그인", "login", "sign in", "/login"):
+        if any(token in goal_text for token in ("로그인", "login", "sign in", "signin")):
+            if not _matches_any("로그인", "login", "sign in", "/login", "signin"):
                 return None
-            matched_groups += 1
             evidence_labels.append("로그인 신호")
 
-        if any(token in goal_text for token in ("문제 목록", "problemset", "문제집합", "문제 리스트")):
-            if not (_matches_any("problemset", "문제", "문제번호") or "/problemset" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("문제 목록 신호")
+        generic_stop_tokens = {
+            "현재", "이미", "추가", "조작", "없이", "보이는지", "표시", "존재하는지",
+            "열려있는지", "확인", "페이지", "화면", "되는지", "정상", "작동", "검증",
+            "상태", "목록이", "목록", "리스트", "테이블", "table", "list", "page",
+            "visible", "already", "without", "interaction", "verify", "check", "page",
+            "open", "opened", "shown",
+        }
+        goal_tokens = [
+            token for token in self._tokenize_text(goal_text)
+            if token not in generic_stop_tokens
+        ]
+        matched_generic: List[str] = []
+        strong_matched = False
+        for token in goal_tokens:
+            if len(token) < 2:
+                continue
+            if token in page_blob:
+                matched_generic.append(token)
+                if token.isdigit() or len(token) >= 4:
+                    strong_matched = True
 
-        if any(token in goal_text for token in ("문제 상세", "problem detail", "문제 페이지")):
-            problem_number_match = re.search(r"(?<!\d)(\d{3,6})(?:번|번 문제)?", goal_text)
-            if problem_number_match is not None:
-                number = str(problem_number_match.group(1))
-                if number not in page_blob:
-                    return None
-                evidence_labels.append(f"문제 번호 {number}")
-                matched_groups += 1
-            if not (_matches_any("/problem/", "시간 제한", "메모리 제한", "제출", "맞힌 사람") or "/problem/" in page_blob):
-                return None
-            evidence_labels.append("문제 상세 신호")
-            matched_groups += 1
+        list_like_hints = ("목록", "리스트", "list", "table", "테이블", "랭킹", "게시판", "카테고리", "태그", "분류", "status", "현황")
+        detail_like_hints = ("상세", "detail")
+        asks_list_like = any(hint in goal_text for hint in list_like_hints)
+        asks_detail_like = any(hint in goal_text for hint in detail_like_hints)
 
-        if any(token in goal_text for token in ("채점 현황", "status")):
-            if not (_matches_any("채점 현황", "status", "제출번호", "결과") or "/status" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("채점 현황 신호")
+        if asks_list_like and not has_collection_evidence:
+            return None
+        if asks_list_like and has_collection_evidence:
+            evidence_labels.append("목록형 구조")
 
-        if any(token in goal_text for token in ("랭킹", "rank", "ranklist")):
-            if not (_matches_any("랭킹", "ranklist", "순위", "rating") or "/ranklist" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("랭킹 신호")
+        if asks_detail_like and not (strong_matched or len(matched_generic) >= 2):
+            return None
+        if asks_detail_like and (strong_matched or len(matched_generic) >= 2):
+            evidence_labels.append("상세 토큰 일치")
 
-        if any(token in goal_text for token in ("게시판", "board")):
-            if not (_matches_any("게시판", "board", "글쓴이", "제목") or "/board/" in page_blob):
+        if not evidence_labels:
+            if strong_matched:
+                evidence_labels.append("핵심 토큰 일치")
+            elif len(matched_generic) >= 2:
+                evidence_labels.append("토큰 일치")
+            elif len(matched_generic) >= 1 and has_collection_evidence:
+                evidence_labels.append("토큰+목록 구조 일치")
+            else:
                 return None
-            matched_groups += 1
-            evidence_labels.append("게시판 신호")
 
-        if any(token in goal_text for token in ("카테고리", "category")):
-            if not (_matches_any("category", "카테고리", "분류") or "/category" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("카테고리 신호")
-
-        if any(token in goal_text for token in ("단계", "step")):
-            if not (_matches_any("step", "단계", "난이도") or "/step" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("단계 신호")
-
-        if any(token in goal_text for token in ("태그", "tag")):
-            if not (_matches_any("tag", "태그") or "/tag" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("태그 신호")
-
-        if any(token in goal_text for token in ("워크북", "workbook")):
-            if not (_matches_any("workbook", "문제집") or "/workbook" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("워크북 신호")
-
-        if any(token in goal_text for token in ("대회", "contest")):
-            if not (_matches_any("contest", "대회") or "/contest" in page_blob):
-                return None
-            matched_groups += 1
-            evidence_labels.append("대회 신호")
-
-        if matched_groups == 0:
-            generic_stop_tokens = {
-                "현재", "이미", "추가", "조작", "없이", "보이는지", "표시", "존재하는지",
-                "열려있는지", "확인", "페이지", "화면", "되는지", "정상", "작동", "검증",
-                "visible", "already", "without", "interaction", "verify", "check", "page",
-            }
-            goal_tokens = [
-                token for token in self._tokenize_text(goal_text)
-                if token not in generic_stop_tokens
-            ]
-            matched_generic = []
-            for token in goal_tokens:
-                if len(token) < 2:
-                    continue
-                if token in page_blob:
-                    matched_generic.append(token)
-            if len(matched_generic) < 2:
-                return None
-            evidence_labels.extend(sorted(set(matched_generic[:4])))
+        if matched_generic:
+            evidence_labels.extend(sorted(dict.fromkeys(matched_generic[:3])))
 
         self._record_reason_code("static_verification_pass")
         labels = ", ".join(dict.fromkeys(evidence_labels)) if evidence_labels else "현재 페이지 신호"
         return f"현재 페이지에서 목표 검증 신호를 바로 확인했습니다. ({labels})"
+
+    def _extract_goal_query_tokens(self, goal: TestGoal) -> List[str]:
+        goal_text = " ".join(
+            [
+                str(goal.name or ""),
+                str(goal.description or ""),
+                " ".join(str(item or "") for item in (goal.success_criteria or [])),
+            ]
+        )
+        quoted = re.findall(r"\"([^\"]{2,})\"|'([^']{2,})'", goal_text)
+        quoted_tokens = [next((part for part in group if part), "") for group in quoted]
+        tokens: List[str] = [token.strip() for token in quoted_tokens if token.strip()]
+
+        for match in re.findall(r"(?<!\d)(\d{3,6})(?!\d)", goal_text):
+            tokens.append(str(match))
+
+        for raw in re.findall(r"[0-9A-Za-z가-힣+/#_-]{2,}", goal_text):
+            token = str(raw or "").strip()
+            low = token.lower()
+            if low in {
+                "문제", "페이지", "검색", "search", "open", "detail", "상세", "열어줘",
+                "현재", "이미", "확인", "보이는지", "추가", "조작", "없이", "종료해줘",
+            }:
+                continue
+            if any(ch.isdigit() for ch in token) or "+" in token or len(token) >= 4:
+                tokens.append(token)
+
+        deduped: List[str] = []
+        seen = set()
+        for token in tokens:
+            norm = self._normalize_text(token)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(token)
+        return deduped[:8]
+
+    def _build_deterministic_goal_preplan(
+        self,
+        *,
+        goal: TestGoal,
+        dom_elements: List[DOMElement],
+        steps: Optional[List[StepResult]] = None,
+    ) -> Optional[ActionDecision]:
+        goal_text = self._normalize_text(
+            " ".join(
+                [
+                    str(goal.name or ""),
+                    str(goal.description or ""),
+                    " ".join(str(item or "") for item in (goal.success_criteria or [])),
+                ]
+            )
+        )
+        if not goal_text:
+            return None
+
+        query_tokens = self._extract_goal_query_tokens(goal)
+        if not query_tokens:
+            return None
+
+        search_hints = ("검색", "search", "query", "find")
+        open_hints = ("열어", "open", "상세", "detail")
+
+        if any(hint in goal_text for hint in search_hints):
+            search_candidates: List[tuple[float, DOMElement]] = []
+            for el in dom_elements:
+                if not bool(el.is_visible and el.is_enabled):
+                    continue
+                tag = self._normalize_text(el.tag)
+                etype = self._normalize_text(el.type)
+                if tag != "input" and tag != "textarea":
+                    continue
+                score = 0.0
+                if etype in {"search", "text"}:
+                    score += 3.0
+                if any(
+                    token in self._normalize_text(
+                        " ".join(
+                            [
+                                str(el.placeholder or ""),
+                                str(el.aria_label or ""),
+                                str(el.text or ""),
+                                str(self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id) or ""),
+                            ]
+                        )
+                    )
+                    for token in ("검색", "search", "query")
+                ):
+                    score += 4.0
+                if score > 0.0:
+                    search_candidates.append((score, el))
+            if search_candidates:
+                search_candidates.sort(key=lambda item: item[0], reverse=True)
+                query_value = query_tokens[0]
+                search_input = search_candidates[0][1]
+                last_step = steps[-1] if steps else None
+                repeated_fill = bool(
+                    last_step
+                    and bool(last_step.success)
+                    and last_step.action.action == ActionType.FILL
+                    and last_step.action.element_id == search_input.id
+                    and self._normalize_text(str(last_step.action.value or "")) == self._normalize_text(query_value)
+                )
+                if repeated_fill:
+                    submit_candidates: List[tuple[float, DOMElement]] = []
+                    for el in dom_elements:
+                        if not bool(el.is_visible and el.is_enabled):
+                            continue
+                        tag = self._normalize_text(el.tag)
+                        etype = self._normalize_text(el.type)
+                        if tag not in {"button", "a", "input"}:
+                            continue
+                        if tag == "input" and etype not in {"submit", "button"}:
+                            continue
+                        blob = self._normalize_text(
+                            " ".join(
+                                [
+                                    str(el.text or ""),
+                                    str(el.aria_label or ""),
+                                    str(getattr(el, "title", None) or ""),
+                                    str(self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id) or ""),
+                                ]
+                            )
+                        )
+                        score = 0.0
+                        if any(token in blob for token in ("검색", "search", "찾기", "go", "submit")):
+                            score += 5.0
+                        if tag == "button":
+                            score += 1.0
+                        if score > 0.0:
+                            submit_candidates.append((score, el))
+                    if submit_candidates:
+                        submit_candidates.sort(key=lambda item: item[0], reverse=True)
+                        submit_target = submit_candidates[0][1]
+                        return ActionDecision(
+                            action=ActionType.CLICK,
+                            element_id=submit_target.id,
+                            value=None,
+                            reasoning=f"같은 검색어 `{query_value}` 입력이 이미 끝났으므로 검색 CTA를 바로 실행합니다.",
+                            confidence=0.94,
+                            is_goal_achieved=False,
+                            goal_achievement_reason=None,
+                        )
+                    return ActionDecision(
+                        action=ActionType.PRESS,
+                        element_id=search_input.id,
+                        value="Enter",
+                        reasoning=f"같은 검색어 `{query_value}` 입력이 이미 끝났으므로 Enter로 검색을 제출합니다.",
+                        confidence=0.93,
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                return ActionDecision(
+                    action=ActionType.FILL,
+                    element_id=search_input.id,
+                    value=query_value,
+                    reasoning=f"목표에 명시된 검색 토큰 `{query_value}`를 검색 입력에 우선 적용합니다.",
+                    confidence=0.92,
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
+
+        if any(hint in goal_text for hint in open_hints):
+            candidates: List[tuple[float, DOMElement, str]] = []
+            numeric_tokens = [token for token in query_tokens if token.isdigit()]
+            for el in dom_elements:
+                if not bool(el.is_visible and el.is_enabled):
+                    continue
+                href = str(el.href or "")
+                text = str(el.text or "")
+                aria = str(el.aria_label or "")
+                blob = self._normalize_text(" ".join([href, text, aria]))
+                matched = []
+                score = 0.0
+                for token in query_tokens:
+                    norm = self._normalize_text(token)
+                    if not norm:
+                        continue
+                    if norm in blob:
+                        matched.append(token)
+                        score += 3.0
+                if not matched:
+                    continue
+                if self._normalize_text(el.tag) == "a":
+                    score += 2.0
+                if href:
+                    score += 1.5
+                if any(ch.isdigit() for ch in "".join(matched)) and re.search(r"/[a-z]+/\d+", href):
+                    score += 2.0
+                for token in numeric_tokens:
+                    if re.search(rf"/{re.escape(token)}(?:[/?#]|$)", href):
+                        score += 6.0
+                    elif token in href:
+                        score += 2.0
+                candidates.append((score, el, ", ".join(matched[:3])))
+            if candidates:
+                candidates.sort(key=lambda item: item[0], reverse=True)
+                _, element, label = candidates[0]
+                return ActionDecision(
+                    action=ActionType.CLICK,
+                    element_id=element.id,
+                    value=None,
+                    reasoning=f"목표에 명시된 타깃 토큰({label})과 가장 잘 맞는 항목을 직접 엽니다.",
+                    confidence=0.9,
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
+
+        return None
 
     @classmethod
     def _build_click_intent_key(
@@ -3597,15 +3811,24 @@ class GoalDrivenAgent:
             if bool(context_shift_result.get("continue_loop")):
                 continue
 
-            # 3. LLM에게 다음 액션 결정 요청 (OpenClaw 철학 정렬: 계획은 LLM, 실행은 ref-only)
-            memory_context = self._build_memory_context(goal)
-            decision = self._decide_next_action(
-                dom_elements=dom_elements,
+            deterministic_preplan = self._build_deterministic_goal_preplan(
                 goal=goal,
-                screenshot=screenshot,
-                memory_context=memory_context,
+                dom_elements=dom_elements,
+                steps=steps,
             )
-            self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
+            if deterministic_preplan is not None:
+                decision = deterministic_preplan
+                self._log(f"규칙 기반 선결정: {decision.action.value} - {decision.reasoning}")
+            else:
+                # 3. LLM에게 다음 액션 결정 요청 (OpenClaw 철학 정렬: 계획은 LLM, 실행은 ref-only)
+                memory_context = self._build_memory_context(goal)
+                decision = self._decide_next_action(
+                    dom_elements=dom_elements,
+                    goal=goal,
+                    screenshot=screenshot,
+                    memory_context=memory_context,
+                )
+                self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
 
             if decision.action == ActionType.SCROLL:
                 scroll_streak += 1
@@ -4266,105 +4489,128 @@ class GoalDrivenAgent:
 
     def _analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
         """MCP Host를 통해 DOM 분석"""
-        try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={
-                    "action": "browser_snapshot",
-                    "params": {
-                        "session_id": self.session_id,
-                        "url": url or "",
-                    },
-                },
-                timeout=30,
-            )
+        last_error: Optional[str] = None
+        for attempt in range(1, 4):
             try:
-                data = response.json()
-            except Exception:
-                data = {"error": response.text or "invalid_json_response"}
-
-            if response.status_code >= 400:
-                detail = data.get("detail") or data.get("error") or response.reason
-                self._log(f"DOM 분석 오류: HTTP {response.status_code} - {detail}")
-                return []
-
-            # analyze_page는 success 필드 없이 elements를 직접 반환
-            if "error" in data:
-                self._log(f"DOM 분석 오류: {data['error']}")
-                return []
-
-            raw_elements = data.get("elements", []) or data.get("dom_elements", [])
-
-            # 셀렉터 맵 초기화
-            self._element_selectors = {}
-            self._element_full_selectors = {}
-            self._element_ref_ids = {}
-            self._selector_to_ref_id = {}
-            self._element_scopes = {}
-            self._active_snapshot_id = str(data.get("snapshot_id") or "")
-            self._active_dom_hash = str(data.get("dom_hash") or "")
-            self._active_snapshot_epoch = int(data.get("epoch") or 0)
-            self._active_url = str(data.get("url") or self._active_url or "")
-            evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
-            self._last_snapshot_evidence = evidence
-
-            # DOMElement로 변환 (ID 부여)
-            elements = []
-            for idx, el in enumerate(raw_elements):
-                attrs = el.get("attributes", {})
-                disabled_attr = attrs.get("disabled")
-                disabled_flag = (
-                    disabled_attr is not None
-                    and str(disabled_attr).strip().lower() not in {"false", "0", "none"}
+                response = requests.post(
+                    f"{self.mcp_host_url}/execute",
+                    json={
+                        "action": "browser_snapshot",
+                        "params": {
+                            "session_id": self.session_id,
+                            "url": url or "",
+                        },
+                    },
+                    timeout=30,
                 )
-                aria_disabled_flag = str(attrs.get("aria-disabled") or "").strip().lower() == "true"
-                gaia_disabled_flag = str(attrs.get("gaia-disabled") or "").strip().lower() == "true"
-                is_enabled = not (disabled_flag or aria_disabled_flag or gaia_disabled_flag)
+                try:
+                    data = response.json()
+                except Exception:
+                    data = {"error": response.text or "invalid_json_response"}
 
-                # 셀렉터 저장
-                selector = el.get("selector", "")
-                full_selector = el.get("full_selector") or selector
-                ref_id = el.get("ref_id", "")
-                scope = el.get("scope")
-                if selector:
-                    self._element_selectors[idx] = selector
-                if full_selector:
-                    self._element_full_selectors[idx] = full_selector
-                if isinstance(ref_id, str) and ref_id:
-                    self._element_ref_ids[idx] = ref_id
-                    if selector:
-                        self._selector_to_ref_id[selector] = ref_id
-                    if full_selector:
-                        self._selector_to_ref_id[full_selector] = ref_id
-                if isinstance(scope, dict):
-                    self._element_scopes[idx] = scope
+                if response.status_code >= 400:
+                    detail = data.get("detail") or data.get("error") or response.reason
+                    last_error = f"HTTP {response.status_code} - {detail}"
+                    if attempt < 3:
+                        self._record_reason_code("dom_snapshot_retry")
+                        time.sleep(0.25 * attempt)
+                        continue
+                    self._log(f"DOM 분석 오류: {last_error}")
+                    return []
 
-                elements.append(
-                    DOMElement(
-                        id=idx,
-                        tag=el.get("tag", ""),
-                        text=el.get("text", "")[:100],  # 텍스트 길이 제한
-                        role=attrs.get("role"),
-                        type=attrs.get("type"),
-                        placeholder=attrs.get("placeholder"),
-                        aria_label=attrs.get("aria-label"),
-                        aria_modal=attrs.get("aria-modal"),
-                        title=attrs.get("title"),
-                        class_name=attrs.get("class"),
-                        href=attrs.get("href"),
-                        bounding_box=el.get("bounding_box"),
-                        options=attrs.get("options"),
-                        selected_value=str(attrs.get("selected_value") or ""),
-                        is_visible=bool(el.get("is_visible", True)),
-                        is_enabled=is_enabled,
+                if "error" in data:
+                    last_error = str(data.get("error") or "snapshot_error")
+                    if attempt < 3:
+                        self._record_reason_code("dom_snapshot_retry")
+                        time.sleep(0.25 * attempt)
+                        continue
+                    self._log(f"DOM 분석 오류: {last_error}")
+                    return []
+
+                raw_elements = data.get("elements", []) or data.get("dom_elements", [])
+                if not raw_elements and attempt < 3:
+                    last_error = "empty_dom_elements"
+                    self._record_reason_code("dom_snapshot_retry")
+                    time.sleep(0.25 * attempt)
+                    continue
+
+                # 셀렉터 맵 초기화
+                self._element_selectors = {}
+                self._element_full_selectors = {}
+                self._element_ref_ids = {}
+                self._selector_to_ref_id = {}
+                self._element_scopes = {}
+                self._active_snapshot_id = str(data.get("snapshot_id") or "")
+                self._active_dom_hash = str(data.get("dom_hash") or "")
+                self._active_snapshot_epoch = int(data.get("epoch") or 0)
+                self._active_url = str(data.get("url") or self._active_url or "")
+                evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
+                self._last_snapshot_evidence = evidence
+
+                # DOMElement로 변환 (ID 부여)
+                elements = []
+                for idx, el in enumerate(raw_elements):
+                    attrs = el.get("attributes", {})
+                    disabled_attr = attrs.get("disabled")
+                    disabled_flag = (
+                        disabled_attr is not None
+                        and str(disabled_attr).strip().lower() not in {"false", "0", "none"}
                     )
-                )
+                    aria_disabled_flag = str(attrs.get("aria-disabled") or "").strip().lower() == "true"
+                    gaia_disabled_flag = str(attrs.get("gaia-disabled") or "").strip().lower() == "true"
+                    is_enabled = not (disabled_flag or aria_disabled_flag or gaia_disabled_flag)
 
-            return elements
+                    selector = el.get("selector", "")
+                    full_selector = el.get("full_selector") or selector
+                    ref_id = el.get("ref_id", "")
+                    scope = el.get("scope")
+                    if selector:
+                        self._element_selectors[idx] = selector
+                    if full_selector:
+                        self._element_full_selectors[idx] = full_selector
+                    if isinstance(ref_id, str) and ref_id:
+                        self._element_ref_ids[idx] = ref_id
+                        if selector:
+                            self._selector_to_ref_id[selector] = ref_id
+                        if full_selector:
+                            self._selector_to_ref_id[full_selector] = ref_id
+                    if isinstance(scope, dict):
+                        self._element_scopes[idx] = scope
 
-        except Exception as e:
-            self._log(f"DOM 분석 실패: {e}")
-            return []
+                    elements.append(
+                        DOMElement(
+                            id=idx,
+                            tag=el.get("tag", ""),
+                            text=el.get("text", "")[:100],
+                            role=attrs.get("role"),
+                            type=attrs.get("type"),
+                            placeholder=attrs.get("placeholder"),
+                            aria_label=attrs.get("aria-label"),
+                            aria_modal=attrs.get("aria-modal"),
+                            title=attrs.get("title"),
+                            class_name=attrs.get("class"),
+                            href=attrs.get("href"),
+                            bounding_box=el.get("bounding_box"),
+                            options=attrs.get("options"),
+                            selected_value=str(attrs.get("selected_value") or ""),
+                            is_visible=bool(el.get("is_visible", True)),
+                            is_enabled=is_enabled,
+                        )
+                    )
+                return elements
+
+            except Exception as e:
+                last_error = str(e)
+                if attempt < 3:
+                    self._record_reason_code("dom_snapshot_retry")
+                    time.sleep(0.25 * attempt)
+                    continue
+                self._log(f"DOM 분석 실패: {e}")
+                return []
+
+        if last_error:
+            self._log(f"DOM 분석 실패: {last_error}")
+        return []
 
     def _capture_screenshot(self) -> Optional[str]:
         """스크린샷 캡처"""

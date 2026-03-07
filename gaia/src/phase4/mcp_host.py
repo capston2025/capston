@@ -57,6 +57,7 @@ from gaia.src.phase4.mcp_ref_snapshot_helpers import (
     _build_role_snapshot_from_aria_text,
     _build_snapshot_text,
     _dedupe_elements_by_dom_ref,
+    _element_signal_score,
     _extract_elements_by_ref,
 )
 

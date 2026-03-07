@@ -1,0 +1,83 @@
+{
+  "suite_id": "boj_remaining5",
+  "site": {
+    "name": "Baekjoon Online Judge",
+    "base_url": "https://www.acmicpc.net/",
+    "mode": "read_only_public"
+  },
+  "scenarios": [
+    {
+      "id": "BOJ_006_PROBLEMSET_SEARCH_1000",
+      "url": "https://www.acmicpc.net/problemset",
+      "goal": "문제 목록 페이지에서 검색창을 이용해 1000 또는 A+B 관련 문제가 보이도록 검색해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "dom_changed"
+      ],
+      "time_budget_sec": 60
+    },
+    {
+      "id": "BOJ_007_PROBLEMSET_OPEN_1000",
+      "url": "https://www.acmicpc.net/problemset",
+      "goal": "문제 목록 페이지에서 1000번 A+B 문제 상세 페이지를 열어줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "detail_visible"
+      ],
+      "time_budget_sec": 60
+    },
+    {
+      "id": "BOJ_014_ADDED_EN_PAGE",
+      "url": "https://www.acmicpc.net/problem/added/1",
+      "goal": "현재 추가된 영어 문제 페이지에서 문제 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible",
+        "problem_link_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_015_PROBLEM_RANKING_PAGE",
+      "url": "https://www.acmicpc.net/problem/ranking",
+      "goal": "현재 문제 순위 페이지에서 인기 문제 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_018_TAGS_PAGE",
+      "url": "https://www.acmicpc.net/problem/tags",
+      "goal": "현재 분류 페이지에서 태그 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible"
+      ],
+      "time_budget_sec": 45
+    }
+  ]
+}
