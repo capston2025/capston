@@ -30,11 +30,17 @@ def _create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", help="Resume GUI from terminal run context")
     parser.add_argument("--url", help="Pre-fill URL field")
     parser.add_argument("--plan", help="Load plan file in advance")
+    parser.add_argument("--bundle", help="Load PRD bundle JSON in advance")
     parser.add_argument("--spec", help="Load spec PDF in advance")
     parser.add_argument(
         "--mode",
         choices=("plan", "ai", "chat"),
         help="GUI startup mode (plan/ai/chat)",
+    )
+    parser.add_argument(
+        "--control",
+        choices=("local", "telegram"),
+        help="GUI control channel hint",
     )
     parser.add_argument("--feature-query", help="Feature query for chat mode")
     parser.add_argument("--max-actions", type=int, help="Max exploratory actions for ai mode")
@@ -85,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     controller = controller_holder[0]
+    if parsed.control:
+        controller.set_control_channel(parsed.control)
     if parsed.resume:
         try:
             context = load_run_context(parsed.resume)
@@ -95,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
             context=context,
             url=parsed.url,
             plan_path=parsed.plan,
+            bundle_path=parsed.bundle,
             spec_path=parsed.spec,
             mode=parsed.mode,
             feature_query=parsed.feature_query,
@@ -103,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     elif (
         parsed.url
         or parsed.plan
+        or parsed.bundle
         or parsed.spec
         or parsed.mode
         or parsed.feature_query
@@ -112,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             context=None,
             url=parsed.url,
             plan_path=parsed.plan,
+            bundle_path=parsed.bundle,
             spec_path=parsed.spec,
             mode=parsed.mode,
             feature_query=parsed.feature_query,

@@ -764,6 +764,7 @@ def _run_single_chat_goal(
     session_id: str = WORKSPACE_DEFAULT,
     steering_policy: Optional[Dict[str, Any]] = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     def _default_intervention_callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         kind = str((payload or {}).get("kind") or "").strip().lower()
@@ -806,7 +807,7 @@ def _run_single_chat_goal(
     if intervention_callback is None:
         intervention_callback = _default_intervention_callback
 
-    goal = _build_test_goal(url=url, query=query)
+    goal = prepared_goal or _build_test_goal(url=url, query=query)
     if isinstance(steering_policy, dict) and steering_policy:
         if not isinstance(goal.test_data, dict):
             goal.test_data = {}
@@ -989,6 +990,7 @@ def run_chat_terminal_once(
     session_id: str = WORKSPACE_DEFAULT,
     steering_policy: Optional[Dict[str, Any]] = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     return _run_single_chat_goal(
         url=url,
@@ -996,6 +998,7 @@ def run_chat_terminal_once(
         session_id=session_id,
         steering_policy=steering_policy,
         intervention_callback=intervention_callback,
+        prepared_goal=prepared_goal,
     )
 
 

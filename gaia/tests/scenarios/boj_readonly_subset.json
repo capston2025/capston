@@ -1,0 +1,96 @@
+{
+  "suite_id": "boj_readonly_subset",
+  "site": {
+    "name": "Baekjoon Online Judge",
+    "base_url": "https://www.acmicpc.net/",
+    "mode": "read_only_public"
+  },
+  "scenarios": [
+    {
+      "id": "BOJ_001_HOME_LOGIN_VISIBLE",
+      "url": "https://www.acmicpc.net/",
+      "goal": "현재 홈 화면에서 상단 로그인 링크가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "text_visible",
+        "link_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_010_STATUS_PAGE",
+      "url": "https://www.acmicpc.net/status",
+      "goal": "현재 채점 현황 페이지에서 제출 결과 테이블이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "table_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_011_RANKLIST_PAGE",
+      "url": "https://www.acmicpc.net/ranklist",
+      "goal": "현재 랭킹 페이지에서 사용자 순위 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "table_visible",
+        "list_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_012_BOARD_LIST_PAGE",
+      "url": "https://www.acmicpc.net/board/list/all",
+      "goal": "현재 게시판 목록 페이지에서 게시글 리스트가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_016_CATEGORY_PAGE",
+      "url": "https://www.acmicpc.net/category",
+      "goal": "현재 출처 카테고리 페이지에서 카테고리 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible"
+      ],
+      "time_budget_sec": 45
+    },
+    {
+      "id": "BOJ_017_STEP_PAGE",
+      "url": "https://www.acmicpc.net/step",
+      "goal": "현재 단계 페이지에서 단계 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible"
+      ],
+      "time_budget_sec": 45
+    }
+  ]
+}

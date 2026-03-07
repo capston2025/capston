@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import html
 import os
+import re
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Mapping, Sequence
@@ -13,6 +16,8 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
+from gaia.src.phase1.prd_ingest import ingest_prd_bundle
+from gaia.src.phase1.prd_bundle_repository import PRDBundleRepository
 from gaia.src.phase1.agent_client import AgentServiceClient
 from gaia.src.phase4.agent import AgentOrchestrator, MCPClient
 from gaia.src.phase4.goal_driven import goals_from_scenarios, sort_goals_by_priority, TestGoal
@@ -26,6 +31,9 @@ from gaia.src.utils.plan_repository import PlanRepository
 from gaia.src.gui.worker import AutomationWorker
 from gaia.src.gui.analysis_worker import AnalysisWorker
 from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker
+from gaia.chat_hub import HubContext, _compile_steering_policy, _format_steering_status, _looks_like_steering_text
+
+TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
 
 
 @dataclass(slots=True)
@@ -83,6 +91,7 @@ class AppController(QObject):
             session_id=self._session_id or "default",
         )
         self._plan_repository = PlanRepository()
+        self._bundle_repository = PRDBundleRepository()
 
         self._current_pdf_text: str | None = None
         self._current_pdf_hash: str | None = None
@@ -90,6 +99,15 @@ class AppController(QObject):
         self._current_feature_query: str | None = None  # ICR 측정용
         self._current_plan_file: str | None = None  # ICR 측정용
         self._current_bug_json: str | None = None  # ER 측정용 (이전 테스트 불러오기 시 bug.json)
+        self._control_channel: str = "local"
+        self._last_result_summary: dict[str, Any] | None = None
+        self._last_progress_message: str = ""
+        self._current_execution_goal: str = ""
+        self._current_execution_step: str = ""
+        self._blocked_reason: str = ""
+        self._active_steering_policy: dict[str, Any] = {}
+        self._pending_intervention: dict[str, Any] | None = None
+        self._pending_intervention_event: threading.Event | None = None
         self._plan: Sequence[TestScenario] = ()
         self._analysis_plan: Sequence[TestScenario] = ()
         self._analysis_goals: Sequence[TestGoal] = ()
@@ -98,6 +116,9 @@ class AppController(QObject):
         self._worker: AutomationWorker | None = None
         self._analysis_thread: QThread | None = None
         self._analysis_worker: AnalysisWorker | None = None
+        self._bridge_status_timer = QTimer(self)
+        self._bridge_status_timer.setInterval(3000)
+        self._bridge_status_timer.timeout.connect(self._refresh_bridge_status)
 
         self._connect_signals()
 
@@ -108,6 +129,7 @@ class AppController(QObject):
         self._window.bugJsonSelected.connect(self._on_bug_json_selected)
         self._window.startRequested.connect(self._on_start_requested)
         self._window.cancelRequested.connect(self._on_cancel_requested)
+        self._window.chatMessageSubmitted.connect(self._on_chat_message_submitted)
         self._window.urlSubmitted.connect(self._on_url_submitted)
 
     def apply_run_context(
@@ -116,6 +138,7 @@ class AppController(QObject):
         *,
         url: str | None = None,
         plan_path: str | Path | None = None,
+        bundle_path: str | Path | None = None,
         spec_path: str | Path | None = None,
         mode: str | None = None,
         feature_query: str | None = None,
@@ -131,6 +154,9 @@ class AppController(QObject):
             context.plan_path if isinstance(context, RunContext) else (
                 context.get("plan_path") if isinstance(context, Mapping) else None
             )
+        )
+        resolved_bundle_path = bundle_path or (
+            context.get("bundle_path") if isinstance(context, Mapping) else None
         )
         resolved_spec_path = spec_path or (
             context.spec_path if isinstance(context, RunContext) else (
@@ -152,7 +178,9 @@ class AppController(QObject):
             self._current_url = str(resolved_url)
             self._window.set_url_field(self._current_url)
 
-        if resolved_plan_path:
+        if resolved_bundle_path:
+            self._on_plan_file_selected(str(resolved_bundle_path))
+        elif resolved_plan_path:
             self._on_plan_file_selected(str(resolved_plan_path))
         elif resolved_spec_path and str(resolved_spec_path).lower().endswith(".pdf"):
             self._on_file_dropped(str(resolved_spec_path))
@@ -168,10 +196,141 @@ class AppController(QObject):
                 pass
 
     def set_start_mode(self, mode: str | None) -> None:
-        if mode in {"plan", "ai", "chat"}:
-            self._startup_mode = mode
+        normalized = None
+        if mode == "plan":
+            normalized = "bundle"
+        elif mode == "ai":
+            normalized = "ai"
+        elif mode == "chat":
+            normalized = "quick"
+        elif mode in {"bundle", "ai", "quick"}:
+            normalized = mode
+        self._startup_mode = normalized
+        if normalized:
+            self._window.set_selected_run_mode(normalized)
+
+    def set_control_channel(self, channel: str | None) -> None:
+        normalized = "telegram" if str(channel or "").strip().lower() == "telegram" else "local"
+        self._control_channel = normalized
+        self._window.set_control_channel(normalized)
+        if normalized == "telegram":
+            self._refresh_bridge_status()
+            self._bridge_status_timer.start()
         else:
-            self._startup_mode = None
+            self._bridge_status_timer.stop()
+
+    def _build_quick_goal(self, url: str, query: str) -> TestGoal:
+        query_text = str(query or "").strip()
+        words = [word for word in query_text.replace("/", " ").split() if word.strip()]
+        return TestGoal(
+            id=f"GUI_{int(time.time())}",
+            name=(query_text[:40] or "gui quick test").strip(),
+            description=query_text,
+            priority="MUST",
+            keywords=words[:5],
+            success_criteria=[query_text],
+            max_steps=20,
+            start_url=url,
+            test_data=({"steering_policy": dict(self._active_steering_policy)} if self._active_steering_policy else {}),
+        )
+
+    def _hub_context(self) -> HubContext:
+        return HubContext(
+            provider=str(os.getenv("GAIA_LLM_PROVIDER") or "openai"),
+            model=str(os.getenv("GAIA_LLM_MODEL") or "gpt-5.4"),
+            auth_strategy=str(os.getenv("GAIA_AUTH_STRATEGY") or "reuse"),
+            url=str(self._current_url or ""),
+            runtime="gui",
+            control_channel=self._control_channel,
+            session_key=self._session_key or "gui",
+            session_id=self._session_id or (self._session_key or "gui"),
+        )
+
+    def _sync_execution_status(self) -> None:
+        self._window.set_execution_status(
+            goal=self._current_execution_goal,
+            step=self._current_execution_step,
+            blocked_reason=self._blocked_reason,
+        )
+
+    def _update_execution_from_progress(self, message: str) -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
+        step_match = re.search(r"Step\s+(\d+)(?:/(\d+))?", text)
+        if step_match:
+            current = step_match.group(1)
+            total = step_match.group(2)
+            self._current_execution_step = f"{current}/{total}" if total else current
+        if "개입 필요" in text:
+            blocked_text = text.split("개입 필요", 1)[-1].strip(" :")
+            if blocked_text:
+                self._blocked_reason = blocked_text
+        self._sync_execution_status()
+
+    def _goal_intervention_callback(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        event = threading.Event()
+        self._pending_intervention = dict(payload or {})
+        self._pending_intervention_event = event
+        reason = str(self._pending_intervention.get("reason") or self._pending_intervention.get("question") or "사용자 입력이 필요합니다.").strip()
+        self._blocked_reason = reason
+        self._sync_execution_status()
+        self._window.append_chat_message("GAIA", f"개입 필요: {reason}")
+        self._window.append_chat_message("GAIA", "입력을 마친 뒤 /resume 을 입력하세요.")
+        if not event.wait(timeout=600):
+            self._pending_intervention = None
+            self._pending_intervention_event = None
+            self._blocked_reason = "사용자 입력이 10분 내 제공되지 않았습니다."
+            self._sync_execution_status()
+            return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
+        response = dict(self._pending_intervention.get("_response") or {})
+        self._pending_intervention = None
+        self._pending_intervention_event = None
+        if bool(response.get("proceed")):
+            self._blocked_reason = ""
+        self._sync_execution_status()
+        return response
+
+    def _exploratory_intervention_callback(self, reason: str, current_url: str) -> bool:
+        event = threading.Event()
+        self._pending_intervention = {"kind": "exploratory", "reason": reason, "current_url": current_url}
+        self._pending_intervention_event = event
+        self._blocked_reason = reason
+        self._sync_execution_status()
+        self._window.append_chat_message("GAIA", f"개입 필요: {reason}")
+        self._window.append_chat_message("GAIA", "계속하려면 /resume, 중단하려면 중단해 라고 입력하세요.")
+        if not event.wait(timeout=600):
+            self._pending_intervention = None
+            self._pending_intervention_event = None
+            self._blocked_reason = "사용자 입력이 10분 내 제공되지 않았습니다."
+            self._sync_execution_status()
+            return False
+        response = dict(self._pending_intervention.get("_response") or {})
+        self._pending_intervention = None
+        self._pending_intervention_event = None
+        if bool(response.get("proceed")):
+            self._blocked_reason = ""
+        self._sync_execution_status()
+        return bool(response.get("proceed"))
+
+    def _refresh_bridge_status(self) -> None:
+        if self._control_channel != "telegram":
+            return
+        status_text = "제어 채널: 텔레그램 선택됨. bridge 상태 확인 중"
+        try:
+            if TELEGRAM_BRIDGE_STATUS_FILE.exists():
+                import json
+                payload = json.loads(TELEGRAM_BRIDGE_STATUS_FILE.read_text(encoding="utf-8"))
+                state = str(payload.get("state") or "unknown").strip()
+                if state == "running":
+                    status_text = "제어 채널: 텔레그램 연결됨 (bridge 실행 중)"
+                elif state == "stopped":
+                    status_text = "제어 채널: 텔레그램 대기 (bridge 중지됨)"
+                else:
+                    status_text = f"제어 채널: 텔레그램 ({state})"
+        except Exception:
+            status_text = "제어 채널: 텔레그램 상태 확인 실패"
+        self._window.set_bridge_status(status_text)
 
     # ------------------------------------------------------------------
     @Slot(str)
@@ -181,8 +340,52 @@ class AppController(QObject):
             self._window.append_log(f"⚠️ File not found: {path}")
             return
 
-        if path.suffix.lower() != ".pdf":
-            self._window.append_log("⚠️ Only PDF files are supported at this time.")
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            self._on_plan_file_selected(str(path))
+            return
+
+        if suffix not in {".pdf", ".docx", ".md", ".txt"}:
+            self._window.append_log("⚠️ 지원 형식: PDF, DOCX, MD, TXT, JSON 번들")
+            return
+
+        if suffix != ".pdf":
+            self._window.append_log(f"📄 기획서 로딩: {path.name}")
+            try:
+                bundle = ingest_prd_bundle(
+                    input_path=path,
+                    base_url=self._current_url,
+                )
+                bundle_path = self._bundle_repository.save_bundle(bundle)
+            except Exception as exc:
+                self._window.append_log(f"❌ 기획서를 번들로 변환하지 못했습니다: {exc}")
+                return
+
+            self._analysis_plan = ()
+            self._analysis_goals = sort_goals_by_priority(
+                [
+                    goal.to_test_goal(bundle.execution_profile.base_url)
+                    for goal in bundle.generated_goals
+                    if goal.enabled
+                ]
+            )
+            self._plan = ()
+            self._current_pdf_text = None
+            self._current_pdf_hash = bundle.source.content_hash
+            self._current_plan_file = str(bundle_path)
+
+            if bundle.execution_profile.base_url:
+                self._current_url = str(bundle.execution_profile.base_url)
+                self._window.set_url_field(self._current_url)
+
+            self._window.show_scenarios(self._analysis_goals)
+            summary = self._summarize_goals(self._analysis_goals)
+            self._window.append_log(
+                f"📦 번들 생성 완료 — 총 {summary['total']}개 "
+                f"(MUST {summary['must']}, SHOULD {summary['should']}, MAY {summary['may']})"
+            )
+            self._window.append_log(f"💾 저장 위치: {bundle_path}")
+            self._reset_tracker_with_goals(self._analysis_goals)
             return
 
         self._window.append_log(f"📄 Loading PDF: {path.name}")
@@ -257,6 +460,39 @@ class AppController(QObject):
             return
 
         try:
+            if path.suffix.lower() == ".json":
+                raw = path.read_text(encoding="utf-8")
+                if "\"gaia.prd_bundle." in raw:
+                    bundle = self._bundle_repository.load_bundle(path)
+                    goals = [
+                        goal.to_test_goal(bundle.execution_profile.base_url)
+                        for goal in bundle.generated_goals
+                        if goal.enabled
+                    ]
+                    if not goals:
+                        self._window.append_log("⚠️ 선택한 번들에 실행 가능한 목표가 없습니다.")
+                        return
+                    self._analysis_plan = ()
+                    self._analysis_goals = sort_goals_by_priority(goals)
+                    self._plan = ()
+                    self._current_pdf_text = None
+                    self._current_pdf_hash = bundle.source.content_hash
+                    self._current_plan_file = str(path)
+                    loaded_url = (bundle.execution_profile.base_url or "").strip()
+                    if loaded_url:
+                        self._current_url = loaded_url
+                        self._window.set_url_field(loaded_url)
+                        self._window.append_log(f"🌐 번들에 저장된 URL을 불러왔습니다: {loaded_url}")
+                    else:
+                        self._window.append_log("ℹ️ 번들에 URL 정보가 없어 직접 입력이 필요합니다.")
+                    self._window.show_scenarios(self._analysis_goals)
+                    summary = self._summarize_goals(self._analysis_goals)
+                    self._window.append_log(
+                        f"📦 '{path.name}' 번들 불러오기 완료 — 총 {summary['total']}개 "
+                        f"(MUST {summary['must']}, SHOULD {summary['should']}, MAY {summary['may']})"
+                    )
+                    self._reset_tracker_with_goals(self._analysis_goals)
+                    return
             scenarios, metadata = self._plan_repository.load_plan_file(path)
         except Exception as exc:
             self._window.append_log(f"❌ 플랜을 불러오지 못했습니다: {exc}")
@@ -660,21 +896,47 @@ class AppController(QObject):
         if startup_mode:
             self._startup_mode = None
 
+        self._last_result_summary = None
+        self._current_execution_goal = ""
+        self._current_execution_step = ""
+        self._blocked_reason = ""
+        self._window.reset_result_summary()
+        self._sync_execution_status()
         candidate_goals = list(self._analysis_goals) if self._analysis_goals else []
+        selected_mode = startup_mode or self._window.get_selected_run_mode()
+        feature_query = self._window.get_feature_query().strip()
 
-        if startup_mode == "ai":
+        if selected_mode == "ai":
+            self._current_execution_goal = "완전 자율 탐색"
+            self._current_execution_step = "0"
+            self._sync_execution_status()
             self._window.append_log("🧭 AI 모드로 즉시 탐색 실행합니다.")
             self._window.set_busy(True, message="AI가 웹 사이트를 탐색하는 중이에요…")
             self._start_exploratory_worker(self._current_url, max_actions=self._max_actions)
             return
 
-        if startup_mode == "chat" and not candidate_goals and self._analysis_plan:
-            self._window.append_log("⚠️ 채팅 모드에서 목표를 찾지 못해 탐색 모드로 전환합니다.")
-            self._window.set_busy(True, message="특정 기능을 우선순위로 탐색하는 중이에요…")
-            self._start_exploratory_worker(self._current_url)
+        if selected_mode == "quick":
+            if feature_query:
+                quick_goal = self._build_quick_goal(self._current_url, feature_query)
+                candidate_goals = [quick_goal]
+                self._window.show_scenarios(candidate_goals)
+                self._current_execution_goal = quick_goal.name
+            elif not candidate_goals:
+                self._window.append_log("⚠️ 빠른 목표 실행을 위해 테스트할 기능을 입력해주세요.")
+                return
+
+        if selected_mode == "bundle" and not candidate_goals:
+            self._window.append_log("⚠️ 기획서/번들 실행 모드입니다. 먼저 번들 또는 기획서를 불러와 주세요.")
             return
 
         if candidate_goals:
+            if not self._current_execution_goal:
+                if len(candidate_goals) == 1:
+                    self._current_execution_goal = str(candidate_goals[0].name or "")
+                else:
+                    self._current_execution_goal = f"{len(candidate_goals)}개 목표 실행"
+            self._current_execution_step = "0"
+            self._sync_execution_status()
             self._reset_tracker_with_goals(candidate_goals)
             self._plan = list(self._analysis_plan)
             self._window.append_log(
@@ -722,6 +984,7 @@ class AppController(QObject):
             tracker=self._tracker,
             session_id=self._session_id,
             mcp_host_url=self._mcp_host_url,
+            intervention_callback=self._goal_intervention_callback,
         )
         worker.moveToThread(thread)
 
@@ -730,6 +993,7 @@ class AppController(QObject):
         worker.screenshot.connect(self._window.update_live_preview)
         worker.scenario_started.connect(self._window.highlight_current_scenario)
         worker.scenario_finished.connect(lambda _: None)
+        worker.result_ready.connect(self._on_worker_result_ready)
         worker.finished.connect(self._on_intelligent_worker_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -754,12 +1018,14 @@ class AppController(QObject):
             max_actions=resolved_actions,
             session_id=self._session_id,
             mcp_host_url=self._mcp_host_url,
+            user_intervention_callback=self._exploratory_intervention_callback,
         )
         worker.moveToThread(thread)
 
         thread.started.connect(worker.start)
         worker.progress.connect(self._handle_worker_progress)
         worker.screenshot.connect(self._window.update_live_preview)
+        worker.result_ready.connect(self._on_worker_result_ready)
         worker.finished.connect(self._on_intelligent_worker_finished)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -791,6 +1057,14 @@ class AppController(QObject):
         """IntelligentOrchestrator 완료를 처리합니다."""
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ 자동화 실행 완료. Coverage: {summary:.1f}%")
+        if self._last_result_summary is None:
+            self._window.show_result_summary(
+                {
+                    "mode": "unknown",
+                    "status": "success",
+                    "reason": f"자동화 실행이 완료되었습니다. Coverage {summary:.1f}%",
+                }
+            )
 
         # 모든 시나리오 하이라이트 초기화
         self._window.reset_scenario_highlights()
@@ -991,11 +1265,22 @@ class AppController(QObject):
     # ------------------------------------------------------------------
     @Slot()
     def _on_cancel_requested(self) -> None:
+        if self._pending_intervention is not None and self._pending_intervention_event is not None:
+            self._pending_intervention["_response"] = {
+                "action": "cancel",
+                "proceed": False,
+                "reason_code": "user_cancelled",
+            }
+            self._pending_intervention_event.set()
+        self._blocked_reason = "사용자 요청으로 실행을 중단했습니다."
+        self._sync_execution_status()
         if self._worker:
             self._worker.request_cancel()
             self._window.append_log("⏹️ Cancel requested.")
+            self._window.append_chat_message("GAIA", "실행 중단을 요청했습니다.")
         else:
             self._window.append_log("ℹ️ No automation in progress.")
+            self._window.append_chat_message("GAIA", "현재 진행 중인 실행이 없습니다.")
 
     # ------------------------------------------------------------------
     @Slot(str)
@@ -1016,11 +1301,126 @@ class AppController(QObject):
             except Exception as e:
                 self._window.append_log(f"⚠️ Failed to cache plan: {e}")
 
+    @Slot(object)
+    def _on_worker_result_ready(self, summary: object) -> None:
+        if isinstance(summary, dict):
+            normalized_summary = dict(summary)
+            if self._current_execution_goal and not normalized_summary.get("current_goal"):
+                normalized_summary["current_goal"] = self._current_execution_goal
+            if self._current_execution_step and not normalized_summary.get("current_step"):
+                normalized_summary["current_step"] = self._current_execution_step
+            if self._blocked_reason and not normalized_summary.get("blocked_reason"):
+                normalized_summary["blocked_reason"] = self._blocked_reason
+            self._last_result_summary = normalized_summary
+            self._current_execution_goal = str(
+                normalized_summary.get("current_goal")
+                or self._current_execution_goal
+                or ""
+            )
+            self._current_execution_step = str(
+                normalized_summary.get("current_step")
+                or self._current_execution_step
+                or ""
+            )
+            self._blocked_reason = str(
+                normalized_summary.get("blocked_reason")
+                or self._blocked_reason
+                or ""
+            )
+            self._sync_execution_status()
+            self._window.show_result_summary(normalized_summary)
+
     # ------------------------------------------------------------------
     @Slot(str)
     def _handle_worker_progress(self, message: str) -> None:
+        self._last_progress_message = str(message or "")
+        self._update_execution_from_progress(self._last_progress_message)
         self._window.append_log(message)
         self._update_overall_progress_display()
+
+    @Slot(str)
+    def _on_chat_message_submitted(self, message: str) -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._window.append_chat_message("사용자", text)
+
+        lowered = text.lower()
+        if lowered.startswith("/resume") or lowered == "resume":
+            if not self._pending_intervention or not self._pending_intervention_event:
+                self._window.append_chat_message("GAIA", "대기 중인 개입 요청이 없습니다.")
+                return
+            response: dict[str, Any] = {"action": "resume", "proceed": True}
+            if "otp=" in lowered:
+                otp = text.split("otp=", 1)[1].strip()
+                if otp:
+                    response["otp"] = otp
+            self._pending_intervention["_response"] = response
+            self._pending_intervention_event.set()
+            self._blocked_reason = ""
+            self._sync_execution_status()
+            self._window.append_chat_message("GAIA", "개입 요청을 재개합니다.")
+            return
+
+        if lowered.startswith("/steer") or _looks_like_steering_text(text):
+            raw = text.split(" ", 1)[1].strip() if lowered.startswith("/steer ") else text
+            if lowered in {"/steer", "/steer status"}:
+                if self._active_steering_policy:
+                    self._window.append_chat_message("GAIA", _format_steering_status(self._active_steering_policy))
+                else:
+                    self._window.append_chat_message("GAIA", "현재 활성 스티어링 정책이 없습니다.")
+                return
+            if lowered == "/steer clear":
+                self._active_steering_policy = {}
+                self._window.append_chat_message("GAIA", "스티어링 정책을 해제했습니다.")
+                return
+            policy = _compile_steering_policy(raw, self._hub_context())
+            self._active_steering_policy = dict(policy)
+            if self._worker is not None and hasattr(self._worker, "apply_steering_policy"):
+                self._worker.apply_steering_policy(self._active_steering_policy)
+            self._window.append_chat_message("GAIA", _format_steering_status(self._active_steering_policy))
+            return
+
+        if any(token in lowered for token in ("취소", "중단", "멈춰", "그만")):
+            self._on_cancel_requested()
+            return
+
+        if (
+            "지금" in text and ("뭐" in text or "상태" in text or "어디" in text)
+        ) or "진행 상황" in text:
+            if self._worker or self._current_execution_goal or self._current_execution_step or self._blocked_reason:
+                parts = []
+                if self._current_execution_goal:
+                    parts.append(f"현재 목표: {self._current_execution_goal}")
+                if self._current_execution_step:
+                    parts.append(f"현재 단계: {self._current_execution_step}")
+                if self._blocked_reason:
+                    parts.append(f"대기 사유: {self._blocked_reason}")
+                if self._last_progress_message:
+                    parts.append(f"최근 진행: {self._last_progress_message}")
+                reply = "\n".join(parts) if parts else "현재 실행 중이지만 아직 상태 메시지가 없습니다."
+            elif isinstance(self._last_result_summary, dict):
+                reply = str(self._last_result_summary.get("reason") or "직전 실행 결과가 없습니다.")
+            else:
+                reply = "아직 실행 전입니다."
+            self._window.append_chat_message("GAIA", reply)
+            return
+
+        if self._worker:
+            self._window.append_chat_message(
+                "GAIA",
+                "현재 실행 중입니다. 취소를 원하면 '중단해'라고 입력하거나, 진행 상황을 물어보세요.",
+            )
+            return
+
+        if not self._current_url:
+            self._window.append_chat_message("GAIA", "먼저 테스트할 URL을 입력해 주세요.")
+            return
+
+        self._window.set_selected_run_mode("quick")
+        self._window.set_feature_query(text)
+        self._window.append_chat_message("GAIA", "빠른 목표 실행으로 처리합니다.")
+        self._on_start_requested()
 
     def _reset_tracker_with_plan(self, scenarios: Sequence[TestScenario]) -> None:
         plan_list = list(scenarios)
