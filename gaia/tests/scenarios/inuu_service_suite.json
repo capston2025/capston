@@ -1,0 +1,176 @@
+{
+  "suite_id": "inuu_service_v1",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e"
+  },
+  "scenarios": [
+    {
+      "id": "INUU_001_HOME_LOGIN_VISIBLE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "현재 메인 화면에서 로그인 버튼 또는 로그인 유도 CTA가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "text_visible",
+        "cta_visible"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 45
+    },
+    {
+      "id": "INUU_002_SEARCH_CHANGES_RESULTS",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "과목 검색창에 키워드를 입력해 검색 결과 목록이 실제로 바뀌는지 검증해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "dom_changed"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 90
+    },
+    {
+      "id": "INUU_003_CREDIT_FILTER_SEMANTIC",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "selection_reflected",
+        "result_consistency"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 120
+    },
+    {
+      "id": "INUU_004_DIVISION_FILTER",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "구분 또는 전공/교양 관련 필터를 바꿨을 때 결과 목록이 실제로 바뀌는지 검증해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "dom_changed"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 90
+    },
+    {
+      "id": "INUU_005_PAGINATION_PERSISTS",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "과목 목록 페이지네이션을 한 번 넘긴 뒤에도 필터나 검색 상태가 유지되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "persistence_verified"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 120
+    },
+    {
+      "id": "INUU_006_LOGIN_AND_ADD_WISHLIST",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 후 과목 하나를 위시리스트에 담고 위시리스트 수치가 증가했는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_completed",
+        "wishlist_count_increased"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 180
+    },
+    {
+      "id": "INUU_007_LOGIN_AND_REMOVE_WISHLIST",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 후 위시리스트에 담긴 과목 하나를 제거하고 위시리스트 수치가 감소했는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_completed",
+        "wishlist_count_decreased"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 180
+    },
+    {
+      "id": "INUU_008_LOGIN_AND_CLEAR_WISHLIST",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 후 위시리스트를 전부 비우고 총 0개 과목 또는 0학점 상태를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_completed",
+        "zero_state_visible"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 180
+    },
+    {
+      "id": "INUU_009_LOGIN_AND_GENERATE_COMBINATION",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 후 위시리스트 기반으로 조합 만들기를 실행하고 조합 결과 리스트가 실제로 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_completed",
+        "combination_results_visible"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 240
+    },
+    {
+      "id": "INUU_010_LOGIN_APPLY_FRIDAY_FREE_COMBINATION",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 후 위시리스트 30학점 기준으로 조합 만들기를 실행하고 15학점 금공강 조합을 시간표에 적용해 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_completed",
+        "combination_applied",
+        "timetable_updated"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 300
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "schema_version": "gaia.benchmark.v1",
+  "suite_id": "inuu_service_timeout_only_v1",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e_timeout_only"
+  },
+  "started_at": "2026-03-08T14:35:51.535406+09:00",
+  "repeats": 2,
+  "scenario_count": 4,
+  "model": "gpt-5.4",
+  "metrics": {
+    "runs_total": 8,
+    "success_rate": 0.0,
+    "avg_time_seconds": 235.78,
+    "reproducibility": 0.0,
+    "flaky_rate": 0.0
+  },
+  "kpi_metrics": {
+    "scenario_success_rate": 0.0,
+    "reproducibility_rate": 0.0,
+    "progress_stop_failure_rate": 1.0,
+    "self_recovery_rate": null,
+    "intervention_rate": 0.0,
+    "counts": {
+      "success": 0,
+      "blocked": 0,
+      "progress_stop_failures": 8,
+      "recovery_runs": 0,
+      "recovery_success": 0
+    },
+    "targets": {
+      "reproducibility_rate": 0.8,
+      "progress_stop_failure_rate": 0.1,
+      "self_recovery_rate": 0.6,
+      "scenario_success_rate": 0.7,
+      "intervention_rate": 0.2
+    }
+  },
+  "status_counts": {
+    "FAIL": 8
+  },
+  "failures": [
+    {
+      "scenario_id": "INUU_007_LOGIN_AND_REMOVE_WISHLIST",
+      "status": "FAIL",
+      "reason": "화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_008_LOGIN_AND_CLEAR_WISHLIST",
+      "status": "FAIL",
+      "reason": "필터 의미 검증에서 필수 항목 실패가 발생했습니다. 화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_009_LOGIN_AND_GENERATE_COMBINATION",
+      "status": "FAIL",
+      "reason": "화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_010_LOGIN_APPLY_FRIDAY_FREE_COMBINATION",
+      "status": "FAIL",
+      "reason": "필터 의미 검증에서 필수 항목 실패가 발생했습니다. 화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_007_LOGIN_AND_REMOVE_WISHLIST",
+      "status": "FAIL",
+      "reason": "화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_008_LOGIN_AND_CLEAR_WISHLIST",
+      "status": "FAIL",
+      "reason": "필터 의미 검증에서 필수 항목 실패가 발생했습니다. 화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_009_LOGIN_AND_GENERATE_COMBINATION",
+      "status": "FAIL",
+      "reason": "화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "INUU_010_LOGIN_APPLY_FRIDAY_FREE_COMBINATION",
+      "status": "FAIL",
+      "reason": "필터 의미 검증에서 필수 항목 실패가 발생했습니다. 화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    }
+  ]
+}

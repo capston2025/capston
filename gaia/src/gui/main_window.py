@@ -58,7 +58,16 @@ class _WebViewFallback(QWidget):
 
 
 def _build_browser_view(parent: QWidget) -> QWidget:
-    return _WebViewFallback(parent)
+    try:
+        from PySide6.QtWebEngineWidgets import QWebEngineView  # type: ignore
+
+        view = QWebEngineView(parent)
+        setattr(view, "_gaia_preview_enabled", True)
+        return view
+    except Exception:
+        fallback = _WebViewFallback(parent)
+        setattr(fallback, "_gaia_preview_enabled", False)
+        return fallback
 
 
 class DropArea(QLabel):
@@ -436,6 +445,7 @@ class MainWindow(QMainWindow):
     chatMessageSubmitted = Signal(str)
     planFileSelected = Signal(str)
     bugJsonSelected = Signal(str)
+    inputSourceCleared = Signal()
 
     def __init__(
         self, *, controller_factory: Callable[["MainWindow"], object] | None = None
@@ -530,6 +540,7 @@ class MainWindow(QMainWindow):
                 border-radius: 16px;
                 border: 1px solid rgba(138, 142, 255, 0.45);
                 padding: 12px 16px;
+                min-height: 24px;
                 color: #1c1f3b;
             }
 
@@ -541,6 +552,7 @@ class MainWindow(QMainWindow):
             QPushButton {
                 border-radius: 18px;
                 padding: 11px 20px;
+                min-height: 22px;
                 color: #ffffff;
                 font-weight: 600;
                 border: none;
@@ -721,6 +733,15 @@ class MainWindow(QMainWindow):
                 border: none;
             }
 
+            QScrollArea#StageScrollArea {
+                background: transparent;
+                border: none;
+            }
+
+            QScrollArea#StageScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
+
             QWidget#ScenarioProgressContent {
                 background: transparent;
             }
@@ -780,8 +801,12 @@ class MainWindow(QMainWindow):
         self._view_logs_button: QPushButton | None
         self._url_input: QLineEdit
         self._browser_view: QWidget
+        self._browser_card: QFrame | None = None
+        self._main_splitter: QSplitter | None = None
+        self._browser_preview_enabled: bool = False
         self._workflow_stage: str
         self._selected_run_mode: str = "quick"
+        self._selected_input_source: str = "none"
         self._control_channel: str = "local"
         self._full_execution_logs: List[str] = []
         self._log_mode: str = "summary"  # "summary" or "full"
@@ -825,6 +850,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, central)
         splitter.setChildrenCollapsible(False)
+        self._main_splitter = splitter
 
         control_panel = QFrame(splitter)
         control_panel.setObjectName("SidePanel")
@@ -846,6 +872,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(control_panel)
 
         browser_card = QFrame(splitter)
+        self._browser_card = browser_card
         browser_card.setObjectName("BrowserCard")
         browser_layout = QVBoxLayout(browser_card)
         browser_layout.setContentsMargins(0, 0, 0, 0)  # 모든 여백 제거
@@ -853,6 +880,9 @@ class MainWindow(QMainWindow):
 
         # 브라우저 제목을 숨겨 콘텐츠 영역을 최대화
         self._browser_view = _build_browser_view(browser_card)
+        self._browser_preview_enabled = bool(
+            getattr(self._browser_view, "_gaia_preview_enabled", False)
+        )
         self._browser_view.setUrl(QUrl("about:blank"))
         base_height = 820
         if self._safe_geometry:
@@ -864,8 +894,12 @@ class MainWindow(QMainWindow):
         browser_layout.addWidget(self._browser_view)
 
         splitter.addWidget(browser_card)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 7)
+        if self._browser_preview_enabled:
+            splitter.setStretchFactor(0, 2)
+            splitter.setStretchFactor(1, 7)
+        else:
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 0)
 
         root_layout.addWidget(splitter, stretch=1)
 
@@ -877,11 +911,19 @@ class MainWindow(QMainWindow):
 
         self._last_plan_directory = Path.cwd() / "artifacts" / "plans"
         self.set_selected_run_mode("quick")
+        self.set_selected_input_source("none")
         self.set_control_channel("local")
         self.show_setup_stage()
 
     def _create_setup_stage(self, parent: QWidget) -> QWidget:
-        page = QWidget(parent)
+        scroll = QScrollArea(parent)
+        scroll.setObjectName("StageScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        page = QWidget(scroll)
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
@@ -921,13 +963,21 @@ class MainWindow(QMainWindow):
         source_row = QHBoxLayout()
         source_row.setSpacing(12)
 
-        select_button = QPushButton("기획서 파일 선택", page)
-        select_button.setObjectName("GhostButton")
-        select_button.clicked.connect(self._open_file_dialog)
-        source_row.addWidget(select_button)
+        self._source_none_button = QPushButton("입력 소스 없음", page)
+        self._source_none_button.setCheckable(True)
+        self._source_none_button.setProperty("modeButton", True)
+        self._source_none_button.clicked.connect(self._clear_input_source)
+        source_row.addWidget(self._source_none_button)
+
+        self._source_file_button = QPushButton("기획서 파일 선택", page)
+        self._source_file_button.setCheckable(True)
+        self._source_file_button.setProperty("modeButton", True)
+        self._source_file_button.clicked.connect(self._open_file_dialog)
+        source_row.addWidget(self._source_file_button)
 
         self._load_plan_button = QPushButton("기존 번들 열기", page)
-        self._load_plan_button.setObjectName("GhostButton")
+        self._load_plan_button.setCheckable(True)
+        self._load_plan_button.setProperty("modeButton", True)
         self._load_plan_button.clicked.connect(self._open_plan_dialog)
         source_row.addWidget(self._load_plan_button)
         source_row.addStretch()
@@ -989,17 +1039,6 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
         layout.addLayout(action_row)
 
-        # 탐색 결과 보기 버튼 행
-        results_row = QHBoxLayout()
-        results_row.setSpacing(12)
-
-        self._view_results_button = QPushButton("📊 탐색 결과 보기", page)
-        self._view_results_button.setObjectName("GhostButton")
-        self._view_results_button.clicked.connect(self.show_exploration_results)
-        results_row.addWidget(self._view_results_button)
-        results_row.addStretch()
-        layout.addLayout(results_row)
-
         # 특정 기능 테스트 입력창 (처음엔 숨김)
         self._feature_input_container = QFrame(page)
         self._feature_input_container.setObjectName("FeatureInputContainer")
@@ -1023,7 +1062,25 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self._feature_input_container)
 
-        chat_label = QLabel("4. 대화형 입력", page)
+        results_label = QLabel("4. 이전 테스트 결과 조회하기", page)
+        results_label.setObjectName("SectionLabel")
+        layout.addWidget(results_label)
+
+        results_row = QHBoxLayout()
+        results_row.setSpacing(12)
+
+        self._view_results_button = QPushButton("탐색 결과 보기", page)
+        self._view_results_button.setObjectName("GhostButton")
+        self._view_results_button.clicked.connect(self.show_exploration_results)
+        results_row.addWidget(self._view_results_button)
+        results_row.addStretch()
+        layout.addLayout(results_row)
+
+        results_hint = QLabel("이전에 저장된 탐색 결과와 리플레이를 다시 확인할 수 있습니다.", page)
+        results_hint.setWordWrap(True)
+        layout.addWidget(results_hint)
+
+        chat_label = QLabel("5. 대화형 입력", page)
         chat_label.setObjectName("SectionLabel")
         layout.addWidget(chat_label)
 
@@ -1048,10 +1105,18 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
-        return page
+        scroll.setWidget(page)
+        return scroll
 
     def _create_review_stage(self, parent: QWidget) -> QWidget:
-        page = QWidget(parent)
+        scroll = QScrollArea(parent)
+        scroll.setObjectName("StageScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        page = QWidget(scroll)
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
@@ -1260,7 +1325,8 @@ class MainWindow(QMainWindow):
 
         # 피드백 섹션 제거(더 이상 필요 없음)
 
-        return page
+        scroll.setWidget(page)
+        return scroll
 
     # ------------------------------------------------------------------
     # 워크플로 단계 헬퍼
@@ -1270,12 +1336,14 @@ class MainWindow(QMainWindow):
         if self._workflow_stack.currentWidget() is not self._setup_page:
             self._workflow_stack.setCurrentWidget(self._setup_page)
         self._back_to_setup_button.setEnabled(False)
+        self._set_browser_panel_visible(False)
 
     def show_review_stage(self) -> None:
         self._workflow_stage = "review"
         if self._workflow_stack.currentWidget() is not self._review_page:
             self._workflow_stack.setCurrentWidget(self._review_page)
         self._back_to_setup_button.setEnabled(not self._is_busy)
+        self._set_browser_panel_visible(self._browser_preview_enabled)
 
     def show_exploration_results(self) -> None:
         """탐색 결과 뷰어 페이지 표시"""
@@ -1283,6 +1351,26 @@ class MainWindow(QMainWindow):
         self._exploration_page.refresh_results()
         if self._workflow_stack.currentWidget() is not self._exploration_page:
             self._workflow_stack.setCurrentWidget(self._exploration_page)
+        self._set_browser_panel_visible(False)
+
+    def _set_browser_panel_visible(self, visible: bool) -> None:
+        if self._main_splitter is None or self._browser_card is None:
+            return
+        if not visible:
+            self._browser_card.setMinimumWidth(0)
+            self._browser_card.setMaximumWidth(0)
+            self._browser_card.hide()
+            self._main_splitter.setHandleWidth(0)
+            self._main_splitter.setSizes([1, 0])
+            return
+
+        self._browser_card.setMaximumWidth(16777215)
+        self._browser_card.show()
+        self._main_splitter.setHandleWidth(16)
+        total_width = max(self.width(), 1200)
+        left = int(total_width * 0.32)
+        right = max(total_width - left, 640)
+        self._main_splitter.setSizes([left, right])
 
     # ------------------------------------------------------------------
     # 컨트롤러에 노출되는 슬롯
@@ -1477,6 +1565,10 @@ class MainWindow(QMainWindow):
         )
         self._drop_area.setEnabled(not busy)
         self._url_input.setEnabled(not busy)
+        if hasattr(self, "_source_none_button"):
+            self._source_none_button.setEnabled(not busy)
+        if hasattr(self, "_source_file_button"):
+            self._source_file_button.setEnabled(not busy)
         if hasattr(self, "_chat_input"):
             self._chat_input.setEnabled(True)
         if hasattr(self, "_chat_send_button"):
@@ -1745,6 +1837,10 @@ class MainWindow(QMainWindow):
                 else ""
             )
             self._current_feature_query = feature_query
+            if str(file_path).lower().endswith(".json"):
+                self.set_selected_input_source("bundle")
+            else:
+                self.set_selected_input_source("file")
             self.fileDropped.emit(file_path)
 
     def _handle_file_drop(self, file_path: str) -> None:
@@ -1755,7 +1851,14 @@ class MainWindow(QMainWindow):
             else ""
         )
         self._current_feature_query = feature_query
+        if str(file_path).lower().endswith(".json"):
+            self.set_selected_input_source("bundle")
+        else:
+            self.set_selected_input_source("file")
         self.fileDropped.emit(file_path)
+
+    def _clear_input_source(self) -> None:
+        self.inputSourceCleared.emit()
 
     def _toggle_feature_input(self) -> None:
         """특정 기능 테스트 입력창을 토글합니다."""
@@ -1791,6 +1894,23 @@ class MainWindow(QMainWindow):
             button.style().polish(button)
         if hasattr(self, "_feature_input_container"):
             self._feature_input_container.setVisible(normalized == "quick")
+
+    def set_selected_input_source(self, source: str) -> None:
+        normalized = source if source in {"none", "file", "bundle"} else "none"
+        self._selected_input_source = normalized
+        mapping = {
+            "none": getattr(self, "_source_none_button", None),
+            "file": getattr(self, "_source_file_button", None),
+            "bundle": getattr(self, "_load_plan_button", None),
+        }
+        for key, button in mapping.items():
+            if button is None:
+                continue
+            selected = key == normalized
+            button.setChecked(selected)
+            button.setProperty("modeSelected", selected)
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def get_selected_run_mode(self) -> str:
         return self._selected_run_mode
@@ -1951,6 +2071,7 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             self._last_plan_directory = Path(file_path).parent
+            self.set_selected_input_source("bundle")
             self.planFileSelected.emit(file_path)
 
     def ask_for_bug_json(self) -> None:

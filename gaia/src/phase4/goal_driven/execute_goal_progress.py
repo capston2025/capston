@@ -199,6 +199,30 @@ def evaluate_post_action_progress(
             duration_seconds=terminal_result.duration_seconds,
         )
     if terminal_result is None:
+        mutation_reason = agent._evaluate_goal_mutation_contract(
+            before_dom=dom_elements,
+            after_dom=post_dom or [],
+        )
+        if mutation_reason:
+            _emit_reason(agent, "mutation_contract_satisfied")
+            agent._log(f"✅ 목표 달성! 이유: {mutation_reason}")
+            terminal_result = GoalResult(
+                goal_id=goal.id,
+                goal_name=goal.name,
+                success=True,
+                steps_taken=steps,
+                total_steps=step_count,
+                final_reason=mutation_reason,
+                duration_seconds=time.time() - start_time,
+            )
+            agent._record_goal_summary(
+                goal=goal,
+                status="success",
+                reason=terminal_result.final_reason,
+                step_count=step_count,
+                duration_seconds=terminal_result.duration_seconds,
+            )
+    if terminal_result is None:
         goal_blob = f"{goal.name} {goal.description}".strip().lower()
         close_keywords = ("닫", "close", "x 버튼", "우상단 x", "overlay", "오버레이", "modal", "모달")
         list_keywords = ("목록", "list", "게시판", "게시글", "board", "row")

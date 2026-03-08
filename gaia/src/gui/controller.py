@@ -127,6 +127,7 @@ class AppController(QObject):
         self._window.fileDropped.connect(self._on_file_dropped)
         self._window.planFileSelected.connect(self._on_plan_file_selected)
         self._window.bugJsonSelected.connect(self._on_bug_json_selected)
+        self._window.inputSourceCleared.connect(self._on_input_source_cleared)
         self._window.startRequested.connect(self._on_start_requested)
         self._window.cancelRequested.connect(self._on_cancel_requested)
         self._window.chatMessageSubmitted.connect(self._on_chat_message_submitted)
@@ -486,6 +487,7 @@ class AppController(QObject):
                     else:
                         self._window.append_log("ℹ️ 번들에 URL 정보가 없어 직접 입력이 필요합니다.")
                     self._window.show_scenarios(self._analysis_goals)
+                    self._window.set_selected_input_source("bundle")
                     summary = self._summarize_goals(self._analysis_goals)
                     self._window.append_log(
                         f"📦 '{path.name}' 번들 불러오기 완료 — 총 {summary['total']}개 "
@@ -519,6 +521,7 @@ class AppController(QObject):
             self._window.append_log("ℹ️ 플랜에 URL 정보가 없어 직접 입력이 필요합니다.")
 
         self._window.show_scenarios(self._analysis_goals)
+        self._window.set_selected_input_source("bundle")
         summary = self._summarize_scenarios(plan_list)
         self._window.append_log(
             f"📂 '{path.name}' 플랜 불러오기 완료 — 총 {summary['total']}개 "
@@ -528,6 +531,24 @@ class AppController(QObject):
 
         # 플랜 불러오기 후 bug.json 선택 여부 묻기
         self._window.ask_for_bug_json()
+
+    @Slot()
+    def _on_input_source_cleared(self) -> None:
+        if self._analysis_thread and self._analysis_thread.isRunning():
+            self._window.append_log("⚠️ 현재 분석이 진행 중입니다. 완료 후 입력 소스를 비워주세요.")
+            return
+        self._analysis_plan = ()
+        self._analysis_goals = ()
+        self._plan = ()
+        self._current_pdf_text = None
+        self._current_pdf_hash = None
+        self._current_plan_file = None
+        self._current_bug_json = None
+        self._window.set_selected_input_source("none")
+        self._window.show_scenarios(())
+        self._window.show_checklist(())
+        self._reset_tracker_with_goals(())
+        self._window.append_log("ℹ️ 입력 소스 선택을 해제했습니다. 빠른 목표 실행 또는 완전 자율 모드로 바로 진행할 수 있습니다.")
 
     @Slot(str)
     def _on_bug_json_selected(self, file_path: str) -> None:

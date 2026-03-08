@@ -411,20 +411,39 @@ class StepReplayWidget(QFrame):
 
         self.setStyleSheet("""
             QFrame {
-                background: #1a1a2e;
-                border-radius: 12px;
-                border: 1px solid rgba(100, 110, 200, 0.3);
+                background: rgba(255, 255, 255, 0.92);
+                border-radius: 14px;
+                border: 1px solid rgba(200, 210, 255, 0.55);
             }
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        title = QLabel("최근 선택 스텝 미리보기", self)
+        title.setStyleSheet("font-size: 13px; font-weight: 700; color: #334155;")
+        header.addWidget(title)
+        header.addStretch()
+
+        self._status_label = QLabel("스텝을 선택하면 before/after를 볼 수 있습니다", self)
+        self._status_label.setStyleSheet("color: #64748b; font-size: 11px;")
+        header.addWidget(self._status_label)
+        layout.addLayout(header)
 
         self._preview_label = QLabel("선택한 테스트를 재생할 수 있습니다", self)
         self._preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._preview_label.setMinimumSize(320, 210)
-        self._preview_label.setStyleSheet("color: #9ca3af;")
+        self._preview_label.setMinimumSize(320, 180)
+        self._preview_label.setStyleSheet("""
+            QLabel {
+                color: #94a3b8;
+                background: linear-gradient(180deg, rgba(241,245,249,0.95), rgba(226,232,240,0.95));
+                border: 1px dashed rgba(148,163,184,0.55);
+                border-radius: 12px;
+                padding: 12px;
+            }
+        """)
         layout.addWidget(self._preview_label)
 
         controls = QHBoxLayout()
@@ -435,10 +454,10 @@ class StepReplayWidget(QFrame):
         self._play_button.clicked.connect(self.play)
         controls.addWidget(self._play_button)
 
-        self._status_label = QLabel("", self)
-        self._status_label.setStyleSheet("color: #9ca3af; font-size: 11px;")
-        controls.addWidget(self._status_label)
-        controls.addStretch()
+        self._open_button = QPushButton("크게 보기", self)
+        self._open_button.setObjectName("GhostButton")
+        self._open_button.setEnabled(False)
+        controls.addWidget(self._open_button)
 
         layout.addLayout(controls)
 
@@ -457,27 +476,32 @@ class StepReplayWidget(QFrame):
         if not self._frames:
             self._preview_label.setText("스크린샷이 없습니다")
             self._play_button.setEnabled(False)
+            self._open_button.setEnabled(False)
+            self._status_label.setText("선택한 스텝에 이미지가 없습니다")
             return
 
         self._play_button.setEnabled(len(self._frames) > 1)
+        self._open_button.setEnabled(True)
         self._render_frame(self._frames[0])
-        if len(self._frames) > 1:
-            self._status_label.setText("before/after 재생 가능")
+        self._status_label.setText("before/after 비교 가능" if len(self._frames) > 1 else "단일 스냅샷")
 
     def play(self):
         if len(self._frames) < 2:
             return
         if self._play_timer.isActive():
             self._play_timer.stop()
-            self._status_label.setText("재생 중지")
+            self._status_label.setText("재생 일시정지")
+            self._play_button.setText("재생")
             return
         self._play_remaining = 8
-        self._status_label.setText("재생 중...")
-        self._play_timer.start(550)
+        self._status_label.setText("before/after 재생 중")
+        self._play_button.setText("일시정지")
+        self._play_timer.start(700)
 
     def _advance_frame(self):
         if self._play_remaining <= 0:
             self._play_timer.stop()
+            self._play_button.setText("재생")
             self._status_label.setText("재생 완료")
             return
         self._play_remaining -= 1
@@ -489,8 +513,8 @@ class StepReplayWidget(QFrame):
 
     def _render_frame(self, pixmap: QPixmap):
         scaled = pixmap.scaled(
-            380,
-            240,
+            560,
+            260,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -692,22 +716,16 @@ class ExplorationDetailView(QWidget):
         layout.setSpacing(12)
 
         self._top_container = QFrame(self)
+        self._top_container.setObjectName("DetailTopContainer")
+        self._top_container.setStyleSheet("""
+            QFrame#DetailTopContainer {
+                background: transparent;
+                border: none;
+            }
+        """)
         top_layout = QVBoxLayout(self._top_container)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(12)
-
-        replay_container = QFrame(self._top_container)
-        replay_layout = QVBoxLayout(replay_container)
-        replay_layout.setContentsMargins(0, 0, 0, 0)
-
-        replay_title = QLabel("🎞️ 스텝 재생", self)
-        replay_title.setStyleSheet("font-size: 13px; font-weight: 600; color: #4b5563;")
-        replay_layout.addWidget(replay_title)
-
-        self._step_replay = StepReplayWidget(replay_container)
-        replay_layout.addWidget(self._step_replay)
-
-        top_layout.addWidget(replay_container)
 
         # 헤더
         header = QHBoxLayout()
@@ -723,11 +741,6 @@ class ExplorationDetailView(QWidget):
         self._toggle_top_button.clicked.connect(self._toggle_top_section)
         header.addWidget(self._toggle_top_button)
 
-        self._summary_button = QPushButton("요약", self)
-        self._summary_button.setObjectName("GhostButton")
-        self._summary_button.clicked.connect(self._show_summary)
-        header.addWidget(self._summary_button)
-
         self._export_button = QPushButton("CSV 내보내기", self)
         self._export_button.setObjectName("GhostButton")
         self._export_button.clicked.connect(self._export_csv)
@@ -735,8 +748,13 @@ class ExplorationDetailView(QWidget):
 
         layout.addLayout(header)
 
+        top_layout.addLayout(header)
+
+        summary_and_preview = QHBoxLayout()
+        summary_and_preview.setSpacing(14)
+
         # 요약 카드
-        summary_card = QFrame(self)
+        summary_card = QFrame(self._top_container)
         summary_card.setObjectName("SummaryCard")
         summary_card.setStyleSheet("""
             QFrame#SummaryCard {
@@ -774,7 +792,19 @@ class ExplorationDetailView(QWidget):
             self._summary_labels[key] = value_label
 
         self._summary_card = summary_card
-        self._summary_card.hide()
+        self._summary_card.show()
+        summary_and_preview.addWidget(summary_card, 1)
+
+        replay_container = QFrame(self._top_container)
+        replay_layout = QVBoxLayout(replay_container)
+        replay_layout.setContentsMargins(0, 0, 0, 0)
+        replay_layout.setSpacing(0)
+        self._step_replay = StepReplayWidget(replay_container)
+        self._step_replay._open_button.clicked.connect(lambda: self._emit_replay(self._table.currentRow()))
+        replay_layout.addWidget(self._step_replay)
+        summary_and_preview.addWidget(replay_container, 2)
+
+        top_layout.addLayout(summary_and_preview)
 
         # 테이블 - 기능 중심 컬럼
         self._table = QTableWidget(self)
@@ -800,6 +830,7 @@ class ExplorationDetailView(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.verticalHeader().setDefaultSectionSize(64)
         self._table.setAlternatingRowColors(True)
+        self._table.setSortingEnabled(False)
         self._table.setStyleSheet("""
             QTableWidget {
                 background: rgba(255, 255, 255, 0.8);
@@ -825,13 +856,14 @@ class ExplorationDetailView(QWidget):
         self._content_splitter.addWidget(self._top_container)
         self._content_splitter.addWidget(self._table)
         self._content_splitter.setStretchFactor(0, 1)
-        self._content_splitter.setStretchFactor(1, 3)
-        self._content_splitter.setSizes([280, 640])
+        self._content_splitter.setStretchFactor(1, 4)
+        self._content_splitter.setSizes([250, 720])
         layout.addWidget(self._content_splitter, stretch=1)
 
         self._current_data = None
         self._current_file_path = None
         self._top_collapsed = False
+        self._toggle_top_button.setText("미리보기 숨기기")
 
     def load_result(self, file_path: str):
         """결과 파일 로드"""
@@ -865,9 +897,22 @@ class ExplorationDetailView(QWidget):
             "coverage": f"{coverage:.0f}%",
             "duration": f"{duration:.1f}s",
         }
+        self._summary_labels["total"].setText(str(total))
+        self._summary_labels["success"].setText(str(success))
+        self._summary_labels["fail"].setText(str(fail))
+        self._summary_labels["issues"].setText(str(issues))
+        self._summary_labels["coverage"].setText(f"{coverage:.0f}%")
+        self._summary_labels["duration"].setText(f"{duration:.1f}s")
 
         # 테이블 업데이트 - 기능 중심
         self._table.setRowCount(total)
+        self._table.setColumnWidth(0, 170)
+        self._table.setColumnWidth(1, 150)
+        self._table.setColumnWidth(2, 190)
+        self._table.setColumnWidth(3, 150)
+        self._table.setColumnWidth(4, 140)
+        self._table.setColumnWidth(5, 90)
+        self._table.setColumnWidth(6, 110)
 
         for row, step in enumerate(steps):
             # 기능 설명 (새 필드)
@@ -964,16 +1009,12 @@ class ExplorationDetailView(QWidget):
         self._top_collapsed = not self._top_collapsed
         if self._top_collapsed:
             self._top_container.hide()
-            self._toggle_top_button.setText("상단 펼치기")
+            self._toggle_top_button.setText("미리보기 펼치기")
             self._content_splitter.setSizes([0, 1])
         else:
             self._top_container.show()
-            self._toggle_top_button.setText("상단 숨기기")
-            self._content_splitter.setSizes([280, 640])
-
-    def _show_summary(self):
-        dialog = SummaryDialog(self._summary_data, parent=self)
-        dialog.exec()
+            self._toggle_top_button.setText("미리보기 숨기기")
+            self._content_splitter.setSizes([250, 720])
 
     def _build_replay_html(self, step_data: Dict) -> str:
         frames = self._collect_step_frames(step_data)
@@ -1110,8 +1151,8 @@ class ExplorationViewer(QWidget):
         back_button.clicked.connect(self.back_requested.emit)
         header.addWidget(back_button)
 
-        title = QLabel("🧪 탐색 테스트 결과", self)
-        title.setStyleSheet("font-size: 18px; font-weight: 600; color: #1f2937;")
+        title = QLabel("탐색 테스트 결과", self)
+        title.setStyleSheet("font-size: 20px; font-weight: 700; color: #1f2937;")
         header.addWidget(title)
 
         header.addStretch()
@@ -1142,7 +1183,7 @@ class ExplorationViewer(QWidget):
         self._list_widget = QWidget(scroll)
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 8, 0)
-        self._list_layout.setSpacing(8)
+        self._list_layout.setSpacing(12)
         self._list_layout.addStretch()
 
         scroll.setWidget(self._list_widget)
@@ -1155,8 +1196,10 @@ class ExplorationViewer(QWidget):
         self._detail_view.replay_requested.connect(self.replay_requested.emit)
         splitter.addWidget(self._detail_view)
 
+        splitter.setChildrenCollapsible(False)
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([360, 1040])
 
         layout.addWidget(splitter, stretch=1)
 
