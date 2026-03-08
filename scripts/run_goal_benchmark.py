@@ -15,6 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
+
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
+
 
 def _load_suite(path: Path) -> Dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -37,18 +43,35 @@ def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
     payload = json.dumps({"scenario": scenario, "session_id": session_id}, ensure_ascii=False)
     return f"""
 import contextlib, io, json, sys
-from gaia.terminal import run_chat_terminal_once
+import os
+from gaia.terminal import _build_test_goal, run_chat_terminal_once
 from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
 payload = json.loads({payload!r})
 scenario = payload['scenario']
 session_id = payload['session_id']
 ensure_mcp_host_running(None, startup_timeout=10.0)
+prepared_goal = _build_test_goal(url=scenario['url'], query=scenario['goal'])
+constraints = scenario.get('constraints') if isinstance(scenario.get('constraints'), dict) else {{}}
+goal_test_data = dict(getattr(prepared_goal, 'test_data', {{}}) or {{}})
+if constraints.get('requires_test_credentials'):
+    username = (os.getenv('GAIA_TEST_USERNAME') or os.getenv('GAIA_AUTH_USERNAME') or '').strip()
+    password = (os.getenv('GAIA_TEST_PASSWORD') or os.getenv('GAIA_AUTH_PASSWORD') or '').strip()
+    email = (os.getenv('GAIA_TEST_EMAIL') or os.getenv('GAIA_AUTH_EMAIL') or '').strip()
+    if username and password:
+        goal_test_data['username'] = username
+        goal_test_data['password'] = password
+        goal_test_data.setdefault('auth_mode', 'provided_credentials')
+        goal_test_data.setdefault('return_credentials', True)
+        if email:
+            goal_test_data['email'] = email
+prepared_goal.test_data = goal_test_data
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
     code, summary = run_chat_terminal_once(
         url=scenario['url'],
         query=scenario['goal'],
         session_id=session_id,
+        prepared_goal=prepared_goal,
     )
 result = {{
     'exit_code': int(code),
@@ -76,7 +99,7 @@ def _run_scenario_once(
             text=True,
             timeout=timeout_sec,
             env=env,
-            cwd=str(Path(__file__).resolve().parents[1]),
+            cwd=str(WORKSPACE_ROOT),
             check=False,
         )
         duration = round(time.monotonic() - started, 2)
@@ -276,6 +299,7 @@ def main() -> int:
     parser.add_argument("--suite", required=True, help="Path to suite JSON")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--provider", default="")
     parser.add_argument("--model", default="gpt-5.4")
     parser.add_argument("--timeout-cap", type=int, default=90)
     parser.add_argument("--session-prefix", default="benchmark")
@@ -296,8 +320,25 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
+    provider = str(args.provider or "").strip().lower()
+    if not provider:
+        model_name = str(args.model or "").strip().lower()
+        if model_name.startswith("gpt-") or "codex" in model_name:
+            provider = "openai"
+        elif model_name.startswith("gemini"):
+            provider = "gemini"
+    if provider:
+        env.setdefault("GAIA_LLM_PROVIDER", provider)
     env.setdefault("GAIA_LLM_MODEL", str(args.model))
     env.setdefault("GAIA_RAIL_ENABLED", "0")
+
+    host_target = (
+        env.get("GAIA_MCP_HOST_URL")
+        or env.get("MCP_HOST_URL")
+        or env.get("GAIA_MCP_BASE_URL")
+        or "http://127.0.0.1:8001"
+    )
+    ensure_mcp_host_running(host_target, startup_timeout=15.0)
 
     rows: List[Dict[str, Any]] = []
     for repeat_idx in range(1, repeats + 1):

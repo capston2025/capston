@@ -1,0 +1,176 @@
+{
+  "suite_id": "recovery_stress_v1",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "recovery_stress"
+  },
+  "scenarios": [
+    {
+      "id": "REC_001_LOGIN_MODAL_OPEN_CLOSE_X",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 모달을 열었다가 X 버튼으로 닫고 메인 상태로 정상 복귀하는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "modal_open",
+        "modal_closed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 120
+    },
+    {
+      "id": "REC_002_LOGIN_MODAL_BACKDROP_CLOSE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 모달을 연 뒤 배경(backdrop)이나 바깥 영역 클릭으로 닫히는지 검증해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "modal_open",
+        "modal_closed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 120
+    },
+    {
+      "id": "REC_003_LOGIN_MODAL_TAB_SWITCH_AND_CLOSE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인 또는 회원가입 모달을 열고 탭을 한 번 전환한 뒤 다시 닫을 수 있는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "modal_open",
+        "dom_changed",
+        "modal_closed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 150
+    },
+    {
+      "id": "REC_004_DYNAMIC_SEARCH_THEN_RESULT_ACTION",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "검색어를 입력해 결과 목록이 동적으로 바뀐 직후 새로 나타난 과목 카드에 액션을 수행할 수 있는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "dom_changed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 150
+    },
+    {
+      "id": "REC_005_FILTER_RELOAD_PERSISTENCE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "필터를 적용한 뒤 페이지를 새로고침하거나 재진입해도 선택 상태와 결과 정합성이 유지되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "selection_reflected",
+        "persistence_verified"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 180
+    },
+    {
+      "id": "REC_006_AUTH_REQUIRED_CONTINUE_WITH_TEST_CREDS",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "로그인이 필요한 기능을 눌렀을 때 로그인 유도 상태를 지나 저장된 테스트 계정으로 계속 진행할 수 있는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_prompt_detected",
+        "auth_completed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 180
+    },
+    {
+      "id": "REC_007_EXPANDED_WISHLIST_CLOSE_RECOVERY",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "위시리스트 확장 보기 상태를 열고 다시 닫은 뒤 메인 목록과 위시리스트 수치가 정상적으로 유지되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "panel_open",
+        "panel_closed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 180
+    },
+    {
+      "id": "REC_008_CLEAR_WISHLIST_ZERO_STATE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "과목이 여러 개 담긴 상태에서 위시리스트를 전부 비우고 zero state까지 안정적으로 도달하는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "wishlist_count_decreased",
+        "zero_state_visible"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 240
+    },
+    {
+      "id": "REC_009_COMBINATION_MODAL_AND_APPLY",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "조합 결과를 연 뒤 후보를 하나 선택해 시간표에 적용하고, 중간 상태 전환이 꼬이지 않는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "combination_results_visible",
+        "timetable_updated"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 300
+    },
+    {
+      "id": "REC_010_FOLLOWUP_ACTION_AFTER_COMBINATION_APPLY",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "조합을 시간표에 적용한 직후 후속 액션을 한 번 더 수행해 stale snapshot이나 blocked 상태 없이 이어지는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "combination_applied",
+        "dom_changed"
+      ],
+      "difficulty": "hard",
+      "time_budget_sec": 300
+    }
+  ]
+}

@@ -1879,6 +1879,42 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
     )
     page = await session.get_or_create_page()
 
+    def _is_retryable_page_detach_error(exc: BaseException) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        return (
+            "frame has been detached" in message
+            or "target page, context or browser has been closed" in message
+        )
+
+    async def _goto_with_retry(target_page: Any, target_url: str, *, timeout: int) -> None:
+        try:
+            await target_page.goto(target_url, timeout=timeout)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            await target_page.goto(target_url, timeout=timeout)
+
+    async def _screenshot_with_retry(target_page: Any, **kwargs: Any) -> bytes:
+        try:
+            return await target_page.screenshot(**kwargs)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.screenshot(**kwargs)
+
+    async def _title_with_retry(target_page: Any) -> str:
+        try:
+            return await target_page.title()
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.title()
+
     # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
     if url:
         current_browser_url = page.url
@@ -1894,7 +1930,7 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
 
         if current_normalized != requested_normalized:
             print(f"[analyze_page] URLs differ, navigating to: {url}")
-            await page.goto(url, timeout=30000)
+            await _goto_with_retry(page, url, timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
@@ -1991,6 +2027,42 @@ async def capture_screenshot(
     )
     page = await session.get_or_create_page()
 
+    def _is_retryable_page_detach_error(exc: BaseException) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        return (
+            "frame has been detached" in message
+            or "target page, context or browser has been closed" in message
+        )
+
+    async def _goto_with_retry(target_page: Any, target_url: str, *, timeout: int) -> None:
+        try:
+            await target_page.goto(target_url, timeout=timeout)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            await target_page.goto(target_url, timeout=timeout)
+
+    async def _screenshot_with_retry(target_page: Any, **kwargs: Any) -> bytes:
+        try:
+            return await target_page.screenshot(**kwargs)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.screenshot(**kwargs)
+
+    async def _title_with_retry(target_page: Any) -> str:
+        try:
+            return await target_page.title()
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.title()
+
     # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
     if url:
         current_browser_url = page.url
@@ -1998,7 +2070,7 @@ async def capture_screenshot(
         requested_normalized = normalize_url(url)
 
         if current_normalized != requested_normalized:
-            await page.goto(url, timeout=30000)
+            await _goto_with_retry(page, url, timeout=30000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=2000)
             except Exception:
@@ -2008,13 +2080,13 @@ async def capture_screenshot(
         session.current_url = page.url
 
     # 현재 페이지(위치와 관계없이)를 캡처합니다
-    screenshot_bytes = await page.screenshot(full_page=False)
+    screenshot_bytes = await _screenshot_with_retry(page, full_page=False)
     screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
     return {
         "screenshot": screenshot_base64,
         "url": page.url,
-        "title": await page.title(),
+        "title": await _title_with_retry(page),
     }
 
 
@@ -3269,13 +3341,32 @@ async def _browser_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     normalized_tab_id = _coerce_tab_id(tab_id)
+
+    def _is_retryable_page_detach_error(exc: BaseException) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        return (
+            "frame has been detached" in message
+            or "target page, context or browser has been closed" in message
+        )
+
+    async def _goto_with_retry(target_page: Any, target_url: str, *, timeout: int) -> None:
+        try:
+            await target_page.goto(target_url, timeout=timeout)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            await target_page.goto(target_url, timeout=timeout)
+
     if normalized_tab_id is not None:
         session, page = await _resolve_session_page(session_id, tab_id=normalized_tab_id)
         if url:
             current = normalize_url(page.url)
             target = normalize_url(url)
             if current != target:
-                await page.goto(url, timeout=60000)
+                await _goto_with_retry(page, url, timeout=60000)
                 try:
                     await page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
@@ -3883,6 +3974,21 @@ async def _browser_act(params: Dict[str, Any]) -> Dict[str, Any]:
 async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
     payload = params.get("payload") if isinstance(params.get("payload"), dict) else {}
 
+    def _coerce_scalar_str(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, dict):
+            for key in ("text", "textContains", "url", "loadState", "selector"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested
+            return ""
+        return ""
+
     def pick(key: str, default: Any = None) -> Any:
         if key in params:
             return params.get(key)
@@ -3894,13 +4000,13 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
     tab_id = pick("tab_id", pick("targetId"))
     session, page = await _resolve_session_page(session_id, tab_id=tab_id)
     timeout_ms = int(pick("timeout_ms") or pick("timeoutMs") or 20000)
-    selector = str(pick("selector") or "")
-    selector_state = str(pick("selector_state") or "visible")
-    js_expr = str(pick("js") or pick("fn") or "")
-    target_url = str(pick("url") or "")
-    load_state = str(pick("load_state") or pick("loadState") or "")
-    text_contains = str(pick("text") or "")
-    text_gone = str(pick("text_gone") or pick("textGone") or "")
+    selector = _coerce_scalar_str(pick("selector"))
+    selector_state = _coerce_scalar_str(pick("selector_state") or "visible") or "visible"
+    js_expr = _coerce_scalar_str(pick("js") or pick("fn"))
+    target_url = _coerce_scalar_str(pick("url"))
+    load_state = _coerce_scalar_str(pick("load_state") or pick("loadState"))
+    text_contains = _coerce_scalar_str(pick("text"))
+    text_gone = _coerce_scalar_str(pick("text_gone") or pick("textGone"))
     allowed_load_states = {"load", "domcontentloaded", "networkidle"}
     if load_state and load_state not in allowed_load_states:
         raise HTTPException(
@@ -3957,7 +4063,17 @@ async def _browser_wait(params: Dict[str, Any]) -> Dict[str, Any]:
         current = normalize_url(page.url)
         target = normalize_url(target_url)
         if current != target:
-            await page.goto(target_url, timeout=max(timeout_ms, 1000))
+            try:
+                await page.goto(target_url, timeout=max(timeout_ms, 1000))
+            except Exception as exc:
+                message = str(exc or "").strip().lower()
+                if (
+                    "frame has been detached" not in message
+                    and "target page, context or browser has been closed" not in message
+                ):
+                    raise
+                await page.wait_for_timeout(150)
+                await page.goto(target_url, timeout=max(timeout_ms, 1000))
     if load_state:
         await page.wait_for_load_state(load_state, timeout=timeout_ms)
     if selector:
@@ -4041,11 +4157,39 @@ async def _browser_screenshot(params: Dict[str, Any]) -> Dict[str, Any]:
     output_path = str(pick("path") or "")
 
     session, page = await _resolve_session_page(session_id, tab_id=tab_id)
+
+    def _is_retryable_page_detach_error(exc: BaseException) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        return (
+            "frame has been detached" in message
+            or "target page, context or browser has been closed" in message
+        )
+
+    async def _goto_with_retry(target_page: Any, target_url: str, *, timeout: int) -> None:
+        try:
+            await target_page.goto(target_url, timeout=timeout)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            await target_page.goto(target_url, timeout=timeout)
+
+    async def _screenshot_with_retry(target_page: Any, **kwargs: Any) -> bytes:
+        try:
+            return await target_page.screenshot(**kwargs)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.screenshot(**kwargs)
+
     if url:
         current = normalize_url(page.url)
         target = normalize_url(url)
         if current != target:
-            await page.goto(url, timeout=60000)
+            await _goto_with_retry(page, url, timeout=60000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
             except Exception:
@@ -4054,7 +4198,7 @@ async def _browser_screenshot(params: Dict[str, Any]) -> Dict[str, Any]:
     screenshot_kwargs: Dict[str, Any] = {"full_page": full_page, "type": image_type}
     if quality is not None and image_type in {"jpeg", "webp"}:
         screenshot_kwargs["quality"] = quality
-    screenshot_bytes = await page.screenshot(**screenshot_kwargs)
+    screenshot_bytes = await _screenshot_with_retry(page, **screenshot_kwargs)
     screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
     saved_path = ""

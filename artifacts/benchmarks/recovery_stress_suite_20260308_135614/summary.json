@@ -1,0 +1,97 @@
+{
+  "schema_version": "gaia.benchmark.v1",
+  "suite_id": "recovery_stress_v1",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "recovery_stress"
+  },
+  "started_at": "2026-03-08T13:56:14.457102+09:00",
+  "repeats": 2,
+  "scenario_count": 10,
+  "model": "gpt-5.4",
+  "metrics": {
+    "runs_total": 20,
+    "success_rate": 0.5,
+    "avg_time_seconds": 64.16,
+    "reproducibility": 0.5,
+    "flaky_rate": 0.0
+  },
+  "kpi_metrics": {
+    "scenario_success_rate": 0.5,
+    "reproducibility_rate": 0.5,
+    "progress_stop_failure_rate": 0.4,
+    "self_recovery_rate": null,
+    "intervention_rate": 0.0,
+    "counts": {
+      "success": 10,
+      "blocked": 0,
+      "progress_stop_failures": 8,
+      "recovery_runs": 0,
+      "recovery_success": 0
+    },
+    "targets": {
+      "reproducibility_rate": 0.8,
+      "progress_stop_failure_rate": 0.1,
+      "self_recovery_rate": 0.6,
+      "scenario_success_rate": 0.7,
+      "intervention_rate": 0.2
+    }
+  },
+  "status_counts": {
+    "SUCCESS": 10,
+    "FAIL": 10
+  },
+  "failures": [
+    {
+      "scenario_id": "REC_002_LOGIN_MODAL_BACKDROP_CLOSE",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(120s)"
+    },
+    {
+      "scenario_id": "REC_004_DYNAMIC_SEARCH_THEN_RESULT_ACTION",
+      "status": "FAIL",
+      "reason": "화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "REC_005_FILTER_RELOAD_PERSISTENCE",
+      "status": "FAIL",
+      "reason": "필터 의미 검증에서 필수 항목 실패가 발생했습니다. 필터 의미 검증 실패: 필수 체크 실패 4건"
+    },
+    {
+      "scenario_id": "REC_008_CLEAR_WISHLIST_ZERO_STATE",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(180s)"
+    },
+    {
+      "scenario_id": "REC_009_COMBINATION_MODAL_AND_APPLY",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(180s)"
+    },
+    {
+      "scenario_id": "REC_002_LOGIN_MODAL_BACKDROP_CLOSE",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(120s)"
+    },
+    {
+      "scenario_id": "REC_004_DYNAMIC_SEARCH_THEN_RESULT_ACTION",
+      "status": "FAIL",
+      "reason": "화면 상태가 반복되어 더 이상 진행이 어렵습니다. 현재 페이지에서 수동 전환 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "REC_005_FILTER_RELOAD_PERSISTENCE",
+      "status": "FAIL",
+      "reason": "필터 의미 검증에서 필수 항목 실패가 발생했습니다. 필터 의미 검증 실패: 필수 체크 실패 4건"
+    },
+    {
+      "scenario_id": "REC_008_CLEAR_WISHLIST_ZERO_STATE",
+      "status": "FAIL",
+      "reason": "동일 액션이 반복되어 실행을 중단했습니다. 목표를 더 구체적으로 입력하거나 /url 후 다시 시도하세요."
+    },
+    {
+      "scenario_id": "REC_009_COMBINATION_MODAL_AND_APPLY",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(180s)"
+    }
+  ]
+}

@@ -446,6 +446,43 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
     )
 
 
+def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str) -> None:
+    if not isinstance(goal.test_data, dict):
+        goal.test_data = {}
+    text = str(query_text or "")
+    lowered = text.lower()
+    needs_auth_context = any(
+        token in lowered
+        for token in (
+            "로그인",
+            "login",
+            "auth",
+            "인증",
+            "회원가입",
+            "signup",
+            "register",
+            "위시리스트",
+            "wishlist",
+            "조합",
+            "combination",
+            "시간표",
+            "timetable",
+        )
+    )
+    if not needs_auth_context:
+        return
+    username = (os.getenv("GAIA_TEST_USERNAME") or os.getenv("GAIA_AUTH_USERNAME") or "").strip()
+    password = (os.getenv("GAIA_TEST_PASSWORD") or os.getenv("GAIA_AUTH_PASSWORD") or "").strip()
+    email = (os.getenv("GAIA_TEST_EMAIL") or os.getenv("GAIA_AUTH_EMAIL") or "").strip()
+    if username and password:
+        goal.test_data.setdefault("username", username)
+        goal.test_data.setdefault("password", password)
+        goal.test_data.setdefault("auth_mode", "provided_credentials")
+        goal.test_data.setdefault("return_credentials", True)
+        if email:
+            goal.test_data.setdefault("email", email)
+
+
 def _infer_goal_type(query_text: str) -> str:
     text = str(query_text or "").lower()
     explicit_filter_tokens = ("필터", "filter", "학점", "credit", "정렬", "sort")
@@ -816,6 +853,7 @@ def _run_single_chat_goal(
         intervention_callback = _default_intervention_callback
 
     goal = prepared_goal or _build_test_goal(url=url, query=query)
+    _augment_goal_with_env_credentials(goal, query)
     if isinstance(steering_policy, dict) and steering_policy:
         if not isinstance(goal.test_data, dict):
             goal.test_data = {}

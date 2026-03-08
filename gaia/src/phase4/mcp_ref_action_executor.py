@@ -50,6 +50,31 @@ from gaia.src.phase4.mcp_ref_verify_fallbacks import (
 from gaia.src.phase4.mcp_error_converter import to_ai_friendly_error
 
 
+def _is_retryable_page_detach_error(exc: BaseException) -> bool:
+    message = str(exc or "").strip().lower()
+    if not message:
+        return False
+    return (
+        "frame has been detached" in message
+        or "target page, context or browser has been closed" in message
+    )
+
+
+async def _goto_with_retry(page: Any, url: str, *, timeout: int, wait_for_networkidle: bool = True) -> None:
+    try:
+        await page.goto(url, timeout=timeout)
+    except Exception as exc:
+        if not _is_retryable_page_detach_error(exc):
+            raise
+        await page.wait_for_timeout(150)
+        await page.goto(url, timeout=timeout)
+    if wait_for_networkidle:
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+
+
 async def execute_ref_action_with_snapshot_impl(
     *,
     session_id: str,
@@ -88,11 +113,7 @@ async def execute_ref_action_with_snapshot_impl(
         current_normalized = normalize_url(page.url)
         requested_normalized = normalize_url(url)
         if current_normalized != requested_normalized:
-            await page.goto(url, timeout=60000)
-            try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                pass
+            await _goto_with_retry(page, url, timeout=60000, wait_for_networkidle=True)
             await page.wait_for_timeout(1000)
 
     try:

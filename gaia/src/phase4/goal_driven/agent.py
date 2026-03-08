@@ -469,6 +469,24 @@ class GoalDrivenAgent:
             self._normalize_text,
         )
 
+    def _evaluate_goal_mutation_contract(
+        self,
+        *,
+        before_dom: List[DOMElement],
+        after_dom: List[DOMElement],
+    ) -> Optional[str]:
+        try:
+            from .constraints import evaluate_mutation_contract
+
+            return evaluate_mutation_contract(
+                before_dom=before_dom,
+                after_dom=after_dom,
+                goal_constraints=self._goal_constraints,
+                normalize_text=self._normalize_text,
+            )
+        except Exception:
+            return None
+
     def _is_collect_constraint_unmet(self) -> bool:
         return is_collect_constraint_unmet_impl(
             self._goal_constraints,

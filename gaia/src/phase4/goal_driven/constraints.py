@@ -2,10 +2,35 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 NormalizeTextFn = Callable[[Optional[str]], str]
+
+_GENERIC_GOAL_STOPWORDS = {
+    "로그인", "login", "후", "하나", "한개", "과목", "문제", "페이지", "화면", "현재", "이미",
+    "확인", "검증", "작동", "정상", "보이는지", "표시", "존재", "추가", "삭제", "제거", "담고",
+    "담은", "비우기", "비우는", "증가", "감소", "clear", "remove", "delete", "add", "increase",
+    "decrease", "check", "verify", "visible", "already", "without", "interaction", "goal",
+    "수치", "count", "number", "total", "총", "해주세요", "해줘", "되는지", "했는지", "하고",
+}
+
+
+def _derive_context_terms(text: str, normalize_text: NormalizeTextFn) -> List[str]:
+    tokens = re.findall(r"[a-z0-9가-힣]+", normalize_text(text))
+    results: List[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        token = str(token or "").strip()
+        if len(token) < 2 or token.isdigit() or token in _GENERIC_GOAL_STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        results.append(token)
+        if len(results) >= 8:
+            break
+    return results
 
 
 def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> Dict[str, Any]:
@@ -24,6 +49,17 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         "same page",
     )
     require_no_navigation = any(hint in text for hint in no_navigation_hints)
+    increase_hints = ("증가", "늘", "담", "추가", "add", "append", "increase", "grow", "more")
+    decrease_hints = ("감소", "줄", "제거", "삭제", "remove", "decrease", "less")
+    clear_hints = ("비우", "비웠", "전체 삭제", "전부 삭제", "clear", "empty", "remove all")
+    mutation_direction: Optional[str] = None
+    if any(hint in text for hint in clear_hints):
+        mutation_direction = "clear"
+    elif any(hint in text for hint in decrease_hints):
+        mutation_direction = "decrease"
+    elif any(hint in text for hint in increase_hints):
+        mutation_direction = "increase"
+    context_terms = _derive_context_terms(text, normalize_text)
     numeric_values: List[int] = []
     metric_terms: List[str] = []
     number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
@@ -35,9 +71,13 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
             metric_terms.append(maybe_term)
 
     if not numeric_values:
+        payload: Dict[str, Any] = {}
         if require_no_navigation:
-            return {"require_no_navigation": True}
-        return {}
+            payload["require_no_navigation"] = True
+        if mutation_direction:
+            payload["mutation_direction"] = mutation_direction
+            payload["context_terms"] = context_terms
+        return payload
 
     if len(numeric_values) == 1:
         only_value = int(numeric_values[0])
@@ -47,9 +87,13 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
             rf"(?<!\d){only_value}\s*(?:id|번호)",
         )
         if any(re.search(pattern, text) for pattern in id_like_patterns):
+            payload = {}
             if require_no_navigation:
-                return {"require_no_navigation": True}
-            return {}
+                payload["require_no_navigation"] = True
+            if mutation_direction:
+                payload["mutation_direction"] = mutation_direction
+                payload["context_terms"] = context_terms
+            return payload
 
     collect_min: Optional[int] = None
     apply_target: Optional[int] = None
@@ -71,7 +115,7 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     metric_label = top_terms[0] if top_terms else "count"
     require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
 
-    return {
+    payload = {
         "metric": "numeric",
         "metric_label": metric_label,
         "metric_terms": top_terms,
@@ -80,6 +124,10 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         "require_collect_before_progress": require_collect_before_progress,
         "require_no_navigation": require_no_navigation,
     }
+    if mutation_direction:
+        payload["mutation_direction"] = mutation_direction
+        payload["context_terms"] = context_terms
+    return payload
 
 
 def extract_metric_values_from_text(
@@ -205,3 +253,101 @@ def estimate_goal_metric_from_dom(
     if collect_min_value >= 3.0 and max_value < (collect_min_value * 0.35) and unique_count <= 2:
         return None
     return float(max(filtered))
+
+
+def estimate_summary_counter_from_dom(
+    dom_elements: List[Any],
+    goal_constraints: Dict[str, Any],
+    normalize_text: NormalizeTextFn,
+) -> Tuple[Optional[int], bool]:
+    context_terms = [
+        str(x).strip().lower()
+        for x in (goal_constraints.get("context_terms") or [])
+        if str(x).strip()
+    ]
+    aggregate_hints = (
+        "총", "합계", "현재", "누적", "selected", "selection", "total",
+        "count", "item", "items", "credit", "credits", "학점", "개수", "수량",
+    )
+    zero_hints = (
+        "비어", "empty", "없어요", "없음", "0개", "0학점",
+    )
+    best_score = -1.0
+    best_value: Optional[int] = None
+    zero_state = False
+    for el in dom_elements:
+        fields = [
+            getattr(el, "text", None),
+            getattr(el, "aria_label", None),
+            getattr(el, "title", None),
+            getattr(el, "placeholder", None),
+        ]
+        for field in fields:
+            if not field:
+                continue
+            normalized = normalize_text(str(field))
+            if not normalized:
+                continue
+            if any(hint in normalized for hint in zero_hints):
+                zero_state = True
+
+            numbers: List[int] = []
+            for pattern in (
+                r"(?:총|합계|현재|누적|selected|selection|count|counts|item|items|total|credit|credits|학점|개수|수량)\s*[:=]?\s*(\d{1,6})",
+                r"(\d{1,6})\s*(?:개|건|명|점|학점|item|items|credit|credits)",
+            ):
+                for m in re.finditer(pattern, normalized):
+                    try:
+                        numbers.append(int(m.group(1)))
+                    except Exception:
+                        continue
+            if not numbers:
+                continue
+
+            score = 0.0
+            if any(term in normalized for term in context_terms):
+                score += 3.0
+            if any(hint in normalized for hint in aggregate_hints):
+                score += 2.0
+            if len(numbers) == 1:
+                score += 0.5
+            candidate = max(numbers)
+            if score > best_score or (score == best_score and best_value is not None and candidate > best_value):
+                best_score = score
+                best_value = candidate
+    return best_value, zero_state
+
+
+def evaluate_mutation_contract(
+    *,
+    before_dom: List[Any],
+    after_dom: List[Any],
+    goal_constraints: Dict[str, Any],
+    normalize_text: NormalizeTextFn,
+) -> Optional[str]:
+    direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
+    if direction not in {"increase", "decrease", "clear"}:
+        return None
+
+    before_value, before_zero = estimate_summary_counter_from_dom(
+        before_dom, goal_constraints, normalize_text
+    )
+    after_value, after_zero = estimate_summary_counter_from_dom(
+        after_dom, goal_constraints, normalize_text
+    )
+
+    if direction == "clear":
+        if after_zero:
+            return "요약 상태가 비움/empty로 변경되어 목표를 완료로 판정했습니다."
+        if after_value is not None and after_value == 0:
+            return "요약 수치가 0으로 변경되어 목표를 완료로 판정했습니다."
+        return None
+
+    if before_value is None or after_value is None:
+        return None
+
+    if direction == "increase" and after_value > before_value:
+        return f"요약 수치가 {before_value} -> {after_value}로 증가해 목표를 완료로 판정했습니다."
+    if direction == "decrease" and after_value < before_value:
+        return f"요약 수치가 {before_value} -> {after_value}로 감소해 목표를 완료로 판정했습니다."
+    return None

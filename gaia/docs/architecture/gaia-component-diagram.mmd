@@ -1,0 +1,73 @@
+flowchart LR
+    subgraph INPUT["Input Layer"]
+        CLI["CLI<br/>gaia/cli.py"]
+        GUI["GUI<br/>main.py + gui/controller.py"]
+        TG["Chat / Telegram<br/>chat_hub.py + telegram_bridge.py"]
+        DOC["Spec / PRD / Plan Input<br/>PDFLoader + SpecAnalyzer + PlanRepository"]
+    end
+
+    subgraph RUNTIME["GAIA Runtime"]
+        TERM["Terminal / Run Context<br/>terminal.py"]
+        AGENT["Agent Layer<br/>GoalDrivenAgent / ExploratoryAgent"]
+        ORCH["Orchestrators<br/>AgentOrchestrator / MasterOrchestrator / IntelligentOrchestrator"]
+        STATE["Runtime State<br/>phase · history · feedback · memory · session"]
+    end
+
+    subgraph DECISION["Decision Layer"]
+        LLM["LLM<br/>goal + success criteria + DOM summary + screenshot<br/>=> action + element_id"]
+    end
+
+    subgraph EXEC["Execution Layer"]
+        MCP["MCP Host<br/>browser_snapshot / browser_act<br/>snapshot_id + ref_id contract"]
+        SNAP["Snapshot Store<br/>session.snapshots + elements_by_ref"]
+        PW["Playwright + Chromium<br/>DOM / frame / state capture<br/>click / fill / select / scroll"]
+    end
+
+    subgraph VALID["Validation Layer"]
+        VERIFY["Execution Validation<br/>state_change + reason_code + attempt logs"]
+        RECOVER["Recovery / Guard<br/>retry · resnapshot · context shift · blocked user action"]
+        SEM["Semantic Validation<br/>filter_validation_engine"]
+    end
+
+    subgraph OUTPUT["Outputs / Ops"]
+        REPORT["GUI / Terminal / Telegram Summary<br/>attachments + result payload"]
+        RAIL["Validation Rail<br/>independent QA / reproducibility rail"]
+    end
+
+    CLI --> TERM
+    GUI --> ORCH
+    TG --> TERM
+    DOC --> TERM
+    DOC --> ORCH
+
+    TERM --> AGENT
+    ORCH --> AGENT
+    AGENT <--> STATE
+    ORCH <--> STATE
+
+    AGENT -->|"DOM summary + screenshot"| LLM
+    LLM -->|"action + element_id"| AGENT
+
+    AGENT -->|"element_id -> ref_id resolve"| MCP
+    MCP -->|"snapshot metadata"| SNAP
+    SNAP --> MCP
+    MCP --> PW
+    PW -->|"DOM / screenshot / action result"| MCP
+
+    MCP -->|"state_change + reason_code"| VERIFY
+    VERIFY --> RECOVER
+    VERIFY --> SEM
+    RECOVER --> AGENT
+    SEM --> REPORT
+    VERIFY --> REPORT
+    REPORT -.-> RAIL
+
+    NOTE1["LLM chooses element_id<br/>not ref_id"]:::note
+    NOTE2["MCP Host assigns ref_id<br/>during snapshot creation"]:::note
+    NOTE3["Actual execution uses<br/>snapshot_id + ref_id"]:::note
+
+    NOTE1 -.-> LLM
+    NOTE2 -.-> MCP
+    NOTE3 -.-> MCP
+
+    classDef note fill:#113C7A,color:#F5FAFF,stroke:#58A6FF,stroke-width:1px;

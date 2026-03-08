@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -16,6 +17,8 @@ _SPAWNED_PROCESS: Optional[subprocess.Popen[str]] = None
 _SPAWNED_LOG_FILE: Optional[IO[str]] = None
 _CLEANUP_REGISTERED = False
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_THIS_DIR = Path(__file__).resolve().parent
+_WORKSPACE_ROOT = _THIS_DIR.parents[2]
 
 
 def resolve_mcp_target(raw_base_url: str | None) -> Tuple[str, int, str]:
@@ -124,11 +127,21 @@ def ensure_mcp_host_running(
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"mcp_host.runtime.{port}.log"
     _SPAWNED_LOG_FILE = log_path.open("a", encoding="utf-8")
+    child_env = os.environ.copy()
+    workspace_root = str(_WORKSPACE_ROOT)
+    existing_pythonpath = str(child_env.get("PYTHONPATH") or "").strip()
+    if existing_pythonpath:
+        child_env["PYTHONPATH"] = f"{workspace_root}:{existing_pythonpath}"
+    else:
+        child_env["PYTHONPATH"] = workspace_root
+    child_env["MCP_HOST_URL"] = base_url
     _SPAWNED_PROCESS = subprocess.Popen(
         [sys.executable, "-m", "gaia.src.phase4.mcp_host"],
         stdout=_SPAWNED_LOG_FILE,
         stderr=subprocess.STDOUT,
         text=True,
+        cwd=workspace_root,
+        env=child_env,
     )
     deadline = time.time() + max(3.0, float(startup_timeout))
     while time.time() < deadline:
