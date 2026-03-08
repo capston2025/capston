@@ -422,7 +422,7 @@ class GoalDrivenAgent:
         return False
 
     def _recover_dom_after_empty(self, goal: "TestGoal") -> List["DOMElement"]:
-        return recover_dom_after_empty_impl(
+        recovered = recover_dom_after_empty_impl(
             runtime_phase=self._runtime_phase,
             no_progress_counter=self._no_progress_counter,
             goal_start_url=str(getattr(goal, "start_url", "") or ""),
@@ -430,6 +430,41 @@ class GoalDrivenAgent:
             log_fn=self._log,
             execute_action_fn=lambda start_url: self._execute_action("goto", url=start_url),
         )
+        if recovered:
+            return recovered
+        return self._force_reset_session_after_empty_dom(goal)
+
+    def _force_reset_session_after_empty_dom(self, goal: "TestGoal") -> List["DOMElement"]:
+        start_url = str(getattr(goal, "start_url", "") or "").strip()
+        self._log("🛠️ DOM 강제 복구: 현재 브라우저 세션을 재생성합니다.")
+        try:
+            requests.post(
+                f"{self.mcp_host_url.rstrip('/')}/close_session",
+                json={
+                    "action": "close_session",
+                    "params": {
+                        "session_id": self.session_id,
+                    },
+                },
+                timeout=(5, 15),
+            )
+        except Exception as exc:
+            self._log(f"⚠️ 세션 재생성 중 close_session 요청 실패: {exc}")
+        time.sleep(0.3)
+        if start_url:
+            try:
+                self._last_exec_result = self._execute_action("goto", url=start_url)
+            except Exception as exc:
+                self._log(f"⚠️ 세션 재생성 후 시작 URL 복구 실패: {exc}")
+        time.sleep(0.8)
+        try:
+            recovered = self._analyze_dom()
+        except Exception as exc:
+            self._log(f"⚠️ 세션 재생성 후 DOM 재분석 실패: {exc}")
+            recovered = []
+        if recovered:
+            self._record_reason_code("dom_session_reset")
+        return recovered
 
     @classmethod
     def _contains_apply_hint(cls, value: Optional[str]) -> bool:
@@ -2293,6 +2328,27 @@ class GoalDrivenAgent:
         )
 
     @classmethod
+    def _has_prominent_auth_form(cls, dom_elements: List[DOMElement]) -> bool:
+        has_password_input = False
+        has_login_cta = False
+        for el in dom_elements:
+            tag = cls._normalize_text(getattr(el, "tag", None))
+            role = cls._normalize_text(getattr(el, "role", None))
+            input_type = cls._normalize_text(getattr(el, "type", None))
+            fields = [
+                getattr(el, "text", None),
+                getattr(el, "aria_label", None),
+                getattr(el, "placeholder", None),
+                getattr(el, "title", None),
+            ]
+            if tag == "input" and input_type == "password":
+                has_password_input = True
+            if any(cls._contains_login_hint(field) for field in fields):
+                if tag in {"button", "a", "input"} or role == "button" or input_type in {"submit", "button"}:
+                    has_login_cta = True
+        return bool(has_password_input and has_login_cta)
+
+    @classmethod
     def _goal_requires_login_interaction(cls, goal: TestGoal) -> bool:
         return goal_requires_login_interaction_impl(
             goal,
@@ -2526,7 +2582,30 @@ class GoalDrivenAgent:
         if not self._intervention_callback:
             return None
         try:
-            resp = self._intervention_callback(payload)
+            enriched = dict(payload or {})
+            attachments = enriched.get("attachments")
+            has_image = False
+            if isinstance(attachments, list):
+                for item in attachments:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("kind") or "").strip().lower() == "image_base64":
+                        has_image = True
+                        break
+            if not has_image:
+                shot = self._capture_screenshot()
+                if isinstance(shot, str) and shot.strip():
+                    enriched["attachments"] = [
+                        *([item for item in attachments if isinstance(attachments, list)] if isinstance(attachments, list) else []),
+                        {
+                            "kind": "image_base64",
+                            "mime": "image/png",
+                            "data": shot,
+                            "caption": "현재 화면",
+                            "label": "개입 요청 시점 화면",
+                        },
+                    ]
+            resp = self._intervention_callback(enriched)
             return resp if isinstance(resp, dict) else None
         except Exception as exc:
             self._log(f"사용자 개입 콜백 오류: {exc}")
@@ -2711,7 +2790,7 @@ class GoalDrivenAgent:
         return True
 
     def _request_login_intervention(self, goal: TestGoal) -> bool:
-        self._log("🙋 사용자 개입 필요: 로그인/인증 화면이 감지되었습니다.")
+        self._log("🙋 사용자 개입 필요: 로그인 또는 회원가입 화면이 감지되었습니다.")
         self._handoff_state = {
             "kind": "auth",
             "phase": self._runtime_phase,
@@ -2723,9 +2802,9 @@ class GoalDrivenAgent:
             "goal_name": goal.name,
             "goal_description": goal.description,
             "question": (
-                "로그인/인증 정보가 필요합니다. "
-                "진행 여부와 계정 정보(username/email/password) 또는 수동 로그인 완료 여부를 알려주세요. "
-                "회원가입으로 진행하려면 auth_mode=signup을 함께 전달하세요."
+                "로그인 또는 회원가입이 필요한 화면이 열렸습니다. "
+                "계정 정보를 전달하거나, 브라우저에서 직접 로그인한 뒤 완료 여부를 알려주세요. "
+                "회원가입으로 진행하려면 auth_mode=signup을 함께 보내면 됩니다."
             ),
             "fields": [
                 "proceed",
@@ -2749,8 +2828,8 @@ class GoalDrivenAgent:
                 self._handoff_state["provided"] = False
                 self._handoff_state["mode"] = "awaiting_user_input"
                 self._log(
-                    "⏸️ 로그인/인증 개입이 필요하지만 비대화 실행이라 입력을 받을 수 없습니다. "
-                    "실행을 중단하고 사용자 응답(회원가입 포함)을 기다립니다."
+                    "⏸️ 로그인 또는 회원가입 개입이 필요하지만 현재 실행 환경에서는 바로 입력을 받을 수 없습니다. "
+                    "실행을 멈추고 사용자 응답을 기다립니다."
                 )
                 return False
         if callback_resp is not None:
@@ -3651,11 +3730,13 @@ class GoalDrivenAgent:
             heuristic_login_gate = self._is_login_gate(dom_elements)
             modal_open_hint = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
             compact_auth_page = self._is_compact_auth_page(dom_elements)
+            prominent_auth_form = self._has_prominent_auth_form(dom_elements)
             login_gate_visible = bool(
-                heuristic_login_gate and (modal_open_hint or compact_auth_page)
+                (heuristic_login_gate or prominent_auth_form)
+                and (modal_open_hint or compact_auth_page or prominent_auth_form)
             )
-            if heuristic_login_gate and not login_gate_visible:
-                self._log("ℹ️ 로그인 힌트는 감지됐지만 modal_open/compact_auth 조건이 없어 AUTH 분기를 보류합니다.")
+            if (heuristic_login_gate or prominent_auth_form) and not login_gate_visible:
+                self._log("ℹ️ 로그인 힌트는 감지됐지만 modal_open/compact_auth/auth_form 조건이 없어 AUTH 분기를 보류합니다.")
             login_intervention = handle_login_intervention(
                 agent=self,
                 goal=goal,
@@ -3668,6 +3749,9 @@ class GoalDrivenAgent:
                 login_intervention.get("login_intervention_asked", login_intervention_asked)
             )
             if bool(login_intervention.get("aborted")):
+                self._record_reason_code(
+                    str(login_intervention.get("reason_code") or "user_intervention_missing")
+                )
                 return self._build_failure_result(
                     goal=goal,
                     steps=steps,

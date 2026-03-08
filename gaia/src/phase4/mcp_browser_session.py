@@ -48,6 +48,70 @@ class BrowserSession:
         self.file_chooser_files: List[str] = []
         self.env_overrides: Dict[str, Any] = {}
 
+    def _browser_alive(self) -> bool:
+        if self.browser is None:
+            return False
+        try:
+            return bool(self.browser.is_connected())
+        except Exception:
+            return False
+
+    def _page_alive(self) -> bool:
+        if self.page is None:
+            return False
+        try:
+            return not bool(self.page.is_closed())
+        except Exception:
+            return False
+
+    async def _apply_page_stealth(self, page: Page) -> None:
+        await page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                });
+
+                window.chrome = {
+                    runtime: {},
+                };
+
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5],
+                });
+
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['ko-KR', 'ko', 'en-US', 'en'],
+                });
+            """)
+
+    async def _recreate_page(self) -> Page:
+        if self.browser is None:
+            raise HTTPException(status_code=503, detail="Browser not initialized")
+        if self.cdp_session is not None:
+            try:
+                await self.cdp_session.detach()
+            except Exception:
+                pass
+            self.cdp_session = None
+        self.screencast_active = False
+        self.dialog_listener_armed = False
+        self.file_chooser_listener_armed = False
+        self.page = await self.browser.new_page()
+        await self._apply_page_stealth(self.page)
+        await self.start_screencast()
+        if self.current_url:
+            try:
+                await self.page.goto(self.current_url, timeout=30000)
+            except Exception:
+                pass
+        return self.page
+
     def _log_info(self, msg: str, *args: Any) -> None:
         if self._logger:
             self._logger.info(msg, *args)
@@ -66,7 +130,7 @@ class BrowserSession:
 
     async def get_or_create_page(self) -> Page:
         """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다."""
-        if not self.browser:
+        if not self._browser_alive():
             playwright_instance = self._playwright_getter()
             if not playwright_instance:
                 raise HTTPException(status_code=503, detail="Playwright not initialized")
@@ -96,31 +160,10 @@ class BrowserSession:
                 raise
 
             self.page = await self.browser.new_page()
-            await self.page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => false,
-                });
-
-                window.chrome = {
-                    runtime: {},
-                };
-
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({ state: Notification.permission }) :
-                        originalQuery(parameters)
-                );
-
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['ko-KR', 'ko', 'en-US', 'en'],
-                });
-            """)
+            await self._apply_page_stealth(self.page)
             await self.start_screencast()
+        elif not self._page_alive():
+            await self._recreate_page()
 
         if self.page:
             self.observability.attach_page(self.page)
@@ -244,16 +287,38 @@ class BrowserSession:
 
     async def close(self):
         if self.screencast_active:
-            await self.stop_screencast()
+            try:
+                await self.stop_screencast()
+            except Exception as exc:
+                self._log_warning("[BrowserSession.close] stop_screencast failed: %s", exc)
+            finally:
+                self.screencast_active = False
 
         if self.cdp_session:
-            await self.cdp_session.detach()
-            self.cdp_session = None
+            try:
+                await self.cdp_session.detach()
+            except Exception as exc:
+                self._log_warning("[BrowserSession.close] cdp detach failed: %s", exc)
+            finally:
+                self.cdp_session = None
+
+        if self.page:
+            try:
+                if not self.page.is_closed():
+                    await self.page.close()
+            except Exception as exc:
+                self._log_warning("[BrowserSession.close] page close failed: %s", exc)
+            finally:
+                self.page = None
 
         if self.browser:
-            await self.browser.close()
-            self.browser = None
-            self.page = None
+            try:
+                if self.browser.is_connected():
+                    await self.browser.close()
+            except Exception as exc:
+                self._log_warning("[BrowserSession.close] browser close failed: %s", exc)
+            finally:
+                self.browser = None
 
 
 def ensure_session(

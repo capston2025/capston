@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running as _ensure_shared_mcp_host_running
 from gaia.src.phase4.memory.models import MemorySummaryRecord
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.session import WORKSPACE_DEFAULT, allocate_session_id, load_session_state
@@ -36,6 +37,7 @@ class HubContext:
     session_key: str = WORKSPACE_DEFAULT
     session_id: str = WORKSPACE_DEFAULT
     session_new: bool = False
+    sticky_session: bool = False
     last_snapshot_id: str = ""
     steering_policy: Dict[str, Any] = field(default_factory=dict)
     pending_user_input: Dict[str, Any] = field(default_factory=dict)
@@ -221,12 +223,6 @@ def _is_mcp_ready(host: str, port: int, base_url: str, timeout: float = 0.8) -> 
 def _stop_spawned_mcp_host() -> None:
     global _MCP_HOST_PROCESS
     global _MCP_HOST_LOG_FILE
-    if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
-        _MCP_HOST_PROCESS.terminate()
-        try:
-            _MCP_HOST_PROCESS.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            _MCP_HOST_PROCESS.kill()
     _MCP_HOST_PROCESS = None
     if _MCP_HOST_LOG_FILE is not None:
         try:
@@ -237,50 +233,8 @@ def _stop_spawned_mcp_host() -> None:
 
 
 def _ensure_mcp_host_running() -> bool:
-    global _MCP_HOST_PROCESS
-    global _MCP_HOST_LOG_FILE
-    global _MCP_HOST_CLEANUP_REGISTERED
-
     host, port, base_url = _resolve_mcp_target()
-    if _is_mcp_ready(host, port, base_url):
-        return True
-
-    # 포트가 열려 있는데 health가 다른 형태면 타 서비스가 쓰고 있는 것으로 보고 중단한다.
-    if _is_tcp_open(host, port) and not _is_mcp_ready(host, port, base_url):
-        return False
-
-    if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if _is_mcp_ready(host, port, base_url):
-                return True
-            time.sleep(0.15)
-        return False
-
-    if not _MCP_HOST_CLEANUP_REGISTERED:
-        atexit.register(_stop_spawned_mcp_host)
-        _MCP_HOST_CLEANUP_REGISTERED = True
-
-    log_dir = Path.home() / ".gaia" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "mcp_host.chat_hub.log"
-    _MCP_HOST_LOG_FILE = log_path.open("a", encoding="utf-8")
-    _MCP_HOST_PROCESS = subprocess.Popen(
-        [sys.executable, "-m", "gaia.src.phase4.mcp_host"],
-        stdout=_MCP_HOST_LOG_FILE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    deadline = time.time() + 10.0
-    while time.time() < deadline:
-        if _is_mcp_ready(host, port, base_url):
-            return True
-        if _MCP_HOST_PROCESS.poll() is not None:
-            break
-        time.sleep(0.2)
-
-    _stop_spawned_mcp_host()
-    return False
+    return _ensure_shared_mcp_host_running(base_url, startup_timeout=10.0)
 
 
 def _mcp_execute(action: str, params: dict) -> tuple[int, dict]:
@@ -934,10 +888,10 @@ def _build_hub_intervention_callback(context: HubContext, sink: HubSink):
         if not question:
             question = "추가 입력이 필요합니다."
         sink.info(
-            "추가 입력 요청이 대기 중입니다.\n"
-            f"- {question}\n"
-            "응답: /handoff key=value ...\n"
-            "예시: /handoff username=user123 password=pass123 proceed=true"
+            "추가 입력이 필요해 실행을 잠시 멈췄습니다.\n"
+            f"{question}\n"
+            "계속하려면 /handoff로 필요한 값을 보내주세요.\n"
+            "예시: /handoff proceed=true username=<id> password=<pw>"
         )
         return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
 
@@ -959,6 +913,7 @@ def _handle_session_command(context: HubContext, raw: str) -> CommandResult:
     if len(parts) >= 2 and parts[1] == "new":
         context.session_id = allocate_session_id(context.session_key or context.workspace or WORKSPACE_DEFAULT)
         context.session_new = True
+        context.sticky_session = True
         context.last_snapshot_id = ""
         context.steering_policy = {}
         context.pending_user_input = {}
@@ -975,6 +930,7 @@ def _handle_session_command(context: HubContext, raw: str) -> CommandResult:
         context.workspace = key
         context.session_id = loaded.mcp_session_id if loaded and loaded.mcp_session_id else key
         context.session_new = False
+        context.sticky_session = True
         context.last_snapshot_id = str(loaded.last_snapshot_id or "") if loaded else ""
         context.steering_policy = {}
         context.pending_user_input = dict(loaded.pending_user_input) if loaded else {}
@@ -1034,19 +990,19 @@ def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
             return {"action": "continue", "proceed": True}
         if kind == "auth":
             sink.info(
-                "추가 입력 필요: 로그인/인증 정보가 필요합니다.\n"
-                "다시 실행 예시:\n"
-                "/test <목표문장> username=<id_or_email> password=<pw>\n"
-                "또는 브라우저에서 수동 로그인 후 같은 목표로 다시 실행하세요."
+                "로그인 또는 회원가입이 필요한 화면이 열려 실행을 멈췄습니다.\n"
+                "계정 정보를 함께 다시 실행하거나, 브라우저에서 직접 로그인한 뒤 다시 시도하세요.\n"
+                "예시: /test <목표문장> username=<id_or_email> password=<pw>"
             )
         elif kind == "clarification":
             sink.info(
-                "추가 입력 필요: 목표가 모호하거나 중요한 정보가 부족합니다.\n"
-                "다시 실행 예시:\n"
+                "목표가 모호하거나 중요한 정보가 부족해 실행을 멈췄습니다.\n"
+                "더 구체적인 목표와 필요한 입력값을 함께 전달해 주세요.\n"
+                "예시:\n"
                 "/test <구체 목표> username=<id> password=<pw> email=<email>"
             )
         else:
-            sink.info("추가 입력 필요: 실행에 필요한 정보가 부족합니다.")
+            sink.info("실행에 필요한 정보가 부족해 잠시 멈췄습니다. 필요한 값을 함께 다시 실행해 주세요.")
         return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
 
     return _callback
@@ -1058,7 +1014,7 @@ def _build_ai_intervention_callback(context: HubContext, sink: HubSink):
             "kind": "auth",
             "reason": str(reason or "").strip(),
             "url": str(current_url or "").strip(),
-            "question": "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요.",
+            "question": "로그인 또는 회원가입이 필요한 화면이 열렸습니다. 계정 정보를 보내거나, 브라우저에서 직접 로그인한 뒤 완료를 알려주세요.",
             "fields": [
                 "proceed",
                 "auth_mode",
@@ -1077,11 +1033,14 @@ def _build_ai_intervention_callback(context: HubContext, sink: HubSink):
             _notify_session_update(context)
             return response
         sink.info(
-            "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요.\n"
-            "응답 예시:\n"
+            "로그인 또는 회원가입이 필요한 화면이 열렸습니다.\n"
+            "아래 방법 중 하나로 계속 진행할 수 있습니다.\n"
+            "1. 계정 정보 전달\n"
             "/handoff proceed=true username=<id_or_email> password=<pw>\n"
-            "또는 /handoff proceed=true auth_mode=signup\n"
-            "또는 수동 로그인 후 /handoff proceed=true manual_done=true"
+            "2. 회원가입으로 진행\n"
+            "/handoff proceed=true auth_mode=signup\n"
+            "3. 브라우저에서 직접 로그인 후 완료 알림\n"
+            "/handoff proceed=true manual_done=true"
         )
         return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
 
@@ -1126,6 +1085,12 @@ def _run_test(
         }
 
     from gaia.terminal import run_chat_terminal_once
+
+    if not bool(context.sticky_session):
+        context.session_id = allocate_session_id(context.workspace or WORKSPACE_DEFAULT)
+        context.session_new = True
+        context.last_snapshot_id = ""
+        _notify_session_update(context)
 
     cb = intervention_callback
     if cb is None:

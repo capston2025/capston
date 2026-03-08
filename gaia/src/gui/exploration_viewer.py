@@ -880,13 +880,22 @@ class ExplorationDetailView(QWidget):
         """데이터 표시"""
         # 요약 업데이트
         steps = data.get("steps", [])
-        self._steps = steps
+        timeline = data.get("step_timeline", [])
+        generic_history = not bool(steps)
+        rows = steps if steps else timeline
+        self._steps = rows
         self._screenshots_dir = data.get("screenshots_dir")
-        total = len(steps)
-        success = sum(1 for s in steps if s.get("success", False))
-        fail = total - success
-        issues = len(data.get("issues_found", []))
+        total = len(steps) if steps else int(data.get("total_steps", 0) or len(timeline))
+        success = (
+            sum(1 for s in steps if s.get("success", False))
+            if steps
+            else int(data.get("success_count", 0) or sum(1 for s in timeline if isinstance(s, dict) and s.get("success")))
+        )
+        fail = int(data.get("failed_count", 0) or max(0, total - success))
+        issues = len(data.get("issues_found", [])) or int(data.get("issues_count", 0) or 0)
         coverage = data.get("coverage", {}).get("coverage_percentage", 0)
+        if not coverage and isinstance(data.get("validation_summary"), dict):
+            coverage = float(data["validation_summary"].get("success_rate", 0) or 0)
         duration = data.get("duration_seconds", 0)
 
         self._summary_data = {
@@ -905,7 +914,7 @@ class ExplorationDetailView(QWidget):
         self._summary_labels["duration"].setText(f"{duration:.1f}s")
 
         # 테이블 업데이트 - 기능 중심
-        self._table.setRowCount(total)
+        self._table.setRowCount(len(rows))
         self._table.setColumnWidth(0, 170)
         self._table.setColumnWidth(1, 150)
         self._table.setColumnWidth(2, 190)
@@ -914,35 +923,45 @@ class ExplorationDetailView(QWidget):
         self._table.setColumnWidth(5, 90)
         self._table.setColumnWidth(6, 110)
 
-        for row, step in enumerate(steps):
-            # 기능 설명 (새 필드)
-            feature_desc = step.get("feature_description", "")
-            test_scenario = step.get("test_scenario", "")
-            business_impact = step.get("business_impact", "")
-
-            # 액션 상세
-            decision = step.get("decision", {})
-            action = decision.get("selected_action", {})
-
-            if action:
-                action_type = action.get("action_type", "")
-                action_desc = action.get("description", "N/A")
-                action_detail = f"{action_type}: {action_desc[:30]}"
+        for row, step in enumerate(rows):
+            if generic_history:
+                feature_desc = (
+                    str(step.get("goal") or "").strip()
+                    or str(data.get("current_goal") or "").strip()
+                    or ("완전 자율 탐색" if data.get("mode") == "exploratory" else "빠른 목표 실행")
+                )
+                test_scenario = str(step.get("reasoning") or "").strip() or "-"
+                business_impact = "-"
+                action_detail = str(step.get("action") or "-").strip() or "-"
+                result = "PASS" if step.get("success") else "FAIL"
+                error_msg = str(step.get("error") or "").strip()
+                detail = "성공" if step.get("success") else (error_msg[:20] if error_msg else str(data.get("reason") or "실패")[:20])
             else:
-                action_detail = "탐색 종료"
-                if not feature_desc:
-                    feature_desc = "탐색 완료"
+                feature_desc = step.get("feature_description", "")
+                test_scenario = step.get("test_scenario", "")
+                business_impact = step.get("business_impact", "")
 
-            # 결과
-            result = "PASS" if step.get("success") else "FAIL"
-            error_msg = step.get("error_message", "")
-            detail = (
-                "성공"
-                if step.get("success")
-                else error_msg[:20]
-                if error_msg
-                else "실패"
-            )
+                decision = step.get("decision", {})
+                action = decision.get("selected_action", {})
+
+                if action:
+                    action_type = action.get("action_type", "")
+                    action_desc = action.get("description", "N/A")
+                    action_detail = f"{action_type}: {action_desc[:30]}"
+                else:
+                    action_detail = "탐색 종료"
+                    if not feature_desc:
+                        feature_desc = "탐색 완료"
+
+                result = "PASS" if step.get("success") else "FAIL"
+                error_msg = step.get("error_message", "")
+                detail = (
+                    "성공"
+                    if step.get("success")
+                    else error_msg[:20]
+                    if error_msg
+                    else "실패"
+                )
 
             # 테이블에 데이터 설정
             self._table.setItem(row, 0, QTableWidgetItem(feature_desc or action_detail))
@@ -977,7 +996,7 @@ class ExplorationDetailView(QWidget):
                     item.setToolTip(item.text())
             self._table.setRowHeight(row, 72)
 
-        if total > 0:
+        if len(rows) > 0:
             self._table.setCurrentCell(0, 0)
             self._preview_step(0, 0, -1, -1)
 
@@ -997,7 +1016,10 @@ class ExplorationDetailView(QWidget):
     def _preview_step(self, row: int, column: int, _prev_row: int, _prev_col: int):
         if not self._steps or row < 0 or row >= len(self._steps):
             return
-        self._step_replay.load_step(self._steps[row], self._screenshots_dir)
+        if self._screenshots_dir:
+            self._step_replay.load_step(self._steps[row], self._screenshots_dir)
+        else:
+            self._step_replay.load_step({}, None)
 
     def _emit_replay(self, row: int):
         if not self._steps or row < 0 or row >= len(self._steps):
@@ -1172,7 +1194,7 @@ class ExplorationViewer(QWidget):
         list_layout = QVBoxLayout(list_container)
         list_layout.setContentsMargins(0, 0, 0, 0)
 
-        list_label = QLabel("최근 테스트 결과", list_container)
+        list_label = QLabel("최근 실행 결과", list_container)
         list_label.setStyleSheet("font-size: 13px; font-weight: 600; color: #4b5563;")
         list_layout.addWidget(list_label)
 
@@ -1220,16 +1242,8 @@ class ExplorationViewer(QWidget):
             self._results_dir.mkdir(parents=True, exist_ok=True)
             return
 
-        files = sorted(self._results_dir.glob("exploration_*.json"), reverse=True)
-
-        # 디렉토리 내 JSON 파일도 찾기
-        for subdir in self._results_dir.iterdir():
-            if subdir.is_dir():
-                for json_file in subdir.glob("*.json"):
-                    if json_file.name.startswith("exploration_"):
-                        continue
-                    files.append(json_file)
-
+        files = list(self._results_dir.glob("exploration_*.json"))
+        files.extend(self._results_dir.glob("execution_*.json"))
         files = sorted(set(files), key=lambda x: x.stat().st_mtime, reverse=True)
 
         for file_path in files[:20]:
@@ -1238,17 +1252,27 @@ class ExplorationViewer(QWidget):
                     data = json.load(f)
 
                 steps = data.get("steps", [])
+                timeline = data.get("step_timeline", [])
                 gif_path = data.get("recording_gif_path")
+                total_steps = len(steps) if steps else int(data.get("total_steps", 0) or len(timeline))
+                success_count = (
+                    sum(1 for s in steps if s.get("success", False))
+                    if steps
+                    else int(data.get("success_count", 0) or sum(1 for s in timeline if isinstance(s, dict) and s.get("success")))
+                )
+                issues_count = len(data.get("issues_found", [])) or int(data.get("issues_count", 0) or 0)
 
                 summary = {
                     "timestamp": datetime.fromtimestamp(
                         file_path.stat().st_mtime
                     ).strftime("%Y-%m-%d %H:%M"),
                     "start_url": data.get("start_url", "Unknown"),
-                    "total_steps": len(steps),
-                    "success_count": sum(1 for s in steps if s.get("success", False)),
-                    "issues_count": len(data.get("issues_found", [])),
+                    "total_steps": total_steps,
+                    "success_count": success_count,
+                    "issues_count": issues_count,
                     "has_gif": gif_path and os.path.exists(gif_path),
+                    "mode": str(data.get("mode") or "exploration"),
+                    "status": str(data.get("status") or ""),
                 }
 
                 card = ExplorationResultCard(str(file_path), summary, self._list_widget)

@@ -778,16 +778,21 @@ class _TelegramBridge:
             fields = payload.get("fields")
             if not isinstance(fields, list):
                 fields = []
+            attachments = payload.get("attachments")
+            attachment_items: list[dict] = []
+            if isinstance(attachments, list):
+                attachment_items = [item for item in attachments if isinstance(item, dict)]
 
             helper_lines = []
             if kind == "auth":
-                helper_lines.append("응답 형식: username=<id_or_email> password=<pw> [email=<email>]")
-                helper_lines.append("또는: manual_done")
+                helper_lines.append("1) 계정 정보 전달: username=<id_or_email> password=<pw> [email=<email>]")
+                helper_lines.append("2) 회원가입 진행: auth_mode=signup")
+                helper_lines.append("3) 브라우저에서 직접 로그인 후 완료 알림: manual_done")
             elif kind == "clarification":
-                helper_lines.append("응답 형식: <구체 목표 문장>")
-                helper_lines.append("또는: goal=\"...\" username=<id> password=<pw> [email=<email>]")
+                helper_lines.append("1) 구체 목표 문장만 보내기")
+                helper_lines.append("2) goal=\"...\" username=<id> password=<pw> [email=<email>]")
             helper_lines.append("취소: /cancel")
-            text = "\n".join(["추가 입력 요청", question, *helper_lines]).strip()
+            text = "\n".join(["추가 입력이 필요해 실행을 잠시 멈췄습니다.", question, *helper_lines]).strip()
 
             pending = _PendingIntervention(
                 kind=kind,
@@ -804,6 +809,17 @@ class _TelegramBridge:
                     loop,
                 )
                 fut.result(timeout=15)
+                if attachment_items:
+                    fut_attach = asyncio.run_coroutine_threadsafe(
+                        self._send_attachments(
+                            application.bot,
+                            chat_id,
+                            attachment_items[:1],
+                            reply_to_message_id,
+                        ),
+                        loop,
+                    )
+                    fut_attach.result(timeout=15)
             except Exception:
                 with self._pending_lock:
                     self._pending_interventions.pop(chat_id, None)

@@ -16,6 +16,44 @@ _GENERIC_GOAL_STOPWORDS = {
 }
 
 
+def _classify_metric_unit(value: str) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return "generic"
+    if any(hint in token for hint in ("학점", "credit", "credits")):
+        return "credit"
+    if any(hint in token for hint in ("과목", "개", "건", "명", "item", "items", "count", "number", "수량", "개수")):
+        return "count"
+    return "generic"
+
+
+def _infer_metric_label_from_text(text: str) -> str:
+    blob = str(text or "").strip().lower()
+    if any(hint in blob for hint in ("학점", "credit", "credits")):
+        return "학점"
+    if any(hint in blob for hint in ("과목", "개", "건", "item", "items", "count", "number", "개수", "수량")):
+        return "count"
+    return "count"
+
+
+def _extract_quantity_metric_terms(text: str) -> List[str]:
+    results: List[str] = []
+    seen: set[str] = set()
+    for pattern in (
+        r"(?<!\d)(\d{1,6})\s*([가-힣a-zA-Z]{1,16})",
+        r"([가-힣a-zA-Z]{1,16})\s*(\d{1,6})(?!\d)",
+    ):
+        for match in re.finditer(pattern, str(text or "")):
+            term = str(match.group(2 if pattern.startswith("(?<!") else 1) or "").strip().lower()
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            results.append(term)
+            if len(results) >= 4:
+                return results
+    return results
+
+
 def _derive_context_terms(text: str, normalize_text: NormalizeTextFn) -> List[str]:
     tokens = re.findall(r"[a-z0-9가-힣]+", normalize_text(text))
     results: List[str] = []
@@ -112,12 +150,16 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         term_freq[term] = int(term_freq.get(term, 0)) + 1
     sorted_terms = sorted(term_freq.items(), key=lambda kv: kv[1], reverse=True)
     top_terms = [t for t, _ in sorted_terms[:4]]
-    metric_label = top_terms[0] if top_terms else "count"
+    if not top_terms:
+        top_terms = _extract_quantity_metric_terms(text)
+    metric_label = top_terms[0] if top_terms else _infer_metric_label_from_text(text)
+    metric_unit = _classify_metric_unit(metric_label)
     require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
 
     payload = {
         "metric": "numeric",
         "metric_label": metric_label,
+        "metric_unit": metric_unit,
         "metric_terms": top_terms,
         "collect_min": collect_min,
         "apply_target": apply_target,
@@ -265,6 +307,14 @@ def estimate_summary_counter_from_dom(
         for x in (goal_constraints.get("context_terms") or [])
         if str(x).strip()
     ]
+    metric_terms = [
+        normalize_text(str(x))
+        for x in (
+            list(goal_constraints.get("metric_terms") or [])
+            + [goal_constraints.get("metric_label") or ""]
+        )
+        if str(x).strip()
+    ]
     aggregate_hints = (
         "총", "합계", "현재", "누적", "selected", "selection", "total",
         "count", "item", "items", "credit", "credits", "학점", "개수", "수량",
@@ -272,6 +322,7 @@ def estimate_summary_counter_from_dom(
     zero_hints = (
         "비어", "empty", "없어요", "없음", "0개", "0학점",
     )
+    target_unit = _classify_metric_unit(goal_constraints.get("metric_unit") or goal_constraints.get("metric_label") or "")
     best_score = -1.0
     best_value: Optional[int] = None
     zero_state = False
@@ -290,31 +341,47 @@ def estimate_summary_counter_from_dom(
                 continue
             if any(hint in normalized for hint in zero_hints):
                 zero_state = True
-
-            numbers: List[int] = []
-            for pattern in (
-                r"(?:총|합계|현재|누적|selected|selection|count|counts|item|items|total|credit|credits|학점|개수|수량)\s*[:=]?\s*(\d{1,6})",
-                r"(\d{1,6})\s*(?:개|건|명|점|학점|item|items|credit|credits)",
-            ):
-                for m in re.finditer(pattern, normalized):
-                    try:
-                        numbers.append(int(m.group(1)))
-                    except Exception:
-                        continue
-            if not numbers:
+            if metric_terms and not any(term in normalized for term in metric_terms):
                 continue
 
-            score = 0.0
-            if any(term in normalized for term in context_terms):
-                score += 3.0
-            if any(hint in normalized for hint in aggregate_hints):
-                score += 2.0
-            if len(numbers) == 1:
-                score += 0.5
-            candidate = max(numbers)
-            if score > best_score or (score == best_score and best_value is not None and candidate > best_value):
-                best_score = score
-                best_value = candidate
+            candidates: List[Tuple[int, str]] = []
+            for m in re.finditer(
+                r"(?:총|합계|현재|누적|selected|selection|count|counts|item|items|total|credit|credits|학점|개수|수량)\s*[:=]?\s*(\d{1,6})\s*(개|건|명|과목|점|학점|item|items|count|credit|credits)?",
+                normalized,
+            ):
+                try:
+                    candidates.append((int(m.group(1)), _classify_metric_unit(m.group(2) or "")))
+                except Exception:
+                    continue
+            for m in re.finditer(
+                r"(\d{1,6})\s*(개|건|명|과목|점|학점|item|items|count|credit|credits)",
+                normalized,
+            ):
+                try:
+                    candidates.append((int(m.group(1)), _classify_metric_unit(m.group(2) or "")))
+                except Exception:
+                    continue
+            if not candidates:
+                continue
+
+            for candidate, candidate_unit in candidates:
+                score = 0.0
+                if any(term in normalized for term in context_terms):
+                    score += 3.0
+                metric_match_count = sum(1 for term in metric_terms if term and term in normalized)
+                if metric_match_count:
+                    score += 4.0 + min(2.0, float(metric_match_count))
+                if any(hint in normalized for hint in aggregate_hints):
+                    score += 2.0
+                if len(candidates) == 1:
+                    score += 0.5
+                if target_unit == "count" and candidate_unit == "count":
+                    score += 2.0
+                elif target_unit == "credit" and candidate_unit == "credit":
+                    score += 2.0
+                if score > best_score or (score == best_score and (best_value is None or candidate > best_value)):
+                    best_score = score
+                    best_value = candidate
     return best_value, zero_state
 
 
@@ -328,6 +395,12 @@ def evaluate_mutation_contract(
     direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
     if direction not in {"increase", "decrease", "clear"}:
         return None
+    metric_label = str(goal_constraints.get("metric_label") or "count").strip() or "count"
+    collect_min = goal_constraints.get("collect_min")
+    try:
+        collect_min_value = int(collect_min) if collect_min is not None else None
+    except Exception:
+        collect_min_value = None
 
     before_value, before_zero = estimate_summary_counter_from_dom(
         before_dom, goal_constraints, normalize_text
@@ -347,7 +420,14 @@ def evaluate_mutation_contract(
         return None
 
     if direction == "increase" and after_value > before_value:
-        return f"요약 수치가 {before_value} -> {after_value}로 증가해 목표를 완료로 판정했습니다."
+        if collect_min_value is not None:
+            if after_value >= collect_min_value:
+                return (
+                    f"요약 수치가 {before_value} -> {after_value}{metric_label}로 증가했고 "
+                    f"최소 기준 {collect_min_value}{metric_label}에 도달해 목표를 완료로 판정했습니다."
+                )
+            return None
+        return f"요약 수치가 {before_value} -> {after_value}{metric_label}로 증가해 목표를 완료로 판정했습니다."
     if direction == "decrease" and after_value < before_value:
-        return f"요약 수치가 {before_value} -> {after_value}로 감소해 목표를 완료로 판정했습니다."
+        return f"요약 수치가 {before_value} -> {after_value}{metric_label}로 감소해 목표를 완료로 판정했습니다."
     return None
