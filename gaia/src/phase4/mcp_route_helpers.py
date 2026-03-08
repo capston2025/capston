@@ -11,8 +11,10 @@ from fastapi.websockets import WebSocketDisconnect
 async def close_session_impl(active_sessions: Dict[str, Any], session_id: str) -> Dict[str, Any]:
     if session_id in active_sessions:
         session = active_sessions[session_id]
-        await session.close()
-        del active_sessions[session_id]
+        try:
+            await session.close()
+        finally:
+            active_sessions.pop(session_id, None)
         return {"success": True, "message": f"Session '{session_id}' closed"}
     return {"success": False, "message": f"Session '{session_id}' not found"}
 

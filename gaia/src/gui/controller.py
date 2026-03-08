@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import threading
@@ -1348,8 +1349,54 @@ class AppController(QObject):
                 or self._blocked_reason
                 or ""
             )
+            self._persist_execution_history(normalized_summary)
             self._sync_execution_status()
             self._window.show_result_summary(normalized_summary)
+
+    def _persist_execution_history(self, summary: dict[str, Any]) -> None:
+        try:
+            repo_root = Path(__file__).resolve().parents[3]
+            results_root = repo_root / "artifacts" / "exploration_results"
+            results_root.mkdir(parents=True, exist_ok=True)
+
+            step_timeline = list(summary.get("step_timeline") or [])
+            total_steps = len(step_timeline)
+            success_count = sum(1 for row in step_timeline if isinstance(row, dict) and bool(row.get("success")))
+            failed_count = max(0, total_steps - success_count)
+            validation_summary = dict(summary.get("validation_summary") or {})
+            issues_count = int(summary.get("issues") or validation_summary.get("failed_checks") or 0)
+            duration_seconds = 0.0
+            raw_duration = summary.get("duration") or summary.get("duration_seconds") or 0
+            try:
+                duration_seconds = float(raw_duration or 0)
+            except Exception:
+                duration_seconds = 0.0
+
+            payload = {
+                "schema_version": "gaia.execution_history.v1",
+                "timestamp": time.strftime("%Y-%m-%d %H:%M"),
+                "start_url": str(getattr(self, "_current_url", "") or self._window._url_input.text() or "Unknown"),
+                "mode": str(summary.get("mode") or "goal"),
+                "status": str(summary.get("status") or "unknown"),
+                "reason": str(summary.get("reason") or ""),
+                "current_goal": str(summary.get("current_goal") or ""),
+                "current_step": str(summary.get("current_step") or ""),
+                "blocked_reason": str(summary.get("blocked_reason") or ""),
+                "total_steps": total_steps,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "issues_count": issues_count,
+                "duration_seconds": duration_seconds,
+                "proof_lines": list(summary.get("proof_lines") or []),
+                "validation_summary": validation_summary,
+                "step_timeline": step_timeline,
+            }
+
+            out_path = results_root / f"execution_{int(time.time())}.json"
+            with open(out_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self._window.append_log(f"⚠️ 실행 이력 저장 실패: {exc}")
 
     # ------------------------------------------------------------------
     @Slot(str)

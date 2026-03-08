@@ -411,6 +411,8 @@ async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
 
                 const loginVisible = /(로그인|log in|sign in)/i.test(clipped);
                 const logoutVisible = /(로그아웃|log out|sign out)/i.test(clipped);
+                const viewportWidth = Number(window.innerWidth || document.documentElement.clientWidth || 0);
+                const viewportHeight = Number(window.innerHeight || document.documentElement.clientHeight || 0);
                 const modalNodes = Array.from(document.querySelectorAll(
                   'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]'
                 ));
@@ -437,6 +439,40 @@ async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
                   const a11yDialog = tag === 'dialog' || role === 'dialog' || role === 'alertdialog' || ariaModal === 'true';
                   return a11yDialog || (hasHint && layered);
                 });
+                const centerAncestors = [];
+                let centerNode = document.elementFromPoint(viewportWidth / 2, viewportHeight / 2);
+                for (let depth = 0; centerNode instanceof Element && depth < 8; depth++) {
+                  centerAncestors.push(centerNode);
+                  centerNode = centerNode.parentElement;
+                }
+                const genericCenterLayers = centerAncestors.filter((el) => {
+                  if (!(el instanceof Element)) return false;
+                  const style = window.getComputedStyle(el);
+                  if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                    return false;
+                  }
+                  if (style.pointerEvents === 'none') return false;
+                  const rect = el.getBoundingClientRect();
+                  if (rect.width < 24 || rect.height < 24) return false;
+                  const zIndex = Number.parseInt(style.zIndex || '0', 10);
+                  const layered = style.position === 'fixed' || style.position === 'sticky' || (style.position === 'absolute' && Number.isFinite(zIndex) && zIndex >= 20);
+                  if (!layered) return false;
+                  const coversCenter =
+                    rect.left <= viewportWidth / 2 &&
+                    rect.right >= viewportWidth / 2 &&
+                    rect.top <= viewportHeight / 2 &&
+                    rect.bottom >= viewportHeight / 2;
+                  if (!coversCenter) return false;
+                  const fullScreenish = rect.width >= viewportWidth * 0.85 && rect.height >= viewportHeight * 0.5;
+                  const largeEnough = rect.width >= Math.max(280, viewportWidth * 0.3) && rect.height >= Math.max(160, viewportHeight * 0.18);
+                  const authHint = /(로그인|회원가입|sign in|log in|login|password|비밀번호)/i.test(String(el.textContent || '').slice(0, 260));
+                  const hasInteractiveChild = Boolean(el.querySelector('input, textarea, select, button, [role="button"]'));
+                  return Number.isFinite(zIndex) && zIndex >= 20 && (fullScreenish || (largeEnough && (authHint || hasInteractiveChild)));
+                });
+                const genericBackdropCount = genericCenterLayers.filter((el) => {
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= viewportWidth * 0.85 && rect.height >= viewportHeight * 0.5;
+                }).length;
                 const backdropCount = Array.from(document.querySelectorAll(
                   '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
                 )).filter((el) => {
@@ -469,10 +505,10 @@ async def _collect_page_evidence(page: Page) -> Dict[str, Any]:
                   interactive_count: Number(interactiveCount || 0),
                   login_visible: Boolean(loginVisible),
                   logout_visible: Boolean(logoutVisible),
-                  modal_count: Number(visibleModalNodes.length || 0),
-                  backdrop_count: Number(backdropCount || 0),
+                  modal_count: Number((visibleModalNodes.length || 0) + (genericCenterLayers.length || 0)),
+                  backdrop_count: Number((backdropCount || 0) + (genericBackdropCount || 0)),
                   dialog_count: Number(dialogCount || 0),
-                  modal_open: Boolean(visibleModalNodes.length > 0 || backdropCount > 0 || dialogCount > 0),
+                  modal_open: Boolean(visibleModalNodes.length > 0 || backdropCount > 0 || dialogCount > 0 || genericCenterLayers.length > 0),
                   scroll_y: scrollY,
                   doc_height: docHeight
                 };
@@ -523,6 +559,8 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
                 .map((t) => t.slice(0, 100));
               const loginVisible = /(로그인|log in|sign in)/i.test(bodyText);
               const logoutVisible = /(로그아웃|log out|sign out)/i.test(bodyText);
+              const viewportWidth = Number(window.innerWidth || document.documentElement.clientWidth || 0);
+              const viewportHeight = Number(window.innerHeight || document.documentElement.clientHeight || 0);
               const modalCount = Array.from(document.querySelectorAll(
                 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], [class*="modal"], [class*="dialog"], [class*="sheet"], [class*="drawer"], [class*="popup"], [class*="overlay"], [class*="backdrop"]'
               )).filter((el) => {
@@ -533,6 +571,40 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
                 }
                 const rect = el.getBoundingClientRect();
                 return rect.width >= 24 && rect.height >= 24;
+              }).length;
+              const centerAncestors = [];
+              let centerNode = document.elementFromPoint(viewportWidth / 2, viewportHeight / 2);
+              for (let depth = 0; centerNode instanceof Element && depth < 8; depth++) {
+                centerAncestors.push(centerNode);
+                centerNode = centerNode.parentElement;
+              }
+              const genericCenterLayers = centerAncestors.filter((el) => {
+                if (!(el instanceof Element)) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') <= 0) {
+                  return false;
+                }
+                if (style.pointerEvents === 'none') return false;
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 24 || rect.height < 24) return false;
+                const zIndex = Number.parseInt(style.zIndex || '0', 10);
+                const layered = style.position === 'fixed' || style.position === 'sticky' || (style.position === 'absolute' && Number.isFinite(zIndex) && zIndex >= 20);
+                if (!layered) return false;
+                const coversCenter =
+                  rect.left <= viewportWidth / 2 &&
+                  rect.right >= viewportWidth / 2 &&
+                  rect.top <= viewportHeight / 2 &&
+                  rect.bottom >= viewportHeight / 2;
+                if (!coversCenter) return false;
+                const fullScreenish = rect.width >= viewportWidth * 0.85 && rect.height >= viewportHeight * 0.5;
+                const largeEnough = rect.width >= Math.max(280, viewportWidth * 0.3) && rect.height >= Math.max(160, viewportHeight * 0.18);
+                const authHint = /(로그인|회원가입|sign in|log in|login|password|비밀번호)/i.test(String(el.textContent || '').slice(0, 260));
+                const hasInteractiveChild = Boolean(el.querySelector('input, textarea, select, button, [role="button"]'));
+                return Number.isFinite(zIndex) && zIndex >= 20 && (fullScreenish || (largeEnough && (authHint || hasInteractiveChild)));
+              });
+              const genericBackdropCount = genericCenterLayers.filter((el) => {
+                const rect = el.getBoundingClientRect();
+                return rect.width >= viewportWidth * 0.85 && rect.height >= viewportHeight * 0.5;
               }).length;
               const backdropCount = Array.from(document.querySelectorAll(
                 '.modal-backdrop, [class*="backdrop"], [class*="overlay"], [data-backdrop], [data-overlay]'
@@ -565,10 +637,10 @@ async def _collect_page_evidence_light(page: Page) -> Dict[str, Any]:
                 interactive_count: Number(interactiveCount || 0),
                 login_visible: Boolean(loginVisible),
                 logout_visible: Boolean(logoutVisible),
-                modal_count: Number(modalCount || 0),
-                backdrop_count: Number(backdropCount || 0),
+                modal_count: Number((modalCount || 0) + (genericCenterLayers.length || 0)),
+                backdrop_count: Number((backdropCount || 0) + (genericBackdropCount || 0)),
                 dialog_count: Number(dialogCount || 0),
-                modal_open: Boolean(modalCount > 0 || backdropCount > 0 || dialogCount > 0),
+                modal_open: Boolean(modalCount > 0 || backdropCount > 0 || dialogCount > 0 || genericCenterLayers.length > 0),
                 scroll_y: scrollY,
                 doc_height: docHeight
               };
@@ -1944,6 +2016,23 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
 
     # 요소를 수집하고 현재 URL을 응답에 추가합니다
     result = await analyze_page_elements(page)
+    should_retry_snapshot = False
+    if isinstance(result, dict):
+        err_text = str(result.get("error") or "").strip().lower()
+        if (
+            "frame has been detached" in err_text
+            or "target page, context or browser has been closed" in err_text
+        ):
+            should_retry_snapshot = True
+    try:
+        if not should_retry_snapshot and bool(page.is_closed()):
+            should_retry_snapshot = True
+    except Exception:
+        if not should_retry_snapshot:
+            should_retry_snapshot = True
+    if should_retry_snapshot:
+        page = await session.get_or_create_page()
+        result = await analyze_page_elements(page)
     elements = result.get("elements", []) if isinstance(result, dict) else []
     if isinstance(elements, list):
         elements = _dedupe_elements_by_dom_ref(elements)

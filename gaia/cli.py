@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Sequence
 
 from gaia import auth as gaia_auth
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running as _ensure_shared_mcp_host_running
 from gaia.src.phase4.session import (
     WORKSPACE_DEFAULT,
     SessionState,
@@ -173,12 +174,6 @@ def _is_mcp_ready(host: str, port: int, base_url: str, timeout: float = 0.8) -> 
 def _stop_spawned_mcp_host() -> None:
     global _MCP_HOST_PROCESS
     global _MCP_HOST_LOG_FILE
-    if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
-        _MCP_HOST_PROCESS.terminate()
-        try:
-            _MCP_HOST_PROCESS.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            _MCP_HOST_PROCESS.kill()
     _MCP_HOST_PROCESS = None
     if _MCP_HOST_LOG_FILE is not None:
         try:
@@ -189,61 +184,16 @@ def _stop_spawned_mcp_host() -> None:
 
 
 def _ensure_mcp_host_running() -> bool:
-    global _MCP_HOST_PROCESS
-    global _MCP_HOST_LOG_FILE
-    global _MCP_HOST_CLEANUP_REGISTERED
-
     host, port, base_url = _resolve_mcp_target()
-    if _is_mcp_ready(host, port, base_url):
-        return True
-
-    if _is_tcp_open(host, port) and not _is_mcp_ready(host, port, base_url):
+    ok = _ensure_shared_mcp_host_running(base_url, startup_timeout=10.0)
+    if not ok:
+        log_path = Path.home() / ".gaia" / "logs" / f"mcp_host.runtime.{port}.log"
         print(
-            "MCP_HOST_URL가 GAIA MCP가 아닌 다른 서비스로 연결되어 있습니다. "
-            f"현재: {base_url}. "
-            "MCP_HOST_URL을 비우거나(기본값 사용) 다른 포트로 설정하세요.",
+            "MCP host 자동 시작에 실패했습니다. "
+            f"로그를 확인하세요: {log_path}",
             file=sys.stderr,
         )
-        return False
-
-    if _MCP_HOST_PROCESS and _MCP_HOST_PROCESS.poll() is None:
-        deadline = time.time() + 5.0
-        while time.time() < deadline:
-            if _is_mcp_ready(host, port, base_url):
-                return True
-            time.sleep(0.15)
-        return False
-
-    if not _MCP_HOST_CLEANUP_REGISTERED:
-        atexit.register(_stop_spawned_mcp_host)
-        _MCP_HOST_CLEANUP_REGISTERED = True
-
-    log_dir = Path.home() / ".gaia" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "mcp_host.log"
-    _MCP_HOST_LOG_FILE = log_path.open("a", encoding="utf-8")
-    _MCP_HOST_PROCESS = subprocess.Popen(
-        [sys.executable, "-m", "gaia.src.phase4.mcp_host"],
-        stdout=_MCP_HOST_LOG_FILE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    deadline = time.time() + 10.0
-    while time.time() < deadline:
-        if _is_mcp_ready(host, port, base_url):
-            print(f"MCP host 자동 시작됨: {host}:{port}")
-            return True
-        if _MCP_HOST_PROCESS.poll() is not None:
-            break
-        time.sleep(0.2)
-
-    print(
-        "MCP host 자동 시작에 실패했습니다. "
-        f"로그를 확인하세요: {log_path}",
-        file=sys.stderr,
-    )
-    _stop_spawned_mcp_host()
-    return False
+    return ok
 
 
 def _save_profile(profile: dict[str, str]) -> None:

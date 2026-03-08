@@ -21,6 +21,33 @@ _THIS_DIR = Path(__file__).resolve().parent
 _WORKSPACE_ROOT = _THIS_DIR.parents[2]
 
 
+def _pid_file_for_port(port: int) -> Path:
+    return Path.home() / ".gaia" / "logs" / f"mcp_host.runtime.{int(port)}.pid"
+
+
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except Exception:
+        return False
+    return True
+
+
+def _read_existing_pid(pid_file: Path) -> Optional[int]:
+    try:
+        raw = pid_file.read_text(encoding="utf-8").strip()
+        pid = int(raw or "0")
+    except Exception:
+        return None
+    if pid > 0 and _pid_running(pid):
+        return pid
+    try:
+        pid_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return None
+
+
 def resolve_mcp_target(raw_base_url: str | None) -> Tuple[str, int, str]:
     raw = (raw_base_url or "http://127.0.0.1:8001").strip()
     if "://" not in raw:
@@ -82,12 +109,6 @@ def wait_for_mcp_ready(
 def _stop_spawned_mcp_host() -> None:
     global _SPAWNED_PROCESS
     global _SPAWNED_LOG_FILE
-    if _SPAWNED_PROCESS and _SPAWNED_PROCESS.poll() is None:
-        _SPAWNED_PROCESS.terminate()
-        try:
-            _SPAWNED_PROCESS.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            _SPAWNED_PROCESS.kill()
     _SPAWNED_PROCESS = None
     if _SPAWNED_LOG_FILE is not None:
         try:
@@ -116,12 +137,13 @@ def ensure_mcp_host_running(
     if _is_tcp_open(host, port) and not is_mcp_ready(base_url):
         return False
 
+    pid_file = _pid_file_for_port(port)
+    existing_pid = _read_existing_pid(pid_file)
+    if existing_pid and wait_for_mcp_ready(base_url, timeout_sec=min(max(2.0, startup_timeout), 10.0)):
+        return True
+
     if _SPAWNED_PROCESS and _SPAWNED_PROCESS.poll() is None:
         return wait_for_mcp_ready(base_url, timeout_sec=min(max(2.0, startup_timeout), 10.0))
-
-    if not _CLEANUP_REGISTERED:
-        atexit.register(_stop_spawned_mcp_host)
-        _CLEANUP_REGISTERED = True
 
     log_dir = Path.home() / ".gaia" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -142,7 +164,13 @@ def ensure_mcp_host_running(
         text=True,
         cwd=workspace_root,
         env=child_env,
+        start_new_session=True,
+        close_fds=True,
     )
+    try:
+        pid_file.write_text(str(int(_SPAWNED_PROCESS.pid)), encoding="utf-8")
+    except Exception:
+        pass
     deadline = time.time() + max(3.0, float(startup_timeout))
     while time.time() < deadline:
         if is_mcp_ready(base_url):
