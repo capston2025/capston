@@ -11,6 +11,7 @@ import json
 import os
 import re
 import requests
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Callable
 from urllib.parse import urlparse
 
@@ -26,6 +27,7 @@ from .constraints import (
     derive_goal_constraints as derive_goal_constraints_impl,
     extract_metric_values_from_text as extract_metric_values_from_text_impl,
     estimate_goal_metric_from_dom as estimate_goal_metric_from_dom_impl,
+    estimate_summary_counter_from_dom as estimate_summary_counter_from_dom_impl,
 )
 from .auth_hints import (
     contains_close_hint as contains_close_hint_impl,
@@ -498,11 +500,37 @@ class GoalDrivenAgent:
         )
 
     def _estimate_goal_metric_from_dom(self, dom_elements: List[DOMElement]) -> Optional[float]:
-        return estimate_goal_metric_from_dom_impl(
+        dom_value = estimate_goal_metric_from_dom_impl(
             dom_elements,
             self._goal_constraints,
             self._normalize_text,
         )
+        evidence = self._last_snapshot_evidence if isinstance(self._last_snapshot_evidence, dict) else {}
+        evidence_fragments: List[str] = []
+        text_digest = str(evidence.get("text_digest") or "").strip()
+        if text_digest:
+            evidence_fragments.append(text_digest)
+        live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
+        for item in live_texts[:8]:
+            text = str(item or "").strip()
+            if text:
+                evidence_fragments.append(text)
+        evidence_value: Optional[int] = None
+        if evidence_fragments:
+            pseudo_elements = [
+                SimpleNamespace(text=fragment, aria_label="", title="", placeholder="")
+                for fragment in evidence_fragments
+            ]
+            evidence_value, _ = estimate_summary_counter_from_dom_impl(
+                pseudo_elements,
+                self._goal_constraints,
+                self._normalize_text,
+            )
+        if dom_value is None:
+            return float(evidence_value) if evidence_value is not None else None
+        if evidence_value is None:
+            return dom_value
+        return float(max(float(dom_value), float(evidence_value)))
 
     def _evaluate_goal_mutation_contract(
         self,
@@ -696,6 +724,8 @@ class GoalDrivenAgent:
         collect_min = self._goal_constraints.get("collect_min")
         metric_label = str(self._goal_constraints.get("metric_label") or "단위")
         require_no_navigation = bool(self._goal_constraints.get("require_no_navigation"))
+        current_view_only = bool(self._goal_constraints.get("current_view_only"))
+        forbid_search_action = bool(self._goal_constraints.get("forbid_search_action"))
         lines: List[str] = []
         if collect_min is not None:
             current = self._goal_metric_value
@@ -716,6 +746,13 @@ class GoalDrivenAgent:
                 "\n10. **페이지 고정 제약(강제)**"
                 "\n   - 목표가 '페이지 이동 없이' 검증이므로 URL이 바뀌는 내비게이션 액션은 금지합니다."
                 "\n   - 링크 이동보다 현재 페이지의 row/panel/modal/open/expand 계열 상호작용을 우선 선택하세요."
+            )
+        if current_view_only or forbid_search_action:
+            lines.append(
+                "\n11. **현재 화면/검색 금지 제약(강제)**"
+                "\n   - 현재 화면에 이미 보이는 카드/행/목록 안에서만 대상을 찾아야 합니다."
+                "\n   - 검색 입력/검색 버튼/검색 제출(Enter)은 금지합니다."
+                "\n   - 타깃 텍스트와 가장 잘 맞는 현재 화면의 카드/행 내부 CTA를 우선 선택하세요."
             )
         steering_rule = self._build_steering_prompt()
         if steering_rule:
@@ -1231,6 +1268,50 @@ class GoalDrivenAgent:
                 goal_achievement_reason=None,
             )
 
+        def _is_search_like_element(element: Optional[DOMElement]) -> bool:
+            if element is None:
+                return False
+            fields = [
+                element.text,
+                element.aria_label,
+                getattr(element, "title", None),
+                element.placeholder,
+                self._element_full_selectors.get(element.id),
+                self._element_selectors.get(element.id),
+            ]
+            blob = " ".join(self._normalize_text(field) for field in fields if field)
+            tag = self._normalize_text(getattr(element, "tag", None))
+            etype = self._normalize_text(getattr(element, "type", None))
+            if any(token in blob for token in ("검색", "search", "query", "찾기")):
+                return True
+            return tag in {"input", "textarea"} and etype == "search"
+
+        if bool(self._goal_constraints.get("forbid_search_action")):
+            search_like = False
+            if decision.action in {ActionType.FILL, ActionType.PRESS, ActionType.CLICK}:
+                search_like = _is_search_like_element(selected_element)
+                if not search_like and decision.action == ActionType.PRESS and str(decision.value or "").strip().lower() == "enter":
+                    search_like = _is_search_like_element(selected_element)
+            if search_like:
+                alternative = self._pick_context_target_click_candidate(dom_elements, excluded_ids={int(decision.element_id) if decision.element_id is not None else -1})
+                if alternative is not None:
+                    alt_id, alt_reason = alternative
+                    return ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=alt_id,
+                        reasoning=f"{alt_reason}. 현재 화면/검색 금지 제약 때문에 검색 상호작용은 차단합니다.",
+                        confidence=max(float(decision.confidence or 0.0) - 0.05, 0.0),
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                return ActionDecision(
+                    action=ActionType.WAIT,
+                    reasoning="현재 화면/검색 금지 제약이 활성화되어 검색 상호작용을 차단했습니다. 현재 보이는 카드에서 타깃을 다시 찾습니다.",
+                    confidence=max(float(decision.confidence or 0.0) - 0.1, 0.0),
+                    is_goal_achieved=False,
+                    goal_achievement_reason=None,
+                )
+
         if bool(self._goal_constraints.get("require_no_navigation")) and decision.action == ActionType.NAVIGATE:
             return ActionDecision(
                 action=ActionType.WAIT,
@@ -1496,6 +1577,40 @@ class GoalDrivenAgent:
             is_goal_achieved=False,
             goal_achievement_reason=None,
         )
+
+    def _pick_context_target_click_candidate(
+        self,
+        dom_elements: List[DOMElement],
+        excluded_ids: Optional[set[int]] = None,
+    ) -> Optional[tuple[int, str]]:
+        blocked = excluded_ids or set()
+        candidates: List[tuple[float, int, str]] = []
+        for el in dom_elements:
+            if el.id in blocked or not bool(el.is_visible and el.is_enabled):
+                continue
+            ref_id = self._element_ref_ids.get(el.id)
+            if not ref_id or self._is_ref_temporarily_blocked(ref_id):
+                continue
+            tag = self._normalize_text(el.tag)
+            role = self._normalize_text(el.role)
+            if tag not in {"button", "a", "input"} and role not in {"button", "link", "menuitem"}:
+                continue
+            fields = self._fields_for_element(el)
+            context_score = self._context_score(el)
+            if context_score <= 0.0:
+                continue
+            score = context_score
+            if self._contains_add_like_hint(el.text) or self._contains_add_like_hint(el.aria_label):
+                score += 2.5
+            if self._contains_wishlist_like_hint(el.text) or self._contains_wishlist_like_hint(el.aria_label):
+                score += 1.2
+            label = str(el.text or el.aria_label or getattr(el, "container_name", None) or f"element:{el.id}")
+            candidates.append((score, el.id, f"현재 화면 타깃 문맥과 가장 잘 맞는 액션을 선택합니다. ({label[:60]})"))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        _, element_id, reason = candidates[0]
+        return element_id, reason
 
     def _constraint_failure_reason(self) -> Optional[str]:
         return build_constraint_failure_reason_impl(
@@ -2010,6 +2125,7 @@ class GoalDrivenAgent:
             if low in {
                 "문제", "페이지", "검색", "search", "open", "detail", "상세", "열어줘",
                 "현재", "이미", "확인", "보이는지", "추가", "조작", "없이", "종료해줘",
+                "검색하지", "말고", "메인", "화면에서만", "현재화면", "메인화면", "누르고", "클릭",
             }:
                 continue
             if any(ch.isdigit() for ch in token) or "+" in token or len(token) >= 4:
@@ -2050,8 +2166,10 @@ class GoalDrivenAgent:
 
         search_hints = ("검색", "search", "query", "find")
         open_hints = ("열어", "open", "상세", "detail")
+        forbid_search_action = bool(self._goal_constraints.get("forbid_search_action"))
+        current_view_only = bool(self._goal_constraints.get("current_view_only"))
 
-        if any(hint in goal_text for hint in search_hints):
+        if any(hint in goal_text for hint in search_hints) and not (forbid_search_action or current_view_only):
             search_candidates: List[tuple[float, DOMElement]] = []
             for el in dom_elements:
                 if not bool(el.is_visible and el.is_enabled):
@@ -2198,6 +2316,511 @@ class GoalDrivenAgent:
 
         return None
 
+    def _goal_quoted_terms(self, goal: TestGoal) -> List[str]:
+        quoted: List[str] = []
+        pattern = r"""\"([^\"]{2,})\"|'([^']{2,})'"""
+        fields = [
+            str(goal.description or ""),
+            *(str(item or "") for item in (goal.success_criteria or [])),
+            str(goal.name or ""),
+        ]
+        for field in fields:
+            for match in re.finditer(pattern, str(field or "")):
+                token = str(match.group(1) or match.group(2) or '').strip()
+                if token:
+                    quoted.append(token)
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for token in quoted:
+            norm = self._normalize_text(token)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(token)
+        return deduped[:6]
+
+    def _goal_target_terms(self, goal: TestGoal) -> List[str]:
+        explicit = [str(x).strip() for x in (self._goal_constraints.get("target_terms") or []) if str(x).strip()]
+        if explicit:
+            return explicit[:6]
+        fallback: List[str] = []
+        for token in self._extract_goal_query_tokens(goal):
+            norm = self._normalize_text(token)
+            if len(norm) < 4 or norm.isdigit():
+                continue
+            fallback.append(token)
+            if len(fallback) >= 4:
+                break
+        return fallback
+
+    def _goal_destination_terms(self, goal: TestGoal) -> List[str]:
+        goal_blob = self._normalize_text(self._goal_text_blob(goal))
+        groups = [
+            ("위시리스트", ("위시리스트", "wishlist", "wish list")),
+            ("장바구니", ("장바구니", "cart", "basket")),
+            ("시간표", ("시간표", "timetable", "schedule")),
+            ("선택목록", ("선택 목록", "선택목록", "selected list", "selected items")),
+            ("내 목록", ("내 목록", "my list", "saved list")),
+        ]
+        matched: List[str] = []
+        for canonical, hints in groups:
+            if any(self._normalize_text(hint) in goal_blob for hint in hints):
+                matched.extend(hints)
+                matched.append(canonical)
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for token in matched:
+            norm = self._normalize_text(token)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(token)
+        return deduped[:8]
+
+    def _evaluate_destination_region_completion(
+        self,
+        *,
+        goal: TestGoal,
+        dom_elements: List[DOMElement],
+    ) -> Optional[str]:
+        target_terms = self._goal_target_terms(goal)
+        destination_terms = self._goal_destination_terms(goal)
+        if not target_terms or not destination_terms:
+            return None
+        norm_targets = [self._normalize_text(term) for term in target_terms if str(term).strip()]
+        norm_destinations = [self._normalize_text(term) for term in destination_terms if str(term).strip()]
+        if not norm_targets or not norm_destinations:
+            return None
+
+        evidence = self._last_snapshot_evidence if isinstance(self._last_snapshot_evidence, dict) else {}
+        evidence_fragments: List[str] = []
+        text_digest = str(evidence.get("text_digest") or "").strip()
+        if text_digest:
+            evidence_fragments.append(text_digest)
+        live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
+        evidence_fragments.extend(str(item or "").strip() for item in live_texts[:12] if str(item or "").strip())
+        evidence_blob = self._normalize_text(" ".join(evidence_fragments))
+
+        def _element_blob(el: DOMElement) -> str:
+            labels = getattr(el, "group_action_labels", None) or []
+            if isinstance(labels, list):
+                label_blob = " ".join(str(x or "") for x in labels if str(x or "").strip())
+            else:
+                label_blob = ""
+            return self._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(el, "text", "") or ""),
+                        str(getattr(el, "aria_label", "") or ""),
+                        str(getattr(el, "title", None) or ""),
+                        str(getattr(el, "container_name", None) or ""),
+                        str(getattr(el, "container_role", None) or ""),
+                        str(getattr(el, "context_text", None) or ""),
+                        label_blob,
+                    ]
+                )
+            )
+
+        region_match = False
+        matched_terms: List[str] = []
+        for el in dom_elements:
+            if not bool(getattr(el, "is_visible", True)):
+                continue
+            blob = _element_blob(el)
+            if not blob:
+                continue
+            has_destination = any(dest and dest in blob for dest in norm_destinations)
+            has_target = any(term and term in blob for term in norm_targets)
+            if has_destination and has_target:
+                region_match = True
+                matched_terms.extend(
+                    term for term, norm in zip(target_terms, norm_targets) if norm and norm in blob
+                )
+                break
+
+        if not region_match and evidence_blob:
+            if any(dest and dest in evidence_blob for dest in norm_destinations) and any(
+                term and term in evidence_blob for term in norm_targets
+            ):
+                region_match = True
+                matched_terms.extend(
+                    term for term, norm in zip(target_terms, norm_targets) if norm and norm in evidence_blob
+                )
+
+        if not region_match:
+            return None
+
+        unique = ", ".join(dict.fromkeys(matched_terms[:3] or target_terms[:3]))
+        destinations = ", ".join(dict.fromkeys(destination_terms[:2]))
+        return f"목표 대상({unique})이 목적지 영역({destinations}) 안에서 확인되어 목표를 완료로 판정했습니다."
+
+    def _evaluate_goal_target_completion(
+        self,
+        *,
+        goal: TestGoal,
+        dom_elements: List[DOMElement],
+    ) -> Optional[str]:
+        direction = str(self._goal_constraints.get("mutation_direction") or "").strip().lower()
+        if direction not in {"increase", "decrease", "clear"}:
+            return None
+        destination_reason = self._evaluate_destination_region_completion(goal=goal, dom_elements=dom_elements)
+        if destination_reason:
+            return destination_reason
+        target_terms = self._goal_target_terms(goal)
+        if not target_terms:
+            return None
+        context_terms = [
+            self._normalize_text(str(x))
+            for x in (self._goal_constraints.get("context_terms") or [])
+            if str(x).strip()
+        ]
+        try:
+            collect_min = int(self._goal_constraints.get("collect_min")) if self._goal_constraints.get("collect_min") is not None else None
+        except Exception:
+            collect_min = None
+        current_metric = self._estimate_goal_metric_from_dom(dom_elements) if dom_elements else None
+        if collect_min is not None and (current_metric is None or float(current_metric) < float(collect_min)):
+            return None
+        evidence = self._last_snapshot_evidence if isinstance(self._last_snapshot_evidence, dict) else {}
+        evidence_fragments: List[str] = []
+        text_digest = str(evidence.get("text_digest") or "").strip()
+        if text_digest:
+            evidence_fragments.append(text_digest)
+        live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
+        for item in live_texts[:8]:
+            text = str(item or "").strip()
+            if text:
+                evidence_fragments.append(text)
+        evidence_blob = self._normalize_text(" ".join(evidence_fragments))
+        matches: List[str] = []
+        contextual_match = False
+        positive_surface_match = False
+        aggregate_page_match = False
+        for term in target_terms:
+            norm_term = self._normalize_text(term)
+            if not norm_term:
+                continue
+            for el in dom_elements:
+                if not bool(el.is_visible):
+                    continue
+                if self._normalize_text(el.tag) in {"input", "textarea", "select"}:
+                    continue
+                blob = self._normalize_text(
+                    " ".join(
+                        [
+                            str(el.text or ""),
+                            str(el.aria_label or ""),
+                            str(getattr(el, "title", None) or ""),
+                            str(getattr(el, "container_name", None) or ""),
+                            str(getattr(el, "context_text", None) or ""),
+                        ]
+                    )
+                )
+                if norm_term and norm_term in blob:
+                    matches.append(term)
+                    if context_terms and any(ctx and ctx in blob for ctx in context_terms):
+                        contextual_match = True
+                    if direction == "increase" and any(
+                        token in blob
+                        for token in (
+                            "추가", "담", "added", "saved", "selected",
+                            "위시", "wishlist", "장바구니", "cart",
+                            "총", "count", "item", "items", "학점", "credit", "credits",
+                        )
+                    ):
+                        positive_surface_match = True
+                    if direction == "decrease" and any(
+                        token in blob
+                        for token in ("삭제", "제거", "remove", "removed", "minus", "감소")
+                    ):
+                        positive_surface_match = True
+                    if direction == "clear" and any(
+                        token in blob for token in ("비어", "empty", "없음", "없어요", "0개", "0학점")
+                    ):
+                        positive_surface_match = True
+                    break
+            if norm_term and norm_term in evidence_blob:
+                matches.append(term)
+                if context_terms and any(ctx and ctx in evidence_blob for ctx in context_terms):
+                    contextual_match = True
+                if direction == "increase" and any(
+                    token in evidence_blob
+                    for token in (
+                        "추가", "담", "added", "saved", "selected",
+                        "위시", "wishlist", "장바구니", "cart",
+                        "총", "count", "item", "items", "학점", "credit", "credits",
+                    )
+                ):
+                    positive_surface_match = True
+                if direction == "decrease" and any(
+                    token in evidence_blob for token in ("삭제", "제거", "remove", "removed", "minus", "감소")
+                ):
+                    positive_surface_match = True
+                if direction == "clear" and any(
+                    token in evidence_blob for token in ("비어", "empty", "없음", "없어요", "0개", "0학점")
+                ):
+                    positive_surface_match = True
+        if not matches:
+            return None
+        page_blob = self._normalize_text(
+            " ".join(
+                " ".join(
+                    [
+                        str(getattr(el, "text", "") or ""),
+                        str(getattr(el, "aria_label", "") or ""),
+                        str(getattr(el, "title", None) or ""),
+                        str(getattr(el, "container_name", None) or ""),
+                        str(getattr(el, "context_text", None) or ""),
+                    ]
+                )
+                for el in dom_elements
+                if bool(getattr(el, "is_visible", True))
+            )
+        )
+        if evidence_blob:
+            page_blob = self._normalize_text(f"{page_blob} {evidence_blob}")
+        if context_terms and not contextual_match:
+            if any(ctx and ctx in page_blob for ctx in context_terms):
+                contextual_match = True
+        if any(
+            token in page_blob
+            for token in (
+                "총", "count", "item", "items", "selected", "selection", "학점", "credit", "credits",
+                "위시", "wishlist", "장바구니", "cart",
+            )
+        ):
+            aggregate_page_match = True
+        if context_terms and not contextual_match and not positive_surface_match and not aggregate_page_match:
+            return None
+        if not contextual_match and context_terms:
+            page_blob = self._normalize_text(
+                " ".join(
+                    " ".join(
+                        [
+                            str(getattr(el, "text", "") or ""),
+                            str(getattr(el, "aria_label", "") or ""),
+                            str(getattr(el, "title", None) or ""),
+                            str(getattr(el, "container_name", None) or ""),
+                            str(getattr(el, "context_text", None) or ""),
+                        ]
+                    )
+                    for el in dom_elements
+                    if bool(getattr(el, "is_visible", True))
+                )
+            )
+            if any(ctx and ctx in page_blob for ctx in context_terms):
+                contextual_match = True
+        unique = ", ".join(dict.fromkeys(matches[:3]))
+        if collect_min is not None:
+            metric_label = str(self._goal_constraints.get("metric_label") or "count")
+            return f"목표 대상({unique})이 현재 화면에 보이고 최소 기준 {collect_min}{metric_label}도 충족해 목표를 완료로 판정했습니다."
+        return f"목표 대상({unique})이 현재 화면에 보여 목표를 완료로 판정했습니다."
+
+    def _evaluate_reasoning_only_wait_completion(
+        self,
+        *,
+        goal: TestGoal,
+        decision: ActionDecision,
+        dom_elements: Optional[List[DOMElement]] = None,
+    ) -> Optional[str]:
+        if decision.action != ActionType.WAIT:
+            return None
+        if dom_elements:
+            target_reason = self._evaluate_goal_target_completion(goal=goal, dom_elements=dom_elements)
+            if target_reason:
+                return target_reason
+        reasoning_raw = str(getattr(decision, "reasoning", None) or "")
+        reasoning_blob = self._normalize_text(reasoning_raw)
+        satisfaction_tokens = ("충족", "완료", "이미", "표시", "반영", "정상", "already", "satisfied", "visible", "present")
+        if not any(token in reasoning_blob for token in satisfaction_tokens):
+            return None
+        target_terms = self._goal_target_terms(goal)
+        quoted_terms = self._goal_quoted_terms(goal)
+        effective_targets = target_terms or quoted_terms
+        if not effective_targets:
+            fallback_targets: List[str] = []
+            for token in self._extract_goal_query_tokens(goal):
+                norm = self._normalize_text(token)
+                if len(norm) < 4 or norm.isdigit():
+                    continue
+                fallback_targets.append(token)
+                if len(fallback_targets) >= 4:
+                    break
+            effective_targets = fallback_targets
+        if not effective_targets:
+            return None
+        normalized_targets = [self._normalize_text(str(term)) for term in effective_targets if str(term).strip()]
+        if not any(term and term in reasoning_blob for term in normalized_targets):
+            return None
+        direction = str(self._goal_constraints.get("mutation_direction") or "").strip().lower()
+        if not direction:
+            goal_blob = self._normalize_text(self._goal_text_blob(goal))
+            if any(token in goal_blob for token in ("비우", "전체삭제", "전부삭제", "clear", "empty")):
+                direction = "clear"
+            elif any(token in goal_blob for token in ("삭제", "제거", "remove", "decrease", "줄")):
+                direction = "decrease"
+            else:
+                direction = "increase"
+        direction_tokens = {
+            "increase": ("위시", "wishlist", "장바구니", "cart", "추가", "담", "added", "saved", "총", "item", "학점", "credit"),
+            "decrease": ("삭제", "제거", "remove", "removed", "감소", "총", "item", "학점", "credit"),
+            "clear": ("비어", "empty", "없음", "없어요", "0개", "0학점"),
+        }.get(direction, ())
+        if direction_tokens and not any(token in reasoning_blob for token in direction_tokens):
+            return None
+        try:
+            collect_min = int(self._goal_constraints.get("collect_min")) if self._goal_constraints.get("collect_min") is not None else None
+        except Exception:
+            collect_min = None
+        if collect_min is not None:
+            metric_label = str(self._goal_constraints.get("metric_label") or "count")
+            metric_tokens = (f"총 {collect_min}", f"{collect_min}학점", f"{collect_min}개", f"{collect_min}과목", f"{collect_min}{metric_label}")
+            if not any(token in reasoning_raw or token in reasoning_blob for token in metric_tokens):
+                return None
+            return f"대기 판단 근거에 목표 대상과 최소 기준 {collect_min}{metric_label} 충족이 명시되어 목표를 완료로 판정했습니다."
+        unique = ", ".join(dict.fromkeys((effective_targets or target_terms)[:3]))
+        return f"대기 판단 근거에 목표 대상({unique}) 충족이 명시되어 목표를 완료로 판정했습니다."
+
+    def _evaluate_explicit_reasoning_proof_completion(
+        self,
+        *,
+        goal: TestGoal,
+        decision: ActionDecision,
+    ) -> Optional[str]:
+        if decision.action != ActionType.WAIT:
+            return None
+        reasoning_raw = str(getattr(decision, "reasoning", None) or "")
+        reasoning_blob = self._normalize_text(reasoning_raw)
+        satisfaction_tokens = ("충족", "완료", "이미", "표시", "반영", "정상", "visible", "present", "already")
+        if not any(token in reasoning_blob for token in satisfaction_tokens):
+            return None
+
+        targets = self._goal_quoted_terms(goal) or self._goal_target_terms(goal)
+        normalized_targets = [self._normalize_text(str(term)) for term in targets if str(term).strip()]
+        matched_targets = [term for term, norm in zip(targets, normalized_targets) if norm and norm in reasoning_blob]
+        if not matched_targets:
+            return None
+
+        destinations = self._goal_destination_terms(goal)
+        normalized_destinations = [self._normalize_text(str(term)) for term in destinations if str(term).strip()]
+        has_destination = any(term and term in reasoning_blob for term in normalized_destinations)
+
+        direction = str(self._goal_constraints.get("mutation_direction") or "").strip().lower()
+        if not direction:
+            goal_blob = self._normalize_text(self._goal_text_blob(goal))
+            if any(token in goal_blob for token in ("비우", "전체삭제", "전부삭제", "clear", "empty")):
+                direction = "clear"
+            elif any(token in goal_blob for token in ("삭제", "제거", "remove", "decrease", "줄")):
+                direction = "decrease"
+            else:
+                direction = "increase"
+        direction_tokens = {
+            "increase": ("추가", "담", "added", "saved", "총", "학점", "count", "item"),
+            "decrease": ("삭제", "제거", "remove", "removed", "감소"),
+            "clear": ("비어", "empty", "없음", "없어요", "0개", "0학점"),
+        }.get(direction, ())
+        has_direction = any(token in reasoning_blob for token in direction_tokens)
+        if not has_destination and not has_direction:
+            return None
+
+        unique = ", ".join(dict.fromkeys(matched_targets[:3]))
+        return f"대기 판단 근거에 목표 대상({unique})의 반영이 명시되어 목표를 완료로 판정했습니다."
+
+    def _evaluate_wait_goal_completion(
+        self,
+        *,
+        goal: TestGoal,
+        decision: ActionDecision,
+        dom_elements: List[DOMElement],
+    ) -> Optional[str]:
+        if decision.action != ActionType.WAIT:
+            return None
+        target_reason = self._evaluate_goal_target_completion(goal=goal, dom_elements=dom_elements)
+        if target_reason:
+            return target_reason
+
+        reasoning_blob = self._normalize_text(getattr(decision, "reasoning", None))
+        satisfaction_tokens = ("충족", "완료", "이미", "표시", "반영", "정상", "already", "satisfied", "visible", "present")
+        if not any(token in reasoning_blob for token in satisfaction_tokens):
+            return None
+
+        target_terms = self._goal_target_terms(goal)
+        if not target_terms:
+            return None
+
+        page_fragments: List[str] = []
+        for el in dom_elements:
+            if not bool(getattr(el, "is_visible", True)):
+                continue
+            page_fragments.extend(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+        evidence = self._last_snapshot_evidence if isinstance(self._last_snapshot_evidence, dict) else {}
+        page_fragments.append(str(evidence.get("text_digest") or ""))
+        live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
+        page_fragments.extend(str(x or "") for x in live_texts[:8])
+        page_blob = self._normalize_text(" ".join(fragment for fragment in page_fragments if fragment))
+
+        normalized_targets = [self._normalize_text(term) for term in target_terms if str(term).strip()]
+        target_in_page = any(term and term in page_blob for term in normalized_targets)
+        target_in_reasoning = any(term and term in reasoning_blob for term in normalized_targets)
+        if not target_in_page and not target_in_reasoning:
+            return None
+
+        direction = str(self._goal_constraints.get("mutation_direction") or "").strip().lower()
+        direction_tokens = {
+            "increase": ("위시", "wishlist", "장바구니", "cart", "추가", "담", "added", "saved", "총", "item", "학점", "credit"),
+            "decrease": ("삭제", "제거", "remove", "removed", "감소", "총", "item", "학점", "credit"),
+            "clear": ("비어", "empty", "없음", "없어요", "0개", "0학점"),
+        }.get(direction, ())
+        direction_matched = (not direction_tokens) or any(token in page_blob or token in reasoning_blob for token in direction_tokens)
+        if not direction_matched:
+            return None
+
+        try:
+            collect_min = int(self._goal_constraints.get("collect_min")) if self._goal_constraints.get("collect_min") is not None else None
+        except Exception:
+            collect_min = None
+        current_metric = self._estimate_goal_metric_from_dom(dom_elements) if dom_elements else None
+        if collect_min is not None and (current_metric is None or float(current_metric) < float(collect_min)):
+            reasoning_metric_ok = any(
+                token in reasoning_blob
+                for token in (
+                    f"총 {collect_min}",
+                    f"{collect_min}학점",
+                    f"{collect_min}개",
+                    f"{collect_min}과목",
+                    f"minimum {collect_min}",
+                )
+            )
+            if not reasoning_metric_ok:
+                return None
+
+        raw_reasoning = str(getattr(decision, "reasoning", None) or "")
+        explicit_target_in_raw_reasoning = any(
+            str(term).strip() and str(term).strip() in raw_reasoning
+            for term in target_terms
+        )
+        explicit_reasoning_proof = bool(
+            (target_in_reasoning or explicit_target_in_raw_reasoning)
+            and any(token in reasoning_blob for token in satisfaction_tokens)
+            and direction_matched
+        )
+        if not target_in_page and not explicit_reasoning_proof:
+            return None
+
+        unique = ", ".join(dict.fromkeys(target_terms[:3]))
+        if collect_min is not None:
+            metric_label = str(self._goal_constraints.get("metric_label") or "count")
+            return f"대기 상태에서 목표 대상({unique})이 확인되었고 최소 기준 {collect_min}{metric_label}도 충족해 목표를 완료로 판정했습니다."
+        return f"대기 상태에서 목표 대상({unique})이 이미 확인되어 목표를 완료로 판정했습니다."
+
     @classmethod
     def _build_click_intent_key(
         cls,
@@ -2224,6 +2847,13 @@ class GoalDrivenAgent:
             return normalized[:limit]
         return normalized
 
+    @staticmethod
+    def _truncate_for_prompt(text: str, limit: int = 120) -> str:
+        normalized = re.sub(r"\s+", " ", (text or "")).strip()
+        if len(normalized) > limit:
+            return normalized[: limit - 1] + "…"
+        return normalized
+
     def _fields_for_element(self, el: DOMElement) -> List[str]:
         selector = self._element_full_selectors.get(el.id) or self._element_selectors.get(el.id) or ""
         return [
@@ -2236,6 +2866,12 @@ class GoalDrivenAgent:
             str(el.role or ""),
             str(el.tag or ""),
             str(el.type or ""),
+            str(getattr(el, "container_name", None) or ""),
+            str(getattr(el, "container_role", None) or ""),
+            str(getattr(el, "context_text", None) or ""),
+            " ".join(str(v) for v in (getattr(el, "group_action_labels", None) or []) if v),
+            str(getattr(el, "role_ref_role", None) or ""),
+            str(getattr(el, "role_ref_name", None) or ""),
         ]
 
     def _candidate_intent_key(self, action: str, fields: List[str]) -> str:
@@ -2245,6 +2881,45 @@ class GoalDrivenAgent:
     @staticmethod
     def _clamp_score(value: float, low: float = -15.0, high: float = 15.0) -> float:
         return max(low, min(high, float(value)))
+
+    def _context_match_tokens(self, el: DOMElement) -> List[str]:
+        goal_tokens = set(getattr(self, "_goal_tokens", set()) or set())
+        if not goal_tokens:
+            return []
+        matched: set[str] = set()
+        for source in (
+            getattr(el, "text", None),
+            getattr(el, "container_name", None),
+            getattr(el, "context_text", None),
+        ):
+            if not source:
+                continue
+            matched.update(goal_tokens.intersection(self._tokenize_text(str(source))))
+        return sorted(matched)
+
+    def _context_score(self, el: DOMElement) -> float:
+        goal_tokens = set(getattr(self, "_goal_tokens", set()) or set())
+        if not goal_tokens:
+            return 0.0
+        text_tokens = set(self._tokenize_text(getattr(el, "text", "") or ""))
+        container_tokens = set(self._tokenize_text(getattr(el, "container_name", "") or ""))
+        context_tokens = set(self._tokenize_text(getattr(el, "context_text", "") or ""))
+        score = 0.0
+        score += 1.25 * len(goal_tokens.intersection(text_tokens))
+        score += 2.0 * len(goal_tokens.intersection(container_tokens))
+        score += 0.75 * len(goal_tokens.intersection(context_tokens))
+        quoted_matches = re.findall(r'"([^"]+)"', str(getattr(self, "_active_goal_text", "") or ""))
+        for phrase in quoted_matches:
+            normalized_phrase = self._normalize_text(phrase)
+            if normalized_phrase and normalized_phrase in self._normalize_text(getattr(el, "container_name", "") or ""):
+                score += 4.0
+            elif normalized_phrase and normalized_phrase in self._normalize_text(getattr(el, "context_text", "") or ""):
+                score += 2.5
+        action_labels = [self._normalize_text(v) for v in (getattr(el, "group_action_labels", None) or []) if v]
+        duplicate_label = self._normalize_text(getattr(el, "text", "") or "")
+        if duplicate_label and action_labels.count(duplicate_label) > 1 and goal_tokens.intersection(container_tokens):
+            score += 1.5
+        return float(score)
 
     def _adaptive_intent_bias(self, intent_key: str) -> float:
         if not intent_key:
@@ -3686,6 +4361,30 @@ class GoalDrivenAgent:
                 last_metric_value = float(self._goal_metric_value)
 
             orchestrator.observe_dom(dom_elements)
+            target_completion_reason = self._evaluate_goal_target_completion(
+                goal=goal,
+                dom_elements=dom_elements,
+            )
+            if target_completion_reason:
+                self._record_reason_code("context_target_selected")
+                self._log(f"✅ 목표 달성! 이유: {target_completion_reason}")
+                terminal_result = GoalResult(
+                    goal_id=goal.id,
+                    goal_name=goal.name,
+                    success=True,
+                    steps_taken=steps,
+                    total_steps=step_count - 1 if step_count > 0 else 0,
+                    final_reason=target_completion_reason,
+                    duration_seconds=time.time() - start_time,
+                )
+                self._record_goal_summary(
+                    goal=goal,
+                    status="success",
+                    reason=terminal_result.final_reason,
+                    step_count=terminal_result.total_steps,
+                    duration_seconds=terminal_result.duration_seconds,
+                )
+                return terminal_result
             if orchestrator.stop_reason:
                 if collect_unmet and "화면 상태가 반복" in str(orchestrator.stop_reason):
                     self._log("🧭 수집 기준 미충족 상태에서 화면 반복 감지: 즉시 컨텍스트 전환으로 복구 시도합니다.")
@@ -3931,6 +4630,35 @@ class GoalDrivenAgent:
                     memory_context=memory_context,
                 )
                 self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
+                reasoning_only_wait_reason = self._evaluate_reasoning_only_wait_completion(
+                    goal=goal,
+                    decision=decision,
+                    dom_elements=dom_elements,
+                )
+                if not reasoning_only_wait_reason:
+                    reasoning_only_wait_reason = self._evaluate_explicit_reasoning_proof_completion(
+                        goal=goal,
+                        decision=decision,
+                    )
+                if reasoning_only_wait_reason:
+                    self._log(f"✅ 목표 달성! 이유: {reasoning_only_wait_reason}")
+                    result = GoalResult(
+                        goal_id=goal.id,
+                        goal_name=goal.name,
+                        success=True,
+                        steps_taken=steps,
+                        total_steps=step_count,
+                        final_reason=reasoning_only_wait_reason,
+                        duration_seconds=time.time() - start_time,
+                    )
+                    self._record_goal_summary(
+                        goal=goal,
+                        status="success",
+                        reason=result.final_reason,
+                        step_count=step_count,
+                        duration_seconds=result.duration_seconds,
+                    )
+                    return result
 
             if decision.action == ActionType.SCROLL:
                 scroll_streak += 1
@@ -3962,6 +4690,22 @@ class GoalDrivenAgent:
                 decision=decision,
                 dom_elements=dom_elements,
             )
+            if not decision.is_goal_achieved and decision.action == ActionType.WAIT:
+                wait_completion_reason = self._evaluate_wait_goal_completion(
+                    goal=goal,
+                    decision=decision,
+                    dom_elements=dom_elements,
+                )
+                if wait_completion_reason:
+                    decision = ActionDecision(
+                        action=decision.action,
+                        element_id=decision.element_id,
+                        value=decision.value,
+                        reasoning=decision.reasoning,
+                        confidence=max(float(decision.confidence or 0.0), 0.8),
+                        is_goal_achieved=True,
+                        goal_achievement_reason=wait_completion_reason,
+                    )
             if bool(self._steering_infeasible_block):
                 self._steering_infeasible_block = False
                 callback_payload = {
@@ -4695,6 +5439,14 @@ class GoalDrivenAgent:
                             bounding_box=el.get("bounding_box"),
                             options=attrs.get("options"),
                             selected_value=str(attrs.get("selected_value") or ""),
+                            container_name=attrs.get("container_name"),
+                            container_role=attrs.get("container_role"),
+                            container_ref_id=attrs.get("container_ref_id"),
+                            context_text=attrs.get("context_text"),
+                            group_action_labels=attrs.get("group_action_labels"),
+                            role_ref_role=attrs.get("role_ref_role"),
+                            role_ref_name=attrs.get("role_ref_name"),
+                            role_ref_nth=attrs.get("role_ref_nth"),
                             is_visible=bool(el.get("is_visible", True)),
                             is_enabled=is_enabled,
                         )
@@ -5079,6 +5831,7 @@ JSON 응답:"""
             has_apply = any(self._contains_apply_hint(f) for f in fields)
 
             score = 0.0
+            context_score = self._context_score(el)
             if has_progress:
                 score += 6.0
             if has_next:
@@ -5133,6 +5886,7 @@ JSON 응답:"""
                 if has_add_like:
                     score -= 3.0
 
+            score += context_score
             score += self._selector_bias_for_fields(fields)
             score += 0.8 * self._adaptive_intent_bias(self._candidate_intent_key("click", fields))
 
@@ -5157,6 +5911,11 @@ JSON 응답:"""
                 if 0 <= previous_rank < 5:
                     score -= max(1.0, 3.2 - (previous_rank * 0.5))
 
+            try:
+                el.context_score_hint = context_score
+            except Exception:
+                pass
+
             return self._clamp_score(score, low=-25.0, high=35.0)
 
         ranked = sorted(elements, key=_score, reverse=True)
@@ -5178,6 +5937,24 @@ JSON 응답:"""
                 parts.append(f"role={el.role}")
             if el.type and el.type != "button":
                 parts.append(f"type={el.type}")
+            if getattr(el, "container_name", None):
+                parts.append(f'container="{el.container_name}"')
+            if getattr(el, "container_role", None):
+                parts.append(f'container-role="{el.container_role}"')
+            if getattr(el, "context_text", None):
+                parts.append(f'context="{self._truncate_for_prompt(el.context_text, 120)}"')
+            action_labels = getattr(el, "group_action_labels", None) or []
+            if action_labels:
+                parts.append(f'actions=[{" | ".join(str(v) for v in action_labels[:5])}]')
+            role_ref_role = getattr(el, "role_ref_role", None)
+            role_ref_name = getattr(el, "role_ref_name", None)
+            if role_ref_role and role_ref_name:
+                nth = getattr(el, "role_ref_nth", None)
+                role_ref = f'{role_ref_role}(name="{role_ref_name}"'
+                if nth is not None:
+                    role_ref += f", nth={nth}"
+                role_ref += ")"
+                parts.append(f"role_ref={role_ref}")
             if el.placeholder:
                 parts.append(f'placeholder="{el.placeholder}"')
             if el.aria_label:
@@ -5188,6 +5965,20 @@ JSON 응답:"""
                 parts.append(f'options=[{" | ".join(opt_strs)}]')
 
             lines.append(" ".join(parts))
+
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for el in selected:
+            container_ref_id = getattr(el, "container_ref_id", None)
+            container_name = getattr(el, "container_name", None)
+            if not container_ref_id or not container_name:
+                continue
+            bucket = grouped.setdefault(str(container_ref_id), {"name": str(container_name), "items": []})
+            bucket["items"].append(f'[{el.id} {el.text or el.aria_label or el.tag}]')
+        if grouped:
+            lines.append("")
+            lines.append("## 컨텍스트 그룹")
+            for bucket in grouped.values():
+                lines.append(f'- 카드 "{bucket["name"]}": {" ".join(bucket["items"][:6])}')
 
         if len(elements) > len(selected):
             lines.append(f"... ({len(elements) - len(selected)} more elements omitted)")

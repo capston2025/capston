@@ -52,6 +52,7 @@ from gaia.src.phase4.mcp_simple_action_utils import (
     evaluate_js_with_timeout as _evaluate_js_with_timeout,
 )
 from gaia.src.phase4.mcp_ref_snapshot_helpers import (
+    _build_context_snapshot_from_elements,
     _build_role_refs_from_elements,
     _build_role_snapshot_from_ai_text,
     _build_role_snapshot_from_aria_text,
@@ -782,6 +783,19 @@ def _build_ref_candidates(ref_meta: Dict[str, Any]) -> List[Tuple[str, str]]:
     dom_ref = str(ref_meta.get("dom_ref") or "").strip()
     if dom_ref:
         candidates.append(("dom_ref", dom_ref))
+    attrs = ref_meta.get("attributes") if isinstance(ref_meta.get("attributes"), dict) else {}
+    role = str(ref_meta.get("role_ref_role") or attrs.get("role_ref_role") or "").strip()
+    name = str(ref_meta.get("role_ref_name") or attrs.get("role_ref_name") or "").strip()
+    if role and name:
+        payload: Dict[str, Any] = {"role": role, "name": name}
+        try:
+            nth_value = ref_meta.get("role_ref_nth", attrs.get("role_ref_nth"))
+            nth = int(nth_value)
+            if nth >= 0:
+                payload["nth"] = nth
+        except Exception:
+            pass
+        candidates.append(("role_ref", f"role_ref:{json_module.dumps(payload, ensure_ascii=False)}"))
 
     dedup: List[Tuple[str, str]] = []
     seen = set()
@@ -829,7 +843,15 @@ def _resolve_stale_ref(
     old_selector = _normalize_snapshot_text(old_meta.get("selector"))
     old_text = _normalize_snapshot_text(old_meta.get("text"))
     old_tag = _normalize_snapshot_text(old_meta.get("tag"))
-    old_role = _normalize_snapshot_text((old_meta.get("attributes") or {}).get("role"))
+    old_attrs = old_meta.get("attributes") if isinstance(old_meta.get("attributes"), dict) else {}
+    old_role = _normalize_snapshot_text(old_attrs.get("role"))
+    old_role_ref_role = _normalize_snapshot_text(old_meta.get("role_ref_role") or old_attrs.get("role_ref_role"))
+    old_role_ref_name = _normalize_snapshot_text(old_meta.get("role_ref_name") or old_attrs.get("role_ref_name"))
+    old_container_name = _normalize_snapshot_text(old_meta.get("container_name") or old_attrs.get("container_name"))
+    try:
+        old_role_ref_nth = int(old_meta.get("role_ref_nth", old_attrs.get("role_ref_nth", 0)) or 0)
+    except Exception:
+        old_role_ref_nth = 0
     old_scope = old_meta.get("scope") if isinstance(old_meta.get("scope"), dict) else {}
     old_frame_index = int(old_scope.get("frame_index", old_meta.get("frame_index", 0)) or 0)
     old_tab_index = int(old_scope.get("tab_index", old_meta.get("tab_index", 0)) or 0)
@@ -851,7 +873,11 @@ def _resolve_stale_ref(
         meta_selector = _normalize_snapshot_text(meta.get("selector"))
         meta_text = _normalize_snapshot_text(meta.get("text"))
         meta_tag = _normalize_snapshot_text(meta.get("tag"))
-        meta_role = _normalize_snapshot_text((meta.get("attributes") or {}).get("role"))
+        meta_attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+        meta_role = _normalize_snapshot_text(meta_attrs.get("role"))
+        meta_role_ref_role = _normalize_snapshot_text(meta.get("role_ref_role") or meta_attrs.get("role_ref_role"))
+        meta_role_ref_name = _normalize_snapshot_text(meta.get("role_ref_name") or meta_attrs.get("role_ref_name"))
+        meta_container_name = _normalize_snapshot_text(meta.get("container_name") or meta_attrs.get("container_name"))
         meta_scope = meta.get("scope") if isinstance(meta.get("scope"), dict) else {}
         meta_frame_index = int(meta_scope.get("frame_index", meta.get("frame_index", 0)) or 0)
         meta_tab_index = int(meta_scope.get("tab_index", meta.get("tab_index", 0)) or 0)
@@ -867,6 +893,12 @@ def _resolve_stale_ref(
             score += 3
         if old_role and old_role == meta_role:
             score += 2
+        if old_role_ref_role and old_role_ref_role == meta_role_ref_role:
+            score += 4
+        if old_role_ref_name and old_role_ref_name == meta_role_ref_name:
+            score += 5
+        if old_container_name and old_container_name == meta_container_name:
+            score += 3
         if old_text and meta_text and old_text in meta_text:
             score += 1
         if old_frame_index == meta_frame_index:
@@ -891,6 +923,34 @@ def _resolve_stale_ref(
             best_meta = meta
 
     if best_score < 6:
+        if old_role_ref_role and old_role_ref_name:
+            role_matches: List[Dict[str, Any]] = []
+            for meta in fresh_map.values():
+                if not isinstance(meta, dict):
+                    continue
+                meta_attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+                meta_role_ref_role = _normalize_snapshot_text(meta.get("role_ref_role") or meta_attrs.get("role_ref_role"))
+                meta_role_ref_name = _normalize_snapshot_text(meta.get("role_ref_name") or meta_attrs.get("role_ref_name"))
+                if meta_role_ref_role != old_role_ref_role or meta_role_ref_name != old_role_ref_name:
+                    continue
+                role_matches.append(meta)
+            if role_matches:
+                role_matches.sort(
+                    key=lambda item: int(
+                        (
+                            item.get("role_ref_nth")
+                            or (
+                                item.get("attributes").get("role_ref_nth")
+                                if isinstance(item.get("attributes"), dict)
+                                else 0
+                            )
+                            or 0
+                        )
+                    )
+                )
+                if 0 <= old_role_ref_nth < len(role_matches):
+                    return role_matches[old_role_ref_nth]
+                return role_matches[0]
         return None
     return best_meta
 
@@ -1517,6 +1577,103 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     };
                 }
 
+                function normalizeText(value) {
+                    return String(value || '').replace(/\s+/g, ' ').trim();
+                }
+
+                function compactLines(value, limit = 2) {
+                    const lines = String(value || '')
+                        .split(/\\n+/)
+                        .map((line) => normalizeText(line))
+                        .filter(Boolean);
+                    return lines.slice(0, limit).join(' | ');
+                }
+
+                function accessibleName(el) {
+                    if (!(el instanceof HTMLElement)) return '';
+                    const aria = normalizeText(el.getAttribute('aria-label'));
+                    if (aria) return aria;
+                    const labelledBy = normalizeText(el.getAttribute('aria-labelledby'));
+                    if (labelledBy) {
+                        const parts = labelledBy
+                            .split(/\s+/)
+                            .map((id) => document.getElementById(id))
+                            .filter(Boolean)
+                            .map((node) => normalizeText(node.textContent || ''))
+                            .filter(Boolean);
+                        if (parts.length > 0) return parts.join(' ');
+                    }
+                    const title = normalizeText(el.getAttribute('title'));
+                    if (title) return title;
+                    const placeholder = normalizeText(el.getAttribute('placeholder'));
+                    if (placeholder) return placeholder;
+                    return normalizeText(el.innerText || el.textContent || '');
+                }
+
+                function isSemanticContainer(el) {
+                    if (!(el instanceof HTMLElement)) return false;
+                    const tag = (el.tagName || '').toLowerCase();
+                    if (['li', 'tr', 'article', 'section'].includes(tag)) return true;
+                    const role = normalizeText(el.getAttribute('role')).toLowerCase();
+                    if (['listitem', 'row', 'article', 'region', 'group'].includes(role)) return true;
+                    const cls = normalizeText(el.className).toLowerCase();
+                    return /(card|item|row|list|result|product|course|subject)/.test(cls);
+                }
+
+                function nearestSemanticContainer(el) {
+                    let current = el instanceof Element ? el.parentElement : null;
+                    while (current) {
+                        if (isSemanticContainer(current)) return current;
+                        current = current.parentElement;
+                    }
+                    return null;
+                }
+
+                function containerName(container) {
+                    if (!(container instanceof HTMLElement)) return '';
+                    const heading = container.querySelector('h1,h2,h3,h4,h5,h6,[role="heading"]');
+                    const headingName = heading ? accessibleName(heading) : '';
+                    if (headingName) return headingName;
+                    const leadLink = container.querySelector('a[href]');
+                    const leadLinkName = leadLink ? accessibleName(leadLink) : '';
+                    if (leadLinkName) return leadLinkName;
+                    const emphasis = container.querySelector('strong,b,[data-testid*="title"],[data-testid*="name"]');
+                    const emphasisName = emphasis ? accessibleName(emphasis) : '';
+                    if (emphasisName) return emphasisName;
+                    const ownName = accessibleName(container);
+                    if (ownName) return ownName;
+                    return compactLines(container.innerText || container.textContent || '', 2);
+                }
+
+                function siblingActionLabels(container) {
+                    if (!(container instanceof HTMLElement)) return [];
+                    const labels = [];
+                    const nodes = Array.from(
+                        container.querySelectorAll('button,[role="button"],a[href],[role="link"],input[type="button"],input[type="submit"]')
+                    );
+                    for (const node of nodes) {
+                        const label = accessibleName(node);
+                        if (label) labels.push(label);
+                    }
+                    return labels.slice(0, 8);
+                }
+
+                function withContext(el, attrs = {}) {
+                    if (!(el instanceof HTMLElement)) return attrs;
+                    const container = nearestSemanticContainer(el);
+                    if (!(container instanceof HTMLElement)) return attrs;
+                    const containerDomRef = assignDomRef(container);
+                    const parentContainer = nearestSemanticContainer(container);
+                    const parentDomRef = parentContainer instanceof HTMLElement ? assignDomRef(parentContainer) : '';
+                    attrs.container_name = containerName(container);
+                    attrs.container_role = normalizeText(container.getAttribute('role')) || normalizeText(container.tagName).toLowerCase();
+                    attrs.container_dom_ref = containerDomRef;
+                    attrs.container_parent_dom_ref = parentDomRef || '';
+                    attrs.context_text = compactLines(container.innerText || container.textContent || '', 2);
+                    attrs.group_action_labels = siblingActionLabels(container);
+                    return attrs;
+                }
+
                 queryAll('input, textarea, select').forEach(el => {
                     const actionability = getActionability(el);
                     if (!actionability.visible) return;
@@ -1562,6 +1719,8 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         // 현재 선택된 값도 기록
                         entry.attributes['selected_value'] = el.value || '';
                     }
+
+                    withContext(el, entry.attributes);
 
                     elements.push(entry);
                 });
@@ -1635,6 +1794,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
                     });
+                    withContext(el, elements[elements.length - 1].attributes);
                 });
 
                 // 페이지네이션/네비게이션 시그널 수집 (아이콘형 next/prev 포함)
@@ -1681,6 +1841,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
                     });
+                    withContext(el, elements[elements.length - 1].attributes);
                 });
 
                 queryAll('[onclick], [class*="btn"], [class*="button"], [class*="cursor-pointer"]').forEach(el => {
@@ -1714,6 +1875,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
                     });
+                            withContext(el, elements[elements.length - 1].attributes);
                         }
                     }
                 });
@@ -1755,6 +1917,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                         actionable: actionability.actionable,
                         visible_strict: actionability.visible,
                     });
+                    withContext(el, elements[elements.length - 1].attributes);
                 });
 
                 // 시맨틱/구조 신호 수집 (OpenClaw 스타일 보강)
@@ -2053,6 +2216,24 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
             "is_main_frame": bool(elem.get("is_main_frame", True)),
         }
 
+    role_refs = _build_role_refs_from_elements(elements)
+    for elem in elements:
+        if not isinstance(elem, dict):
+            continue
+        ref_id = str(elem.get("ref_id") or "").strip()
+        attrs = elem.get("attributes") if isinstance(elem.get("attributes"), dict) else {}
+        role_ref = role_refs.get(ref_id) if ref_id else None
+        if not isinstance(role_ref, dict):
+            continue
+        elem["role_ref_role"] = role_ref.get("role")
+        elem["role_ref_name"] = role_ref.get("name")
+        elem["role_ref_nth"] = role_ref.get("nth")
+        attrs["role_ref_role"] = role_ref.get("role")
+        attrs["role_ref_name"] = role_ref.get("name")
+        attrs["role_ref_nth"] = role_ref.get("nth")
+
+    context_snapshot = _build_context_snapshot_from_elements(elements)
+
     elements_by_ref: Dict[str, Dict[str, Any]] = {
         elem["ref_id"]: elem for elem in elements if isinstance(elem, dict) and elem.get("ref_id")
     }
@@ -2065,6 +2246,7 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
         "epoch": epoch,
         "captured_at": captured_at,
         "elements_by_ref": elements_by_ref,
+        "context_snapshot": context_snapshot,
     }
     session.snapshots[snapshot_id] = snapshot_record
     session.current_snapshot_id = snapshot_id
@@ -2086,6 +2268,7 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
     result["tab_index"] = tab_index
     result["captured_at"] = captured_at
     result["dom_elements"] = elements
+    result["context_snapshot"] = context_snapshot
     try:
         result["evidence"] = await _collect_page_evidence(page)
     except Exception:
@@ -2260,6 +2443,30 @@ def _select_frame_for_ref(page: Page, ref_meta: Dict[str, Any]):
 
 async def _resolve_locator_from_ref(page: Page, ref_meta: Dict[str, Any], _selector_hint: str):
     frame, frame_index = _select_frame_for_ref(page, ref_meta)
+    selector_hint = str(_selector_hint or "").strip()
+    if selector_hint.startswith("role_ref:"):
+        try:
+            payload = json_module.loads(selector_hint[len("role_ref:"):])
+        except Exception:
+            return None, frame_index, selector_hint, "invalid_role_ref_hint"
+        role = str(payload.get("role") or "").strip()
+        name = str(payload.get("name") or "").strip()
+        if not role or not name:
+            return None, frame_index, selector_hint, "invalid_role_ref_hint"
+        try:
+            nth = int(payload.get("nth", 0) or 0)
+        except Exception:
+            nth = 0
+        try:
+            locator_group = frame.get_by_role(role, name=name, exact=True)
+            match_count = await locator_group.count()
+            if match_count <= 0:
+                return None, frame_index, selector_hint, "role_ref_not_found"
+            if nth >= match_count:
+                nth = match_count - 1
+            return locator_group.nth(max(0, nth)), frame_index, f'role={role} name="{name}" nth={max(0, nth)}', ""
+        except Exception as exc:
+            return None, frame_index, selector_hint, str(exc) or "role_ref_not_found"
     dom_ref = str(ref_meta.get("dom_ref") or "").strip()
 
     if not dom_ref:

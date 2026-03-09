@@ -13,7 +13,17 @@ _GENERIC_GOAL_STOPWORDS = {
     "담은", "비우기", "비우는", "증가", "감소", "clear", "remove", "delete", "add", "increase",
     "decrease", "check", "verify", "visible", "already", "without", "interaction", "goal",
     "수치", "count", "number", "total", "총", "해주세요", "해줘", "되는지", "했는지", "하고",
+    "검색하지", "말고", "메인", "화면에", "보이는", "카드들", "중에서", "눌러서", "누른다음에",
+    "현재화면", "메인화면", "current", "screen", "main", "only",
 }
+
+_TARGET_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
+    {
+        "버튼", "클릭", "눌러", "누르고", "누른", "누르", "추가해", "추가하고", "담기",
+        "위시리스트", "wishlist", "메인", "현재화면", "현재", "검색하지", "말고", "없이",
+        "screen", "page", "only", "local", "main",
+    }
+)
 
 
 def _classify_metric_unit(value: str) -> str:
@@ -87,6 +97,36 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         "same page",
     )
     require_no_navigation = any(hint in text for hint in no_navigation_hints)
+    current_view_only_hints = (
+        "현재 화면",
+        "지금 화면",
+        "현재 메인 화면",
+        "메인 화면에서만",
+        "현재 페이지에서만",
+        "현재 화면에서만",
+        "지금 보이는",
+        "보이는 과목 카드",
+        "보이는 카드",
+        "현재 목록에서만",
+        "current screen",
+        "current page only",
+        "main screen only",
+        "already visible on page",
+    )
+    current_view_only = any(hint in text for hint in current_view_only_hints)
+    forbid_search_hints = (
+        "검색하지 말",
+        "검색 없이",
+        "검색말고",
+        "search하지 말",
+        "search 없이",
+        "do not search",
+        "without search",
+        "skip search",
+    )
+    forbid_search_action = any(hint in text for hint in forbid_search_hints)
+    if current_view_only:
+        require_no_navigation = True
     increase_hints = ("증가", "늘", "담", "추가", "add", "append", "increase", "grow", "more")
     decrease_hints = ("감소", "줄", "제거", "삭제", "remove", "decrease", "less")
     clear_hints = ("비우", "비웠", "전체 삭제", "전부 삭제", "clear", "empty", "remove all")
@@ -98,6 +138,19 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     elif any(hint in text for hint in increase_hints):
         mutation_direction = "increase"
     context_terms = _derive_context_terms(text, normalize_text)
+    target_terms: List[str] = []
+    for group in re.findall(r"\"([^\"]{2,})\"|'([^']{2,})'", str(goal_blob or "")):
+        token = next((part for part in group if part), "")
+        normalized = normalize_text(token)
+        if normalized and normalized not in _TARGET_TERM_STOPWORDS:
+            target_terms.append(str(token).strip())
+    if not target_terms:
+        for token in context_terms:
+            if len(token) < 4 or token in _TARGET_TERM_STOPWORDS or token.isdigit():
+                continue
+            target_terms.append(token)
+            if len(target_terms) >= 4:
+                break
     numeric_values: List[int] = []
     metric_terms: List[str] = []
     number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
@@ -112,9 +165,15 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         payload: Dict[str, Any] = {}
         if require_no_navigation:
             payload["require_no_navigation"] = True
+        if current_view_only:
+            payload["current_view_only"] = True
+        if forbid_search_action:
+            payload["forbid_search_action"] = True
         if mutation_direction:
             payload["mutation_direction"] = mutation_direction
             payload["context_terms"] = context_terms
+        if target_terms:
+            payload["target_terms"] = target_terms
         return payload
 
     if len(numeric_values) == 1:
@@ -128,9 +187,15 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
             payload = {}
             if require_no_navigation:
                 payload["require_no_navigation"] = True
+            if current_view_only:
+                payload["current_view_only"] = True
+            if forbid_search_action:
+                payload["forbid_search_action"] = True
             if mutation_direction:
                 payload["mutation_direction"] = mutation_direction
                 payload["context_terms"] = context_terms
+            if target_terms:
+                payload["target_terms"] = target_terms
             return payload
 
     collect_min: Optional[int] = None
@@ -166,9 +231,15 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         "require_collect_before_progress": require_collect_before_progress,
         "require_no_navigation": require_no_navigation,
     }
+    if current_view_only:
+        payload["current_view_only"] = True
+    if forbid_search_action:
+        payload["forbid_search_action"] = True
     if mutation_direction:
         payload["mutation_direction"] = mutation_direction
         payload["context_terms"] = context_terms
+    if target_terms:
+        payload["target_terms"] = target_terms
     return payload
 
 

@@ -204,15 +204,46 @@ def evaluate_post_action_progress(
             after_dom=post_dom or [],
         )
         if mutation_reason:
-            _emit_reason(agent, "mutation_contract_satisfied")
-            agent._log(f"✅ 목표 달성! 이유: {mutation_reason}")
+            target_reason = agent._evaluate_goal_target_completion(
+                goal=goal,
+                dom_elements=post_dom or [],
+            )
+            if target_reason:
+                _emit_reason(agent, "mutation_contract_satisfied")
+                agent._log(f"✅ 목표 달성! 이유: {target_reason}")
+                terminal_result = GoalResult(
+                    goal_id=goal.id,
+                    goal_name=goal.name,
+                    success=True,
+                    steps_taken=steps,
+                    total_steps=step_count,
+                    final_reason=target_reason,
+                    duration_seconds=time.time() - start_time,
+                )
+                agent._record_goal_summary(
+                    goal=goal,
+                    status="success",
+                    reason=terminal_result.final_reason,
+                    step_count=step_count,
+                    duration_seconds=terminal_result.duration_seconds,
+                )
+            else:
+                _emit_reason(agent, "mutation_contract_missing_target_proof")
+    if terminal_result is None:
+        target_reason = agent._evaluate_goal_target_completion(
+            goal=goal,
+            dom_elements=post_dom or [],
+        )
+        if target_reason:
+            _emit_reason(agent, "context_target_selected")
+            agent._log(f"✅ 목표 달성! 이유: {target_reason}")
             terminal_result = GoalResult(
                 goal_id=goal.id,
                 goal_name=goal.name,
                 success=True,
                 steps_taken=steps,
                 total_steps=step_count,
-                final_reason=mutation_reason,
+                final_reason=target_reason,
                 duration_seconds=time.time() - start_time,
             )
             agent._record_goal_summary(

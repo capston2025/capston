@@ -89,6 +89,15 @@ class DOMElement(BaseModel):
     bounding_box: Optional[dict] = Field(default=None, description="요소 위치 정보")
     options: Optional[list] = Field(default=None, description="select 요소의 option 목록 [{value, text}]")
     selected_value: Optional[str] = Field(default=None, description="select 요소의 현재 선택 value")
+    container_name: Optional[str] = Field(default=None, description="가장 가까운 semantic container의 대표 이름")
+    container_role: Optional[str] = Field(default=None, description="가장 가까운 semantic container의 role")
+    container_ref_id: Optional[str] = Field(default=None, description="가장 가까운 semantic container의 synthetic ref")
+    context_text: Optional[str] = Field(default=None, description="해당 container의 compact 텍스트 요약")
+    group_action_labels: Optional[list] = Field(default=None, description="같은 container 안의 sibling action 라벨 목록")
+    role_ref_role: Optional[str] = Field(default=None, description="role-based recovery hint role")
+    role_ref_name: Optional[str] = Field(default=None, description="role-based recovery hint name")
+    role_ref_nth: Optional[int] = Field(default=None, description="동일 role/name 중 duplicate index")
+    context_score_hint: Optional[float] = Field(default=None, description="선택 설명용 context score")
 
     # 상태
     is_visible: bool = Field(default=True)

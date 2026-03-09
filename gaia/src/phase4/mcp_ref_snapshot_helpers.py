@@ -629,6 +629,71 @@ def _build_role_refs_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, 
     return refs
 
 
+def _build_context_snapshot_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, Any]:
+    container_entries: Dict[str, Dict[str, Any]] = {}
+    child_refs_by_dom_ref: Dict[str, List[str]] = defaultdict(list)
+
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        container_dom_ref = str(attrs.get("container_dom_ref") or "").strip()
+        if not container_dom_ref:
+            continue
+        if container_dom_ref not in container_entries:
+            container_entries[container_dom_ref] = {
+                "role": str(attrs.get("container_role") or "").strip() or None,
+                "name": str(attrs.get("container_name") or "").strip() or None,
+                "parent_dom_ref": str(attrs.get("container_parent_dom_ref") or "").strip() or None,
+                "context_text": str(attrs.get("context_text") or "").strip() or None,
+                "interactive": False,
+            }
+        ref_id = str(item.get("ref_id") or "").strip()
+        if ref_id:
+            child_refs_by_dom_ref[container_dom_ref].append(ref_id)
+            container_entries[container_dom_ref]["interactive"] = True
+
+    container_ref_by_dom_ref: Dict[str, str] = {}
+    nodes: List[Dict[str, Any]] = []
+    for index, (dom_ref, meta) in enumerate(container_entries.items()):
+        ref_id = f"ctx-{index}"
+        container_ref_by_dom_ref[dom_ref] = ref_id
+        nodes.append(
+            {
+                "ref_id": ref_id,
+                "role": meta.get("role"),
+                "name": meta.get("name"),
+                "parent_ref_id": None,
+                "child_ref_ids": child_refs_by_dom_ref.get(dom_ref, []),
+                "interactive": bool(meta.get("interactive")),
+                "context_text": meta.get("context_text"),
+                "_parent_dom_ref": meta.get("parent_dom_ref"),
+            }
+        )
+
+    for node in nodes:
+        parent_dom_ref = str(node.pop("_parent_dom_ref") or "").strip()
+        if parent_dom_ref:
+            node["parent_ref_id"] = container_ref_by_dom_ref.get(parent_dom_ref)
+
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        container_dom_ref = str(attrs.get("container_dom_ref") or "").strip()
+        if container_dom_ref and container_dom_ref in container_ref_by_dom_ref:
+            context_ref = container_ref_by_dom_ref[container_dom_ref]
+            attrs["container_ref_id"] = context_ref
+            item["container_ref_id"] = context_ref
+
+    node_by_ref = {str(node.get("ref_id") or ""): node for node in nodes if str(node.get("ref_id") or "")}
+    return {
+        "nodes": nodes,
+        "node_by_ref": node_by_ref,
+        "container_ref_by_dom_ref": container_ref_by_dom_ref,
+    }
+
+
 async def _try_snapshot_for_ai(page: Page, timeout_ms: int = 5000) -> Optional[str]:
     timeout_ms = max(500, min(int(timeout_ms or 5000), 60000))
 
