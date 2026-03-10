@@ -893,19 +893,19 @@ Agent는 `_execute_decision()`에서 `element_id -> ref_id`를 찾은 뒤 `brows
 
 Host는 액션 전/후를 비교해 아래 플래그들을 계산한다.
 
-- `url_changed`
-- `dom_changed`
-- `target_visibility_changed`
-- `target_value_changed`
-- `target_value_matches`
-- `target_focus_changed`
-- `focus_changed`
-- `target_checked_changed`
-- `target_aria_expanded_changed`
-- `target_aria_pressed_changed`
-- `target_aria_selected_changed`
-- `target_disabled_changed`
-- `counter_changed`
+- `url_changed` // 현재 url이 바뀌었는지
+- `dom_changed` // DOM 구조나 주요 내용이 바뀌었는지
+- `target_visibility_changed` // 대상 요소가 보이게 되거나 숨겨졌는지
+- `target_value_changed` // 대상 요소의 값이 바뀌었는지 input, select
+- `target_value_matches` // 대상 요소의 값이 기대한 값과 일치하는지
+- `target_focus_changed` // 대상 요소 자신이 포커스를 얻거나 잃었는지
+- `focus_changed` // 페이지 전체 기준 포커스 대상이 바뀌었는지
+- `target_checked_changed` // 체크박스 / 라디오의 checked 상태가 바뀌었는지
+- `target_aria_expanded_changed` // aria-expanded 값이 바뀌었는지
+- `target_aria_pressed_changed` // aria-selectd 값이 바뀌었는지 
+- `target_aria_selected_changed` // 대상 요소가 disabled 되거나 enabled 됐는지 
+- `target_disabled_changed` // 숫자 카운터 UI가 바뀌었는지
+- `counter_changed` //number_tokens_changed
 - `number_tokens_changed`
 - `status_text_changed`
 - `list_count_changed`

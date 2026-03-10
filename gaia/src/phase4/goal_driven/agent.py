@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 import os
 import re
+import requests
 from typing import Any, Dict, List, Optional, Callable
 from types import SimpleNamespace
 
