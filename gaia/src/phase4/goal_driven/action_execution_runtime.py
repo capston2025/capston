@@ -1,0 +1,439 @@
+from __future__ import annotations
+
+from typing import List, Optional
+
+import requests
+
+from .models import ActionDecision, ActionType, DOMElement
+from .parsing import parse_multi_values, parse_wait_payload
+from .runtime import ActionExecResult
+from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
+
+
+def execute_decision(
+    agent,
+    decision: ActionDecision,
+    dom_elements: List[DOMElement],
+) -> tuple[bool, Optional[str]]:
+    """결정된 액션 실행"""
+
+    agent._last_exec_result = None
+
+    selector = None
+    full_selector = None
+    ref_id = None
+    requires_ref = decision.action in {
+        ActionType.CLICK,
+        ActionType.FILL,
+        ActionType.PRESS,
+        ActionType.HOVER,
+        ActionType.SCROLL,
+        ActionType.SELECT,
+    }
+    if decision.element_id is not None:
+        selector = agent._element_selectors.get(decision.element_id)
+        full_selector = agent._element_full_selectors.get(decision.element_id)
+        ref_id = agent._element_ref_ids.get(decision.element_id)
+        if not selector and not full_selector and not ref_id:
+            agent._last_exec_result = ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="not_found",
+                reason=f"요소 ID {decision.element_id}에 대한 ref/selector를 찾을 수 없음",
+            )
+            return False, f"요소 ID {decision.element_id}에 대한 ref/selector를 찾을 수 없음"
+        if requires_ref and (not ref_id or not agent._active_snapshot_id):
+            _ = agent._analyze_dom()
+            selector = agent._element_selectors.get(decision.element_id)
+            full_selector = agent._element_full_selectors.get(decision.element_id)
+            ref_id = agent._element_ref_ids.get(decision.element_id)
+            if not ref_id:
+                selector_to_ref = getattr(agent, "_selector_to_ref_id", {}) or {}
+                for candidate in (full_selector, selector):
+                    if candidate:
+                        mapped_ref = selector_to_ref.get(candidate)
+                        if mapped_ref:
+                            ref_id = mapped_ref
+                            break
+            if not ref_id or not agent._active_snapshot_id:
+                agent._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="ref_required",
+                    reason=(
+                        "Ref-only policy: 선택된 요소의 ref_id/snapshot_id가 없습니다. "
+                        "최신 snapshot 재수집 후 다시 결정해야 합니다."
+                    ),
+                )
+                return False, agent._last_exec_result.as_error_message()
+    selected_element = None
+    if decision.element_id is not None:
+        try:
+            selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+        except Exception:
+            selected_element = None
+
+    element_actions = {
+        ActionType.CLICK,
+        ActionType.FILL,
+        ActionType.PRESS,
+        ActionType.HOVER,
+        ActionType.SCROLL,
+        ActionType.SELECT,
+    }
+    retriable_reason_codes = {
+        "snapshot_not_found",
+        "stale_snapshot",
+        "ref_required",
+        "not_found",
+        "ambiguous_ref_target",
+        "no_state_change",
+        "not_actionable",
+    }
+
+    def _refresh_ref_binding() -> None:
+        nonlocal selector, full_selector, ref_id
+        _ = agent._analyze_dom()
+        selector_to_ref = getattr(agent, "_selector_to_ref_id", {}) or {}
+        if decision.element_id is not None:
+            selector = agent._element_selectors.get(decision.element_id) or selector
+            full_selector = agent._element_full_selectors.get(decision.element_id) or full_selector
+            ref_id = agent._element_ref_ids.get(decision.element_id) or ref_id
+        if not ref_id:
+            for candidate in (full_selector, selector):
+                if candidate:
+                    mapped_ref = selector_to_ref.get(candidate)
+                    if mapped_ref:
+                        ref_id = mapped_ref
+                        break
+
+    def _execute_with_ref_recovery(
+        action_name: str,
+        action_value: Optional[str] = None,
+    ) -> tuple[bool, Optional[str]]:
+        nonlocal selector, full_selector, ref_id
+        agent._last_exec_result = execute_action(
+            agent,
+            action_name,
+            selector=selector,
+            full_selector=full_selector,
+            ref_id=ref_id,
+            value=action_value,
+        )
+        should_retry = (
+            decision.action in element_actions
+            and agent._last_exec_result.reason_code in retriable_reason_codes
+        )
+        if should_retry:
+            prev_snapshot = agent._active_snapshot_id
+            prev_ref = ref_id or ""
+            _refresh_ref_binding()
+            if ref_id and agent._active_snapshot_id:
+                agent._last_exec_result = execute_action(
+                    agent,
+                    action_name,
+                    selector=selector,
+                    full_selector=full_selector,
+                    ref_id=ref_id,
+                    value=action_value,
+                )
+                if (
+                    agent._last_exec_result.success
+                    and agent._last_exec_result.effective
+                    and (prev_snapshot != agent._active_snapshot_id or prev_ref != (ref_id or ""))
+                ):
+                    agent._log("♻️ stale/ref 오류 복구: 최신 snapshot/ref 재매핑 후 재시도 성공")
+        return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
+
+    try:
+        if decision.action in {
+            ActionType.CLICK,
+            ActionType.FILL,
+            ActionType.PRESS,
+            ActionType.HOVER,
+            ActionType.SCROLL,
+            ActionType.SELECT,
+        } and decision.element_id is None:
+            agent._last_exec_result = ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="missing_element_id",
+                reason=f"{decision.action.value} 액션에는 element_id가 필요함",
+            )
+            return False, f"{decision.action.value} 액션에는 element_id가 필요함"
+        if decision.action == ActionType.CLICK and selected_element is not None and not agent._goal_allows_logout():
+            logout_fields = [
+                selected_element.text,
+                selected_element.aria_label,
+                selected_element.title,
+                selector,
+                full_selector,
+            ]
+            if any(agent._contains_logout_hint(field) for field in logout_fields):
+                agent._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="blocked_logout_action",
+                    reason="목표와 무관한 로그아웃 액션을 차단했습니다.",
+                )
+                return False, agent._last_exec_result.as_error_message()
+        if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS} and agent._is_ref_temporarily_blocked(ref_id):
+            agent._last_exec_result = ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="blocked_ref_no_progress",
+                reason=(
+                    "같은 ref에서 상태 변화 없는 실패가 반복되어 임시 차단했습니다. "
+                    "다른 요소/페이지 전환을 시도합니다."
+                ),
+                ref_id_used=ref_id or "",
+            )
+            return False, agent._last_exec_result.as_error_message()
+
+        if decision.action == ActionType.CLICK:
+            click_value = decision.value
+            reasoning_norm = agent._normalize_text(decision.reasoning)
+            if any(token in reasoning_norm for token in ("닫", "close", "dismiss", "x 버튼", "우상단 x")):
+                click_value = "__close_intent__"
+            return _execute_with_ref_recovery("click", action_value=click_value)
+
+        if decision.action == ActionType.FILL:
+            if not decision.value:
+                agent._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="invalid_input",
+                    reason="fill 액션에 value가 필요함",
+                )
+                return False, "fill 액션에 value가 필요함"
+            return _execute_with_ref_recovery("fill", action_value=decision.value)
+
+        if decision.action == ActionType.PRESS:
+            return _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
+
+        if decision.action == ActionType.SCROLL:
+            return _execute_with_ref_recovery("scroll", action_value=decision.value or "down")
+
+        if decision.action == ActionType.SELECT:
+            if not decision.value:
+                agent._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="invalid_input",
+                    reason="select 액션에 value(values)가 필요함",
+                )
+                return False, "select 액션에 value(values)가 필요함"
+            return _execute_with_ref_recovery("select", action_value=decision.value)
+
+        if decision.action == ActionType.WAIT:
+            wait_value = decision.value
+            if wait_value is None or (isinstance(wait_value, str) and not wait_value.strip()):
+                wait_value = {"timeMs": 700}
+            agent._last_exec_result = execute_action(agent, "wait", value=wait_value)
+            return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
+
+        if decision.action == ActionType.NAVIGATE:
+            agent._last_exec_result = execute_action(agent, "goto", url=decision.value)
+            return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
+
+        if decision.action == ActionType.HOVER:
+            return _execute_with_ref_recovery("hover")
+
+        agent._last_exec_result = ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="unsupported_action",
+            reason=f"지원하지 않는 액션: {decision.action}",
+        )
+        return False, f"지원하지 않는 액션: {decision.action}"
+    except Exception as exc:
+        agent._last_exec_result = ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="exception",
+            reason=str(exc),
+        )
+        return False, str(exc)
+
+
+def execute_action(
+    agent,
+    action: str,
+    selector: Optional[str] = None,
+    full_selector: Optional[str] = None,
+    ref_id: Optional[str] = None,
+    value: Optional[str] = None,
+    values: Optional[List[str]] = None,
+    url: Optional[str] = None,
+) -> ActionExecResult:
+    """MCP Host를 통해 액션 실행"""
+
+    use_ref_protocol = bool(
+        ref_id
+        and agent._active_snapshot_id
+        and action in {"click", "fill", "press", "hover", "scroll", "scrollIntoView", "select"}
+    )
+    is_element_action = action in {
+        "click",
+        "fill",
+        "press",
+        "hover",
+        "scroll",
+        "scrollIntoView",
+        "select",
+        "dragAndDrop",
+        "dragSlider",
+    }
+    if is_element_action and not use_ref_protocol:
+        return ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="ref_required",
+            reason="Ref-only policy: snapshot_id + ref_id가 필요합니다.",
+        )
+
+    if use_ref_protocol:
+        params = {
+            "session_id": agent.session_id,
+            "snapshot_id": agent._active_snapshot_id,
+            "ref_id": ref_id,
+            "action": action,
+            "url": url or "",
+            "verify": True,
+            "selector_hint": full_selector or selector or "",
+        }
+        if action == "select":
+            parsed_values = values or parse_multi_values(value)
+            if not parsed_values:
+                return ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="invalid_input",
+                    reason="select 액션에는 values가 필요합니다.",
+                )
+            params["values"] = parsed_values
+            params["value"] = parsed_values if len(parsed_values) > 1 else parsed_values[0]
+        elif value is not None:
+            params["value"] = value
+        request_action = "browser_act"
+    else:
+        if action == "wait":
+            wait_payload = parse_wait_payload(value)
+            simple_wait_only = bool(wait_payload) and set(wait_payload.keys()).issubset({"time_ms", "timeMs"})
+            if simple_wait_only:
+                wait_ms = wait_payload.get("time_ms", wait_payload.get("timeMs", 1000))
+                try:
+                    wait_ms = max(0, int(wait_ms))
+                except Exception:
+                    wait_ms = 1000
+                params = {
+                    "session_id": agent.session_id,
+                    "action": "wait",
+                    "value": wait_ms,
+                    "url": url or "",
+                }
+                request_action = "browser_act"
+            else:
+                params = {"session_id": agent.session_id}
+                params.update(wait_payload)
+                request_action = "browser_wait"
+        else:
+            params = {
+                "session_id": agent.session_id,
+                "action": action,
+                "url": url or "",
+                "selector": full_selector or selector or "",
+            }
+            if value is not None:
+                params["value"] = value
+            if action == "goto" and url:
+                params["value"] = url
+            request_action = "browser_act"
+
+    try:
+        response = requests.post(
+            f"{agent.mcp_host_url}/execute",
+            json={"action": request_action, "params": params},
+            timeout=(10, 120),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"error": response.text or "invalid_json_response"}
+
+        if response.status_code >= 400:
+            status_family = "http_4xx" if 400 <= response.status_code < 500 else "http_5xx"
+            detail_raw = data.get("detail")
+            if isinstance(detail_raw, dict):
+                reason_code, detail = extract_reason_fields({"detail": detail_raw}, response.status_code)
+            else:
+                reason_code = status_family
+                detail = str(data.get("detail") or data.get("error") or response.reason or "HTTP error")
+            attempt_logs = data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else []
+            retry_path = data.get("retry_path") if isinstance(data.get("retry_path"), list) else []
+            attempt_count = int(data.get("attempt_count") or len(attempt_logs) or 0)
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code=reason_code,
+                reason=detail,
+                state_change={},
+                attempt_logs=attempt_logs,
+                retry_path=retry_path,
+                attempt_count=attempt_count,
+                snapshot_id_used=str(data.get("snapshot_id_used") or ""),
+                ref_id_used=str(data.get("ref_id_used") or ""),
+            )
+
+        is_success = bool(data.get("success"))
+        is_effective = bool(data.get("effective", True))
+        attempt_logs = data.get("attempt_logs")
+        retry_path = data.get("retry_path")
+        attempt_count = int(
+            data.get("attempt_count")
+            or (len(attempt_logs) if isinstance(attempt_logs, list) else 0)
+            or 0
+        )
+        if is_success and is_effective:
+            return ActionExecResult(
+                success=True,
+                effective=True,
+                reason_code="ok",
+                reason="ok",
+                state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                attempt_logs=attempt_logs if isinstance(attempt_logs, list) else [],
+                retry_path=retry_path if isinstance(retry_path, list) else [],
+                attempt_count=attempt_count,
+                snapshot_id_used=str(data.get("snapshot_id_used") or ""),
+                ref_id_used=str(data.get("ref_id_used") or ""),
+            )
+
+        reason_code, reason = extract_reason_fields(data, response.status_code)
+        if reason_code in {"snapshot_not_found", "stale_snapshot", "ambiguous_ref_target", "ambiguous_selector"}:
+            reason = (
+                f"{reason} | 최신 snapshot/ref로 다시 시도해야 합니다."
+                if reason
+                else "최신 snapshot/ref로 다시 시도해야 합니다."
+            )
+        if isinstance(attempt_logs, list) and attempt_logs:
+            reason = f"{reason} (attempts={len(attempt_logs)})"
+        return ActionExecResult(
+            success=is_success,
+            effective=is_effective,
+            reason_code=reason_code,
+            reason=reason,
+            state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+            attempt_logs=attempt_logs if isinstance(attempt_logs, list) else [],
+            retry_path=retry_path if isinstance(retry_path, list) else [],
+            attempt_count=attempt_count,
+            snapshot_id_used=str(data.get("snapshot_id_used") or ""),
+            ref_id_used=str(data.get("ref_id_used") or ""),
+        )
+
+    except Exception as exc:
+        return ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="request_exception",
+            reason=add_no_retry_hint(str(exc)),
+        )

@@ -7,16 +7,14 @@ Exploratory Testing Agent
 from __future__ import annotations
 import time
 import json
-import hashlib
 import math
 import os
 import re
-import base64
 import requests
 from typing import Any, Dict, List, Optional, Set, Callable, Tuple
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecord
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
@@ -24,15 +22,107 @@ from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, wait_for_m
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from gaia.src.phase4.tool_loop_detector import ToolLoopDetector
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
-
-# GIF 생성을 위한 선택적 import
-try:
-    from PIL import Image
-    import io
-
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
+from .exploration_artifacts_runtime import (
+    generate_gif as generate_gif_impl,
+    save_screenshot_to_file as save_screenshot_to_file_impl,
+    save_step_artifact_payload as save_step_artifact_payload_impl,
+    setup_recording_dir as setup_recording_dir_impl,
+    write_result_json as write_result_json_impl,
+)
+from .exploration_memory_runtime import (
+    extract_domain as extract_domain_impl,
+    is_login_page_with_no_elements as is_login_page_with_no_elements_impl,
+    memory_context as memory_context_impl,
+    record_action_memory as record_action_memory_impl,
+    request_user_intervention as request_user_intervention_impl,
+)
+from .exploration_cache_runtime import (
+    cosine_similarity as cosine_similarity_impl,
+    embed_text as embed_text_impl,
+    get_llm_cache_key as get_llm_cache_key_impl,
+    load_llm_cache as load_llm_cache_impl,
+    load_semantic_cache as load_semantic_cache_impl,
+    record_exploration_summary as record_exploration_summary_impl,
+    resolve_llm_cache_path as resolve_llm_cache_path_impl,
+    resolve_semantic_cache_path as resolve_semantic_cache_path_impl,
+    save_llm_cache as save_llm_cache_impl,
+    save_semantic_cache as save_semantic_cache_impl,
+    semantic_cache_lookup as semantic_cache_lookup_impl,
+    semantic_cache_store as semantic_cache_store_impl,
+    semantic_cache_text as semantic_cache_text_impl,
+)
+from .exploratory_browser_runtime import (
+    capture_screenshot as capture_screenshot_impl,
+    check_console_errors as check_console_errors_impl,
+    get_current_url as get_current_url_impl,
+)
+from .exploration_ui_runtime import (
+    detect_active_modal_region as detect_active_modal_region_impl,
+    find_close_menu_selector as find_close_menu_selector_impl,
+    find_open_menu_selector as find_open_menu_selector_impl,
+    is_bbox_inside_region as is_bbox_inside_region_impl,
+    is_mcp_transport_error as is_mcp_transport_error_impl,
+    normalize_bbox as normalize_bbox_impl,
+    recover_mcp_host as recover_mcp_host_impl,
+    should_open_menu_for_action as should_open_menu_for_action_impl,
+)
+from .exploration_decision_runtime import (
+    build_exploration_prompt as build_exploration_prompt_impl,
+    decide_next_exploration_action as decide_next_exploration_action_impl,
+    parse_exploration_decision as parse_exploration_decision_impl,
+)
+from .exploration_actions_runtime import (
+    action_signature as action_signature_impl,
+    auth_field_bucket as auth_field_bucket_impl,
+    auth_field_needs_input as auth_field_needs_input_impl,
+    auth_field_order as auth_field_order_impl,
+    boost_action_priority as boost_action_priority_impl,
+    build_action_for_element as build_action_for_element_impl,
+    build_navigation_actions as build_navigation_actions_impl,
+    build_saucedemo_item_actions as build_saucedemo_item_actions_impl,
+    element_label as element_label_impl,
+    enqueue_frontier_action as enqueue_frontier_action_impl,
+    generate_testable_actions as generate_testable_actions_impl,
+    has_login_form as has_login_form_impl,
+    has_pending_inputs as has_pending_inputs_impl,
+    has_tested_inputs as has_tested_inputs_impl,
+    is_high_priority_element as is_high_priority_element_impl,
+    is_toggle_action as is_toggle_action_impl,
+    normalize_action_description as normalize_action_description_impl,
+    normalize_seed_urls as normalize_seed_urls_impl,
+    resolve_navigation_target as resolve_navigation_target_impl,
+    select_frontier_action as select_frontier_action_impl,
+    state_key as state_key_impl,
+)
+from .exploration_dom_runtime import (
+    build_element_id as build_element_id_impl,
+    determine_input_value as determine_input_value_impl,
+    evaluate_selector as evaluate_selector_impl,
+    fallback_selector_for_element as fallback_selector_for_element_impl,
+    find_element_by_id as find_element_by_id_impl,
+    find_selector_by_element_id as find_selector_by_element_id_impl,
+    get_select_state as get_select_state_impl,
+    get_toggle_state as get_toggle_state_impl,
+    is_selector_safe as is_selector_safe_impl,
+    pick_select_option as pick_select_option_impl,
+)
+from .exploration_validation_runtime import (
+    aggregate_validation_summary as aggregate_validation_summary_impl,
+    append_validation_report as append_validation_report_impl,
+    create_action_failure_issue as create_action_failure_issue_impl,
+    create_error_issue as create_error_issue_impl,
+    create_intent_issue as create_intent_issue_impl,
+    is_expected_non_bug_console_error as is_expected_non_bug_console_error_impl,
+    report_console_errors as report_console_errors_impl,
+    verify_action_intent as verify_action_intent_impl,
+)
+from .exploration_summary_runtime import (
+    calculate_coverage as calculate_coverage_impl,
+    call_llm_text_only as call_llm_text_only_impl,
+    determine_completion_reason as determine_completion_reason_impl,
+    hash_url as hash_url_impl,
+    print_summary as print_summary_impl,
+)
 
 from .exploratory_models import (
     ExplorationConfig,
@@ -326,13 +416,7 @@ class ExploratoryAgent:
         return None
 
     def _setup_recording_dir(self, session_id: str) -> Path:
-        """녹화용 디렉토리 설정"""
-        repo_root = Path(__file__).resolve().parents[4]
-        screenshots_dir = (
-            repo_root / "artifacts" / "exploration_results" / session_id / "screenshots"
-        )
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        return screenshots_dir
+        return setup_recording_dir_impl(session_id)
 
     def _save_screenshot_to_file(
         self,
@@ -341,28 +425,7 @@ class ExploratoryAgent:
         step_num: int,
         suffix: str = "",
     ) -> str:
-        """스크린샷을 파일로 저장"""
-        if not screenshot_base64:
-            return ""
-        try:
-            # base64 데이터에서 헤더 제거
-            if "," in screenshot_base64:
-                screenshot_base64 = screenshot_base64.split(",")[1]
-
-            img_data = base64.b64decode(screenshot_base64)
-            if suffix:
-                filename = f"step_{step_num:03d}_{suffix}.png"
-            else:
-                filename = f"step_{step_num:03d}.png"
-            filepath = screenshots_dir / filename
-
-            with open(filepath, "wb") as f:
-                f.write(img_data)
-
-            return str(filepath)
-        except Exception as e:
-            self._log(f"⚠️ 스크린샷 저장 실패: {e}")
-            return ""
+        return save_screenshot_to_file_impl(self, screenshot_base64, screenshots_dir, step_num, suffix)
 
     def _save_step_artifact_payload(
         self,
@@ -371,83 +434,13 @@ class ExploratoryAgent:
         before_path: str = "",
         after_path: str = "",
     ) -> None:
-        if screenshots_dir is None:
-            return
-        try:
-            steps_dir = screenshots_dir.parent / "steps"
-            steps_dir.mkdir(parents=True, exist_ok=True)
-            payload = step.model_dump(mode="json")
-            payload["files"] = {
-                "before": before_path,
-                "after": after_path,
-            }
-            if self._last_exec_meta:
-                payload["exec_meta"] = dict(self._last_exec_meta)
-            out_path = steps_dir / f"step_{int(step.step_number):03d}.json"
-            with open(out_path, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            self._log(f"⚠️ 스텝 산출물 저장 실패: {exc}")
+        save_step_artifact_payload_impl(self, screenshots_dir, step, before_path, after_path)
 
     def _write_result_json(self, result: ExplorationResult) -> Optional[str]:
-        try:
-            repo_root = Path(__file__).resolve().parents[4]
-            results_root = repo_root / "artifacts" / "exploration_results"
-            results_root.mkdir(parents=True, exist_ok=True)
-            session_dir = results_root / str(result.session_id)
-            session_dir.mkdir(parents=True, exist_ok=True)
-            payload = result.model_dump(mode="json")
-
-            session_file = session_dir / "exploration_result.json"
-            with open(session_file, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-
-            top_level_file = results_root / f"{result.session_id}.json"
-            with open(top_level_file, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-            return str(top_level_file)
-        except Exception as exc:
-            self._log(f"⚠️ 결과 JSON 저장 실패: {exc}")
-            return None
+        return write_result_json_impl(self, result)
 
     def _generate_gif(self, screenshots_dir: Path, output_path: Path) -> bool:
-        """스크린샷들로 GIF 생성"""
-        if not HAS_PIL:
-            self._log("⚠️ PIL이 설치되지 않아 GIF를 생성할 수 없습니다")
-            return False
-
-        try:
-            png_files = sorted(screenshots_dir.glob("step_*_before.png"))
-            if len(png_files) < 2:
-                png_files = sorted(screenshots_dir.glob("step_*.png"))
-            if len(png_files) < 2:
-                self._log("⚠️ GIF 생성을 위한 스크린샷이 부족합니다")
-                return False
-
-            images = []
-            for png_file in png_files:
-                img = Image.open(png_file)
-                # 크기 조정 (너무 크면 GIF가 무거워짐)
-                max_width = 800
-                if img.width > max_width:
-                    ratio = max_width / img.width
-                    new_size = (max_width, int(img.height * ratio))
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                images.append(img)
-
-            # GIF 저장 (각 프레임 1초)
-            images[0].save(
-                output_path,
-                save_all=True,
-                append_images=images[1:],
-                duration=1000,  # 1초 per frame
-                loop=0,
-            )
-            self._log(f"🎬 GIF 생성 완료: {output_path}")
-            return True
-        except Exception as e:
-            self._log(f"⚠️ GIF 생성 실패: {e}")
-            return False
+        return generate_gif_impl(self, screenshots_dir, output_path)
 
     def _generate_feature_description(
         self, action: Optional[TestableAction], context: str = ""
@@ -594,63 +587,29 @@ class ExploratoryAgent:
         return scenarios
 
     def _resolve_llm_cache_path(self) -> str:
-        repo_root = Path(__file__).resolve().parents[4]
-        return str(repo_root / "artifacts" / "llm_cache.json")
+        return resolve_llm_cache_path_impl()
 
     def _resolve_semantic_cache_path(self) -> str:
-        repo_root = Path(__file__).resolve().parents[4]
-        return str(repo_root / "artifacts" / "cache" / "semantic_llm_cache.json")
+        return resolve_semantic_cache_path_impl()
 
     def _load_llm_cache(self) -> None:
-        try:
-            if os.path.exists(self._llm_cache_path):
-                with open(self._llm_cache_path, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict):
-                    self._llm_cache = {k: str(v) for k, v in data.items()}
-        except Exception as exc:
-            self._log(f"⚠️ LLM 캐시 로드 실패: {exc}")
+        load_llm_cache_impl(self)
 
     def _save_llm_cache(self) -> None:
-        try:
-            os.makedirs(os.path.dirname(self._llm_cache_path), exist_ok=True)
-            with open(self._llm_cache_path, "w", encoding="utf-8") as handle:
-                json.dump(self._llm_cache, handle, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            self._log(f"⚠️ LLM 캐시 저장 실패: {exc}")
+        save_llm_cache_impl(self)
 
     def _load_semantic_cache(self) -> None:
-        try:
-            if os.path.exists(self._semantic_cache_path):
-                with open(self._semantic_cache_path, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if isinstance(data, list):
-                    self._semantic_cache = data
-        except Exception as exc:
-            self._log(f"⚠️ 시맨틱 캐시 로드 실패: {exc}")
+        load_semantic_cache_impl(self)
 
     def _save_semantic_cache(self) -> None:
-        try:
-            os.makedirs(os.path.dirname(self._semantic_cache_path), exist_ok=True)
-            with open(self._semantic_cache_path, "w", encoding="utf-8") as handle:
-                json.dump(self._semantic_cache, handle, ensure_ascii=False)
-        except Exception as exc:
-            self._log(f"⚠️ 시맨틱 캐시 저장 실패: {exc}")
+        save_semantic_cache_impl(self)
 
     @staticmethod
     def _extract_domain(url: str) -> str:
-        parsed = urlparse(url or "")
-        return (parsed.netloc or "").lower()
+        return extract_domain_impl(url)
 
     def _memory_context(self) -> str:
-        if not self._memory_store.enabled or not self._memory_domain:
-            return ""
-        hints = self._memory_retriever.retrieve_lightweight(
-            domain=self._memory_domain,
-            goal_text="exploratory testing",
-            action_history=self._action_history[-6:],
-        )
-        return self._memory_retriever.format_for_prompt(hints)
+        return memory_context_impl(self)
 
     def _record_action_memory(
         self,
@@ -661,68 +620,21 @@ class ExploratoryAgent:
         success: bool,
         error: Optional[str],
     ) -> None:
-        if not self._memory_store.enabled or self._memory_episode_id is None:
-            return
-        meta = self._last_exec_meta or {}
-        reason_code = str(meta.get("reason_code") or ("ok" if success else "unknown_error"))
-        changed = reason_code not in {"no_state_change"}
-        try:
-            self._memory_store.record_action(
-                MemoryActionRecord(
-                    episode_id=self._memory_episode_id,
-                    domain=self._memory_domain,
-                    url=self._current_url or "",
-                    step_number=step_number,
-                    action=action_type,
-                    selector=selector,
-                    full_selector=selector,
-                    ref_id=str(meta.get("ref_id_used") or ""),
-                    success=success,
-                    effective=bool(meta.get("effective", success)),
-                    changed=changed,
-                    reason_code=reason_code,
-                    reason=str(meta.get("reason") or (error or "")),
-                    snapshot_id=str(meta.get("snapshot_id_used") or self._active_snapshot_id),
-                    dom_hash=self._active_dom_hash,
-                    epoch=self._active_snapshot_epoch,
-                    frame_index=None,
-                    tab_index=None,
-                    state_change=meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
-                    attempt_logs=meta.get("attempt_logs") if isinstance(meta.get("attempt_logs"), list) else [],
-                )
-            )
-        except Exception:
-            return
+        record_action_memory_impl(
+            self,
+            step_number=step_number,
+            action_type=action_type,
+            selector=selector,
+            success=success,
+            error=error,
+        )
 
     def _record_exploration_summary(
         self,
         *,
         result: ExplorationResult,
     ) -> None:
-        if not self._memory_store.enabled:
-            return
-        status = "success" if result.completion_reason and "완료" in result.completion_reason else "finished"
-        try:
-            self._memory_store.add_dialog_summary(
-                MemorySummaryRecord(
-                    episode_id=self._memory_episode_id,
-                    domain=self._memory_domain,
-                    command="/ai",
-                    summary=(
-                        f"actions={result.total_actions}, pages={result.total_pages_visited}, "
-                        f"issues={len(result.issues_found)}, reason={result.completion_reason}"
-                    ),
-                    status=status,
-                    metadata={
-                        "total_actions": result.total_actions,
-                        "total_pages": result.total_pages_visited,
-                        "issues": len(result.issues_found),
-                        "completion_reason": result.completion_reason,
-                    },
-                )
-            )
-        except Exception:
-            return
+        record_exploration_summary_impl(self, result=result)
 
     def _get_llm_cache_key(
         self,
@@ -730,228 +642,36 @@ class ExploratoryAgent:
         screenshot: Optional[str],
         action_signature: str,
     ) -> str:
-        digest = hashlib.md5()
-        digest.update(prompt.encode("utf-8"))
-        digest.update(action_signature.encode("utf-8"))
-        if screenshot:
-            digest.update(screenshot.encode("utf-8"))
-        return digest.hexdigest()
+        return get_llm_cache_key_impl(prompt, screenshot, action_signature)
 
     def _semantic_cache_text(
         self,
         page_state: PageState,
         testable_actions: List[TestableAction],
     ) -> str:
-        actions_text = "\n".join(
-            f"{action.action_type}:{action.description}"
-            for action in testable_actions[:60]
-        )
-        element_summary = ",".join(
-            sorted(
-                {f"{el.tag}:{el.text[:20]}" for el in page_state.interactive_elements}
-            )
-        )
-        state_summary = (
-            f"tested={len(self._tested_elements)};"
-            f"history={';'.join(self._action_history[-3:])}"
-        )
-        action_signature = self._action_signature(testable_actions)
-        return (
-            f"{page_state.url}\n{element_summary}\n{state_summary}\n"
-            f"signature={action_signature}\n{actions_text}"
-        )
+        return semantic_cache_text_impl(self, page_state, testable_actions)
 
     def _embed_text(self, text: str) -> List[float]:
-        tokens = re.findall(r"[\w가-힣]+", text.lower())
-        dim = 128
-        vector = [0.0] * dim
-        for token in tokens:
-            token_hash = hashlib.md5(token.encode("utf-8")).hexdigest()
-            index = int(token_hash[:8], 16) % dim
-            vector[index] += 1.0
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm > 0:
-            vector = [value / norm for value in vector]
-        return vector
+        return embed_text_impl(text)
 
     def _cosine_similarity(self, left: List[float], right: List[float]) -> float:
-        if not left or not right:
-            return 0.0
-        length = min(len(left), len(right))
-        dot = sum(left[i] * right[i] for i in range(length))
-        left_norm = math.sqrt(sum(left[i] * left[i] for i in range(length)))
-        right_norm = math.sqrt(sum(right[i] * right[i] for i in range(length)))
-        if left_norm == 0 or right_norm == 0:
-            return 0.0
-        return dot / (left_norm * right_norm)
+        return cosine_similarity_impl(left, right)
 
     def _semantic_cache_lookup(
         self, text: str, action_signature: str, threshold: float = 0.95
     ) -> Optional[str]:
-        if not self._semantic_cache:
-            return None
-        query_embedding = self._embed_text(text)
-        best_score = 0.0
-        best_response: Optional[str] = None
-        for entry in self._semantic_cache:
-            embedding = entry.get("embedding")
-            response = entry.get("response")
-            signature = entry.get("signature")
-            if signature != action_signature:
-                continue
-            if not isinstance(embedding, list) or not isinstance(response, str):
-                continue
-            score = self._cosine_similarity(query_embedding, embedding)
-            if score > best_score:
-                best_score = score
-                best_response = response
-        if best_response and best_score >= threshold:
-            self._log(f"🧠 시맨틱 캐시 hit (score={best_score:.2f})")
-            return best_response
-        return None
+        return semantic_cache_lookup_impl(self, text, action_signature, threshold)
 
     def _semantic_cache_store(
         self, text: str, response: str, action_signature: str
     ) -> None:
-        embedding = self._embed_text(text)
-        self._semantic_cache.append(
-            {
-                "embedding": embedding,
-                "response": response,
-                "text": text[:500],
-                "signature": action_signature,
-            }
-        )
-        if len(self._semantic_cache) > 200:
-            self._semantic_cache = self._semantic_cache[-200:]
-        self._save_semantic_cache()
+        semantic_cache_store_impl(self, text, response, action_signature)
 
     def _is_login_page_with_no_elements(self, page_state: PageState) -> bool:
-        """
-        로그인 페이지이면서 요소를 찾지 못한 경우 감지
-
-        Args:
-            page_state: 현재 페이지 상태
-
-        Returns:
-            bool: 사용자 개입이 필요한 로그인 페이지인 경우 True
-        """
-        # URL에 로그인 관련 키워드가 포함되어 있는지 확인
-        login_keywords = ["login", "signin", "auth", "sso", "portal"]
-        url_lower = page_state.url.lower()
-        has_login_keyword = any(keyword in url_lower for keyword in login_keywords)
-
-        # 요소가 0개이거나 매우 적은 경우
-        has_few_elements = len(page_state.interactive_elements) <= 2
-
-        return has_login_keyword and has_few_elements
+        return is_login_page_with_no_elements_impl(page_state)
 
     def _request_user_intervention(self, reason: str, current_url: str) -> bool:
-        """
-        사용자 개입 요청
-
-        Args:
-            reason: 개입이 필요한 이유 (예: "로그인 필요", "캡챠 해결 필요")
-            current_url: 현재 URL
-
-        Returns:
-            bool: 사용자가 작업을 완료했으면 True, 탐색 중단하려면 False
-        """
-        self._log("=" * 60)
-        self._log("⏸️  사용자 개입 필요")
-        self._log(f"   이유: {reason}")
-        self._log(f"   현재 URL: {current_url}")
-        self._log("=" * 60)
-
-        # 콜백이 있으면 콜백 사용
-        if self._user_intervention_callback:
-            callback_resp = self._user_intervention_callback(reason, current_url)
-            if isinstance(callback_resp, dict):
-                username = str(
-                    callback_resp.get("username")
-                    or callback_resp.get("id")
-                    or callback_resp.get("user")
-                    or ""
-                ).strip()
-                email = str(callback_resp.get("email") or "").strip()
-                password = str(callback_resp.get("password") or "").strip()
-                auth_mode = str(callback_resp.get("auth_mode") or "").strip().lower()
-                manual_done = bool(callback_resp.get("manual_done"))
-                proceed_raw = callback_resp.get("proceed")
-                proceed = True
-                if isinstance(proceed_raw, bool):
-                    proceed = proceed_raw
-                elif isinstance(proceed_raw, str):
-                    proceed = proceed_raw.strip().lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                        "y",
-                        "on",
-                        "continue",
-                        "c",
-                    }
-                if auth_mode in {"signup", "register"}:
-                    self._auth_input_values["auth_mode"] = "signup"
-                if username:
-                    self._auth_input_values["username"] = username
-                if email:
-                    self._auth_input_values["email"] = email
-                if password:
-                    self._auth_input_values["password"] = password
-                if manual_done:
-                    self._auth_input_values["manual_done"] = "true"
-                if proceed:
-                    self._forced_completion_reason = ""
-                else:
-                    self._forced_completion_reason = (
-                        "auth_required: 로그인 요청이 와서 사용자 입력을 기다리는 중입니다. "
-                        "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요."
-                    )
-                return proceed
-            proceed = bool(callback_resp)
-            if proceed:
-                self._forced_completion_reason = ""
-            else:
-                self._forced_completion_reason = (
-                    "auth_required: 로그인 요청이 와서 사용자 입력을 기다리는 중입니다. "
-                    "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요."
-                )
-            return proceed
-
-        # 콜백이 없으면 기본 input() 사용
-        interactive_stdin = False
-        try:
-            interactive_stdin = bool(os.isatty(0))
-        except Exception:
-            interactive_stdin = False
-        if not interactive_stdin:
-            self._forced_completion_reason = (
-                "auth_required: 로그인 요청이 와서 사용자 입력을 기다리는 중입니다. "
-                "로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요."
-            )
-            self._log(
-                "⏸️ 로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요. "
-                "비대화 실행이라 입력을 받을 수 없어 현재 실행을 일시 중지합니다."
-            )
-            return False
-        print(f"\n🔔 사용자 개입이 필요합니다!")
-        print(f"이유: {reason}")
-        print(f"현재 URL: {current_url}")
-        print("로그인 요청왔는데 어떻게 할까요? 아이디 비밀번호를 알려주세요.")
-        print(f"\n브라우저에서 필요한 작업(로그인 등)을 완료한 후,")
-        user_input = (
-            input("계속하려면 'c' 또는 'continue'를 입력하세요 (중단: 'q'): ")
-            .strip()
-            .lower()
-        )
-
-        if user_input in ["c", "continue", "yes", "y"]:
-            self._log("✅ 사용자가 작업을 완료했습니다. 탐색을 계속합니다.")
-            return True
-        else:
-            self._log("❌ 사용자가 탐색 중단을 요청했습니다.")
-            return False
+        return request_user_intervention_impl(self, reason, current_url)
 
     def _infer_runtime_phase(self, page_state: PageState) -> str:
         elements = page_state.interactive_elements or []
@@ -1868,257 +1588,34 @@ class ExploratoryAgent:
 
     @staticmethod
     def _is_mcp_transport_error(error_text: str) -> bool:
-        lowered = str(error_text or "").lower()
-        transport_markers = (
-            "read timed out",
-            "connection refused",
-            "failed to establish a new connection",
-            "max retries exceeded",
-            "remote end closed connection",
-            "connection aborted",
-            "connection reset",
-        )
-        return any(marker in lowered for marker in transport_markers)
+        return is_mcp_transport_error_impl(error_text)
 
     def _recover_mcp_host(self, *, context: str) -> bool:
-        if wait_for_mcp_ready(self.mcp_host_url, timeout_sec=1.2):
-            return True
-        recovered = ensure_mcp_host_running(self.mcp_host_url, startup_timeout=8.0)
-        if recovered:
-            self._log(f"♻️ MCP host 연결 복구 성공 ({context})")
-        else:
-            self._log(f"⚠️ MCP host 연결 복구 실패 ({context})")
-        return recovered
+        return recover_mcp_host_impl(self, context=context)
 
     def _normalize_bbox(self, bbox: Optional[dict]) -> Optional[Tuple[float, float, float, float]]:
-        if not isinstance(bbox, dict):
-            return None
-        try:
-            x = float(bbox.get("x"))
-            y = float(bbox.get("y"))
-            w = float(bbox.get("width"))
-            h = float(bbox.get("height"))
-        except Exception:
-            return None
-        if w <= 0 or h <= 0:
-            return None
-        return (x, y, w, h)
+        return normalize_bbox_impl(bbox)
 
     def _detect_active_modal_region(
         self, dom_elements: List[DOMElement]
     ) -> Optional[Dict[str, float]]:
-        normalized_boxes: List[Tuple[float, float, float, float]] = []
-        for el in dom_elements:
-            box = self._normalize_bbox(el.bounding_box)
-            if box:
-                normalized_boxes.append(box)
-        if not normalized_boxes:
-            return None
-
-        viewport_w = max((x + w) for x, _, w, _ in normalized_boxes)
-        viewport_h = max((y + h) for _, y, _, h in normalized_boxes)
-        viewport_area = max(1.0, viewport_w * viewport_h)
-
-        candidates: List[Tuple[float, Dict[str, float], float]] = []
-        for el in dom_elements:
-            box = self._normalize_bbox(el.bounding_box)
-            if not box:
-                continue
-            x, y, w, h = box
-            area = w * h
-            frac = area / viewport_area
-            if frac < 0.03:
-                continue
-
-            role = str(el.role or "").strip().lower()
-            aria_modal = str(el.aria_modal or "").strip().lower()
-            class_blob = str(el.class_name or "").strip().lower()
-            tag = str(el.tag or "").strip().lower()
-            looks_modal = (
-                role in {"dialog", "alertdialog"}
-                or aria_modal == "true"
-                or any(
-                    token in class_blob
-                    for token in ("modal", "dialog", "drawer", "sheet", "popup")
-                )
-                or (tag == "dialog")
-            )
-            if not looks_modal:
-                continue
-
-            score = 0.0
-            if role in {"dialog", "alertdialog"}:
-                score += 6.0
-            if aria_modal == "true":
-                score += 5.0
-            if tag == "dialog":
-                score += 2.0
-            if frac < 0.98:
-                score += 1.0
-            if frac > 0.995:
-                score -= 2.0
-            if 0.05 <= frac <= 0.9:
-                score += 1.0
-            candidates.append(
-                (
-                    score,
-                    {"x": x, "y": y, "width": w, "height": h},
-                    frac,
-                )
-            )
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        selected = candidates[0][1]
-        for _, region, frac in candidates:
-            if frac < 0.95:
-                selected = region
-                break
-        return selected
+        return detect_active_modal_region_impl(self, dom_elements)
 
     def _is_bbox_inside_region(
         self,
         bbox: Optional[dict],
         region: Dict[str, float],
     ) -> bool:
-        normalized = self._normalize_bbox(bbox)
-        if not normalized:
-            return True
-        x, y, w, h = normalized
-        cx = x + (w / 2.0)
-        cy = y + (h / 2.0)
-        margin = 8.0
-        left = float(region.get("x", 0.0)) - margin
-        top = float(region.get("y", 0.0)) - margin
-        right = float(region.get("x", 0.0) + region.get("width", 0.0)) + margin
-        bottom = float(region.get("y", 0.0) + region.get("height", 0.0)) + margin
-        return left <= cx <= right and top <= cy <= bottom
+        return is_bbox_inside_region_impl(self, bbox, region)
 
     def _capture_screenshot(self) -> Optional[str]:
-        """스크린샷 캡처"""
-        try:
-            response = None
-            last_exc: Optional[Exception] = None
-            payload = {
-                "action": "capture_screenshot",
-                "params": {"session_id": self.session_id},
-            }
-            for attempt in range(2):
-                try:
-                    response = requests.post(
-                        f"{self.mcp_host_url}/execute",
-                        json=payload,
-                        timeout=(5, 25),
-                    )
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if (
-                        attempt == 0
-                        and self._is_mcp_transport_error(str(exc))
-                        and self._recover_mcp_host(context="capture_screenshot")
-                    ):
-                        continue
-                    raise
-            if response is None and last_exc is not None:
-                raise last_exc
-            data = response.json()
-            screenshot = data.get("screenshot")
-
-            if screenshot and self._screenshot_callback:
-                self._screenshot_callback(screenshot)
-
-            return screenshot
-
-        except Exception as e:
-            self._log(f"스크린샷 캡처 실패: {e}")
-            return None
+        return capture_screenshot_impl(self)
 
     def _check_console_errors(self) -> List[str]:
-        """콘솔 에러 확인"""
-        try:
-            response = None
-            last_exc: Optional[Exception] = None
-            payload = {
-                "action": "get_console_logs",
-                "params": {"session_id": self.session_id, "type": "error"},
-            }
-            for attempt in range(2):
-                try:
-                    response = requests.post(
-                        f"{self.mcp_host_url}/execute",
-                        json=payload,
-                        timeout=(3, 10),
-                    )
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if (
-                        attempt == 0
-                        and self._is_mcp_transport_error(str(exc))
-                        and self._recover_mcp_host(context="console_logs")
-                    ):
-                        continue
-                    raise
-            if response is None and last_exc is not None:
-                raise last_exc
-            data = response.json()
-            logs = data.get("logs", [])
-            if not isinstance(logs, list):
-                return []
-            normalized: List[str] = []
-            for item in logs:
-                if isinstance(item, str):
-                    normalized.append(item)
-                else:
-                    try:
-                        normalized.append(json.dumps(item, ensure_ascii=False))
-                    except Exception:
-                        normalized.append(str(item))
-            return normalized
-
-        except Exception as e:
-            self._log(f"콘솔 로그 확인 실패: {e}")
-            return []
+        return check_console_errors_impl(self)
 
     def _get_current_url(self) -> str:
-        """현재 URL 가져오기"""
-        try:
-            response = None
-            last_exc: Optional[Exception] = None
-            payload = {
-                "action": "get_current_url",
-                "params": {"session_id": self.session_id},
-            }
-            for attempt in range(2):
-                try:
-                    response = requests.post(
-                        f"{self.mcp_host_url}/execute",
-                        json=payload,
-                        timeout=(3, 10),
-                    )
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if (
-                        attempt == 0
-                        and self._is_mcp_transport_error(str(exc))
-                        and self._recover_mcp_host(context="current_url")
-                    ):
-                        continue
-                    raise
-            if response is None and last_exc is not None:
-                raise last_exc
-            data = response.json()
-            return data.get("url", self._current_url)
-
-        except Exception as e:
-            return self._current_url
+        return get_current_url_impl(self)
 
     def _decide_next_exploration_action(
         self,
@@ -2126,930 +1623,90 @@ class ExploratoryAgent:
         screenshot: Optional[str],
         action_count: int,
     ) -> ExplorationDecision:
-        """LLM에게 다음 탐색 액션 결정 요청"""
-
-        # 테스트 가능한 액션 목록 생성
-        testable_actions = self._generate_testable_actions(page_state)
-        self._log(f"   - 테스트 가능한 액션: {len(testable_actions)}개")
-        if not testable_actions:
-            preview = [
-                f"{el.tag}:{self._element_label(el)}"
-                for el in page_state.interactive_elements[:10]
-            ]
-            self._log(f"   - 요소 샘플: {preview}")
-
-        if not testable_actions:
-            if self.config.test_navigation and self._action_frontier:
-                frontier_action = self._select_frontier_action(page_state, [])
-                if frontier_action:
-                    return ExplorationDecision(
-                        should_continue=True,
-                        selected_action=frontier_action,
-                        reasoning="BFS 큐에 남은 액션으로 계속 탐색",
-                        confidence=0.4,
-                    )
-            return ExplorationDecision(
-                should_continue=False,
-                reasoning="더 이상 테스트할 요소가 없습니다",
-                confidence=1.0,
-            )
-
-        # AUTH phase에서는 LLM 자유탐색보다 인증 플로우를 우선 강제한다.
-        if str(self._runtime_phase or "").upper() == "AUTH":
-            def _auth_haystack(action: TestableAction) -> str:
-                return str(action.description or "").strip().lower()
-
-            auth_fill_keywords = (
-                "아이디",
-                "username",
-                "user id",
-                "email",
-                "이메일",
-                "password",
-                "비밀번호",
-                "otp",
-                "captcha",
-                "인증",
-            )
-            auth_submit_keywords = ("로그인", "login", "log in", "sign in")
-            auth_signup_keywords = ("회원가입", "sign up", "signup", "register")
-
-            auth_fill_actions = [
-                a
-                for a in testable_actions
-                if a.action_type == "fill"
-                and any(k in _auth_haystack(a) for k in auth_fill_keywords)
-            ]
-            auth_fill_actions = [
-                a for a in auth_fill_actions if self._auth_field_needs_input(a, page_state)
-            ]
-            if auth_fill_actions:
-                auth_fill_actions.sort(
-                    key=lambda x: (
-                        self._auth_field_order(self._auth_field_bucket(x)),
-                        -float(x.priority),
-                    )
-                )
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=auth_fill_actions[0],
-                    reasoning="AUTH 단계: 인증 입력 필드 우선",
-                    confidence=0.9,
-                )
-
-            auth_login_clicks = [
-                a
-                for a in testable_actions
-                if a.action_type == "click"
-                and any(k in _auth_haystack(a) for k in auth_submit_keywords)
-                and not any(k in _auth_haystack(a) for k in auth_signup_keywords)
-            ]
-            if auth_login_clicks:
-                auth_login_clicks.sort(key=lambda x: float(x.priority), reverse=True)
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=auth_login_clicks[0],
-                    reasoning="AUTH 단계: 로그인 제출 액션 우선",
-                    confidence=0.9,
-                )
-
-        state_key = self._state_key(page_state, testable_actions)
-        self._current_state_key = state_key
-        visited_actions = self._state_action_history.get(state_key, set())
-        unvisited = [
-            action
-            for action in testable_actions
-            if f"{action.element_id}:{action.action_type}" not in visited_actions
-        ]
-        if unvisited:
-            if self._has_pending_inputs(page_state):
-                fill_actions = [
-                    action for action in unvisited if action.action_type == "fill"
-                ]
-                if fill_actions:
-                    fill_actions.sort(key=lambda x: x.priority, reverse=True)
-                    return ExplorationDecision(
-                        should_continue=True,
-                        selected_action=fill_actions[0],
-                        reasoning="미입력 필드 우선 입력",
-                        confidence=0.75,
-                    )
-            unvisited_keys = {
-                f"{action.element_id}:{action.action_type}" for action in unvisited
-            }
-            testable_actions = sorted(
-                testable_actions,
-                key=lambda action: (
-                    1
-                    if f"{action.element_id}:{action.action_type}" in unvisited_keys
-                    else 0,
-                    float(action.priority),
-                ),
-                reverse=True,
-            )
-
-        if (
-            self.config.test_navigation
-            and not self._has_pending_inputs(page_state)
-            and not unvisited
-        ):
-            frontier_action = self._select_frontier_action(page_state, testable_actions)
-            if frontier_action:
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=frontier_action,
-                    reasoning="BFS 탐색: 큐에 등록된 액션 우선 선택",
-                    confidence=0.6,
-                )
-            if self._action_frontier:
-                self._log("ℹ️ BFS 큐는 남아있지만 현재 페이지에서 매칭 실패")
-
-        # 프롬프트 구성
-        memory_context = self._memory_context()
-        prompt = self._build_exploration_prompt(
-            page_state=page_state,
-            testable_actions=testable_actions,
-            action_count=action_count,
-            memory_context=memory_context,
+        return decide_next_exploration_action_impl(
+            self, page_state, screenshot, action_count
         )
 
-        try:
-            action_signature = self._action_signature(testable_actions)
-            cache_key = self._get_llm_cache_key(prompt, screenshot, action_signature)
-            response_text = self._llm_cache.get(cache_key)
-
-            if response_text:
-                self._log("🧠 LLM 캐시 hit")
-            else:
-                semantic_text = self._semantic_cache_text(page_state, testable_actions)
-                response_text = self._semantic_cache_lookup(
-                    semantic_text, action_signature
-                )
-
-            if not response_text:
-                # 선택된 provider API 호출
-                if screenshot:
-                    response_text = self.llm.analyze_with_vision(prompt, screenshot)
-                else:
-                    response_text = self._call_llm_text_only(prompt)
-
-                self._llm_cache[cache_key] = response_text
-                if len(self._llm_cache) > 200:
-                    self._llm_cache.pop(next(iter(self._llm_cache)))
-                self._save_llm_cache()
-
-                semantic_text = self._semantic_cache_text(page_state, testable_actions)
-                self._semantic_cache_store(
-                    semantic_text, response_text, action_signature
-                )
-
-            # JSON 파싱
-            decision = self._parse_exploration_decision(response_text, testable_actions)
-
-            if not decision.should_continue and testable_actions:
-                fallback_action = sorted(
-                    testable_actions, key=lambda x: x.priority, reverse=True
-                )[0]
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=fallback_action,
-                    reasoning="남은 액션이 있어 탐색 지속",
-                    confidence=0.5,
-                )
-
-            return decision
-
-        except Exception as e:
-            self._log(f"LLM 결정 실패: {e}")
-            fatal_reason = self._fatal_llm_reason(str(e))
-            if fatal_reason:
-                return ExplorationDecision(
-                    should_continue=False,
-                    reasoning=fatal_reason,
-                    confidence=1.0,
-                )
-            # 기본 결정: 첫 번째 미테스트 요소 선택
-            if testable_actions:
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=testable_actions[0],
-                    reasoning=f"LLM 오류로 기본 액션 선택: {e}",
-                    confidence=0.3,
-                )
-            else:
-                return ExplorationDecision(
-                    should_continue=False,
-                    reasoning="테스트할 요소 없음",
-                    confidence=1.0,
-                )
-
     def _generate_testable_actions(self, page_state: PageState) -> List[TestableAction]:
-        """페이지 상태에서 테스트 가능한 액션 목록 생성"""
-        actions = []
-
-        recent_action_counts: Dict[str, int] = {}
-        for entry in self._action_history[-5:]:
-            if ": " in entry:
-                action_part = entry.split(": ", 1)[1]
-                action_type = action_part.split(" on ", 1)[0]
-                recent_action_counts[action_type] = (
-                    recent_action_counts.get(action_type, 0) + 1
-                )
-
-        pending_inputs = self._has_pending_inputs(page_state)
-        has_tested_inputs = self._has_tested_inputs(page_state)
-        auth_form_active = self._has_login_form(page_state)
-        auth_phase_active = str(self._runtime_phase or "").upper() == "AUTH"
-        actions_with_status: List[tuple[TestableAction, bool]] = []
-
-        for element in page_state.interactive_elements:
-            # 이미 테스트한 요소는 우선순위 낮게
-            priority = 0.3 if element.tested else 0.8
-
-            element_label = self._element_label(element)
-
-            # 액션 타입 결정
-            if element.tag == "input":
-                if element.type in ["text", "email", "password", "search"]:
-                    action_type = "fill"
-                    field_hint = element_label or element.type or ""
-                    if element.type == "password":
-                        description = f"비밀번호 입력: {field_hint}"
-                    elif element.type == "email":
-                        description = f"이메일 입력: {field_hint}"
-                    else:
-                        description = f"텍스트 입력({element.type}): {field_hint}"
-                elif element.type in ["submit", "button", "image"]:
-                    action_type = "click"
-                    if self._has_login_form(page_state):
-                        description = "버튼: Login"
-                    else:
-                        description = f"Input: {element.type or element_label}"
-                elif element.type in ["checkbox", "radio"]:
-                    action_type = "click"
-                    description = f"체크박스/라디오: {element_label or element.type}"
-                else:
-                    action_type = "click"
-                    description = f"Input: {element.type or element_label}"
-            elif element.tag == "a":
-                action_type = "click"
-                link_label = element_label or "[icon link]"
-                description = f"링크: {link_label}"
-                # 외부 링크는 탐색 대상에서 제외
-                if element.href:
-                    resolved = urljoin(page_state.url, element.href)
-                    current_host = urlparse(page_state.url).netloc
-                    target_host = urlparse(resolved).netloc
-                    if current_host and target_host and current_host != target_host:
-                        continue
-            elif element.tag == "button":
-                action_type = "click"
-                button_label = element_label or "[icon]"
-                description = f"버튼: {button_label}"
-            elif element.tag == "select":
-                action_type = "select"
-                opt_hint = ""
-                if hasattr(element, "options") and element.options:
-                    opt_texts = [
-                        str(o.get("text", "")).strip()
-                        for o in element.options[:5]
-                        if isinstance(o, dict) and str(o.get("text", "")).strip()
-                    ]
-                    if opt_texts:
-                        opt_hint = f" [{' / '.join(opt_texts)}]"
-                description = f"드롭다운: {element_label}{opt_hint}"
-            else:
-                action_type = "click"
-                description = f"{element.tag}: {element_label or element.role}"
-
-            auth_mode = str(self._auth_input_values.get("auth_mode") or "").strip().lower()
-            has_auth_credentials = bool(
-                str(self._auth_input_values.get("password") or "").strip()
-                and (
-                    str(self._auth_input_values.get("username") or "").strip()
-                    or str(self._auth_input_values.get("email") or "").strip()
-                )
-            )
-            if (
-                auth_phase_active
-                and has_auth_credentials
-                and auth_mode not in {"signup", "register"}
-                and action_type == "click"
-            ):
-                desc_lower = description.lower()
-                signup_keywords = (
-                    "회원가입",
-                    "sign up",
-                    "signup",
-                    "register",
-                    "계정이 없으신가요",
-                )
-                if any(keyword in desc_lower for keyword in signup_keywords):
-                    continue
-
-            if auth_phase_active:
-                desc_lower = description.lower()
-                auth_keywords = [
-                    "login",
-                    "log in",
-                    "sign in",
-                    "sign up",
-                    "signup",
-                    "auth",
-                    "password",
-                    "email",
-                    "username",
-                    "아이디",
-                    "비밀번호",
-                    "로그인",
-                    "회원가입",
-                    "인증",
-                    "captcha",
-                    "otp",
-                    "verify",
-                    "continue",
-                    "다음",
-                    "확인",
-                    "완료",
-                    "close",
-                    "dismiss",
-                    "cancel",
-                    "취소",
-                    "닫기",
-                ]
-                element_hint = " ".join(
-                    [
-                        desc_lower,
-                        str(element_label or "").lower(),
-                        str(element.selector or "").lower(),
-                        str(getattr(element, "aria_label", "") or "").lower(),
-                        str(getattr(element, "placeholder", "") or "").lower(),
-                        str(getattr(element, "title", "") or "").lower(),
-                        str(getattr(element, "text", "") or "").lower(),
-                    ]
-                )
-                input_type = str(getattr(element, "type", "") or "").lower()
-                is_auth_form_control = element.tag in {"input", "textarea"} and (
-                    input_type in {"password", "email"}
-                    or any(keyword in element_hint for keyword in auth_keywords)
-                )
-                is_auth_cta = action_type == "click" and any(
-                    keyword in element_hint for keyword in auth_keywords
-                )
-                if not (is_auth_form_control or is_auth_cta):
-                    continue
-                priority = min(1.0, (priority * 1.15) + 0.05)
-
-            if action_type == "select" and not str(element_label or "").strip():
-                priority *= 0.25
-            # 최근 액션과 동일한 타입이면 우선순위 낮춤
-            recent_count = recent_action_counts.get(action_type, 0)
-            if recent_count >= 2:
-                priority *= 0.6
-            elif recent_count == 1:
-                priority *= 0.8
-
-            # Guard: 필수 입력이 남아있으면 제출/확인 버튼 제외
-            auth_trigger_click = False
-            if auth_phase_active and action_type == "click":
-                auth_trigger_keywords = [
-                    "login",
-                    "log in",
-                    "sign in",
-                    "signup",
-                    "sign up",
-                    "회원가입",
-                    "로그인",
-                    "인증",
-                    "verify",
-                ]
-                label_lower = description.lower()
-                auth_trigger_click = any(
-                    keyword in label_lower for keyword in auth_trigger_keywords
-                )
-
-            if pending_inputs and action_type == "click" and not auth_trigger_click:
-                if self._has_login_form(page_state):
-                    if element.tag == "input" and (element.type or "").lower() in [
-                        "submit",
-                        "button",
-                        "image",
-                    ]:
-                        continue
-                    if element.tag == "button" and "login" in description.lower():
-                        continue
-                if element.tag == "input" and (element.type or "").lower() in [
-                    "submit",
-                    "button",
-                    "image",
-                ]:
-                    if not has_tested_inputs:
-                        continue
-                if element.tag == "button":
-                    submit_keywords = [
-                        "submit",
-                        "login",
-                        "log in",
-                        "sign in",
-                        "next",
-                        "continue",
-                        "confirm",
-                        "ok",
-                        "로그인",
-                        "다음",
-                        "확인",
-                        "완료",
-                    ]
-                    label_lower = description.lower()
-                    if any(keyword in label_lower for keyword in submit_keywords):
-                        if not has_tested_inputs:
-                            continue
-                        priority *= 0.7
-
-            # Guard: 토글 액션은 페이지당 1회씩만 허용
-            if action_type == "click":
-                temp_action = TestableAction(
-                    element_id=element.element_id,
-                    action_type=action_type,
-                    description=description,
-                    priority=priority,
-                    reasoning="",
-                )
-                if self._is_toggle_action(temp_action):
-                    toggle_key = (
-                        f"{page_state.url_hash}:{element.element_id}:"
-                        f"{self._normalize_action_description(temp_action)}"
-                    )
-                    if self._toggle_action_history.get(toggle_key, 0) >= 1:
-                        continue
-
-            # 동일 요소의 반복 시도는 우선순위 낮추거나 제외
-            attempt_key = f"{page_state.url_hash}:{element.element_id}:{action_type}"
-            attempt_count = self._action_attempts.get(attempt_key, 0)
-            max_attempts = 2
-            if (
-                element.tag == "a"
-                or "back" in description.lower()
-                or "next" in description.lower()
-            ):
-                max_attempts = 4
-            if attempt_count >= max_attempts:
-                continue
-            if action_type == "select" and not str(element_label or "").strip():
-                if attempt_count >= 1:
-                    continue
-            if attempt_count >= 1:
-                priority *= 0.5
-
-            # 링크는 새 페이지 탐색을 우선
-            if element.tag == "a" and element.href:
-                resolved = urljoin(page_state.url, element.href)
-                if resolved:
-                    current_host = urlparse(page_state.url).netloc
-                    target_host = urlparse(resolved).netloc
-                    if target_host and target_host != current_host:
-                        priority *= 0.5
-                    else:
-                        href_hash = self._hash_url(resolved)
-                        if href_hash not in self._visited_pages:
-                            priority = min(priority * 1.3, 1.0)
-
-            # 파괴적 액션 회피
-            if self.config.avoid_destructive:
-                destructive_keywords = [
-                    "delete",
-                    "삭제",
-                    "제거",
-                    "clear",
-                    "reset",
-                    "logout",
-                    "로그아웃",
-                    "로그 아웃",
-                    "log out",
-                    "sign out",
-                    "reset app state",
-                ]
-                if any(
-                    keyword in description.lower() for keyword in destructive_keywords
-                ):
-                    if any(
-                        keyword in description.lower()
-                        for keyword in self.config.allow_destructive_keywords
-                    ):
-                        priority *= 0.6
-                    elif action_type == "click":
-                        continue
-                    priority *= 0.1
-
-            action = TestableAction(
-                element_id=element.element_id,
-                action_type=action_type,
-                description=description,
-                priority=priority,
-                reasoning=f"{'미테스트' if not element.tested else '재테스트'} 요소",
-            )
-
-            action = self._boost_action_priority(action)
-
-            if (
-                action.action_type == "click"
-                and not element.tested
-                and not pending_inputs
-                and not self._is_toggle_action(action)
-            ):
-                self._enqueue_frontier_action(page_state, action)
-
-            actions_with_status.append((action, element.tested))
-
-        actions = [action for action, _ in actions_with_status]
-        has_untested = any(not tested for _, tested in actions_with_status)
-        if has_untested:
-            actions = [action for action, tested in actions_with_status if not tested]
-            if auth_phase_active and self._has_login_form(page_state):
-                auth_submit_keywords = ("login", "log in", "sign in", "로그인")
-                for action, _tested in actions_with_status:
-                    if action.action_type != "click":
-                        continue
-                    desc = str(action.description or "").lower()
-                    if not any(keyword in desc for keyword in auth_submit_keywords):
-                        continue
-                    duplicate = any(
-                        str(existing.element_id) == str(action.element_id)
-                        and str(existing.action_type) == str(action.action_type)
-                        for existing in actions
-                    )
-                    if duplicate:
-                        continue
-                    action.priority = min(1.0, float(action.priority) + 0.35)
-                    actions.append(action)
-        actions.extend(self._build_navigation_actions(page_state))
-
-        # 우선순위로 정렬
-        actions.sort(key=lambda x: x.priority, reverse=True)
-
-        max_actions = 60
-        if len(actions) > max_actions:
-            category_buckets: Dict[str, List[TestableAction]] = {}
-            for action in actions:
-                if action.action_type == "fill":
-                    category = "fill"
-                elif action.action_type == "select":
-                    category = "select"
-                elif action.action_type == "navigate":
-                    category = "navigate"
-                elif action.action_type == "click":
-                    if "[icon link]" in action.description:
-                        category = "icon_link"
-                    elif "[icon]" in action.description:
-                        category = "icon_button"
-                    elif action.description.startswith("링크:"):
-                        category = "link"
-                    elif action.description.startswith("버튼:"):
-                        category = "button"
-                    elif action.description.startswith("체크박스"):
-                        category = "toggle"
-                    else:
-                        category = "click"
-                else:
-                    category = action.action_type
-                category_buckets.setdefault(category, []).append(action)
-
-            balanced: List[TestableAction] = []
-            per_category = max(2, max_actions // max(len(category_buckets), 1))
-            for category in [
-                "fill",
-                "select",
-                "navigate",
-                "icon_link",
-                "icon_button",
-                "link",
-                "button",
-                "toggle",
-                "click",
-            ]:
-                bucket = category_buckets.get(category, [])
-                if not bucket:
-                    continue
-                balanced.extend(bucket[:per_category])
-
-            if len(balanced) < max_actions:
-                remaining = [action for action in actions if action not in balanced]
-                balanced.extend(remaining[: max_actions - len(balanced)])
-
-            return balanced[:max_actions]
-
-        return actions
+        return generate_testable_actions_impl(self, page_state)
 
     def _enqueue_frontier_action(
         self,
         page_state: PageState,
         action: TestableAction,
     ) -> None:
-        key = f"{page_state.url_hash}:{action.element_id}:{action.action_type}"
-        if key in self._action_frontier_set:
-            return
-        self._action_frontier.append(
-            {
-                "url_hash": page_state.url_hash,
-                "element_id": action.element_id,
-                "action_type": action.action_type,
-            }
-        )
-        self._action_frontier_set.add(key)
+        enqueue_frontier_action_impl(self, page_state, action)
 
     def _has_pending_inputs(self, page_state: PageState) -> bool:
-        for element in page_state.interactive_elements:
-            if element.tag != "input":
-                continue
-            input_type = (element.type or "text").lower()
-            if input_type in ["submit", "button", "hidden", "image"]:
-                continue
-            if not element.tested:
-                return True
-        return False
+        return has_pending_inputs_impl(self, page_state)
 
     def _has_tested_inputs(self, page_state: PageState) -> bool:
-        for element in page_state.interactive_elements:
-            if element.tag != "input":
-                continue
-            input_type = (element.type or "text").lower()
-            if input_type in ["submit", "button", "hidden", "image"]:
-                continue
-            if element.tested:
-                return True
-        return False
+        return has_tested_inputs_impl(self, page_state)
 
     def _has_login_form(self, page_state: PageState) -> bool:
-        has_password = False
-        has_user_input = False
-        for element in page_state.interactive_elements:
-            if element.tag != "input":
-                continue
-            input_type = (element.type or "text").lower()
-            if input_type == "password":
-                has_password = True
-            if input_type in ["text", "email"]:
-                has_user_input = True
-        return has_password and has_user_input
+        return has_login_form_impl(self, page_state)
 
-    @staticmethod
-    def _auth_field_order(bucket: Optional[str]) -> int:
-        return {"username": 0, "password": 1, "otp": 2}.get(str(bucket or ""), 9)
+    def _auth_field_order(self, bucket: Optional[str]) -> int:
+        return auth_field_order_impl(self, bucket)
 
     def _auth_field_bucket(self, action: TestableAction) -> Optional[str]:
-        haystack = " ".join(
-            [str(action.description or ""), str(action.element_id or "")]
-        ).lower()
-        if any(token in haystack for token in ("password", "비밀번호", "passwd", "pwd")):
-            return "password"
-        if any(token in haystack for token in ("username", "user id", "userid", "email", "이메일", "아이디", "사용자")):
-            return "username"
-        if any(token in haystack for token in ("otp", "2fa", "인증코드", "verification code")):
-            return "otp"
-        return None
+        return auth_field_bucket_impl(self, action)
 
     def _auth_field_needs_input(
         self,
         action: TestableAction,
         page_state: PageState,
     ) -> bool:
-        bucket = self._auth_field_bucket(action)
-        selector = self._find_selector_by_element_id(action.element_id, page_state)
-        current_value = ""
-        if selector:
-            observed = self._evaluate_selector(
-                selector, "el => (el.value ?? '').toString()"
-            )
-            current_value = str(observed or "").strip()
-        if bucket and current_value:
-            self._auth_completed_fields.add(bucket)
-            return False
-        if bucket and bucket in self._auth_completed_fields:
-            return False
-        return True
+        return auth_field_needs_input_impl(self, action, page_state)
 
     def _is_high_priority_element(self, element: ElementState) -> bool:
-        label = self._element_label(element).lower()
-        selector = (element.selector or "").lower()
-        haystack = f"{label} {selector}".strip()
-        if not haystack:
-            return False
-        return any(
-            keyword in haystack for keyword in self.config.high_priority_keywords
-        )
+        return is_high_priority_element_impl(self, element)
 
     def _boost_action_priority(self, action: TestableAction) -> TestableAction:
-        description = action.description.lower()
-        if any(
-            keyword in description for keyword in self.config.high_priority_keywords
-        ):
-            action.priority = min(1.0, action.priority + 0.35)
-        return action
+        return boost_action_priority_impl(self, action)
 
     def _normalize_seed_urls(self, start_url: str) -> List[str]:
-        seeds: List[str] = []
-        for url in self.config.seed_urls:
-            if not url:
-                continue
-            if url.startswith("http://") or url.startswith("https://"):
-                seeds.append(url)
-            else:
-                seeds.append(urljoin(start_url, url))
-        return list(dict.fromkeys(seeds))
+        return normalize_seed_urls_impl(self, start_url)
 
     def _build_navigation_actions(self, page_state: PageState) -> List[TestableAction]:
-        actions: List[TestableAction] = []
-        seen: Set[str] = set()
-        pending_inputs = self._has_pending_inputs(page_state)
-        base_priority = 0.95 if not pending_inputs else 0.4
-        for url in self._seed_urls:
-            resolved = urljoin(page_state.url, url)
-            if self._hash_url(resolved) in self._visited_pages:
-                continue
-            element_id = f"navigate:{resolved}"
-            attempt_key = f"{page_state.url_hash}:{element_id}:navigate"
-            if self._action_attempts.get(attempt_key, 0) >= 3:
-                continue
-            if element_id in seen:
-                continue
-            seen.add(element_id)
-            actions.append(
-                TestableAction(
-                    element_id=element_id,
-                    action_type="navigate",
-                    description=f"URL 이동: {resolved}",
-                    priority=base_priority,
-                    reasoning="탐색 시드",
-                )
-            )
-
-        actions.extend(self._build_saucedemo_item_actions(page_state, seen))
-        return actions
+        return build_navigation_actions_impl(self, page_state)
 
     def _build_saucedemo_item_actions(
         self,
         page_state: PageState,
         seen: Set[str],
     ) -> List[TestableAction]:
-        if "saucedemo.com" not in page_state.url:
-            return []
-        if "inventory.html" not in page_state.url:
-            return []
-        parsed = urlparse(page_state.url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
-        actions: List[TestableAction] = []
-        pending_inputs = self._has_pending_inputs(page_state)
-        base_priority = 0.9 if not pending_inputs else 0.35
-        pattern = re.compile(r"item_(\d+)_")
-        for element in page_state.interactive_elements:
-            selector = element.selector or ""
-            match = pattern.search(selector)
-            if not match:
-                continue
-            item_id = match.group(1)
-            target_url = f"{base_url}/inventory-item.html?id={item_id}"
-            element_id = f"navigate:{target_url}"
-            attempt_key = f"{page_state.url_hash}:{element_id}:navigate"
-            if self._action_attempts.get(attempt_key, 0) >= 3:
-                continue
-            if element_id in seen:
-                continue
-            seen.add(element_id)
-            actions.append(
-                TestableAction(
-                    element_id=element_id,
-                    action_type="navigate",
-                    description=f"상품 상세 이동: id={item_id}",
-                    priority=base_priority,
-                    reasoning="상품 상세 직접 이동",
-                )
-            )
-        return actions
+        return build_saucedemo_item_actions_impl(self, page_state, seen)
 
     def _resolve_navigation_target(self, element_id: str, current_url: str) -> str:
-        target = element_id
-        if element_id.startswith("navigate:"):
-            target = element_id.split(":", 1)[1]
-        if not target:
-            return current_url
-        return urljoin(current_url, target)
+        return resolve_navigation_target_impl(self, element_id, current_url)
 
     def _element_label(self, element: ElementState) -> str:
-        parts = [
-            element.text or "",
-            element.aria_label or "",
-            element.title or "",
-            element.placeholder or "",
-            element.role or "",
-        ]
-        label = next((part for part in parts if part), "")
-        return label.strip()
+        return element_label_impl(self, element)
 
     def _action_signature(self, actions: List[TestableAction]) -> str:
-        entries = [
-            f"{action.action_type}:{self._normalize_action_description(action)}"
-            for action in actions
-        ]
-        digest = hashlib.md5("|".join(entries).encode("utf-8")).hexdigest()[:12]
-        return digest
+        return action_signature_impl(self, actions)
 
     def _normalize_action_description(self, action: TestableAction) -> str:
-        description = action.description.lower()
-        if self._is_toggle_action(action):
-            for keyword in [
-                "add to cart",
-                "remove",
-                "open",
-                "close",
-                "show",
-                "hide",
-                "expand",
-                "collapse",
-            ]:
-                if keyword in description:
-                    return keyword
-        return action.description
+        return normalize_action_description_impl(self, action)
 
     def _build_action_for_element(
         self, element: ElementState, action_type: str
     ) -> TestableAction:
-        label = self._element_label(element)
-        if element.tag == "input":
-            if element.type in ["text", "email", "password", "search"]:
-                description = f"텍스트 입력({element.type}): {label or element.type}"
-            elif element.type in ["checkbox", "radio"]:
-                description = f"체크박스/라디오: {label or element.type}"
-            else:
-                description = f"Input: {element.type or label}"
-        elif element.tag == "a":
-            description = f"링크: {label or 'Link'}"
-        elif element.tag == "button":
-            description = f"버튼: {label or 'Button'}"
-        elif element.tag == "select":
-            description = f"드롭다운: {label}"
-        else:
-            description = f"{element.tag}: {label or element.role}"
-
-        return TestableAction(
-            element_id=element.element_id,
-            action_type=action_type,
-            description=description,
-            priority=0.5,
-            reasoning="BFS fallback",
-        )
+        return build_action_for_element_impl(self, element, action_type)
 
     def _state_key(self, page_state: PageState, actions: List[TestableAction]) -> str:
-        dom_marker = (
-            self._active_dom_hash
-            or self._active_snapshot_id
-            or self._action_signature(actions)
-        )
-        epoch_marker = str(int(self._active_snapshot_epoch or 0))
-        return f"{page_state.url_hash}:{dom_marker}:{epoch_marker}"
+        return state_key_impl(self, page_state, actions)
 
     def _is_toggle_action(self, action: TestableAction) -> bool:
-        label = action.description.lower()
-        toggle_keywords = [
-            "add to cart",
-            "remove",
-            "open",
-            "close",
-            "show",
-            "hide",
-            "expand",
-            "collapse",
-        ]
-        return any(keyword in label for keyword in toggle_keywords)
+        return is_toggle_action_impl(self, action)
 
     def _select_frontier_action(
         self,
         page_state: PageState,
         testable_actions: List[TestableAction],
     ) -> Optional[TestableAction]:
-        if not self._action_frontier:
-            return None
-
-        action_map = {
-            f"{page_state.url_hash}:{action.element_id}:{action.action_type}": action
-            for action in testable_actions
-        }
-        element_map = {el.element_id: el for el in page_state.interactive_elements}
-        for entry in list(self._action_frontier):
-            if entry["url_hash"] != page_state.url_hash:
-                continue
-            key = f"{entry['url_hash']}:{entry['element_id']}:{entry['action_type']}"
-            action = action_map.get(key)
-            if action:
-                self._action_frontier.remove(entry)
-                self._action_frontier_set.discard(key)
-                return action
-            element = element_map.get(entry["element_id"])
-            if element:
-                self._action_frontier.remove(entry)
-                self._action_frontier_set.discard(key)
-                return self._build_action_for_element(element, entry["action_type"])
-
-        return None
+        return select_frontier_action_impl(self, page_state, testable_actions)
 
     def _build_exploration_prompt(
         self,
@@ -3058,142 +1715,16 @@ class ExploratoryAgent:
         action_count: int,
         memory_context: str = "",
     ) -> str:
-        """탐색 프롬프트 생성"""
-
-        # 테스트 가능한 액션을 텍스트로 변환 (최대 30개)
-        actions_text = "\n".join(
-            [
-                f"[{i}] {action.action_type.upper()}: {action.description} (우선순위: {action.priority:.2f})"
-                for i, action in enumerate(testable_actions[:60])
-            ]
+        return build_exploration_prompt_impl(
+            self, page_state, testable_actions, action_count, memory_context
         )
-
-        # 최근 액션 히스토리
-        recent_history = (
-            "\n".join(self._action_history[-5:])
-            if self._action_history
-            else "없음 (첫 탐색)"
-        )
-
-        # 발견된 이슈 요약
-        issues_summary = (
-            f"{len(self._found_issues)}개 이슈 발견"
-            if self._found_issues
-            else "아직 이슈 없음"
-        )
-
-        prompt = f"""당신은 웹 애플리케이션 탐색 테스트 에이전트입니다.
-화면의 모든 UI 요소를 자율적으로 탐색하고 테스트하여 버그를 찾는 것이 목표입니다.
-
-## 현재 상황
-- URL: {page_state.url}
-- 탐색 진행: {action_count}/{self.config.max_actions} 액션
-- 테스트 완료 요소: {len(self._tested_elements)}개
-- 발견된 이슈: {issues_summary}
-
-## 최근 수행한 액션
-{recent_history}
-
-## 도메인 실행 기억(KB)
-{memory_context or '없음'}
-
-## 테스트 가능한 액션 목록 (우선순위 순)
-{actions_text}
-
-## 지시사항
-1. **우선순위 고려**: 미테스트 요소를 우선 선택하세요
-2. **다양성**: 같은 유형만 계속 테스트하지 말고 다양한 UI 요소를 테스트하세요
-3. **탐색 확대**: 방문하지 않은 링크나 새 페이지로 이어질 요소를 우선 선택하세요
-4. **외부 링크 제외**: 현재 도메인 밖으로 이동하는 링크는 선택하지 마세요
-5. **BFS 탐색**: 새로 발견된 내부 링크는 발견 순서대로 우선 선택하세요
-6. **버그 탐지**: 에러 메시지, 깨진 UI, 예상치 못한 동작을 찾으세요
-7. **종료 조건**: 더 이상 테스트할 요소가 없거나, 충분히 탐색했다면 should_continue: false
-
-## 입력값 생성 규칙 (fill 액션인 경우)
-- **중요**: 화면에 테스트 계정 정보가 보이면 반드시 그 값을 사용하세요!
-- 사용자명/아이디 필드: input_values에 "username" 키로 값 지정
-- 비밀번호 필드: input_values에 "password" 키로 값 지정
-- 이메일 필드: "test.explorer@example.com"
-- 일반 텍스트: "Test input"
-
-## 응답 형식 (JSON만, 마크다운 없이)
-{{
-    "should_continue": true | false,
-    "selected_action_index": 액션 인덱스 (0-59, 선택 안 하면 null),
-    "input_values": {{"username": "사용자명", "password": "비밀번호"}},  // fill 액션인 경우, 필요한 키만 포함
-    "reasoning": "이 액션을 선택한 이유 또는 종료 이유",
-    "confidence": 0.0~1.0,
-    "expected_outcome": "예상되는 결과"
-}}
-
-JSON 응답:"""
-
-        return prompt
 
     def _parse_exploration_decision(
         self,
         response_text: str,
         testable_actions: List[TestableAction],
     ) -> ExplorationDecision:
-        """LLM 응답을 ExplorationDecision으로 파싱"""
-        # 마크다운 코드 블록 제거
-        text = response_text.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-        if not text:
-            return ExplorationDecision(
-                should_continue=False,
-                reasoning="LLM 오류: empty_response_from_model",
-                confidence=0.0,
-            )
-
-        # Codex CLI 로그가 앞에 붙는 경우 JSON 부분만 추출
-        if not text.startswith("{"):
-            first = text.find("{")
-            last = text.rfind("}")
-            if first != -1 and last != -1 and last > first:
-                text = text[first:last + 1].strip()
-
-        try:
-            data = json.loads(text)
-
-            should_continue = data.get("should_continue", True)
-            action_index = data.get("selected_action_index")
-            selected_action = None
-
-            if action_index is not None and 0 <= action_index < len(testable_actions):
-                selected_action = testable_actions[action_index]
-
-            return ExplorationDecision(
-                should_continue=should_continue,
-                selected_action=selected_action,
-                input_values=data.get("input_values", {}),
-                reasoning=data.get("reasoning", ""),
-                confidence=data.get("confidence", 0.5),
-                expected_outcome=data.get("expected_outcome", ""),
-            )
-
-        except (json.JSONDecodeError, ValueError) as e:
-            self._log(f"JSON 파싱 실패: {e}")
-            # 기본값: 첫 번째 액션 선택
-            if testable_actions:
-                return ExplorationDecision(
-                    should_continue=True,
-                    selected_action=testable_actions[0],
-                    reasoning=f"파싱 오류로 기본 액션 선택: {e}",
-                    confidence=0.3,
-                )
-            else:
-                return ExplorationDecision(
-                    should_continue=False,
-                    reasoning="파싱 오류 및 액션 없음",
-                    confidence=0.0,
-                )
+        return parse_exploration_decision_impl(self, response_text, testable_actions)
 
     def _execute_exploration_action(
         self,
@@ -3368,45 +1899,13 @@ JSON 응답:"""
         action: TestableAction,
         selector: str,
     ) -> bool:
-        description = action.description.lower()
-        selector_lower = selector.lower()
-        if "sidebar" in selector_lower or "menu" in selector_lower:
-            return "링크" in description or "메뉴" in description
-        return False
+        return should_open_menu_for_action_impl(self, action, selector)
 
     def _find_open_menu_selector(self, page_state: PageState) -> Optional[str]:
-        for element in page_state.interactive_elements:
-            if element.tag != "button":
-                continue
-            label = (element.text or "").lower()
-            aria_label = (element.aria_label or "").lower()
-            combined = f"{label} {aria_label}".strip()
-            if not combined:
-                continue
-            if "menu" in combined and "close" not in combined and "open" in combined:
-                selector = self._find_selector_by_element_id(
-                    element.element_id, page_state
-                )
-                if selector:
-                    return selector
-        return None
+        return find_open_menu_selector_impl(self, page_state)
 
     def _find_close_menu_selector(self, page_state: PageState) -> Optional[str]:
-        for element in page_state.interactive_elements:
-            if element.tag != "button":
-                continue
-            label = (element.text or "").lower()
-            aria_label = (element.aria_label or "").lower()
-            combined = f"{label} {aria_label}".strip()
-            if not combined:
-                continue
-            if "menu" in combined and "close" in combined:
-                selector = self._find_selector_by_element_id(
-                    element.element_id, page_state
-                )
-                if selector:
-                    return selector
-        return None
+        return find_close_menu_selector_impl(self, page_state)
 
     def _execute_action(
         self,
@@ -3753,129 +2252,16 @@ JSON 응답:"""
         return False
 
     def _evaluate_selector(self, selector: str, script: str) -> Optional[str]:
-        wrapped_fn = (
-            "(() => {"
-            f"const __selector = {json.dumps(selector)};"
-            f"const __fnSource = {json.dumps(script)};"
-            "const __el = document.querySelector(__selector);"
-            "if (!__el) return null;"
-            "try {"
-            "  const __fn = eval('(' + __fnSource + ')');"
-            "  return __fn(__el);"
-            "} catch (_e) {"
-            "  return null;"
-            "}"
-            "})()"
-        )
-        params: Dict[str, object] = {
-            "session_id": self.session_id,
-            "action": "evaluate",
-            "url": "",
-            "fn": wrapped_fn,
-        }
-        try:
-            response = None
-            last_exc: Optional[Exception] = None
-            request_timeout = max(10.0, min(float(self.config.action_timeout), 30.0))
-            for attempt in range(2):
-                try:
-                    response = requests.post(
-                        f"{self.mcp_host_url}/execute",
-                        json={"action": "browser_act", "params": params},
-                        timeout=(5, request_timeout),
-                    )
-                    last_exc = None
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    if (
-                        attempt == 0
-                        and self._is_mcp_transport_error(str(exc))
-                        and self._recover_mcp_host(context="evaluate_selector")
-                    ):
-                        continue
-                    raise
-            if response is None and last_exc is not None:
-                raise last_exc
-            data = response.json()
-            if not data.get("success"):
-                return None
-            result = data.get("result")
-            return str(result) if result is not None else None
-        except Exception:
-            return None
+        return evaluate_selector_impl(self, selector, script)
 
     def _get_select_state(self, selector: Optional[str]) -> Optional[dict]:
-        if not selector:
-            return None
-        result = self._evaluate_selector(
-            selector,
-            """
-            el => JSON.stringify({
-                value: el.value ?? '',
-                text: (el.selectedOptions && el.selectedOptions[0]
-                    ? el.selectedOptions[0].textContent
-                    : '')
-            })
-            """,
-        )
-        if not result:
-            return None
-        try:
-            return json.loads(result)
-        except Exception:
-            return None
+        return get_select_state_impl(self, selector)
 
     def _pick_select_option(self, element_state: Optional[Any]) -> str:
-        """select 요소에서 유효한 option value를 선택한다."""
-        if element_state is None:
-            return "1"
-        opts = getattr(element_state, "options", None)
-        if not opts or not isinstance(opts, list):
-            return "1"
-        # 빈 값/placeholder 옵션을 제외한 실제 옵션 필터링
-        real_opts = [
-            o for o in opts
-            if isinstance(o, dict)
-            and str(o.get("value", "")).strip()
-            and str(o.get("value", "")).strip() != "__truncated__"
-        ]
-        if not real_opts:
-            return "1"
-        # 현재 선택된 값이 아닌 다른 옵션 선택 (탐색 다양성)
-        selected_val = getattr(element_state, "text", "") or ""
-        for opt in real_opts:
-            if str(opt.get("text", "")).strip() != selected_val.strip():
-                return str(opt["value"])
-        # 모든 옵션이 동일하면 첫 번째 반환
-        return str(real_opts[0]["value"])
+        return pick_select_option_impl(self, element_state)
 
     def _get_toggle_state(self, selector: Optional[str]) -> Optional[dict]:
-        if not selector:
-            return None
-        result = self._evaluate_selector(
-            selector,
-            """
-            el => JSON.stringify({
-                checked: typeof el.checked === 'boolean' ? el.checked : null,
-                pressed: (el.getAttribute && el.getAttribute('aria-pressed'))
-                    ? el.getAttribute('aria-pressed') === 'true'
-                    : null,
-                selected: (el.getAttribute && el.getAttribute('aria-selected'))
-                    ? el.getAttribute('aria-selected') === 'true'
-                    : null,
-                expanded: (el.getAttribute && el.getAttribute('aria-expanded'))
-                    ? el.getAttribute('aria-expanded') === 'true'
-                    : null
-            })
-            """,
-        )
-        if not result:
-            return None
-        try:
-            return json.loads(result)
-        except Exception:
-            return None
+        return get_toggle_state_impl(self, selector)
 
     def _build_element_id(
         self,
@@ -3883,161 +2269,38 @@ JSON 응답:"""
         element: DOMElement,
         selector: str,
     ) -> str:
-        """요소 고유 ID 생성"""
-        if selector:
-            return f"{url_hash}:{selector}"
-
-        parts = [
-            element.tag,
-            element.type or "",
-            element.placeholder or "",
-            element.aria_label or "",
-            element.text[:30] if element.text else "",
-        ]
-        filtered = [part for part in parts if part]
-        if not filtered:
-            return f"{url_hash}:{element.tag}"
-        return f"{url_hash}:" + ":".join(filtered)
+        return build_element_id_impl(self, url_hash, element, selector)
 
     def _find_selector_by_element_id(
         self,
         element_id: str,
         page_state: PageState,
     ) -> Optional[str]:
-        """element_id로 셀렉터 찾기"""
-        element = self._find_element_by_id(element_id, page_state)
-        if not element:
-            return None
-        selector = element.selector
-        if selector and self._is_selector_safe(selector):
-            return selector
-        fallback = self._fallback_selector_for_element(element, page_state)
-        return fallback or selector
+        return find_selector_by_element_id_impl(self, element_id, page_state)
 
     def _find_element_by_id(
         self,
         element_id: str,
         page_state: PageState,
     ) -> Optional[ElementState]:
-        """element_id로 ElementState 찾기"""
-        for element in page_state.interactive_elements:
-            if element.element_id == element_id:
-                return element
-        return None
+        return find_element_by_id_impl(self, element_id, page_state)
 
     def _is_selector_safe(self, selector: str) -> bool:
-        if not selector:
-            return False
-        if selector.startswith("role=") or selector.startswith("text="):
-            return True
-        if "[" in selector or "]" in selector:
-            return False
-        parts = selector.split(".")
-        for part in parts[1:]:
-            segment = part.split(" ")[0].split(">")[0]
-            if ":" in segment:
-                return False
-        return True
+        return is_selector_safe_impl(self, selector)
 
     def _fallback_selector_for_element(
         self,
         element: ElementState,
         page_state: PageState,
     ) -> Optional[str]:
-        label = self._element_label(element)
-        if element.tag == "select":
-            select_index = 0
-            for candidate in page_state.interactive_elements:
-                if candidate.tag == "select":
-                    if candidate.element_id == element.element_id:
-                        return f"select >> nth={select_index}"
-                    select_index += 1
-            return "select"
-
-        if element.tag == "input":
-            if element.placeholder:
-                return f'input[placeholder="{element.placeholder}"]'
-            if element.aria_label:
-                return f'input[aria-label="{element.aria_label}"]'
-            if element.type:
-                input_index = 0
-                for candidate in page_state.interactive_elements:
-                    if candidate.tag == "input" and candidate.type == element.type:
-                        if candidate.element_id == element.element_id:
-                            return f'input[type="{element.type}"] >> nth={input_index}'
-                        input_index += 1
-
-        if element.aria_label:
-            return f'[aria-label="{element.aria_label}"]'
-        if element.role:
-            if label:
-                return f'role={element.role}[name="{label}"]'
-            return f"role={element.role}"
-        if label and len(label) <= 40:
-            return f'text="{label}"'
-        return None
+        return fallback_selector_for_element_impl(self, element, page_state)
 
     def _determine_input_value(
         self,
         action: TestableAction,
         input_values: Dict[str, str],
     ) -> str:
-        """입력 필드에 넣을 값 결정"""
-        desc_lower = action.description.lower()
-
-        if "saucedemo.com" in (self._current_url or ""):
-            if "password" in desc_lower or "비밀번호" in desc_lower:
-                return "secret_sauce"
-            if "username" in desc_lower or "사용자" in desc_lower:
-                return "standard_user"
-
-        if self._auth_input_values:
-            if "비밀번호" in desc_lower or "password" in desc_lower:
-                password = str(self._auth_input_values.get("password") or "").strip()
-                if password:
-                    return password
-            else:
-                username = str(
-                    self._auth_input_values.get("username")
-                    or self._auth_input_values.get("email")
-                    or ""
-                ).strip()
-                if username:
-                    return username
-
-        # 명시적으로 제공된 값 사용 (LLM이 제공한 input_values 우선)
-        if input_values:
-            # 비밀번호 필드면 password 키 찾기
-            if "비밀번호" in desc_lower or "password" in desc_lower:
-                for key in ["password", "비밀번호", "pw", "secret"]:
-                    if key in input_values:
-                        self._log(f"📝 비밀번호 입력: {input_values[key]}")
-                        return input_values[key]
-            # 사용자명/텍스트 필드면 username 키 찾기
-            else:
-                for key in ["username", "user", "id", "아이디", "사용자"]:
-                    if key in input_values:
-                        self._log(f"📝 사용자명 입력: {input_values[key]}")
-                        return input_values[key]
-            # 매칭 안 되면 첫 번째 값 사용
-            first_key = list(input_values.keys())[0]
-            first_value = input_values[first_key]
-            self._log(f"📝 입력값 사용 (첫번째): {first_key}={first_value}")
-            return first_value
-
-        # 기본값 생성
-        if "email" in desc_lower or "이메일" in desc_lower:
-            return "test.explorer@example.com"
-        elif "password" in desc_lower or "비밀번호" in desc_lower:
-            return "TestPass123!"
-        elif "name" in desc_lower or "이름" in desc_lower:
-            return "Test User"
-        elif "phone" in desc_lower or "전화" in desc_lower:
-            return "010-1234-5678"
-        elif "search" in desc_lower or "검색" in desc_lower:
-            return "test"
-        else:
-            return "Test input"
+        return determine_input_value_impl(self, action, input_values)
 
     def _create_error_issue(
         self,
@@ -4045,32 +2308,7 @@ JSON 응답:"""
         error_logs: List[Any],
         url: str,
     ) -> Optional[FoundIssue]:
-        """콘솔 에러 이슈 생성"""
-        issue_id = f"ERR_{int(time.time())}_{len(self._found_issues)}"
-        normalized_logs = [str(item) for item in error_logs]
-        filtered_logs = [
-            log
-            for log in normalized_logs
-            if not self._is_expected_non_bug_console_error(log)
-        ]
-        if not filtered_logs:
-            return None
-
-        return FoundIssue(
-            issue_id=issue_id,
-            issue_type=IssueType.ERROR,
-            severity="medium",
-            title=f"JavaScript 에러 발생: {action.description}",
-            description=f"액션 실행 후 콘솔 에러가 발생했습니다.\n\n에러 로그:\n"
-            + "\n".join(filtered_logs[:5]),
-            url=url,
-            steps_to_reproduce=[
-                f"1. {url}로 이동",
-                f"2. {action.description}를 {action.action_type}",
-            ],
-            error_message=filtered_logs[0] if filtered_logs else None,
-            console_logs=filtered_logs,
-        )
+        return create_error_issue_impl(self, action, error_logs, url)
 
     def _create_action_failure_issue(
         self,
@@ -4078,28 +2316,7 @@ JSON 응답:"""
         error_message: str,
         url: str,
     ) -> FoundIssue:
-        """액션 실패 이슈 생성"""
-        issue_id = f"FAIL_{int(time.time())}_{len(self._found_issues)}"
-        err = str(error_message or "").lower()
-        severity = "medium"
-        issue_type = IssueType.UNEXPECTED_BEHAVIOR
-        if "read timed out" in err or "request_exception" in err:
-            severity = "low"
-            issue_type = IssueType.TIMEOUT
-
-        return FoundIssue(
-            issue_id=issue_id,
-            issue_type=issue_type,
-            severity=severity,
-            title=f"액션 실행 실패: {action.description}",
-            description=f"액션을 실행했지만 실패했습니다.\n\n오류: {error_message}",
-            url=url,
-            steps_to_reproduce=[
-                f"1. {url}로 이동",
-                f"2. {action.description}를 {action.action_type}",
-            ],
-            error_message=error_message,
-        )
+        return create_action_failure_issue_impl(self, action, error_message, url)
 
     def _create_intent_issue(
         self,
@@ -4109,18 +2326,11 @@ JSON 응답:"""
         screenshot_before: Optional[str] = None,
         screenshot_after: Optional[str] = None,
     ) -> FoundIssue:
-        issue_id = f"INTENT_{int(time.time())}_{len(self._found_issues)}"
-        return FoundIssue(
-            issue_id=issue_id,
-            issue_type=IssueType.UNEXPECTED_BEHAVIOR,
-            severity="low",
-            title=f"의도한 결과 미확인: {action.description}",
-            description=f"액션 실행 후 의도한 변화가 감지되지 않았습니다.\n\n사유: {reason}",
-            url=url,
-            steps_to_reproduce=[
-                f"1. {url}로 이동",
-                f"2. {action.description}를 {action.action_type}",
-            ],
+        return create_intent_issue_impl(
+            self,
+            action,
+            url,
+            reason,
             screenshot_before=screenshot_before,
             screenshot_after=screenshot_after,
         )
@@ -4138,117 +2348,19 @@ JSON 응답:"""
         before_select_state: Optional[dict],
         before_toggle_state: Optional[dict],
     ) -> tuple[bool, Optional[str]]:
-        if action.action_type == "navigate":
-            target_url = self._resolve_navigation_target(action.element_id, before_url)
-            if self._normalize_url_for_compare(
-                after_url
-            ) == self._normalize_url_for_compare(target_url):
-                return True, None
-            if after_url != before_url:
-                return True, None
-            return False, f"URL 이동이 확인되지 않음: {target_url}"
-
-        if action.action_type == "fill":
-            selector = self._find_selector_by_element_id(
-                action.element_id, before_state
-            )
-            if not selector:
-                return True, None
-            if not expected_input:
-                return True, None
-            current_value = self._evaluate_selector(
-                selector, "el => (el.value ?? el.textContent ?? '').toString()"
-            )
-            if current_value is None:
-                return True, None
-            if self._normalize_text(expected_input) in self._normalize_text(
-                current_value
-            ):
-                return True, None
-            return False, "입력값 반영이 확인되지 않음"
-
-        if action.action_type == "hover":
-            return True, None
-
-        if action.action_type == "select":
-            selector = self._find_selector_by_element_id(
-                action.element_id, before_state
-            )
-            if not selector:
-                return True, None
-            after_select_state = self._get_select_state(selector)
-            expected_label = None
-            if ":" in action.description:
-                expected_label = action.description.split(":", 1)[1].strip()
-            if expected_label and after_select_state:
-                after_text = self._normalize_text(after_select_state.get("text"))
-                if self._normalize_text(expected_label) in after_text:
-                    return True, None
-            if before_select_state and after_select_state:
-                if before_select_state.get("value") != after_select_state.get("value"):
-                    return True, None
-                if self._normalize_text(
-                    before_select_state.get("text")
-                ) != self._normalize_text(after_select_state.get("text")):
-                    return True, None
-            if after_select_state and (
-                after_select_state.get("value") or after_select_state.get("text")
-            ):
-                return True, None
-            return False, "드롭다운 선택 결과가 확인되지 않음"
-
-        if action.action_type in ["click", "select"]:
-            if after_url != before_url:
-                return True, None
-
-            if (
-                screenshot_before
-                and screenshot_after
-                and screenshot_before != screenshot_after
-            ):
-                return True, None
-
-            before_count = len(before_state.interactive_elements)
-            after_count = len(after_state.interactive_elements)
-            if before_count != after_count:
-                return True, None
-
-            element_before = self._find_element_by_id(action.element_id, before_state)
-            selector = element_before.selector if element_before else None
-            element_after = (
-                self._find_element_by_selector(selector, after_state)
-                if selector
-                else None
-            )
-            if selector and element_after is None:
-                return True, None
-
-            if selector:
-                toggle_state = self._get_toggle_state(selector)
-                if toggle_state:
-                    if before_toggle_state and toggle_state != before_toggle_state:
-                        return True, None
-                    if toggle_state.get("checked") is True:
-                        return True, None
-                    if toggle_state.get("pressed") is True:
-                        return True, None
-                    if toggle_state.get("selected") is True:
-                        return True, None
-                    if toggle_state.get("expanded") is True:
-                        return True, None
-            if element_before and element_after:
-                if self._normalize_text(element_before.text) != self._normalize_text(
-                    element_after.text
-                ):
-                    return True, None
-                if (element_before.aria_label or "").strip() != (
-                    element_after.aria_label or ""
-                ).strip():
-                    return True, None
-
-            return False, "URL/DOM 변화가 감지되지 않음"
-
-        return True, None
+        return verify_action_intent_impl(
+            self,
+            action,
+            before_state,
+            after_state,
+            before_url,
+            after_url,
+            screenshot_before,
+            screenshot_after,
+            expected_input,
+            before_select_state,
+            before_toggle_state,
+        )
 
     def _run_filter_semantic_validation(self, goal_text: str) -> Dict[str, Any]:
         try:
@@ -4272,70 +2384,11 @@ JSON 응답:"""
             return {}
 
     def _append_validation_report(self, report: Dict[str, Any], step_number: int) -> List[Dict[str, Any]]:
-        if not isinstance(report, dict):
-            return []
-        raw_checks = report.get("checks")
-        if not isinstance(raw_checks, list):
-            return []
-        step_rows: List[Dict[str, Any]] = []
-        for row in raw_checks:
-            if not isinstance(row, dict):
-                continue
-            item = dict(row)
-            item["source_step"] = int(step_number)
-            step_rows.append(item)
-        if not step_rows:
-            return []
-        self._validation_checks.extend(step_rows)
-
-        summary = report.get("summary")
-        if isinstance(summary, dict):
-            self._verification_report = {
-                "mode": str(report.get("mode") or "filter_semantic_v2"),
-                "summary": dict(summary),
-                "rules_used": list(report.get("rules_used") or []),
-                "pages_checked": int(report.get("pages_checked") or 1),
-                "cases": list(report.get("cases") or []),
-                "reason_code_summary": dict(self._validation_reason_counts or {}),
-            }
-        self._validation_summary = self._aggregate_validation_summary(self._validation_checks)
-        return step_rows
+        return append_validation_report_impl(self, report, step_number)
 
     @staticmethod
     def _aggregate_validation_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        total = len(rows or [])
-        passed = 0
-        failed = 0
-        skipped = 0
-        failed_mandatory = 0
-        skipped_mandatory = 0
-        for row in rows or []:
-            if not isinstance(row, dict):
-                continue
-            status = str(row.get("status") or "").strip().lower()
-            mandatory = bool(row.get("mandatory"))
-            if status in {"pass", "passed"}:
-                passed += 1
-            elif status in {"fail", "failed"}:
-                failed += 1
-                if mandatory:
-                    failed_mandatory += 1
-            elif status.startswith("skipped") or status == "skipped":
-                skipped += 1
-                if mandatory:
-                    skipped_mandatory += 1
-        success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
-        return {
-            "goal_type": "filter_validation_semantic",
-            "total_checks": total,
-            "passed_checks": passed,
-            "failed_checks": failed,
-            "skipped_checks": skipped,
-            "failed_mandatory_checks": failed_mandatory,
-            "skipped_mandatory_checks": skipped_mandatory,
-            "strict_failed": bool((failed_mandatory + skipped_mandatory) > 0),
-            "success_rate": success_rate,
-        }
+        return aggregate_validation_summary_impl(rows)
 
     def _find_element_by_selector(
         self, selector: Optional[str], page_state: PageState
@@ -4363,83 +2416,14 @@ JSON 응답:"""
     def _report_console_errors(
         self, console_errors: List[str], screenshot: Optional[str]
     ):
-        """콘솔 에러 리포트"""
-        filtered_errors = [
-            str(log)
-            for log in (console_errors or [])
-            if not self._is_expected_non_bug_console_error(str(log))
-        ]
-        if not filtered_errors:
-            return
-        issue_id = f"CONSOLE_{int(time.time())}"
-
-        issue = FoundIssue(
-            issue_id=issue_id,
-            issue_type=IssueType.ERROR,
-            severity="medium",
-            title=f"콘솔 에러 감지: {len(filtered_errors)}개",
-            description=f"페이지 로드 시 콘솔 에러가 발견되었습니다.\n\n"
-            + "\n".join(filtered_errors[:5]),
-            url=self._current_url,
-            steps_to_reproduce=[f"1. {self._current_url}로 이동"],
-            console_logs=filtered_errors,
-            screenshot_before=screenshot,
-        )
-
-        self._found_issues.append(issue)
+        return report_console_errors_impl(self, console_errors, screenshot)
 
     @staticmethod
     def _is_expected_non_bug_console_error(log_text: str) -> bool:
-        text = str(log_text or "").lower()
-        if not text:
-            return False
-        expected_patterns = (
-            "이미 사용 중인 아이디",
-            "already used",
-            "already exists",
-            "duplicate",
-            "invalid credentials",
-            "wrong password",
-            "비밀번호가 일치하지",
-            "회원가입 실패",
-            "로그인 실패",
-            "api 에러 상세",
-        )
-        has_expected = any(pat in text for pat in expected_patterns)
-        if not has_expected:
-            return False
-        if "400" in text or "failed to load resource" in text:
-            return True
-        # 사이트별 인증/중복 검증 메시지는 HTTP 코드가 노출되지 않아도 정상 동작일 수 있음
-        auth_validation_hints = (
-            "회원가입",
-            "로그인",
-            "auth",
-            "credential",
-            "아이디",
-            "비밀번호",
-            "validation",
-        )
-        if any(h in text for h in auth_validation_hints):
-            return True
-        return False
+        return is_expected_non_bug_console_error_impl(log_text)
 
     def _calculate_coverage(self) -> Dict[str, Any]:
-        """테스트 커버리지 계산"""
-        total_elements = 0
-        tested_elements = len(self._tested_elements)
-
-        for page in self._visited_pages.values():
-            total_elements += len(page.interactive_elements)
-
-        return {
-            "total_interactive_elements": total_elements,
-            "tested_elements": tested_elements,
-            "coverage_percentage": (tested_elements / total_elements * 100)
-            if total_elements > 0
-            else 0,
-            "total_pages": len(self._visited_pages),
-        }
+        return calculate_coverage_impl(self._visited_pages, self._tested_elements)
 
     def _determine_completion_reason(
         self,
@@ -4447,101 +2431,19 @@ JSON 응답:"""
         steps: List[ExplorationStep],
         duration_seconds: float = 0.0,
     ) -> str:
-        """탐색 종료 이유 결정"""
-        if self._forced_completion_reason:
-            return self._forced_completion_reason
-        if (
-            self.config.loop_mode == "time"
-            and int(self.config.time_budget_seconds or 0) > 0
-            and duration_seconds >= int(self.config.time_budget_seconds)
-        ):
-            return f"시간 예산 도달 ({int(self.config.time_budget_seconds)}s)"
-        if action_count >= self.config.max_actions:
-            return f"최대 액션 수 도달 ({self.config.max_actions})"
-        elif steps and not steps[-1].decision.should_continue:
-            return steps[-1].decision.reasoning
-        else:
-            return "탐색 완료"
+        return determine_completion_reason_impl(
+            self._forced_completion_reason,
+            self.config,
+            action_count,
+            steps,
+            duration_seconds,
+        )
 
     def _print_summary(self, result: ExplorationResult):
-        """탐색 결과 요약 출력"""
-        self._log("\n" + "=" * 60)
-        self._log("🎉 탐색 완료!")
-        self._log("=" * 60)
-        self._log(f"총 액션 수: {result.total_actions}")
-        self._log(f"방문한 페이지: {result.total_pages_visited}개")
-        self._log(f"테스트한 요소: {result.total_elements_tested}개")
-        self._log(f"커버리지: {result.get_coverage_percentage():.1f}%")
-        self._log(f"발견한 이슈: {len(result.issues_found)}개")
-
-        if result.issues_found:
-            critical = len([i for i in result.issues_found if i.severity == "critical"])
-            high = len([i for i in result.issues_found if i.severity == "high"])
-            medium = len([i for i in result.issues_found if i.severity == "medium"])
-            low = len([i for i in result.issues_found if i.severity == "low"])
-
-            self._log(f"  - Critical: {critical}개")
-            self._log(f"  - High: {high}개")
-            self._log(f"  - Medium: {medium}개")
-            self._log(f"  - Low: {low}개")
-
-        self._log(f"소요 시간: {result.duration_seconds:.1f}초")
-        self._log(f"종료 이유: {result.completion_reason}")
-        self._log("=" * 60)
+        return print_summary_impl(self._log, result)
 
     def _hash_url(self, url: str) -> str:
-        """URL 해시 생성 (중복 방지)"""
-        parsed = urlparse(url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        query = parsed.query or ""
-        if any(key in query for key in ["id=", "item=", "product="]):
-            base_url = f"{base_url}?{query}"
-        return hashlib.md5(base_url.encode()).hexdigest()[:12]
+        return hash_url_impl(url)
 
     def _call_llm_text_only(self, prompt: str) -> str:
-        """스크린샷 없이 텍스트만으로 LLM 호출 (provider 자동 선택)"""
-        if hasattr(self.llm, "analyze_text"):
-            return str(self.llm.analyze_text(prompt, max_completion_tokens=4096, temperature=0.2))
-
-        # Gemini-style client
-        if hasattr(self.llm, "client") and hasattr(getattr(self.llm, "client"), "models"):
-            try:
-                from google.genai import types
-
-                response = self.llm.client.models.generate_content(
-                    model=self.llm.model,
-                    contents=[types.Content(parts=[types.Part(text=prompt)])],
-                    config=types.GenerateContentConfig(
-                        max_output_tokens=4096,
-                        temperature=0.2,
-                    ),
-                )
-                text = getattr(response, "text", None)
-                if isinstance(text, str):
-                    return text
-            except Exception:
-                pass
-
-        # OpenAI-style client
-        response = self.llm.client.chat.completions.create(
-            model=self.llm.model,
-            max_completion_tokens=4096,
-            temperature=0.2,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        content = response.choices[0].message.content if response.choices else ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks: List[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        chunks.append(text)
-                    continue
-                text = getattr(item, "text", None)
-                if isinstance(text, str):
-                    chunks.append(text)
-            return "\n".join(chunks).strip()
-        return str(content or "")
+        return call_llm_text_only_impl(self.llm, prompt)
