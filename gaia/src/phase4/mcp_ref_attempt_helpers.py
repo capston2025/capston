@@ -41,6 +41,8 @@ async def resolve_locator_for_attempt(
             reason_code = "ambiguous_ref_target"
         elif locator_error_text in {"dom_ref_missing"}:
             reason_code = "stale_snapshot"
+        elif mode == "role_ref" and locator_error_text in {"role_ref_not_found", "invalid_role_ref_hint"}:
+            reason_code = "role_ref_recovery_failed"
         else:
             reason_code = "not_found"
         attempt_logs.append(
@@ -62,7 +64,7 @@ async def resolve_locator_for_attempt(
         }
     return {
         "ok": True,
-        "reason_code": "ok",
+        "reason_code": "role_ref_recovered" if mode == "role_ref" else "ok",
         "locator": locator,
         "frame_index": frame_index,
         "resolved_selector": resolved_selector,
