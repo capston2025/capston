@@ -6,6 +6,14 @@ from typing import Optional
 from .models import ActionDecision, ActionType
 
 
+_ACTION_ALIASES = {
+    "verify": ActionType.WAIT.value,
+    "check": ActionType.WAIT.value,
+    "validate": ActionType.WAIT.value,
+    "confirm": ActionType.WAIT.value,
+}
+
+
 def parse_decision(agent, response_text: str) -> ActionDecision:
     """LLM 응답을 ActionDecision으로 파싱"""
     text = response_text.strip()
@@ -32,19 +40,20 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
     try:
         data = json.loads(text)
         action_raw = str(data.get("action", "wait")).strip().lower()
+        normalized_action = _ACTION_ALIASES.get(action_raw, action_raw)
         raw_value = data.get("value")
         normalized_value: Optional[str]
         if raw_value is None:
             normalized_value = None
         elif isinstance(raw_value, str):
             normalized_value = raw_value
-        elif action_raw in {"wait", "select"} and isinstance(raw_value, (dict, list, int, float, bool)):
+        elif normalized_action in {"wait", "select"} and isinstance(raw_value, (dict, list, int, float, bool)):
             normalized_value = json.dumps(raw_value, ensure_ascii=False)
         else:
             normalized_value = str(raw_value)
 
         return ActionDecision(
-            action=ActionType(data.get("action", "wait")),
+            action=ActionType(normalized_action or "wait"),
             element_id=data.get("element_id"),
             value=normalized_value,
             reasoning=data.get("reasoning", ""),

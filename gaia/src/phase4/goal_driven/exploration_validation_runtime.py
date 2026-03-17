@@ -247,6 +247,8 @@ def _append_validation_report(self, report: Dict[str, Any], step_number: int) ->
             "pages_checked": int(report.get("pages_checked") or 1),
             "cases": list(report.get("cases") or []),
             "reason_code_summary": dict(self._validation_reason_counts or {}),
+            "container_source_summary": dict(getattr(self, "_last_container_source_summary", {}) or {}),
+            "active_scoped_container_ref": str(getattr(self, "_active_scoped_container_ref", "") or ""),
         }
     self._validation_summary = self._aggregate_validation_summary(self._validation_checks)
     return step_rows

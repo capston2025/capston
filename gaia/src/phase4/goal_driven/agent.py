@@ -2128,8 +2128,12 @@ class GoalDrivenAgent:
             start_time=start_time,
             reason=final_reason,
         )
-    def _analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
-        return analyze_dom_impl(self, url=url)
+    def _analyze_dom(
+        self,
+        url: Optional[str] = None,
+        scope_container_ref_id: Optional[str] = None,
+    ) -> List[DOMElement]:
+        return analyze_dom_impl(self, url=url, scope_container_ref_id=scope_container_ref_id)
 
     def _capture_screenshot(self) -> Optional[str]:
         return capture_screenshot_impl(self)
@@ -2184,6 +2188,14 @@ class GoalDrivenAgent:
 
     def _format_dom_for_llm(self, elements: List[DOMElement]) -> str:
         return format_dom_for_llm_impl(self, elements)
+
+    def _pick_scoped_container(
+        self,
+        elements: List[DOMElement],
+    ) -> tuple[Optional[str], Optional[str], Optional[str], float, bool]:
+        from .dom_prompt_formatting import pick_scoped_container as pick_scoped_container_impl
+
+        return pick_scoped_container_impl(self, elements)
 
     def _parse_decision(self, response_text: str) -> ActionDecision:
         return parse_decision_impl(self, response_text)

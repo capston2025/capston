@@ -7,6 +7,7 @@ import requests
 from .models import ActionDecision, ActionType, DOMElement
 from .parsing import parse_multi_values, parse_wait_payload
 from .runtime import ActionExecResult
+from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 
 
@@ -351,11 +352,24 @@ def execute_action(
             request_action = "browser_act"
 
     try:
-        response = requests.post(
-            f"{agent.mcp_host_url}/execute",
-            json={"action": request_action, "params": params},
-            timeout=(10, 120),
-        )
+        def _post_execute():
+            return requests.post(
+                f"{agent.mcp_host_url}/execute",
+                json={"action": request_action, "params": params},
+                timeout=(10, 120),
+            )
+
+        try:
+            response = _post_execute()
+        except Exception as exc:
+            if (
+                request_action == "browser_wait"
+                and is_mcp_transport_error(str(exc))
+                and recover_mcp_host(agent, context=f"action:{request_action}")
+            ):
+                response = _post_execute()
+            else:
+                raise
         try:
             data = response.json()
         except Exception:

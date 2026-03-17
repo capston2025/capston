@@ -11,6 +11,7 @@
 - Platform: Homebrew/패키징 검증 자동화
 - UX: 결과 패널/텔레그램 템플릿 반영
 - Reliability: 5분 하드닝 + reason_code 리포트 배치
+- Reliability: `/test` 자동 Playwright 검증 레일(smoke) 도입
 
 ## Week 3
 - Core: 기능 확장 2개(자율모드/디스패치)
@@ -35,6 +36,8 @@
 
 ## 산출물 위치
 - 회귀 시나리오: `gaia/tests/scenarios/*.json`
+- Playwright 검증 레일: `gaia/playwright-rail`
+- 레일 아티팩트: `gaia/artifacts/validation-rail/<run_id>/<scope>/`
 - 하드닝 결과: `artifacts/hardening/*.json`
 - reason_code 리포트: `artifacts/reports/reason_code_report_*.{md,json}`
 - 팀 오너십: `gaia/docs/TEAM_OWNERSHIP.md`

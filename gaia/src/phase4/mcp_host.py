@@ -1077,27 +1077,47 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     return containerName(candidate);
                 }
 
+                function semanticStructureScore(candidateEl, metrics) {
+                    if (!(candidateEl instanceof HTMLElement) || !metrics) return -Infinity;
+                    let score = 0;
+                    if (metrics.semanticRoleScore > 0) score += 4;
+                    if (metrics.semanticTagScore > 0) score += 3;
+                    if (metrics.headingPresent) score += 3;
+                    const explicitName = semanticContainerName(candidateEl);
+                    if (explicitName) score += 2;
+                    if (metrics.repeatedSiblingPattern) score += 2;
+                    if (metrics.interactiveDescendants >= 2) score += 1.5;
+                    else if (metrics.interactiveDescendants === 1) score += 0.75;
+                    if (metrics.meaningfulTextBlock) score += 1;
+                    if (metrics.areaRatio > 0.90) score -= 4;
+                    else if (metrics.areaRatio > 0.75) score -= 2;
+                    if (metrics.genericWrapperOnly) score -= 3;
+                    return score;
+                }
+
                 function namedSemanticContainer(targetEl, startNode = null) {
                     const candidates = semanticContainerCandidates(targetEl, startNode);
+                    let best = null;
+                    let bestScore = -Infinity;
                     for (const candidate of candidates) {
                         const el = candidate.el;
                         const metrics = getContainerMetrics(el);
                         if (!metrics) continue;
-                        const isSemantic = metrics.semanticRoleScore > 0 || metrics.semanticTagScore > 0;
-                        if (!isSemantic) continue;
-                        if (metrics.areaRatio > 0.90) continue;
-                        const name = semanticContainerName(el);
-                        if (!name) continue;
-                        const score = scoreSemanticContainer(el, targetEl, candidate.distance);
-                        if (score < 3.0) continue;
-                        return {
+                        const structuralScore = semanticStructureScore(el, metrics);
+                        if (structuralScore < 6.0) continue;
+                        const semanticScore = scoreSemanticContainer(el, targetEl, candidate.distance);
+                        if (semanticScore < 4.0) continue;
+                        const combinedScore = structuralScore + semanticScore;
+                        if (combinedScore <= bestScore) continue;
+                        best = {
                             el,
-                            score,
+                            score: combinedScore,
                             distance: candidate.distance,
                             source: 'semantic-first',
                         };
+                        bestScore = combinedScore;
                     }
-                    return null;
+                    return best;
                 }
 
                 function repeatedSiblingPattern(el) {
@@ -1259,7 +1279,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
 
                     if (fragments.length < 3) {
                         const fallbackLines = String(container.innerText || container.textContent || '')
-                            .split(/\n+/)
+                            .split(/\\n+/)
                             .map((line) => normalizeText(line))
                             .filter(Boolean);
                         for (const line of fallbackLines) {
@@ -1288,6 +1308,7 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
                     attrs.container_parent_dom_ref = parentDomRef || '';
                     attrs.context_text = containerContextText(container) || compactLines(container.innerText || container.textContent || '', 3);
                     attrs.group_action_labels = siblingActionLabels(container);
+                    attrs.container_source = containerMatch && containerMatch.source ? String(containerMatch.source) : '';
                     if (containerMatch && Number.isFinite(containerMatch.score)) {
                         attrs.context_score_hint = Number(containerMatch.score.toFixed(2));
                     }
@@ -1718,7 +1739,11 @@ async def analyze_page_elements(page) -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[str, Any]:
+async def snapshot_page(
+    url: str = None,
+    session_id: str = "default",
+    scope_container_ref_id: str = "",
+) -> Dict[str, Any]:
     """페이지 스냅샷 생성 (snapshot_id/dom_hash/ref 포함)."""
     if not playwright_instance:
         raise HTTPException(status_code=503, detail="Playwright is not initialized.")
@@ -1819,6 +1844,26 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
     elements = result.get("elements", []) if isinstance(result, dict) else []
     if isinstance(elements, list):
         elements = _dedupe_elements_by_dom_ref(elements)
+    scoped_container_ref_id = str(scope_container_ref_id or "").strip()
+    if scoped_container_ref_id and isinstance(elements, list):
+        scoped_elements: List[Dict[str, Any]] = []
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            attrs = elem.get("attributes") if isinstance(elem.get("attributes"), dict) else {}
+            elem_dom_ref = str(elem.get("dom_ref") or "").strip()
+            container_ref = str(attrs.get("container_ref_id") or attrs.get("container_dom_ref") or "").strip()
+            parent_container_ref = str(
+                attrs.get("container_parent_ref_id") or attrs.get("container_parent_dom_ref") or ""
+            ).strip()
+            if (
+                elem_dom_ref == scoped_container_ref_id
+                or container_ref == scoped_container_ref_id
+                or parent_container_ref == scoped_container_ref_id
+            ):
+                scoped_elements.append(elem)
+        if scoped_elements:
+            elements = scoped_elements
     tab_index = _get_tab_index(page)
     session.snapshot_epoch += 1
     epoch = session.snapshot_epoch
@@ -1865,6 +1910,7 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
         "dom_hash": dom_hash,
         "epoch": epoch,
         "captured_at": captured_at,
+        "scope_container_ref_id": scoped_container_ref_id,
         "elements_by_ref": elements_by_ref,
         "context_snapshot": context_snapshot,
     }
@@ -1889,6 +1935,7 @@ async def snapshot_page(url: str = None, session_id: str = "default") -> Dict[st
     result["captured_at"] = captured_at
     result["dom_elements"] = elements
     result["context_snapshot"] = context_snapshot
+    result["scope_container_ref_id"] = scoped_container_ref_id
     try:
         result["evidence"] = await _collect_page_evidence(page)
     except Exception:

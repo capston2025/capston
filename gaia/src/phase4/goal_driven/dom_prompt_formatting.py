@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import DOMElement
 
@@ -28,6 +28,7 @@ def fields_for_element(agent: Any, el: DOMElement) -> List[str]:
         str(el.type or ""),
         str(getattr(el, "container_name", None) or ""),
         str(getattr(el, "container_role", None) or ""),
+        str(getattr(el, "container_source", None) or ""),
         str(getattr(el, "context_text", None) or ""),
         " ".join(str(v) for v in (getattr(el, "group_action_labels", None) or []) if v),
         str(getattr(el, "role_ref_role", None) or ""),
@@ -76,6 +77,66 @@ def context_score(agent: Any, el: DOMElement) -> float:
     return float(score)
 
 
+def pick_scoped_container(
+    agent: Any,
+    elements: List[DOMElement],
+) -> Tuple[Optional[str], Optional[str], Optional[str], float, bool]:
+    goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
+    quoted_matches = re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or ""))
+    normalized_phrases = [agent._normalize_text(v) for v in quoted_matches if agent._normalize_text(v)]
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for el in elements:
+        container_ref_id = getattr(el, "container_ref_id", None)
+        container_name = getattr(el, "container_name", None)
+        if not container_ref_id or not container_name:
+            continue
+        bucket = grouped.setdefault(
+            str(container_ref_id),
+            {
+                "name": str(container_name),
+                "source": str(getattr(el, "container_source", None) or ""),
+                "elements": [],
+            },
+        )
+        bucket["elements"].append(el)
+
+    if not grouped:
+        return None, None, None, 0.0, False
+
+    ranked: List[Tuple[float, str, str, str]] = []
+    for ref_id, bucket in grouped.items():
+        group_name = str(bucket["name"] or "")
+        group_source = str(bucket["source"] or "")
+        group_elements = list(bucket["elements"] or [])
+        container_tokens = set(agent._tokenize_text(group_name))
+        context_blob = " ".join(
+            str(getattr(el, "context_text", None) or "") for el in group_elements if getattr(el, "context_text", None)
+        )
+        context_tokens = set(agent._tokenize_text(context_blob))
+        score = 0.0
+        score += 2.5 * len(goal_tokens.intersection(container_tokens))
+        score += 1.0 * len(goal_tokens.intersection(context_tokens))
+        if group_source == "semantic-first":
+            score += 2.5
+        for phrase in normalized_phrases:
+            if phrase and phrase in agent._normalize_text(group_name):
+                score += 5.0
+            elif phrase and phrase in agent._normalize_text(context_blob):
+                score += 3.0
+        score += min(1.5, 0.25 * len(group_elements))
+        ranked.append((score, ref_id, group_name, group_source))
+
+    ranked.sort(reverse=True)
+    best_score, best_ref, best_name, best_source = ranked[0]
+    ambiguous = False
+    if len(ranked) > 1:
+        second_score = ranked[1][0]
+        ambiguous = abs(best_score - second_score) < 1.5
+    if best_score < 6.0:
+        return None, None, None, best_score, ambiguous
+    return best_ref, best_name, best_source, float(best_score), ambiguous
+
+
 def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     phase = (agent._runtime_phase or "COLLECT").upper()
 
@@ -105,6 +166,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
             host_context_score = float(getattr(el, "context_score_hint", 0.0) or 0.0)
         except Exception:
             host_context_score = 0.0
+        container_source = str(getattr(el, "container_source", None) or "")
         if has_progress:
             score += 6.0
         if has_next:
@@ -161,6 +223,8 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
 
         score += local_context_score
         score += max(0.0, min(0.75, host_context_score * 0.12))
+        if container_source == "semantic-first":
+            score += 1.0
         score += agent._selector_bias_for_fields(fields)
         score += 0.8 * agent._adaptive_intent_bias(agent._candidate_intent_key("click", fields))
 
@@ -210,6 +274,8 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
             parts.append(f'container="{el.container_name}"')
         if getattr(el, "container_role", None):
             parts.append(f'container-role="{el.container_role}"')
+        if getattr(el, "container_source", None):
+            parts.append(f'container-source="{el.container_source}"')
         if getattr(el, "context_text", None):
             parts.append(f'context="{truncate_for_prompt(el.context_text, 120)}"')
         action_labels = getattr(el, "group_action_labels", None) or []
@@ -240,13 +306,21 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         container_name = getattr(el, "container_name", None)
         if not container_ref_id or not container_name:
             continue
-        bucket = grouped.setdefault(str(container_ref_id), {"name": str(container_name), "items": []})
+        bucket = grouped.setdefault(
+            str(container_ref_id),
+            {
+                "name": str(container_name),
+                "source": str(getattr(el, "container_source", None) or ""),
+                "items": [],
+            },
+        )
         bucket["items"].append(f'[{el.id} {el.text or el.aria_label or el.tag}]')
     if grouped:
         lines.append("")
         lines.append("## 컨텍스트 그룹")
         for bucket in grouped.values():
-            lines.append(f'- 카드 "{bucket["name"]}": {" ".join(bucket["items"][:6])}')
+            source = f' source={bucket["source"]}' if bucket.get("source") else ""
+            lines.append(f'- 카드 "{bucket["name"]}"{source}: {" ".join(bucket["items"][:6])}')
 
     if len(elements) > len(selected):
         lines.append(f"... ({len(elements) - len(selected)} more elements omitted)")

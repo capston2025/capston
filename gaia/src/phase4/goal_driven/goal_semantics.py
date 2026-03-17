@@ -17,6 +17,12 @@ _CANONICAL_DESTINATION_ALIASES: Dict[str, Sequence[str]] = {
 _AUTH_TOKENS = ("로그인", "회원가입", "인증", "sign in", "log in", "login", "auth", "otp", "2fa")
 _OPEN_DETAIL_TOKENS = ("열어", "열기", "상세", "detail", "open")
 _APPLY_TOKENS = ("적용", "선택", "추가해", "넣어", "apply", "select")
+_MUTATION_REQUIRED_TOKENS = (
+    "클릭", "click", "눌", "누르", "tap", "press",
+    "담기", "담아", "담고", "추가", "넣어", "넣고",
+    "삭제", "제거", "remove", "clear", "비우",
+    "적용", "apply", "select",
+)
 
 
 @dataclass
@@ -129,6 +135,19 @@ def extract_goal_semantics(
     goal_kind = _extract_goal_kind(texts, goal_constraints, filter_style, verification_style, destination_aliases)
     explicit_auth_goal = goal_kind == GoalKind.AUTH
     mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
+    joined = " ".join(str(t or "") for t in texts).lower()
+    explicit_mutation_request = any(token in joined for token in _MUTATION_REQUIRED_TOKENS)
+    mutate_required = goal_constraints.get("mutate_required", None)
+    if mutate_required is None:
+        mutate_required = bool(
+            explicit_mutation_request
+            and goal_kind in {
+                GoalKind.ADD_TO_LIST,
+                GoalKind.REMOVE_FROM_LIST,
+                GoalKind.CLEAR_LIST,
+                GoalKind.APPLY_SELECTION,
+            }
+        )
     return GoalSemantics(
         goal_kind=goal_kind,
         target_terms=target_terms,
@@ -137,7 +156,7 @@ def extract_goal_semantics(
         constraints=goal_constraints,
         quoted_targets=quoted_targets,
         already_satisfied_ok=bool(goal_constraints.get("already_satisfied_ok", True)),
-        mutate_required=bool(goal_constraints.get("mutate_required", False)),
+        mutate_required=bool(mutate_required),
         explicit_auth_goal=explicit_auth_goal,
         require_no_navigation=bool(goal_constraints.get("require_no_navigation")),
         current_view_only=bool(goal_constraints.get("current_view_only")),
