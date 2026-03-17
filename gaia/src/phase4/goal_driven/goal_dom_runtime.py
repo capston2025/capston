@@ -6,10 +6,17 @@ from typing import List, Optional
 import requests
 
 from .models import DOMElement
+from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
 
 
-def analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
+def analyze_dom(
+    self,
+    url: Optional[str] = None,
+    scope_container_ref_id: Optional[str] = None,
+) -> List[DOMElement]:
     """MCP Host를 통해 DOM 분석"""
+    if not str(scope_container_ref_id or "").strip():
+        self._active_scoped_container_ref = ""
     last_error: Optional[str] = None
     for attempt in range(1, 4):
         try:
@@ -20,6 +27,7 @@ def analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
                     "params": {
                         "session_id": self.session_id,
                         "url": url or "",
+                        "scope_container_ref_id": str(scope_container_ref_id or "").strip(),
                     },
                 },
                 timeout=30,
@@ -65,6 +73,8 @@ def analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
             self._active_dom_hash = str(data.get("dom_hash") or "")
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
             self._active_url = str(data.get("url") or self._active_url or "")
+            if str(data.get("scope_container_ref_id") or "").strip():
+                self._active_scoped_container_ref = str(data.get("scope_container_ref_id") or "").strip()
             evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
             self._last_snapshot_evidence = evidence
 
@@ -117,6 +127,7 @@ def analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
                         container_name=attrs.get("container_name"),
                         container_role=attrs.get("container_role"),
                         container_ref_id=attrs.get("container_ref_id") or attrs.get("container_dom_ref"),
+                        container_source=attrs.get("container_source"),
                         context_text=attrs.get("context_text"),
                         group_action_labels=attrs.get("group_action_labels"),
                         role_ref_role=attrs.get("role_ref_role"),
@@ -127,10 +138,22 @@ def analyze_dom(self, url: Optional[str] = None) -> List[DOMElement]:
                         is_enabled=is_enabled,
                     )
                 )
+            source_summary: dict[str, int] = {}
+            for item in elements:
+                source = str(getattr(item, "container_source", None) or "").strip()
+                if not source:
+                    continue
+                source_summary[source] = int(source_summary.get(source, 0)) + 1
+            self._last_container_source_summary = source_summary
             return elements
 
         except Exception as e:
             last_error = str(e)
+            if is_mcp_transport_error(last_error) and recover_mcp_host(self, context="goal_dom_snapshot"):
+                if attempt < 3:
+                    self._record_reason_code("dom_snapshot_retry")
+                    time.sleep(0.25 * attempt)
+                    continue
             if attempt < 3:
                 self._record_reason_code("dom_snapshot_retry")
                 time.sleep(0.25 * attempt)

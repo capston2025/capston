@@ -95,9 +95,18 @@ def evaluate_goal_target_completion(
     direction = str(agent._goal_constraints.get("mutation_direction") or "").strip().lower()
     if direction not in {"increase", "decrease", "clear"}:
         return None
+    semantics = getattr(agent, "_goal_semantics", None)
+    semantic_goal_kind = str(getattr(semantics, "goal_kind", "") or "").strip().lower()
+    destination_terms = agent._goal_destination_terms(goal)
     destination_reason = evaluate_destination_region_completion(agent, goal=goal, dom_elements=dom_elements)
     if destination_reason:
         return destination_reason
+    if (
+        semantic_goal_kind in {"add_to_list", "remove_from_list", "clear_list", "apply_selection"}
+        or bool(destination_terms)
+        or bool(getattr(semantics, "mutate_required", False))
+    ):
+        return None
     target_terms = agent._goal_target_terms(goal)
     if not target_terms:
         return None

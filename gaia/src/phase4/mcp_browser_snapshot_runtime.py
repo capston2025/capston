@@ -16,6 +16,7 @@ async def browser_snapshot(params: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
     session_id = str(pick("session_id", "default"))
     tab_id = pick("tab_id", pick("targetId"))
     url = str(pick("url") or "")
+    scope_container_ref_id = str(pick("scope_container_ref_id") or "").strip()
     snapshot_format = str(pick("format") or "").strip().lower()
     mode = str(pick("mode") or "").strip().lower()
     refs_mode = str(pick("refs", "ref") or "ref").strip().lower()
@@ -79,9 +80,17 @@ async def browser_snapshot(params: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
                     await page.wait_for_load_state("networkidle", timeout=5000)
                 except Exception:
                     pass
-        snap = await ctx["snapshot_page"](url="", session_id=session_id)
+        snap = await ctx["snapshot_page"](
+            url="",
+            session_id=session_id,
+            scope_container_ref_id=scope_container_ref_id,
+        )
     else:
-        snap = await ctx["snapshot_page"](url=url, session_id=session_id)
+        snap = await ctx["snapshot_page"](
+            url=url,
+            session_id=session_id,
+            scope_container_ref_id=scope_container_ref_id,
+        )
         session, page = await ctx["resolve_session_page"](session_id)
     elements = snap.get("dom_elements") or snap.get("elements") or []
     elements_by_ref = ctx["extract_elements_by_ref"](snap)
@@ -101,6 +110,7 @@ async def browser_snapshot(params: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
         "dom_elements": elements,
         "elements_by_ref": elements_by_ref,
         "current_url": page.url,
+        "scope_container_ref_id": scope_container_ref_id,
     }
 
     wants_text_snapshot = bool(snapshot_format in {"ai", "aria", "role"} or mode == "efficient")

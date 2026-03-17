@@ -33,6 +33,8 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._memory_selector_bias = {}
     agent._recent_click_element_ids = []
     agent._last_dom_top_ids = []
+    agent._active_scoped_container_ref = ""
+    agent._last_container_source_summary = {}
     agent._goal_tokens = agent._derive_goal_tokens(goal)
     agent._goal_constraints = agent._derive_goal_constraints(goal)
     initialize_goal_policy_runtime(agent, goal)

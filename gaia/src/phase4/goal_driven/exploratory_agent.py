@@ -331,6 +331,8 @@ class ExploratoryAgent:
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
+        self._active_scoped_container_ref: str = ""
+        self._last_container_source_summary: Dict[str, int] = {}
         self._active_modal_region: Optional[Dict[str, float]] = None
         self._last_exec_meta: Dict[str, Any] = {}
         self._action_attempts: Dict[
@@ -1205,6 +1207,18 @@ class ExploratoryAgent:
                     bucket = self._auth_field_bucket(decision.selected_action)
                     if bucket:
                         self._auth_completed_fields.add(bucket)
+                if success and decision.selected_action and intent_ok:
+                    acted = self._find_element_by_id(decision.selected_action.element_id, page_state)
+                    acted_container_ref = str(getattr(acted, "container_ref_id", "") or "").strip()
+                    acted_container_source = str(getattr(acted, "container_source", "") or "").strip()
+                    if (
+                        acted_container_ref
+                        and acted_container_source == "semantic-first"
+                        and str(decision.selected_action.action_type or "").strip().lower() in {"click", "select"}
+                    ):
+                        self._active_scoped_container_ref = acted_container_ref
+                    else:
+                        self._active_scoped_container_ref = ""
 
             step_validation_checks: List[Dict[str, Any]] = []
             if (
@@ -1294,7 +1308,11 @@ class ExploratoryAgent:
         test_scenarios = self._group_steps_into_scenarios(steps)
         if self._verification_report:
             self._verification_report = dict(self._verification_report)
-            self._verification_report["reason_code_summary"] = dict(self._validation_reason_counts or {})
+        else:
+            self._verification_report = {}
+        self._verification_report["reason_code_summary"] = dict(self._validation_reason_counts or {})
+        self._verification_report["container_source_summary"] = dict(self._last_container_source_summary or {})
+        self._verification_report["active_scoped_container_ref"] = str(self._active_scoped_container_ref or "")
 
         # 최종 결과 생성
         result = ExplorationResult(
@@ -1424,6 +1442,12 @@ class ExploratoryAgent:
                         placeholder=el.placeholder,
                         bounding_box=el.bounding_box,
                         options=el.options,
+                        container_name=el.container_name,
+                        container_role=el.container_role,
+                        container_ref_id=el.container_ref_id,
+                        container_source=el.container_source,
+                        context_text=el.context_text,
+                        group_action_labels=el.group_action_labels,
                         tested=tested,
                     )
                 )
@@ -1464,11 +1488,19 @@ class ExploratoryAgent:
             self._log(f"페이지 분석 실패: {e}")
             return None
 
-    def _analyze_dom(self) -> List[DOMElement]:
+    def _analyze_dom(self, scope_container_ref_id: Optional[str] = None) -> List[DOMElement]:
         """MCP Host를 통해 DOM 분석"""
+        scoped_ref = str(
+            scope_container_ref_id
+            or self._active_scoped_container_ref
+            or ""
+        ).strip()
         payload = {
             "action": "browser_snapshot",
-            "params": {"session_id": self.session_id},
+            "params": {
+                "session_id": self.session_id,
+                "scope_container_ref_id": scoped_ref,
+            },
         }
         try:
             response = None
@@ -1509,6 +1541,9 @@ class ExploratoryAgent:
 
             raw_elements = data.get("elements", []) or data.get("dom_elements", [])
             raw_elements_by_ref = data.get("elements_by_ref")
+            if not raw_elements and scoped_ref:
+                self._active_scoped_container_ref = ""
+                return self._analyze_dom(scope_container_ref_id="")
 
             # 셀렉터 맵 초기화
             self._element_selectors = {}
@@ -1518,6 +1553,8 @@ class ExploratoryAgent:
             self._active_snapshot_id = str(data.get("snapshot_id") or "")
             self._active_dom_hash = str(data.get("dom_hash") or "")
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
+            if str(data.get("scope_container_ref_id") or "").strip():
+                self._active_scoped_container_ref = str(data.get("scope_container_ref_id") or "").strip()
 
             if isinstance(raw_elements_by_ref, dict):
                 for rid, meta in raw_elements_by_ref.items():
@@ -1575,10 +1612,24 @@ class ExploratoryAgent:
                         bounding_box=el.get("bounding_box"),
                         options=attrs.get("options"),
                         selected_value=str(attrs.get("selected_value") or ""),
+                        container_name=attrs.get("container_name"),
+                        container_role=attrs.get("container_role"),
+                        container_ref_id=attrs.get("container_ref_id") or attrs.get("container_dom_ref"),
+                        container_source=attrs.get("container_source"),
+                        context_text=attrs.get("context_text"),
+                        group_action_labels=attrs.get("group_action_labels"),
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=is_enabled,
                     )
                 )
+
+            source_summary: Dict[str, int] = {}
+            for item in elements:
+                source = str(getattr(item, "container_source", None) or "").strip()
+                if not source:
+                    continue
+                source_summary[source] = int(source_summary.get(source, 0)) + 1
+            self._last_container_source_summary = source_summary
 
             return elements
 

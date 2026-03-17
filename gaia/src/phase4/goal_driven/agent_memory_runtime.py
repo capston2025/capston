@@ -219,6 +219,12 @@ def record_goal_summary(
                     "steps": step_count,
                     "reason": reason,
                     "duration_seconds": duration_seconds,
+                    "active_scoped_container_ref": str(
+                        getattr(agent, "_active_scoped_container_ref", "") or ""
+                    ),
+                    "container_source_summary": dict(
+                        getattr(agent, "_last_container_source_summary", {}) or {}
+                    ),
                 },
             )
         )

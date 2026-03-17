@@ -29,6 +29,12 @@ class ElementState(BaseModel):
     placeholder: Optional[str] = None
     bounding_box: Optional[dict] = None
     options: Optional[list] = None  # select 요소의 option 목록 [{value, text}]
+    container_name: Optional[str] = None
+    container_role: Optional[str] = None
+    container_ref_id: Optional[str] = None
+    container_source: Optional[str] = None
+    context_text: Optional[str] = None
+    group_action_labels: Optional[List[str]] = None
 
     # 테스트 상태
     tested: bool = Field(default=False, description="테스트 완료 여부")

@@ -92,6 +92,7 @@ class DOMElement(BaseModel):
     container_name: Optional[str] = Field(default=None, description="가장 가까운 semantic container의 대표 이름")
     container_role: Optional[str] = Field(default=None, description="가장 가까운 semantic container의 role")
     container_ref_id: Optional[str] = Field(default=None, description="가장 가까운 semantic container의 synthetic ref")
+    container_source: Optional[str] = Field(default=None, description="container 선택 경로 (semantic-first/scored-fallback)")
     context_text: Optional[str] = Field(default=None, description="해당 container의 compact 텍스트 요약")
     group_action_labels: Optional[list] = Field(default=None, description="같은 container 안의 sibling action 라벨 목록")
     role_ref_role: Optional[str] = Field(default=None, description="role-based recovery hint role")

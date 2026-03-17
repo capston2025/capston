@@ -982,6 +982,8 @@ def _run_single_chat_goal(
         "duration_seconds": round(float(result.duration_seconds), 2),
         "step_timeline": _build_step_timeline(result),
         "reason_code_summary": reason_summary,
+        "container_source_summary": dict(getattr(agent, "_last_container_source_summary", {}) or {}),
+        "active_scoped_container_ref": str(getattr(agent, "_active_scoped_container_ref", "") or ""),
         "validation_summary": validation_report.get("summary", {}),
         "validation_checks": validation_report.get("checks", []),
         "verification_report": validation_report,
@@ -1248,6 +1250,14 @@ def _run_ai_terminal_impl(
                 verification_report.get("reason_code_summary")
                 if isinstance(verification_report.get("reason_code_summary"), dict)
                 else {}
+            ),
+            "container_source_summary": (
+                verification_report.get("container_source_summary")
+                if isinstance(verification_report.get("container_source_summary"), dict)
+                else {}
+            ),
+            "active_scoped_container_ref": str(
+                verification_report.get("active_scoped_container_ref") or ""
             ),
             "validation_summary": validation_summary,
             "validation_checks": validation_checks,

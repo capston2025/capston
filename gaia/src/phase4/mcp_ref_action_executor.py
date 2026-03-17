@@ -60,6 +60,26 @@ def _is_retryable_page_detach_error(exc: BaseException) -> bool:
     )
 
 
+async def _safe_capture_page_screenshot_base64(page: Any) -> Optional[str]:
+    try:
+        screenshot_bytes = await page.screenshot(full_page=False)
+    except Exception as exc:
+        if _is_retryable_page_detach_error(exc):
+            return None
+        return None
+    try:
+        return base64.b64encode(screenshot_bytes).decode("utf-8")
+    except Exception:
+        return None
+
+
+def _safe_page_url(page: Any, fallback: str = "") -> str:
+    try:
+        return str(getattr(page, "url", "") or fallback or "")
+    except Exception:
+        return str(fallback or "")
+
+
 async def _goto_with_retry(page: Any, url: str, *, timeout: int, wait_for_networkidle: bool = True) -> None:
     try:
         await page.goto(url, timeout=timeout)
@@ -636,9 +656,8 @@ async def execute_ref_action_with_snapshot_impl(
         )
         print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
         if effective:
-            session.current_url = page.url
-            screenshot_bytes = await page.screenshot(full_page=False)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            session.current_url = _safe_page_url(page, session.current_url)
+            screenshot_base64 = await _safe_capture_page_screenshot_base64(page)
             tab_id_value = _get_tab_index(page)
             if auth_submit_like_click and trace_auth_submit_enabled:
                 print(
@@ -662,14 +681,9 @@ async def execute_ref_action_with_snapshot_impl(
                 tab_id=tab_id_value,
             )
 
-    screenshot = None
-    try:
-        screenshot_bytes = await page.screenshot(full_page=False)
-        screenshot = base64.b64encode(screenshot_bytes).decode("utf-8")
-    except Exception:
-        screenshot = None
+    screenshot = await _safe_capture_page_screenshot_base64(page)
 
-    session.current_url = page.url
+    session.current_url = _safe_page_url(page, session.current_url)
     tab_id_value = _get_tab_index(page)
     if auth_submit_like_click and trace_auth_submit_enabled:
         print(

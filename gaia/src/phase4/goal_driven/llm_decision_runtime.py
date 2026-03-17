@@ -13,7 +13,28 @@ def decide_next_action(
     screenshot: Optional[str] = None,
     memory_context: str = "",
 ) -> ActionDecision:
-    elements_text = agent._format_dom_for_llm(dom_elements)
+    scoped_ref_id, scoped_name, scoped_source, scoped_score, scoped_ambiguous = agent._pick_scoped_container(dom_elements)
+    elements_for_prompt = dom_elements
+    if scoped_ambiguous:
+        agent._record_reason_code("context_target_ambiguous")
+    elif scoped_ref_id:
+        rescoped_dom = agent._analyze_dom(scope_container_ref_id=scoped_ref_id)
+        if rescoped_dom and 0 < len(rescoped_dom) < len(dom_elements):
+            elements_for_prompt = rescoped_dom
+            agent._active_scoped_container_ref = str(scoped_ref_id)
+            if scoped_source == "semantic-first":
+                agent._record_reason_code("semantic_container_scoped")
+            else:
+                agent._record_reason_code("container_scoped_snapshot")
+        else:
+            agent._record_reason_code("container_context_missing")
+    else:
+        agent._record_reason_code("container_context_missing")
+
+    elements_text = agent._format_dom_for_llm(elements_for_prompt)
+    scoped_hint = "없음"
+    if scoped_ref_id and scoped_name:
+        scoped_hint = f'{scoped_name} (ref={scoped_ref_id}, source={scoped_source or "unknown"}, score={scoped_score:.2f})'
     recent_repeated = agent._recent_click_element_ids[-8:]
     recent_block_text = ", ".join(str(x) for x in recent_repeated) if recent_repeated else "없음"
     signup_rule = ""
@@ -58,6 +79,9 @@ def decide_next_action(
 
 ## 현재 화면의 DOM 요소 (클릭/입력 가능한 요소들)
 {elements_text}
+
+## 현재 선택된 우선 컨테이너
+{scoped_hint}
 
 ## 중요 지시사항
 0. **키워드 우선 탐색**: 키워드와 관련된 요소를 먼저 찾아서 목표 달성에 활용하세요.
