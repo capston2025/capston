@@ -970,3 +970,219 @@ async def analyze_page_elements(page, ctx: Dict[str, Any]) -> Dict[str, Any]:
         current_url = getattr(page, "url", "unknown")
         print(f"Error analyzing page {current_url}: {e}")
         return {"error": str(e)}
+
+
+async def snapshot_page(
+    url: str = None,
+    session_id: str = "default",
+    scope_container_ref_id: str = "",
+    ctx: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    ctx = ctx or {}
+    """페이지 스냅샷 생성 (snapshot_id/dom_hash/ref 포함)."""
+    if not ctx["playwright_instance"]:
+        raise ctx["HTTPException"](status_code=503, detail="Playwright is not initialized.")
+
+
+    # 세션을 가져오거나 생성합니다
+    session = ctx["ensure_session"](
+    active_sessions=ctx["active_sessions"],
+    session_id=session_id,
+    playwright_getter=ctx["get_playwright_instance"],
+    screencast_subscribers=ctx["screencast_subscribers"],
+    frame_setter=ctx["set_current_screencast_frame"],
+    logger=ctx["logger"],
+    )
+
+    page = await session.get_or_create_page()
+
+    def _is_retryable_page_detach_error(exc: BaseException) -> bool:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return False
+        return (
+            "frame has been detached" in message
+            or "target page, context or browser has been closed" in message
+        )
+
+    async def _goto_with_retry(target_page: Any, target_url: str, *, timeout: int) -> None:
+        try:
+            await target_page.goto(target_url, timeout=timeout)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            await target_page.goto(target_url, timeout=timeout)
+
+    async def _screenshot_with_retry(target_page: Any, **kwargs: Any) -> bytes:
+        try:
+            return await target_page.screenshot(**kwargs)
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.screenshot(**kwargs)
+
+    async def _title_with_retry(target_page: Any) -> str:
+        try:
+            return await target_page.title()
+        except Exception as exc:
+            if not _is_retryable_page_detach_error(exc):
+                raise
+            await target_page.wait_for_timeout(150)
+            return await target_page.title()
+
+    # URL이 주어지고 현재 브라우저 URL과 다를 때에만 이동합니다
+    if url:
+        current_browser_url = page.url
+        current_normalized = ctx["normalize_url"](current_browser_url)
+        requested_normalized = ctx["normalize_url"](url)
+
+
+        print(
+            f"[analyze_page] Current browser URL: {current_browser_url} (normalized: {current_normalized})"
+        )
+        print(
+            f"[analyze_page] Requested URL: {url} (normalized: {requested_normalized})"
+        )
+
+        if current_normalized != requested_normalized:
+            print(f"[analyze_page] URLs differ, navigating to: {url}")
+            await _goto_with_retry(page, url, timeout=30000)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+            # 이동 후 React/Figma SPA가 하이드레이션되도록 대기합니다
+            await page.wait_for_timeout(3000)
+
+        # session.current_url을 실제 브라우저 URL과 항상 동기화합니다
+        session.current_url = page.url
+        print(f"[analyze_page] Synced session.current_url to: {session.current_url}")
+
+    # 요소를 수집하고 현재 URL을 응답에 추가합니다
+    result = await ctx["analyze_page_elements"](page)
+
+    should_retry_snapshot = False
+    if isinstance(result, dict):
+        err_text = str(result.get("error") or "").strip().lower()
+        if (
+            "frame has been detached" in err_text
+            or "target page, context or browser has been closed" in err_text
+        ):
+            should_retry_snapshot = True
+    try:
+        if not should_retry_snapshot and bool(page.is_closed()):
+            should_retry_snapshot = True
+    except Exception:
+        if not should_retry_snapshot:
+            should_retry_snapshot = True
+    if should_retry_snapshot:
+        page = await session.get_or_create_page()
+        result = await ctx["analyze_page_elements"](page)
+
+    elements = result.get("elements", []) if isinstance(result, dict) else []
+    if isinstance(elements, list):
+        elements = ctx["dedupe_elements_by_dom_ref"](elements)
+
+    scoped_container_ref_id = str(scope_container_ref_id or "").strip()
+    if scoped_container_ref_id and isinstance(elements, list):
+        scoped_elements: List[Dict[str, Any]] = []
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+            attrs = elem.get("attributes") if isinstance(elem.get("attributes"), dict) else {}
+            elem_dom_ref = str(elem.get("dom_ref") or "").strip()
+            container_ref = str(attrs.get("container_ref_id") or attrs.get("container_dom_ref") or "").strip()
+            parent_container_ref = str(
+                attrs.get("container_parent_ref_id") or attrs.get("container_parent_dom_ref") or ""
+            ).strip()
+            if (
+                elem_dom_ref == scoped_container_ref_id
+                or container_ref == scoped_container_ref_id
+                or parent_container_ref == scoped_container_ref_id
+            ):
+                scoped_elements.append(elem)
+        if scoped_elements:
+            elements = scoped_elements
+    tab_index = ctx["get_tab_index"](page)
+
+    session.snapshot_epoch += 1
+    epoch = session.snapshot_epoch
+    dom_hash = ctx["build_snapshot_dom_hash"](page.url, elements)
+    snapshot_id = f"{session.session_id}:{epoch}:{dom_hash[:12]}"
+    captured_at = int(time.time() * 1000)
+
+    for idx, elem in enumerate(elements):
+        frame_index = int(elem.get("frame_index", 0) or 0)
+        ref_id = f"t{tab_index}-f{frame_index}-e{idx}"
+        elem["ref_id"] = ref_id
+        elem["scope"] = {
+            "tab_index": tab_index,
+            "frame_index": frame_index,
+            "is_main_frame": bool(elem.get("is_main_frame", True)),
+        }
+
+    role_refs = ctx["build_role_refs_from_elements"](elements)
+
+    for elem in elements:
+        if not isinstance(elem, dict):
+            continue
+        ref_id = str(elem.get("ref_id") or "").strip()
+        attrs = elem.get("attributes") if isinstance(elem.get("attributes"), dict) else {}
+        role_ref = role_refs.get(ref_id) if ref_id else None
+        if not isinstance(role_ref, dict):
+            continue
+        elem["role_ref_role"] = role_ref.get("role")
+        elem["role_ref_name"] = role_ref.get("name")
+        elem["role_ref_nth"] = role_ref.get("nth")
+        attrs["role_ref_role"] = role_ref.get("role")
+        attrs["role_ref_name"] = role_ref.get("name")
+        attrs["role_ref_nth"] = role_ref.get("nth")
+
+    context_snapshot = ctx["build_context_snapshot_from_elements"](elements)
+
+
+    elements_by_ref: Dict[str, Dict[str, Any]] = {
+        elem["ref_id"]: elem for elem in elements if isinstance(elem, dict) and elem.get("ref_id")
+    }
+    snapshot_record = {
+        "snapshot_id": snapshot_id,
+        "session_id": session_id,
+        "url": page.url,
+        "tab_index": tab_index,
+        "dom_hash": dom_hash,
+        "epoch": epoch,
+        "captured_at": captured_at,
+        "scope_container_ref_id": scoped_container_ref_id,
+        "elements_by_ref": elements_by_ref,
+        "context_snapshot": context_snapshot,
+    }
+    session.snapshots[snapshot_id] = snapshot_record
+    session.current_snapshot_id = snapshot_id
+    session.current_dom_hash = dom_hash
+
+    # 오래된 스냅샷 정리
+    if len(session.snapshots) > 20:
+        oldest = sorted(
+            session.snapshots.items(),
+            key=lambda item: int((item[1] or {}).get("epoch", 0)),
+        )
+        for old_snapshot_id, _ in oldest[: len(session.snapshots) - 20]:
+            session.snapshots.pop(old_snapshot_id, None)
+
+    result["url"] = page.url
+    result["snapshot_id"] = snapshot_id
+    result["dom_hash"] = dom_hash
+    result["epoch"] = epoch
+    result["tab_index"] = tab_index
+    result["captured_at"] = captured_at
+    result["dom_elements"] = elements
+    result["context_snapshot"] = context_snapshot
+    result["scope_container_ref_id"] = scoped_container_ref_id
+    try:
+        result["evidence"] = await ctx["collect_page_evidence"](page)
+
+    except Exception:
+        result["evidence"] = {}
+    return result
