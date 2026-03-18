@@ -421,6 +421,28 @@ class GoalDrivenAgent:
         )
         if recovered:
             return recovered
+        now = time.time()
+        auth_phase = str(getattr(self, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block"
+        auth_recent = bool(getattr(self, "_auth_interrupt_active", False))
+        last_auth_submit_at = float(getattr(self, "_last_auth_submit_at", 0.0) or 0.0)
+        last_auth_interrupt_at = float(getattr(self, "_auth_interrupt_started_at", 0.0) or 0.0)
+        if auth_phase or auth_recent or (
+            last_auth_submit_at and now - last_auth_submit_at < 20.0
+        ) or (
+            last_auth_interrupt_at and now - last_auth_interrupt_at < 12.0
+        ):
+            self._log("🛠️ DOM 강제 복구 보류: 인증/전환 직후라 세션 재생성 대신 재대기 후 DOM을 다시 읽습니다.")
+            for delay in (0.9, 1.3, 1.8):
+                time.sleep(delay)
+                try:
+                    recovered = self._analyze_dom(scope_container_ref_id="")
+                except Exception as exc:
+                    self._log(f"⚠️ 인증 직후 DOM 재분석 실패: {exc}")
+                    recovered = []
+                if recovered:
+                    self._record_reason_code("dom_session_reset_deferred")
+                    return recovered
+            return []
         return self._force_reset_session_after_empty_dom(goal)
 
     def _force_reset_session_after_empty_dom(self, goal: "TestGoal") -> List["DOMElement"]:

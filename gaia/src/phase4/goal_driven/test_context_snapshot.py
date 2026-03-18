@@ -1,5 +1,8 @@
 from gaia.src.phase4.mcp_host import _build_ref_candidates, _resolve_stale_ref
-from gaia.src.phase4.mcp_ref_snapshot_helpers import _build_context_snapshot_from_elements
+from gaia.src.phase4.mcp_ref_snapshot_helpers import (
+    _build_context_snapshot_from_elements,
+    _build_role_snapshot_from_elements,
+)
 
 
 def _element(
@@ -93,3 +96,20 @@ def test_build_context_snapshot_assigns_container_ref_ids_and_children():
     assert node["name"] == "자기주도학습컨설팅"
     assert set(node["child_ref_ids"]) == {"21", "22"}
     assert elements[0]["attributes"]["container_ref_id"].startswith("ctx-")
+    assert node["role_groups"]
+    summaries = {str(group.get("summary") or "") for group in node["role_groups"]}
+    assert 'button "담기" x1' in summaries
+    assert 'button "강의평" x1' in summaries
+
+
+def test_build_role_snapshot_from_elements_includes_ref_role_name_and_nth():
+    elements = [
+        _element("31", "gaia-button-31", text="담기", nth=0),
+        _element("32", "gaia-button-32", text="담기", nth=1),
+    ]
+    payload = _build_role_snapshot_from_elements(elements)
+    assert payload["refs_mode"] == "role"
+    assert 'button "담기" [ref=31]' in payload["snapshot"]
+    assert '[nth=1]' in payload["snapshot"]
+    assert payload["refs"]["31"]["role"] == "button"
+    assert payload["refs"]["32"]["nth"] == 1

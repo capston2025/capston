@@ -73,8 +73,13 @@ def analyze_dom(
             self._active_dom_hash = str(data.get("dom_hash") or "")
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
             self._active_url = str(data.get("url") or self._active_url or "")
-            if str(data.get("scope_container_ref_id") or "").strip():
-                self._active_scoped_container_ref = str(data.get("scope_container_ref_id") or "").strip()
+            self._active_scoped_container_ref = str(data.get("scope_container_ref_id") or "").strip()
+            self._last_context_snapshot = (
+                data.get("context_snapshot") if isinstance(data.get("context_snapshot"), dict) else {}
+            )
+            self._last_role_snapshot = (
+                data.get("role_snapshot") if isinstance(data.get("role_snapshot"), dict) else {}
+            )
             evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
             self._last_snapshot_evidence = evidence
 

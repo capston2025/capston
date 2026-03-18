@@ -103,6 +103,13 @@ def pick_scoped_container(
     if not grouped:
         return None, None, None, 0.0, False
 
+    role_groups_by_container_ref = {}
+    context_snapshot = getattr(agent, "_last_context_snapshot", None)
+    if isinstance(context_snapshot, dict):
+        raw_groups = context_snapshot.get("role_groups_by_container_ref")
+        if isinstance(raw_groups, dict):
+            role_groups_by_container_ref = raw_groups
+
     ranked: List[Tuple[float, str, str, str]] = []
     for ref_id, bucket in grouped.items():
         group_name = str(bucket["name"] or "")
@@ -124,6 +131,27 @@ def pick_scoped_container(
             elif phrase and phrase in agent._normalize_text(context_blob):
                 score += 3.0
         score += min(1.5, 0.25 * len(group_elements))
+        role_groups = role_groups_by_container_ref.get(ref_id)
+        if isinstance(role_groups, list) and role_groups:
+            score += min(1.2, 0.2 * len(role_groups))
+            role_group_blob = " ".join(
+                " ".join(
+                    str(v)
+                    for v in (
+                        group.get("role"),
+                        group.get("name"),
+                        " ".join(str(label) for label in (group.get("labels") or []) if label),
+                    )
+                    if v
+                )
+                for group in role_groups
+                if isinstance(group, dict)
+            )
+            role_group_tokens = set(agent._tokenize_text(role_group_blob))
+            score += 0.8 * len(goal_tokens.intersection(role_group_tokens))
+            for phrase in normalized_phrases:
+                if phrase and phrase in agent._normalize_text(role_group_blob):
+                    score += 2.0
         ranked.append((score, ref_id, group_name, group_source))
 
     ranked.sort(reverse=True)
@@ -139,6 +167,38 @@ def pick_scoped_container(
 
 def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     phase = (agent._runtime_phase or "COLLECT").upper()
+    lines = []
+
+    role_snapshot = getattr(agent, "_last_role_snapshot", None)
+    if isinstance(role_snapshot, dict):
+        snapshot_text = str(role_snapshot.get("snapshot") or "").strip()
+        refs_mode = str(role_snapshot.get("refs_mode") or "").strip()
+        stats = role_snapshot.get("stats") if isinstance(role_snapshot.get("stats"), dict) else {}
+        if snapshot_text:
+            lines.append("## 역할 스냅샷")
+            meta_parts = []
+            if refs_mode:
+                meta_parts.append(f"refs_mode={refs_mode}")
+            if stats:
+                meta_parts.append(
+                    "stats="
+                    + ",".join(
+                        f"{key}:{value}"
+                        for key, value in (
+                            ("lines", stats.get("lines")),
+                            ("refs", stats.get("refs")),
+                            ("interactive", stats.get("interactive")),
+                        )
+                        if value is not None
+                    )
+                )
+            if meta_parts:
+                lines.append(f'- {" ".join(meta_parts)}')
+            snapshot_lines = snapshot_text.split("\n")
+            lines.extend(snapshot_lines[:24])
+            if len(snapshot_lines) > 24:
+                lines.append(f"... ({len(snapshot_lines) - 24} more role lines omitted)")
+            lines.append("")
 
     def _score(el: DOMElement) -> float:
         text = agent._normalize_text(el.text)
@@ -260,7 +320,6 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     dom_limit = max(80, min(dom_limit, 800))
     selected: List[DOMElement] = ranked[:dom_limit]
 
-    lines = []
     for el in selected:
         parts = [f"[{el.id}] <{el.tag}>"]
 
@@ -321,6 +380,41 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         for bucket in grouped.values():
             source = f' source={bucket["source"]}' if bucket.get("source") else ""
             lines.append(f'- 카드 "{bucket["name"]}"{source}: {" ".join(bucket["items"][:6])}')
+
+    context_snapshot = getattr(agent, "_last_context_snapshot", None)
+    role_groups_by_container_ref = {}
+    if isinstance(context_snapshot, dict):
+        raw_groups = context_snapshot.get("role_groups_by_container_ref")
+        if isinstance(raw_groups, dict):
+            role_groups_by_container_ref = raw_groups
+    selected_container_refs = [
+        str(getattr(el, "container_ref_id", None) or "").strip()
+        for el in selected
+        if str(getattr(el, "container_ref_id", None) or "").strip()
+    ]
+    rendered_role_groups = []
+    for container_ref in list(dict.fromkeys(selected_container_refs)):
+        groups = role_groups_by_container_ref.get(container_ref)
+        if not isinstance(groups, list) or not groups:
+            continue
+        container_name = ""
+        for el in selected:
+            if str(getattr(el, "container_ref_id", None) or "") == container_ref:
+                container_name = str(getattr(el, "container_name", None) or "").strip()
+                break
+        summaries = [
+            str(group.get("summary") or "").strip()
+            for group in groups[:4]
+            if isinstance(group, dict) and str(group.get("summary") or "").strip()
+        ]
+        if not summaries:
+            continue
+        rendered_role_groups.append((container_name or container_ref, summaries))
+    if rendered_role_groups:
+        lines.append("")
+        lines.append("## 역할 그룹")
+        for container_name, summaries in rendered_role_groups[:8]:
+            lines.append(f'- "{container_name}": {" | ".join(summaries)}')
 
     if len(elements) > len(selected):
         lines.append(f"... ({len(elements) - len(selected)} more elements omitted)")

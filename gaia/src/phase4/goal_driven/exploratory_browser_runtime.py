@@ -8,6 +8,26 @@ import requests
 
 def capture_screenshot(agent) -> Optional[str]:
     try:
+        try:
+            connect_timeout = int(
+                getattr(agent, "_env_int", lambda *_args, **_kwargs: 3)(
+                    "GAIA_SCREENSHOT_CONNECT_TIMEOUT_SEC",
+                    3,
+                    low=1,
+                    high=30,
+                )
+            )
+            read_timeout = int(
+                getattr(agent, "_env_int", lambda *_args, **_kwargs: 8)(
+                    "GAIA_SCREENSHOT_READ_TIMEOUT_SEC",
+                    8,
+                    low=2,
+                    high=60,
+                )
+            )
+        except Exception:
+            connect_timeout = 3
+            read_timeout = 8
         response = None
         last_exc: Optional[Exception] = None
         payload = {
@@ -19,7 +39,7 @@ def capture_screenshot(agent) -> Optional[str]:
                 response = requests.post(
                     f"{agent.mcp_host_url}/execute",
                     json=payload,
-                    timeout=(5, 25),
+                    timeout=(connect_timeout, read_timeout),
                 )
                 last_exc = None
                 break

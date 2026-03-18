@@ -245,7 +245,7 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
         "question": (
             "로그인 또는 회원가입이 필요한 화면이 열렸습니다. "
             "계정 정보를 전달하거나, 브라우저에서 직접 로그인한 뒤 완료 여부를 알려주세요. "
-            "회원가입으로 진행하려면 auth_mode=signup을 함께 보내면 됩니다."
+            "회원가입으로 진행하려면 auth_mode=signup, 로그인하지 않고 계속하려면 auth_mode=skip을 함께 보내면 됩니다."
         ),
         "fields": [
             "proceed",
@@ -283,6 +283,14 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             agent._handoff_state["mode"] = "manual_done"
             return True
         auth_mode = str(callback_resp.get("auth_mode") or "").strip().lower()
+        if auth_mode in {"skip", "declined", "dismiss", "close", "no_login"}:
+            if not isinstance(goal.test_data, dict):
+                goal.test_data = {}
+            goal.test_data["auth_mode"] = "skip"
+            agent._log("사용자 요청에 따라 로그인하지 않고 진행합니다.")
+            agent._handoff_state["provided"] = True
+            agent._handoff_state["mode"] = "declined"
+            return True
         username = str(callback_resp.get("username") or "").strip()
         email = str(callback_resp.get("email") or "").strip()
         password = str(callback_resp.get("password") or "").strip()
@@ -377,8 +385,13 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
         return False
 
     if answer in {"n", "no"}:
-        agent._log("로그인 개입이 취소되었습니다.")
-        return False
+        if not isinstance(goal.test_data, dict):
+            goal.test_data = {}
+        goal.test_data["auth_mode"] = "skip"
+        agent._log("사용자 요청에 따라 로그인하지 않고 진행합니다.")
+        agent._handoff_state["provided"] = True
+        agent._handoff_state["mode"] = "declined"
+        return True
 
     try:
         login_id = input("아이디/이메일 (비우면 브라우저에서 수동 로그인): ").strip()

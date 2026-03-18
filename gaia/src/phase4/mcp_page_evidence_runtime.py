@@ -501,6 +501,33 @@ def resolve_stale_ref(
         old_cx = None
         old_cy = None
 
+    context_snapshot = fresh_snapshot.get("context_snapshot", {})
+    role_groups_by_container_ref = (
+        context_snapshot.get("role_groups_by_container_ref")
+        if isinstance(context_snapshot, dict) and isinstance(context_snapshot.get("role_groups_by_container_ref"), dict)
+        else {}
+    )
+
+    def _matching_role_group_bonus(container_ref: str, candidate_role: str, candidate_name: str) -> int:
+        if not container_ref or not candidate_role or not candidate_name:
+            return 0
+        groups = role_groups_by_container_ref.get(container_ref)
+        if not isinstance(groups, list) or not groups:
+            return 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_role = normalize_snapshot_text(group.get("role"))
+            group_name = normalize_snapshot_text(group.get("name"))
+            labels = " ".join(str(v) for v in (group.get("labels") or []) if v)
+            labels_norm = normalize_snapshot_text(labels)
+            if candidate_role != group_role:
+                continue
+            if candidate_name == group_name or candidate_name in labels_norm:
+                if old_role_ref_role == candidate_role and old_role_ref_name == candidate_name:
+                    return 1
+        return 0
+
     best_score = -1
     best_meta: Optional[Dict[str, Any]] = None
     for meta in fresh_map.values():
@@ -516,6 +543,7 @@ def resolve_stale_ref(
         meta_role_ref_role = normalize_snapshot_text(meta.get("role_ref_role") or meta_attrs.get("role_ref_role"))
         meta_role_ref_name = normalize_snapshot_text(meta.get("role_ref_name") or meta_attrs.get("role_ref_name"))
         meta_container_name = normalize_snapshot_text(meta.get("container_name") or meta_attrs.get("container_name"))
+        meta_container_ref = normalize_snapshot_text(meta.get("container_ref_id") or meta_attrs.get("container_ref_id"))
         try:
             meta_role_ref_nth = int(meta.get("role_ref_nth", meta_attrs.get("role_ref_nth", 0)) or 0)
         except Exception:
@@ -551,6 +579,7 @@ def resolve_stale_ref(
                 score -= min(abs(meta_role_ref_nth - old_role_ref_nth), 3)
         if old_container_name and old_container_name == meta_container_name:
             score += 3
+        score += _matching_role_group_bonus(meta_container_ref, meta_role_ref_role, meta_role_ref_name)
         if old_text and meta_text and old_text in meta_text:
             score += 1
         if old_frame_index == meta_frame_index:

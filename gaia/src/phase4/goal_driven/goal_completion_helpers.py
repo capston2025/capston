@@ -20,15 +20,6 @@ def evaluate_destination_region_completion(
     if not norm_targets or not norm_destinations:
         return None
 
-    evidence = agent._last_snapshot_evidence if isinstance(agent._last_snapshot_evidence, dict) else {}
-    evidence_fragments: List[str] = []
-    text_digest = str(evidence.get("text_digest") or "").strip()
-    if text_digest:
-        evidence_fragments.append(text_digest)
-    live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
-    evidence_fragments.extend(str(item or "").strip() for item in live_texts[:12] if str(item or "").strip())
-    evidence_blob = agent._normalize_text(" ".join(evidence_fragments))
-
     def _element_blob(el: DOMElement) -> str:
         labels = getattr(el, "group_action_labels", None) or []
         if isinstance(labels, list):
@@ -66,15 +57,6 @@ def evaluate_destination_region_completion(
             )
             break
 
-    if not region_match and evidence_blob:
-        if any(dest and dest in evidence_blob for dest in norm_destinations) and any(
-            term and term in evidence_blob for term in norm_targets
-        ):
-            region_match = True
-            matched_terms.extend(
-                term for term, norm in zip(target_terms, norm_targets) if norm and norm in evidence_blob
-            )
-
     if not region_match:
         return None
 
@@ -98,9 +80,6 @@ def evaluate_goal_target_completion(
     semantics = getattr(agent, "_goal_semantics", None)
     semantic_goal_kind = str(getattr(semantics, "goal_kind", "") or "").strip().lower()
     destination_terms = agent._goal_destination_terms(goal)
-    destination_reason = evaluate_destination_region_completion(agent, goal=goal, dom_elements=dom_elements)
-    if destination_reason:
-        return destination_reason
     if (
         semantic_goal_kind in {"add_to_list", "remove_from_list", "clear_list", "apply_selection"}
         or bool(destination_terms)
@@ -317,9 +296,32 @@ def evaluate_explicit_reasoning_proof_completion(
     if not has_destination and not has_direction:
         return None
     if dom_elements:
-        target_reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom_elements)
-        if target_reason:
-            return target_reason
+        destination_reason = evaluate_destination_region_completion(agent, goal=goal, dom_elements=dom_elements)
+        if destination_reason:
+            return destination_reason
+        visible_blob = agent._normalize_text(
+            " ".join(
+                " ".join(
+                    [
+                        str(getattr(el, "text", "") or ""),
+                        str(getattr(el, "aria_label", "") or ""),
+                        str(getattr(el, "title", None) or ""),
+                        str(getattr(el, "container_name", None) or ""),
+                        str(getattr(el, "context_text", None) or ""),
+                    ]
+                )
+                for el in dom_elements
+                if bool(getattr(el, "is_visible", True))
+            )
+        )
+        if any(norm and norm in visible_blob for norm in normalized_targets):
+            unique = ", ".join(dict.fromkeys(matched_targets[:3]))
+            if has_destination:
+                destinations_label = ", ".join(dict.fromkeys(destinations[:2]))
+                return (
+                    f"모델 판단과 현재 화면 증거상 목표 대상({unique})이 목적지 영역({destinations_label})에 반영된 것으로 확인되어 목표를 완료로 판정했습니다."
+                )
+            return f"모델 판단과 현재 화면 증거상 목표 대상({unique})이 반영된 것으로 확인되어 목표를 완료로 판정했습니다."
     return None
 
 
