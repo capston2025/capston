@@ -253,6 +253,46 @@ def evaluate_post_action_progress(
                 step_count=step_count,
                 duration_seconds=terminal_result.duration_seconds,
             )
+    if terminal_result is None and decision.action == ActionType.WAIT:
+        wait_reason = agent._evaluate_explicit_reasoning_proof_completion(
+            goal=goal,
+            decision=decision,
+            dom_elements=post_dom or [],
+        )
+        wait_reason_code = "wait_reasoning_proof_completion"
+        if not wait_reason:
+            wait_reason = agent._evaluate_wait_goal_completion(
+                goal=goal,
+                decision=decision,
+                dom_elements=post_dom or [],
+            )
+            wait_reason_code = "wait_goal_completion"
+        if not wait_reason:
+            wait_reason = agent._evaluate_reasoning_only_wait_completion(
+                goal=goal,
+                decision=decision,
+                dom_elements=post_dom or [],
+            )
+            wait_reason_code = "wait_reasoning_target_completion"
+        if wait_reason:
+            _emit_reason(agent, wait_reason_code)
+            agent._log(f"✅ 목표 달성! 이유: {wait_reason}")
+            terminal_result = GoalResult(
+                goal_id=goal.id,
+                goal_name=goal.name,
+                success=True,
+                steps_taken=steps,
+                total_steps=step_count,
+                final_reason=wait_reason,
+                duration_seconds=time.time() - start_time,
+            )
+            agent._record_goal_summary(
+                goal=goal,
+                status="success",
+                reason=terminal_result.final_reason,
+                step_count=step_count,
+                duration_seconds=terminal_result.duration_seconds,
+            )
     if terminal_result is None:
         goal_blob = f"{goal.name} {goal.description}".strip().lower()
         close_keywords = ("닫", "close", "x 버튼", "우상단 x", "overlay", "오버레이", "modal", "모달")

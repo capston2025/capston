@@ -35,6 +35,9 @@ class ElementState(BaseModel):
     container_source: Optional[str] = None
     context_text: Optional[str] = None
     group_action_labels: Optional[List[str]] = None
+    role_ref_role: Optional[str] = None
+    role_ref_name: Optional[str] = None
+    role_ref_nth: Optional[int] = None
 
     # 테스트 상태
     tested: bool = Field(default=False, description="테스트 완료 여부")

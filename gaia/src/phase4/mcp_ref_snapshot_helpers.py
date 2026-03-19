@@ -629,9 +629,112 @@ def _build_role_refs_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, 
     return refs
 
 
+def _build_role_snapshot_from_elements(
+    elements: List[Dict[str, Any]],
+    *,
+    line_limit: int = 500,
+    max_chars: int = 24000,
+) -> Dict[str, Any]:
+    refs = _build_role_refs_from_elements(elements)
+    lines: List[str] = []
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref_id") or "").strip()
+        if not ref:
+            continue
+        ref_meta = refs.get(ref) or {}
+        role = str(ref_meta.get("role") or "").strip().lower() or "generic"
+        name = str(ref_meta.get("name") or "").strip()
+        nth = ref_meta.get("nth")
+        parts = [f"- {role}"]
+        if name:
+            parts.append(f'"{name}"')
+        parts.append(f"[ref={ref}]")
+        if nth is not None:
+            parts.append(f"[nth={nth}]")
+        lines.append(" ".join(parts))
+
+    snapshot = "\n".join(lines) or "(empty)"
+    trimmed_lines = snapshot.split("\n")[: max(1, min(int(line_limit or 500), 5000))]
+    snapshot = "\n".join(trimmed_lines)
+    snapshot, truncated = _limit_snapshot_text(snapshot, max_chars=max_chars)
+    return {
+        "snapshot": snapshot,
+        "refs_mode": "role",
+        "refs": refs,
+        "truncated": truncated,
+        "stats": _role_snapshot_stats(snapshot, refs),
+    }
+
+
+def _build_role_groups_for_container(
+    items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("ref_id") or "").strip()
+        if not ref:
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        role = str(attrs.get("role_ref_role") or attrs.get("role") or "").strip().lower()
+        if not role:
+            tag = str(item.get("tag") or "").strip().lower()
+            if tag == "a":
+                role = "link"
+            elif tag in {"input", "textarea"}:
+                role = "textbox"
+            elif tag == "select":
+                role = "combobox"
+            elif tag == "button":
+                role = "button"
+            else:
+                role = "generic"
+        name = str(
+            attrs.get("role_ref_name")
+            or item.get("text")
+            or attrs.get("aria-label")
+            or attrs.get("title")
+            or ""
+        ).strip()
+        group_key = f"{role}:{name}"
+        bucket = grouped.setdefault(
+            group_key,
+            {
+                "role": role,
+                "name": name or None,
+                "count": 0,
+                "refs": [],
+                "nths": [],
+                "labels": [],
+            },
+        )
+        bucket["count"] += 1
+        bucket["refs"].append(ref)
+        nth = attrs.get("role_ref_nth")
+        if nth is not None:
+            bucket["nths"].append(int(nth))
+        label = str(item.get("text") or attrs.get("aria-label") or attrs.get("title") or "").strip()
+        if label and label not in bucket["labels"]:
+            bucket["labels"].append(label)
+
+    role_groups = list(grouped.values())
+    role_groups.sort(key=lambda group: (-int(group.get("count", 0) or 0), str(group.get("role") or ""), str(group.get("name") or "")))
+    for group in role_groups:
+        name = str(group.get("name") or "").strip()
+        role = str(group.get("role") or "").strip()
+        count = int(group.get("count", 0) or 0)
+        suffix = f' "{name}"' if name else ""
+        group["summary"] = f'{role}{suffix} x{count}'
+    return role_groups
+
+
 def _build_context_snapshot_from_elements(elements: List[Dict[str, Any]]) -> Dict[str, Any]:
     container_entries: Dict[str, Dict[str, Any]] = {}
     child_refs_by_dom_ref: Dict[str, List[str]] = defaultdict(list)
+    items_by_container_dom_ref: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
     for item in elements:
         if not isinstance(item, dict):
@@ -652,6 +755,7 @@ def _build_context_snapshot_from_elements(elements: List[Dict[str, Any]]) -> Dic
         if ref_id:
             child_refs_by_dom_ref[container_dom_ref].append(ref_id)
             container_entries[container_dom_ref]["interactive"] = True
+            items_by_container_dom_ref[container_dom_ref].append(item)
 
     container_ref_by_dom_ref: Dict[str, str] = {}
     nodes: List[Dict[str, Any]] = []
@@ -667,6 +771,7 @@ def _build_context_snapshot_from_elements(elements: List[Dict[str, Any]]) -> Dic
                 "child_ref_ids": child_refs_by_dom_ref.get(dom_ref, []),
                 "interactive": bool(meta.get("interactive")),
                 "context_text": meta.get("context_text"),
+                "role_groups": [],
                 "_parent_dom_ref": meta.get("parent_dom_ref"),
             }
         )
@@ -675,6 +780,19 @@ def _build_context_snapshot_from_elements(elements: List[Dict[str, Any]]) -> Dic
         parent_dom_ref = str(node.pop("_parent_dom_ref") or "").strip()
         if parent_dom_ref:
             node["parent_ref_id"] = container_ref_by_dom_ref.get(parent_dom_ref)
+
+    role_groups_by_container_ref: Dict[str, List[Dict[str, Any]]] = {}
+    for dom_ref, items in items_by_container_dom_ref.items():
+        context_ref = container_ref_by_dom_ref.get(dom_ref)
+        if not context_ref:
+            continue
+        groups = _build_role_groups_for_container(items)
+        role_groups_by_container_ref[context_ref] = groups
+
+    for node in nodes:
+        node_ref = str(node.get("ref_id") or "").strip()
+        if node_ref:
+            node["role_groups"] = role_groups_by_container_ref.get(node_ref, [])
 
     for item in elements:
         if not isinstance(item, dict):
@@ -691,6 +809,7 @@ def _build_context_snapshot_from_elements(elements: List[Dict[str, Any]]) -> Dic
         "nodes": nodes,
         "node_by_ref": node_by_ref,
         "container_ref_by_dom_ref": container_ref_by_dom_ref,
+        "role_groups_by_container_ref": role_groups_by_container_ref,
     }
 
 

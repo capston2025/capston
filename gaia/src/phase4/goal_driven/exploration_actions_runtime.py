@@ -303,6 +303,10 @@ def generate_testable_actions(agent: Any, page_state: PageState) -> List[Testabl
         )
 
         action = boost_action_priority(agent, action)
+        action.priority = min(
+            1.0,
+            float(action.priority) + frontier_context_bonus(agent, element),
+        )
 
         if (
             action.action_type == "click"
@@ -489,6 +493,25 @@ def boost_action_priority(agent: Any, action: TestableAction) -> TestableAction:
     if any(keyword in description for keyword in agent.config.high_priority_keywords):
         action.priority = min(1.0, action.priority + 0.35)
     return action
+
+
+def frontier_context_bonus(agent: Any, element: ElementState) -> float:
+    bonus = 0.0
+    if str(getattr(element, "container_source", None) or "").strip() == "semantic-first":
+        bonus += 0.18
+    active_ref = str(getattr(agent, "_active_scoped_container_ref", "") or "").strip()
+    if active_ref and str(getattr(element, "container_ref_id", None) or "").strip() == active_ref:
+        bonus += 0.24
+    container_role = str(getattr(element, "container_role", None) or "").strip().lower()
+    if container_role in {"article", "listitem", "row", "region", "group"}:
+        bonus += 0.08
+    role = str(getattr(element, "role", None) or "").strip().lower()
+    if role in {"button", "link", "tab", "menuitem", "option"}:
+        bonus += 0.05
+    group_actions = getattr(element, "group_action_labels", None) or []
+    if group_actions:
+        bonus += min(0.12, 0.03 * len(group_actions))
+    return bonus
 
 
 def normalize_seed_urls(agent: Any, start_url: str) -> List[str]:
@@ -680,19 +703,29 @@ def select_frontier_action(
         for action in testable_actions
     }
     element_map = {el.element_id: el for el in page_state.interactive_elements}
-    for entry in list(agent._action_frontier):
+    candidates: List[tuple[float, Dict[str, str], str, Optional[TestableAction], Optional[ElementState]]] = []
+    for index, entry in enumerate(list(agent._action_frontier)):
         if entry["url_hash"] != page_state.url_hash:
             continue
         key = f"{entry['url_hash']}:{entry['element_id']}:{entry['action_type']}"
         action = action_map.get(key)
-        if action:
-            agent._action_frontier.remove(entry)
-            agent._action_frontier_set.discard(key)
-            return action
         element = element_map.get(entry["element_id"])
-        if element:
-            agent._action_frontier.remove(entry)
-            agent._action_frontier_set.discard(key)
-            return build_action_for_element(agent, element, entry["action_type"])
+        score = float(action.priority) if action else 0.0
+        if element is not None:
+            score += frontier_context_bonus(agent, element)
+        score += max(0.0, 0.25 - (index * 0.01))
+        candidates.append((score, entry, key, action, element))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _score, entry, key, action, element = candidates[0]
+    agent._action_frontier.remove(entry)
+    agent._action_frontier_set.discard(key)
+    if action:
+        return action
+    if element:
+        return build_action_for_element(agent, element, entry["action_type"])
 
     return None

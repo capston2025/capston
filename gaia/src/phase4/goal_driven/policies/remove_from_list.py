@@ -16,14 +16,21 @@ class RemoveFromListPolicy:
         if event == "blocked_auth":
             return "handle_auth_or_block"
         if current_phase == "handle_auth_or_block" and event in {"action_ok", "wait_progress"}:
-            return "locate_target"
+            return "reveal_destination_surface"
         if current_phase == "locate_target" and event in {"action_ok", "action_no_state_change"}:
+            return "reveal_destination_surface"
+        if current_phase == "reveal_destination_surface" and event in {"action_ok", "wait_progress"}:
+            destination_surface_actionable = bool(getattr(evidence, "derived", {}).get("destination_surface_actionable"))
+            target_cta_visible = bool(getattr(evidence, "derived", {}).get("target_action_cta_visible"))
+            return "act_on_target" if destination_surface_actionable and target_cta_visible else current_phase
+        if current_phase == "act_on_target" and event in {"action_ok", "action_no_state_change"}:
             return "verify_removal"
         return current_phase
 
     def mandatory_validators(self, phase: str, ctx: Any, semantics: Any, evidence: Any) -> List[str]:
         mapping = {
             "locate_target": ["target_candidate_validator"],
+            "reveal_destination_surface": ["destination_anchor_validator", "destination_surface_actionable_validator"],
             "verify_removal": [
                 "destination_anchor_validator",
                 "target_present_before_validator",
@@ -74,6 +81,6 @@ class RemoveFromListPolicy:
 
     def progress_contract(self) -> Dict[str, Any]:
         return {
-            "strong_progress_signals": ["destination_anchor_found", "aggregate_metric_delta"],
+            "strong_progress_signals": ["destination_anchor_found", "destination_surface_actionable", "target_seen_during_run", "aggregate_metric_delta"],
             "weak_progress_signals": ["toast_only", "button_state_change_only", "scroll_change_only"],
         }

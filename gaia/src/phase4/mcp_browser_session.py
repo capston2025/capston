@@ -47,6 +47,7 @@ class BrowserSession:
         self.file_chooser_listener_armed: bool = False
         self.file_chooser_files: List[str] = []
         self.env_overrides: Dict[str, Any] = {}
+        self._screencast_tasks: set[asyncio.Task[Any]] = set()
 
     def _browser_alive(self) -> bool:
         if self.browser is None:
@@ -245,36 +246,60 @@ class BrowserSession:
             except Exception as exc:
                 self._log_warning("[CDP Screencast] Failed to start: %s", exc)
 
+    def _track_background_task(self, task: asyncio.Task[Any]) -> None:
+        self._screencast_tasks.add(task)
+
+        def _cleanup(done_task: asyncio.Task[Any]) -> None:
+            self._screencast_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except Exception as exc:
+                self._log_warning("[CDP Screencast] Background task failed: %s", exc)
+
+        task.add_done_callback(_cleanup)
+
+    async def _fanout_screencast_frame(self, frame_data: str) -> None:
+        if not frame_data or not self._screencast_subscribers:
+            return
+        disconnected_clients = []
+        payload = {
+            "type": "screencast_frame",
+            "session_id": self.session_id,
+            "frame": frame_data,
+            "timestamp": asyncio.get_event_loop().time(),
+        }
+        for ws in list(self._screencast_subscribers):
+            try:
+                await ws.send_json(payload)
+            except Exception as exc:
+                self._log_warning("[CDP Screencast] Failed to send to subscriber: %s", exc)
+                disconnected_clients.append(ws)
+        for ws in disconnected_clients:
+            if ws in self._screencast_subscribers:
+                self._screencast_subscribers.remove(ws)
+
     async def _handle_screencast_frame(self, payload: Dict[str, Any]):
         frame_data = payload.get("data")
         session_ack = payload.get("sessionId")
 
         if frame_data:
             self._frame_setter(frame_data)
-            disconnected_clients = []
-            for ws in self._screencast_subscribers:
-                try:
-                    await ws.send_json(
-                        {
-                            "type": "screencast_frame",
-                            "session_id": self.session_id,
-                            "frame": frame_data,
-                            "timestamp": asyncio.get_event_loop().time(),
-                        }
-                    )
-                except Exception as exc:
-                    self._log_warning("[CDP Screencast] Failed to send to subscriber: %s", exc)
-                    disconnected_clients.append(ws)
-
-            for ws in disconnected_clients:
-                if ws in self._screencast_subscribers:
-                    self._screencast_subscribers.remove(ws)
 
         if self.cdp_session and session_ack:
             try:
                 await self.cdp_session.send("Page.screencastFrameAck", {"sessionId": session_ack})
             except Exception as exc:
                 self._log_warning("[CDP Screencast] Failed to ack frame: %s", exc)
+                self.screencast_active = False
+                try:
+                    await self.cdp_session.detach()
+                except Exception:
+                    pass
+                self.cdp_session = None
+                return
+
+        if frame_data and self._screencast_subscribers:
+            self._track_background_task(asyncio.create_task(self._fanout_screencast_frame(frame_data)))
 
     async def stop_screencast(self):
         if self.cdp_session and self.screencast_active:
@@ -286,6 +311,9 @@ class BrowserSession:
                 self._log_warning("[CDP Screencast] Failed to stop: %s", exc)
 
     async def close(self):
+        for task in list(self._screencast_tasks):
+            task.cancel()
+        self._screencast_tasks.clear()
         if self.screencast_active:
             try:
                 await self.stop_screencast()

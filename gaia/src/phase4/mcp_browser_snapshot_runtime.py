@@ -110,7 +110,11 @@ async def browser_snapshot(params: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
         "dom_elements": elements,
         "elements_by_ref": elements_by_ref,
         "current_url": page.url,
-        "scope_container_ref_id": scope_container_ref_id,
+        "requested_scope_container_ref_id": scope_container_ref_id,
+        "scope_container_ref_id": str(snap.get("scope_container_ref_id") or ""),
+        "scope_applied": bool(snap.get("scope_applied")),
+        "context_snapshot": snap.get("context_snapshot") if isinstance(snap.get("context_snapshot"), dict) else {},
+        "role_snapshot": snap.get("role_snapshot") if isinstance(snap.get("role_snapshot"), dict) else {},
     }
 
     wants_text_snapshot = bool(snapshot_format in {"ai", "aria", "role"} or mode == "efficient")

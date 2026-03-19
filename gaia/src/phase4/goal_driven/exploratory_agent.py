@@ -333,6 +333,8 @@ class ExploratoryAgent:
         self._active_snapshot_epoch: int = 0
         self._active_scoped_container_ref: str = ""
         self._last_container_source_summary: Dict[str, int] = {}
+        self._last_context_snapshot: Dict[str, Any] = {}
+        self._last_role_snapshot: Dict[str, Any] = {}
         self._active_modal_region: Optional[Dict[str, float]] = None
         self._last_exec_meta: Dict[str, Any] = {}
         self._action_attempts: Dict[
@@ -1448,6 +1450,9 @@ class ExploratoryAgent:
                         container_source=el.container_source,
                         context_text=el.context_text,
                         group_action_labels=el.group_action_labels,
+                        role_ref_role=el.role_ref_role,
+                        role_ref_name=el.role_ref_name,
+                        role_ref_nth=el.role_ref_nth,
                         tested=tested,
                     )
                 )
@@ -1555,6 +1560,12 @@ class ExploratoryAgent:
             self._active_snapshot_epoch = int(data.get("epoch") or 0)
             if str(data.get("scope_container_ref_id") or "").strip():
                 self._active_scoped_container_ref = str(data.get("scope_container_ref_id") or "").strip()
+            self._last_context_snapshot = (
+                data.get("context_snapshot") if isinstance(data.get("context_snapshot"), dict) else {}
+            )
+            self._last_role_snapshot = (
+                data.get("role_snapshot") if isinstance(data.get("role_snapshot"), dict) else {}
+            )
 
             if isinstance(raw_elements_by_ref, dict):
                 for rid, meta in raw_elements_by_ref.items():

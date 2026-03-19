@@ -49,6 +49,13 @@ def _validate_destination_anchor(ctx: Any, semantics: Any, evidence: EvidenceBun
     return _fail("destination_anchor_validator", mandatory, "destination_anchor_missing")
 
 
+def _validate_destination_surface_actionable(ctx: Any, semantics: Any, evidence: EvidenceBundle, mandatory: bool) -> ValidatorResult:
+    ok = bool(evidence.derived.get("destination_surface_actionable"))
+    if ok:
+        return _pass("destination_surface_actionable_validator", mandatory)
+    return _fail("destination_surface_actionable_validator", mandatory, "destination_surface_not_actionable")
+
+
 def _validate_membership_state(ctx: Any, semantics: Any, evidence: EvidenceBundle, mandatory: bool) -> ValidatorResult:
     ok = bool(evidence.current.get("target_in_destination"))
     if ok:
@@ -73,7 +80,10 @@ def _validate_aggregate_delta(ctx: Any, semantics: Any, evidence: EvidenceBundle
 
 
 def _validate_target_present_before(ctx: Any, semantics: Any, evidence: EvidenceBundle, mandatory: bool) -> ValidatorResult:
-    ok = bool(evidence.baseline.get("target_in_destination"))
+    ok = bool(
+        evidence.baseline.get("target_in_destination")
+        or evidence.derived.get("target_seen_during_run")
+    )
     if ok:
         return _pass("target_present_before_validator", mandatory)
     return _fail("target_present_before_validator", mandatory, "target_not_present_before")
@@ -119,6 +129,7 @@ def _validate_auth_prompt_visible(ctx: Any, semantics: Any, evidence: EvidenceBu
 VALIDATOR_REGISTRY: Dict[str, Callable[[Any, Any, EvidenceBundle, bool], ValidatorResult]] = {
     "target_candidate_validator": _validate_target_candidate,
     "destination_anchor_validator": _validate_destination_anchor,
+    "destination_surface_actionable_validator": _validate_destination_surface_actionable,
     "membership_state_validator": _validate_membership_state,
     "aggregate_delta_validator": _validate_aggregate_delta,
     "target_present_before_validator": _validate_target_present_before,

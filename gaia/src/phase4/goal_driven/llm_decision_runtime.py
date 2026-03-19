@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
+from .goal_kinds import GoalKind
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
 
@@ -13,23 +14,378 @@ def decide_next_action(
     screenshot: Optional[str] = None,
     memory_context: str = "",
 ) -> ActionDecision:
-    scoped_ref_id, scoped_name, scoped_source, scoped_score, scoped_ambiguous = agent._pick_scoped_container(dom_elements)
-    elements_for_prompt = dom_elements
-    if scoped_ambiguous:
-        agent._record_reason_code("context_target_ambiguous")
-    elif scoped_ref_id:
-        rescoped_dom = agent._analyze_dom(scope_container_ref_id=scoped_ref_id)
-        if rescoped_dom and 0 < len(rescoped_dom) < len(dom_elements):
-            elements_for_prompt = rescoped_dom
-            agent._active_scoped_container_ref = str(scoped_ref_id)
-            if scoped_source == "semantic-first":
-                agent._record_reason_code("semantic_container_scoped")
+    def _label_blob(element: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(element, "text", "") or ""),
+                    str(getattr(element, "aria_label", None) or ""),
+                    str(getattr(element, "placeholder", None) or ""),
+                    str(getattr(element, "title", None) or ""),
+                    str(getattr(element, "type", None) or ""),
+                ]
+            )
+        )
+
+    def _find_auth_phase_fallback() -> Optional[ActionDecision]:
+        auth_history_blob = " ".join(agent._action_history[-8:] if agent._action_history else []).lower()
+        username_done = bool(getattr(agent, "_auth_identifier_done", False)) or any(
+            token in auth_history_blob for token in ("아이디", "username", "email")
+        )
+        password_done = bool(getattr(agent, "_auth_password_done", False)) or any(
+            token in auth_history_blob for token in ("비밀번호", "password")
+        )
+        login_button: Optional[DOMElement] = None
+        username_field: Optional[DOMElement] = None
+        password_field: Optional[DOMElement] = None
+        for element in elements_for_prompt or dom_elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            blob = _label_blob(element)
+            if element.tag in {"input", "textarea"}:
+                if ("password" in blob or "비밀번호" in blob) and password_field is None:
+                    password_field = element
+                elif any(token in blob for token in ("아이디", "username", "email", "이메일", "user")) and username_field is None:
+                    username_field = element
+            elif (
+                str(getattr(element, "role", "") or "").lower() == "button"
+                or str(getattr(element, "tag", "") or "").lower() == "button"
+            ):
+                if any(token in blob for token in ("로그인", "login", "sign in", "signin")) and login_button is None:
+                    login_button = element
+        if auth_has_credentials:
+            if not username_done and username_field is not None:
+                return ActionDecision(
+                    action=ActionType.FILL,
+                    element_id=username_field.id,
+                    value=str(
+                        (goal.test_data or {}).get("username")
+                        or (goal.test_data or {}).get("email")
+                        or ""
+                    ),
+                    reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 로그인 식별자 입력을 우선합니다.",
+                    confidence=0.95,
+                )
+            if not password_done and password_field is not None:
+                return ActionDecision(
+                    action=ActionType.FILL,
+                    element_id=password_field.id,
+                    value=str((goal.test_data or {}).get("password") or ""),
+                    reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 비밀번호 입력을 우선합니다.",
+                    confidence=0.95,
+                )
+            if login_button is not None:
+                return ActionDecision(
+                    action=ActionType.CLICK,
+                    element_id=login_button.id,
+                    reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 로그인 제출을 우선합니다.",
+                    confidence=0.95,
+                )
+        return ActionDecision(
+            action=ActionType.WAIT,
+            reasoning="AUTH 단계 강제 규칙: 로그인 게이트가 열려 있어 닫기/X 대신 사용자 개입 또는 인증 입력을 우선합니다.",
+            confidence=0.6,
+        )
+
+    def _auth_surface_score(element: DOMElement) -> float:
+        if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+            return 0.0
+        blob = _label_blob(element)
+        score = 0.0
+        if element.tag in {"input", "textarea"}:
+            score += 1.0
+            if any(token in blob for token in ("password", "비밀번호")):
+                score += 6.0
+            if any(token in blob for token in ("username", "email", "이메일", "아이디", "user")):
+                score += 4.0
+        if any(token in blob for token in ("로그인", "login", "sign in", "signin", "회원가입", "signup", "submit", "continue", "next")):
+            score += 3.0
+        if str(getattr(element, "aria_modal", "") or "").strip().lower() == "true":
+            score += 3.0
+        meta_blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(element, "container_name", "") or ""),
+                    str(getattr(element, "context_text", "") or ""),
+                ]
+            )
+        )
+        if any(token in meta_blob for token in ("로그인", "login", "sign in", "signin", "회원가입", "signup", "password", "비밀번호", "email", "이메일", "아이디")):
+            score += 2.0
+        return score
+
+    def _auth_surface_ref(elements: List[DOMElement]) -> str:
+        bucket_scores: dict[str, float] = {}
+        for element in elements:
+            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
+            if not container_ref:
+                continue
+            bucket_scores[container_ref] = float(bucket_scores.get(container_ref, 0.0)) + _auth_surface_score(element)
+        if not bucket_scores:
+            return ""
+        best_ref, best_score = max(bucket_scores.items(), key=lambda item: item[1])
+        return best_ref if best_score >= 5.0 else ""
+
+    def _has_auth_fields(elements: List[DOMElement]) -> bool:
+        for element in elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            if element.tag not in {"input", "textarea"}:
+                continue
+            blob = _label_blob(element)
+            if any(token in blob for token in ("password", "비밀번호", "username", "email", "이메일", "아이디", "user")):
+                return True
+        return False
+
+    def _auth_dom_for_prompt() -> List[DOMElement]:
+        auth_elements = list(dom_elements or [])
+        if _has_auth_fields(auth_elements):
+            return auth_elements
+        full_dom = agent._analyze_dom(scope_container_ref_id="")
+        if not full_dom:
+            return auth_elements
+        auth_scope_ref = _auth_surface_ref(full_dom)
+        if auth_scope_ref:
+            scoped_auth_dom = agent._analyze_dom(scope_container_ref_id=auth_scope_ref)
+            if scoped_auth_dom:
+                agent._auth_interrupt_scope_ref = str(auth_scope_ref)
+                agent._auth_interrupt_scope_source = "auth-interrupt-scope"
+                agent._active_scoped_container_ref = str(auth_scope_ref)
+                agent._record_reason_code("auth_interrupt_scoped")
+                return scoped_auth_dom
+        agent._auth_interrupt_scope_ref = ""
+        agent._auth_interrupt_scope_source = ""
+        agent._active_scoped_container_ref = ""
+        agent._record_reason_code("auth_interrupt_unscoped")
+        return full_dom
+
+    def _find_post_auth_resume_decision(resume_elements: List[DOMElement]) -> Optional[ActionDecision]:
+        blocked_intent = getattr(agent, "_blocked_intent", {}) or {}
+        if not isinstance(blocked_intent, dict) or not blocked_intent:
+            return None
+        if bool(getattr(agent, "_blocked_intent_resumed", False)):
+            return None
+        target_blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(blocked_intent.get("text") or ""),
+                    str(blocked_intent.get("aria_label") or ""),
+                    str(blocked_intent.get("title") or ""),
+                    str(blocked_intent.get("container_name") or ""),
+                    str(blocked_intent.get("context_text") or ""),
+                ]
+            )
+        )
+        best_element: Optional[DOMElement] = None
+        best_score = 0.0
+        for element in resume_elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            if str(getattr(element, "role", "") or "").lower() not in {"button", "link"} and str(getattr(element, "tag", "") or "").lower() not in {"button", "a"}:
+                continue
+            element_blob = agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(element, "text", "") or ""),
+                        str(getattr(element, "aria_label", "") or ""),
+                        str(getattr(element, "title", "") or ""),
+                        str(getattr(element, "container_name", "") or ""),
+                        str(getattr(element, "context_text", "") or ""),
+                    ]
+                )
+            )
+            score = 0.0
+            if target_blob and element_blob:
+                if target_blob == element_blob:
+                    score += 8.0
+                if str(getattr(element, "container_ref_id", "") or "").strip() and str(getattr(element, "container_ref_id", "") or "").strip() == str(blocked_intent.get("container_ref_id") or "").strip():
+                    score += 4.0
+                overlap = sum(
+                    1
+                    for token in target_blob.split()
+                    if len(token) >= 2 and token in element_blob
+                )
+                score += min(overlap, 6)
+            if score > best_score:
+                best_score = score
+                best_element = element
+        if best_element is None or best_score < 4.0:
+            return None
+        agent._blocked_intent_resumed = True
+        agent._record_reason_code("post_auth_resume")
+        return ActionDecision(
+            action=ActionType.CLICK,
+            element_id=best_element.id,
+            reasoning="AUTH interrupt 해제 후 원래 막혔던 CTA intent를 1회 재개합니다.",
+            confidence=0.92,
+        )
+
+    def _find_destination_surface_reveal_decision(reveal_elements: List[DOMElement]) -> Optional[ActionDecision]:
+        semantics = getattr(agent, "_goal_semantics", None)
+        if semantics is None or getattr(semantics, "goal_kind", None) not in {GoalKind.REMOVE_FROM_LIST, GoalKind.CLEAR_LIST}:
+            return None
+        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
+        if current_phase not in {"reveal_destination_surface", "act_on_target", "verify_removal", "verify_empty"}:
+            return None
+        destination_terms = [
+            agent._normalize_text(term)
+            for term in list(getattr(semantics, "destination_terms", []) or [])
+            if str(term or "").strip()
+        ]
+        target_terms = [
+            agent._normalize_text(term)
+            for term in list(getattr(semantics, "target_terms", []) or [])
+            if str(term or "").strip()
+        ]
+        if not destination_terms:
+            return None
+
+        def _blob(el: DOMElement) -> str:
+            return agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(el, "text", "") or ""),
+                        str(getattr(el, "aria_label", "") or ""),
+                        str(getattr(el, "title", "") or ""),
+                        str(getattr(el, "container_name", "") or ""),
+                        str(getattr(el, "context_text", "") or ""),
+                    ]
+                )
+            )
+
+        target_container_refs: set[str] = set()
+        for element in reveal_elements:
+            blob = _blob(element)
+            if any(term in blob for term in target_terms):
+                container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
+                if container_ref:
+                    target_container_refs.add(container_ref)
+
+        remove_visible = False
+        for element in reveal_elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            blob = _blob(element)
+            same_target_container = bool(str(getattr(element, "container_ref_id", "") or "").strip()) and str(
+                getattr(element, "container_ref_id", "") or ""
+            ).strip() in target_container_refs
+            if any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우")) and (
+                same_target_container or any(term in blob for term in destination_terms)
+            ):
+                remove_visible = True
+                break
+        if remove_visible:
+            return None
+
+        best_secondary_element: Optional[DOMElement] = None
+        best_secondary_score = 0.0
+        for element in reveal_elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
+            if not container_ref or container_ref not in target_container_refs:
+                continue
+            blob = _blob(element)
+            tag = str(getattr(element, "tag", "") or "").lower()
+            role = str(getattr(element, "role", "") or "").lower()
+            score = 0.0
+            if role in {"button", "link", "tab"} or tag in {"button", "a"}:
+                score += 6.0
+            if any(term in blob for term in target_terms):
+                score += 5.0
+            if any(token in blob for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "menu", "옵션", "option", "more", "편집", "edit", "상세", "details", "⋯", "...")):
+                score += 6.0
+            labels = getattr(element, "group_action_labels", None) or []
+            if isinstance(labels, list) and len([x for x in labels if str(x or "").strip()]) >= 2:
+                score += 3.0
+            if any(token in blob for token in ("페이지", "pagination", "next", "prev", "정렬", "sort", "filter", "검색", "search")):
+                score -= 8.0
+            if score > best_secondary_score:
+                best_secondary_score = score
+                best_secondary_element = element
+        if best_secondary_element is not None and best_secondary_score >= 8.0:
+            agent._record_reason_code("target_row_secondary_reveal")
+            return ActionDecision(
+                action=ActionType.CLICK,
+                element_id=best_secondary_element.id,
+                reasoning="목표 항목이 있는 행/카드 내부에서 보조 affordance를 먼저 열어 제거 CTA를 드러냅니다.",
+                confidence=0.9,
+            )
+
+        best_element: Optional[DOMElement] = None
+        best_score = 0.0
+        for element in reveal_elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            blob = _blob(element)
+            tag = str(getattr(element, "tag", "") or "").lower()
+            role = str(getattr(element, "role", "") or "").lower()
+            score = 0.0
+            if any(term in blob for term in destination_terms):
+                score += 10.0
+            if role in {"button", "link", "tab"} or tag in {"button", "a"}:
+                score += 3.0
+            if any(token in blob for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "내 목록", "saved", "favorites", "selected")):
+                score += 2.0
+            if any(token in blob for token in ("페이지", "pagination", "next", "prev", "정렬", "sort", "filter", "검색", "search")):
+                score -= 8.0
+            if score > best_score:
+                best_score = score
+                best_element = element
+        if best_element is not None and best_score >= 8.0:
+            agent._record_reason_code("destination_surface_reveal")
+            return ActionDecision(
+                action=ActionType.CLICK,
+                element_id=best_element.id,
+                reasoning="목적지 영역은 확인되지만 제거 CTA가 직접 보이지 않아, 목적지 surface를 먼저 드러내는 컨트롤을 선택합니다.",
+                confidence=0.9,
+            )
+
+        return None
+
+    recent_auth_blob = " ".join((agent._action_history[-6:] if agent._action_history else []) + (agent._action_feedback[-6:] if agent._action_feedback else [])).lower()
+    auth_phase_active = bool(
+        str(getattr(agent, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block"
+        or bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
+    )
+    auth_mode = str(((goal.test_data or {}) if isinstance(goal.test_data, dict) else {}).get("auth_mode") or "").strip().lower()
+    auth_has_credentials = bool(agent._has_login_test_data(goal))
+    handoff_mode = str((getattr(agent, "_handoff_state", {}) or {}).get("mode") or "").strip().lower()
+    auth_close_allowed = auth_mode in {"skip", "declined", "dismiss", "close", "no_login"} or handoff_mode in {"declined", "skip"}
+
+    base_dom_elements = dom_elements
+    if auth_phase_active and not auth_close_allowed:
+        base_dom_elements = _auth_dom_for_prompt()
+    else:
+        if bool(getattr(agent, "_auth_interrupt_active", False)) and not bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible")):
+            setattr(agent, "_auth_interrupt_active", False)
+        agent._auth_interrupt_scope_ref = ""
+        agent._auth_interrupt_scope_source = ""
+
+    elements_for_prompt = base_dom_elements
+    if auth_phase_active and not auth_close_allowed:
+        scoped_ref_id = str(getattr(agent, "_auth_interrupt_scope_ref", "") or "").strip()
+        scoped_name = "auth-interrupt-surface" if scoped_ref_id else ""
+        scoped_source = str(getattr(agent, "_auth_interrupt_scope_source", "") or "").strip()
+        scoped_score = 0.0
+        scoped_ambiguous = False
+    else:
+        scoped_ref_id, scoped_name, scoped_source, scoped_score, scoped_ambiguous = agent._pick_scoped_container(base_dom_elements)
+        if scoped_ambiguous:
+            agent._record_reason_code("context_target_ambiguous")
+        elif scoped_ref_id:
+            rescoped_dom = agent._analyze_dom(scope_container_ref_id=scoped_ref_id)
+            if rescoped_dom and 0 < len(rescoped_dom) < len(base_dom_elements):
+                elements_for_prompt = rescoped_dom
+                agent._active_scoped_container_ref = str(scoped_ref_id)
+                if scoped_source == "semantic-first":
+                    agent._record_reason_code("semantic_container_scoped")
+                else:
+                    agent._record_reason_code("container_scoped_snapshot")
             else:
-                agent._record_reason_code("container_scoped_snapshot")
+                agent._record_reason_code("container_context_missing")
         else:
             agent._record_reason_code("container_context_missing")
-    else:
-        agent._record_reason_code("container_context_missing")
 
     elements_text = agent._format_dom_for_llm(elements_for_prompt)
     scoped_hint = "없음"
@@ -37,6 +393,50 @@ def decide_next_action(
         scoped_hint = f'{scoped_name} (ref={scoped_ref_id}, source={scoped_source or "unknown"}, score={scoped_score:.2f})'
     recent_repeated = agent._recent_click_element_ids[-8:]
     recent_block_text = ", ".join(str(x) for x in recent_repeated) if recent_repeated else "없음"
+    auth_prompt_visible_now = bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
+    likely_post_auth_resume = bool(
+        not auth_phase_active
+        and not auth_prompt_visible_now
+        and bool(getattr(agent, "_auth_interrupt_active", False))
+        and any(token in recent_auth_blob for token in ("로그인", "login", "sign in", "회원가입", "auth"))
+    )
+    if likely_post_auth_resume:
+        resumed_decision = _find_post_auth_resume_decision(elements_for_prompt or base_dom_elements or dom_elements)
+        if resumed_decision is not None:
+            return resumed_decision
+    reveal_decision = _find_destination_surface_reveal_decision(elements_for_prompt or base_dom_elements or dom_elements)
+    if reveal_decision is not None:
+        return reveal_decision
+    resume_after_auth_rule = ""
+    if likely_post_auth_resume:
+        resume_after_auth_rule = """
+9. **인증 직후 재개 규칙(강화)**
+   - 방금 로그인/인증이 끝난 직후라면, 원래 막혔던 목표 CTA/같은 target 카드의 액션을 먼저 1회 재시도하세요.
+   - 이 경우 최근 반복 클릭 회피 규칙보다 목표 CTA 재개가 우선입니다.
+   - 인증 직후에는 바로 wait로 끝내지 말고, 차단되었던 CTA를 재시도한 뒤 그 결과를 검증하세요.
+"""
+    auth_gate_rule = ""
+    if auth_phase_active:
+        if auth_close_allowed:
+            auth_gate_rule = """
+10. **로그인 거부 후 처리 규칙**
+   - 사용자가 로그인하지 않고 계속 진행하라고 명시했습니다.
+   - 이 경우에만 X/닫기/뒤로가기/모달 닫기가 허용됩니다.
+"""
+        elif auth_has_credentials:
+            auth_gate_rule = """
+10. **인증 게이트 규칙(강제)**
+   - 현재 로그인/회원가입 화면이 열려 있고 로그인 정보가 준비되어 있습니다.
+   - X/닫기/뒤로가기/모달 닫기 액션은 금지입니다.
+   - 아이디/이메일 입력 -> 비밀번호 입력 -> 로그인 제출 순서만 선택하세요.
+"""
+        else:
+            auth_gate_rule = """
+10. **인증 게이트 규칙(강제)**
+   - 현재 로그인/회원가입 화면이 열려 있습니다.
+   - X/닫기/뒤로가기/모달 닫기 액션은 금지입니다.
+   - 로그인 정보가 없으면 사용자 개입 요청 외 다른 액션을 선택하지 마세요.
+"""
     signup_rule = ""
     if agent._goal_mentions_signup(goal):
         signup_rule = """
@@ -109,6 +509,8 @@ def decide_next_action(
 8. **단계 전환 규칙(강제)**
    - 동일한 클릭 의도가 여러 번 연속 성공해도 목표가 완료되지 않으면, 다음 액션은 단계 전환 CTA를 우선 선택하세요.
    - 해당 CTA가 보이지 않으면 스크롤/탭 전환/다음 페이지 이동으로 CTA를 먼저 찾으세요.
+{resume_after_auth_rule}
+{auth_gate_rule}
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
@@ -128,7 +530,21 @@ JSON 응답:"""
             response_text = agent.llm.analyze_with_vision(prompt, screenshot)
         else:
             response_text = agent._call_llm_text_only(prompt)
-        return agent._parse_decision(response_text)
+        decision = agent._parse_decision(response_text)
+        if auth_phase_active and not auth_close_allowed:
+            selected_element = next(
+                (el for el in (elements_for_prompt or dom_elements) if int(getattr(el, "id", -1)) == int(decision.element_id or -9999)),
+                None,
+            )
+            reasoning_norm = agent._normalize_text(str(getattr(decision, "reasoning", "") or ""))
+            selected_blob = _label_blob(selected_element) if selected_element is not None else ""
+            close_intent = any(
+                token in reasoning_norm or token in selected_blob
+                for token in ("닫", "close", "dismiss", "x 버튼", "x버튼", "우상단 x", "닫기")
+            )
+            if close_intent:
+                return _find_auth_phase_fallback()
+        return decision
     except Exception as e:
         agent._log(f"LLM 결정 실패: {e}")
         return ActionDecision(

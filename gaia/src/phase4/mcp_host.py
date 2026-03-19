@@ -106,6 +106,7 @@ from gaia.src.phase4.mcp_page_evidence_runtime import (
 from gaia.src.phase4.mcp_ref_snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_refs_from_elements,
+    _build_role_snapshot_from_elements,
     _build_role_snapshot_from_ai_text,
     _build_role_snapshot_from_aria_text,
     _build_snapshot_text,
@@ -116,22 +117,43 @@ from gaia.src.phase4.mcp_ref_snapshot_helpers import (
 )
 
 logger = logging.getLogger("gaia.mcp_host")
+MCP_BOOT_ID = uuid.uuid4().hex[:12]
 
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI):
     """FastAPI lifespan handler for Playwright startup/shutdown."""
     global playwright_instance
-    logger.info("Initializing Playwright...")
+    logger.info(
+        "Initializing Playwright... pid=%s ppid=%s boot_id=%s",
+        os.getpid(),
+        os.getppid(),
+        MCP_BOOT_ID,
+    )
     playwright_instance = await async_playwright().start()
-    logger.info("Playwright initialized.")
+    logger.info(
+        "Playwright initialized. pid=%s ppid=%s boot_id=%s",
+        os.getpid(),
+        os.getppid(),
+        MCP_BOOT_ID,
+    )
     try:
         yield
     finally:
         if playwright_instance:
-            logger.info("Stopping Playwright...")
+            logger.info(
+                "Stopping Playwright... pid=%s ppid=%s boot_id=%s",
+                os.getpid(),
+                os.getppid(),
+                MCP_BOOT_ID,
+            )
             await playwright_instance.stop()
-            logger.info("Playwright stopped.")
+            logger.info(
+                "Playwright stopped. pid=%s ppid=%s boot_id=%s",
+                os.getpid(),
+                os.getppid(),
+                MCP_BOOT_ID,
+            )
 
 
 app = FastAPI(
@@ -211,6 +233,9 @@ async def health() -> Dict[str, Any]:
         "uptime_sec": round(max(0.0, time.time() - MCP_STARTED_AT), 3),
         "active_sessions": len(active_sessions),
         "version": MCP_HOST_VERSION,
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "boot_id": MCP_BOOT_ID,
     }
 
 
@@ -1844,9 +1869,37 @@ async def snapshot_page(
     elements = result.get("elements", []) if isinstance(result, dict) else []
     if isinstance(elements, list):
         elements = _dedupe_elements_by_dom_ref(elements)
-    scoped_container_ref_id = str(scope_container_ref_id or "").strip()
-    if scoped_container_ref_id and isinstance(elements, list):
+    requested_scope_container_ref_id = str(scope_container_ref_id or "").strip()
+    resolved_scope_dom_ref = requested_scope_container_ref_id
+    applied_scope_dom_ref = ""
+
+    if requested_scope_container_ref_id.startswith("ctx-"):
+        snapshot_candidates: List[Dict[str, Any]] = []
+        current_snapshot_id = str(getattr(session, "current_snapshot_id", "") or "").strip()
+        if current_snapshot_id:
+            current_snapshot = session.snapshots.get(current_snapshot_id)
+            if isinstance(current_snapshot, dict):
+                snapshot_candidates.append(current_snapshot)
+        for snapshot in session.snapshots.values():
+            if isinstance(snapshot, dict) and snapshot not in snapshot_candidates:
+                snapshot_candidates.append(snapshot)
+        for snapshot in snapshot_candidates:
+            context_snapshot = snapshot.get("context_snapshot") if isinstance(snapshot.get("context_snapshot"), dict) else {}
+            container_ref_by_dom_ref = (
+                context_snapshot.get("container_ref_by_dom_ref")
+                if isinstance(context_snapshot.get("container_ref_by_dom_ref"), dict)
+                else {}
+            )
+            for dom_ref, ctx_ref in container_ref_by_dom_ref.items():
+                if str(ctx_ref or "").strip() == requested_scope_container_ref_id:
+                    resolved_scope_dom_ref = str(dom_ref or "").strip()
+                    break
+            if resolved_scope_dom_ref and resolved_scope_dom_ref != requested_scope_container_ref_id:
+                break
+
+    if requested_scope_container_ref_id and isinstance(elements, list):
         scoped_elements: List[Dict[str, Any]] = []
+        scope_match_ref = str(resolved_scope_dom_ref or requested_scope_container_ref_id).strip()
         for elem in elements:
             if not isinstance(elem, dict):
                 continue
@@ -1857,13 +1910,14 @@ async def snapshot_page(
                 attrs.get("container_parent_ref_id") or attrs.get("container_parent_dom_ref") or ""
             ).strip()
             if (
-                elem_dom_ref == scoped_container_ref_id
-                or container_ref == scoped_container_ref_id
-                or parent_container_ref == scoped_container_ref_id
+                elem_dom_ref == scope_match_ref
+                or container_ref == scope_match_ref
+                or parent_container_ref == scope_match_ref
             ):
                 scoped_elements.append(elem)
         if scoped_elements:
             elements = scoped_elements
+            applied_scope_dom_ref = scope_match_ref
     tab_index = _get_tab_index(page)
     session.snapshot_epoch += 1
     epoch = session.snapshot_epoch
@@ -1898,6 +1952,21 @@ async def snapshot_page(
         attrs["role_ref_nth"] = role_ref.get("nth")
 
     context_snapshot = _build_context_snapshot_from_elements(elements)
+    role_snapshot = _build_role_snapshot_from_elements(
+        elements,
+        line_limit=500,
+        max_chars=24000,
+    )
+    returned_scope_container_ref_id = ""
+    if applied_scope_dom_ref:
+        container_ref_by_dom_ref = (
+            context_snapshot.get("container_ref_by_dom_ref")
+            if isinstance(context_snapshot.get("container_ref_by_dom_ref"), dict)
+            else {}
+        )
+        returned_scope_container_ref_id = str(
+            container_ref_by_dom_ref.get(applied_scope_dom_ref) or applied_scope_dom_ref
+        ).strip()
 
     elements_by_ref: Dict[str, Dict[str, Any]] = {
         elem["ref_id"]: elem for elem in elements if isinstance(elem, dict) and elem.get("ref_id")
@@ -1910,9 +1979,11 @@ async def snapshot_page(
         "dom_hash": dom_hash,
         "epoch": epoch,
         "captured_at": captured_at,
-        "scope_container_ref_id": scoped_container_ref_id,
+        "requested_scope_container_ref_id": requested_scope_container_ref_id,
+        "scope_container_ref_id": returned_scope_container_ref_id,
         "elements_by_ref": elements_by_ref,
         "context_snapshot": context_snapshot,
+        "role_snapshot": role_snapshot,
     }
     session.snapshots[snapshot_id] = snapshot_record
     session.current_snapshot_id = snapshot_id
@@ -1935,7 +2006,10 @@ async def snapshot_page(
     result["captured_at"] = captured_at
     result["dom_elements"] = elements
     result["context_snapshot"] = context_snapshot
-    result["scope_container_ref_id"] = scoped_container_ref_id
+    result["role_snapshot"] = role_snapshot
+    result["requested_scope_container_ref_id"] = requested_scope_container_ref_id
+    result["scope_container_ref_id"] = returned_scope_container_ref_id
+    result["scope_applied"] = bool(returned_scope_container_ref_id)
     try:
         result["evidence"] = await _collect_page_evidence(page)
     except Exception:
@@ -2019,13 +2093,27 @@ async def capture_screenshot(
         session.current_url = page.url
 
     # 현재 페이지(위치와 관계없이)를 캡처합니다
-    screenshot_bytes = await _screenshot_with_retry(page, full_page=False)
-    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+    screenshot_base64 = ""
+    screenshot_warning = ""
+    try:
+        screenshot_bytes = await _screenshot_with_retry(page, full_page=False)
+        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+    except Exception as exc:
+        logger.warning("capture_screenshot best-effort fallback: %s", exc)
+        screenshot_warning = str(exc)
+    title_text = ""
+    try:
+        title_text = await _title_with_retry(page)
+    except Exception as exc:
+        logger.warning("capture_screenshot title best-effort fallback: %s", exc)
+        if not screenshot_warning:
+            screenshot_warning = str(exc)
 
     return {
         "screenshot": screenshot_base64,
         "url": page.url,
-        "title": await _title_with_retry(page),
+        "title": title_text,
+        "warning": screenshot_warning,
     }
 
 

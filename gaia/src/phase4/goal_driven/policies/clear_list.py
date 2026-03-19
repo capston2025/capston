@@ -10,19 +10,24 @@ class ClearListPolicy:
     kind = GoalKind.CLEAR_LIST
 
     def initial_phase(self, semantics: Any) -> str:
-        return "act_on_target"
+        return "reveal_destination_surface"
 
     def next_phase(self, current_phase: str, event: str, evidence: Any, budgets: Dict[str, Any]) -> str:
         if event == "blocked_auth":
             return "handle_auth_or_block"
         if current_phase == "handle_auth_or_block" and event in {"action_ok", "wait_progress"}:
-            return "act_on_target"
+            return "reveal_destination_surface"
+        if current_phase == "reveal_destination_surface" and event in {"action_ok", "wait_progress"}:
+            destination_surface_actionable = bool(getattr(evidence, "derived", {}).get("destination_surface_actionable"))
+            target_cta_visible = bool(getattr(evidence, "derived", {}).get("target_action_cta_visible"))
+            return "act_on_target" if destination_surface_actionable and target_cta_visible else current_phase
         if current_phase == "act_on_target" and event in {"action_ok", "action_no_state_change"}:
             return "verify_empty"
         return current_phase
 
     def mandatory_validators(self, phase: str, ctx: Any, semantics: Any, evidence: Any) -> List[str]:
         mapping = {
+            "reveal_destination_surface": ["destination_anchor_validator", "destination_surface_actionable_validator"],
             "verify_empty": [
                 "destination_anchor_validator",
                 "empty_state_validator",
@@ -67,6 +72,6 @@ class ClearListPolicy:
 
     def progress_contract(self) -> Dict[str, Any]:
         return {
-            "strong_progress_signals": ["destination_anchor_found", "empty_state_visible", "aggregate_metric_delta"],
+            "strong_progress_signals": ["destination_anchor_found", "destination_surface_actionable", "empty_state_visible", "aggregate_metric_delta"],
             "weak_progress_signals": ["toast_only", "scroll_change_only"],
         }

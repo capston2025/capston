@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import List, Optional
 
 import requests
@@ -11,12 +12,110 @@ from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 
 
+def _is_placeholder_wait_text(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"", "{}", "[]", "null", "none", "undefined"}
+
+
+def _execute_request_timeout(agent, request_action: str, action: str) -> tuple[int, int]:
+    connect_timeout = 10
+    if request_action == "browser_wait":
+        default_read_timeout = 120
+    elif action in {"click", "press", "goto"}:
+        default_read_timeout = 180
+    else:
+        default_read_timeout = 120
+    try:
+        read_timeout = int(
+            getattr(agent, "_env_int", lambda *_args, **_kwargs: default_read_timeout)(
+                "GAIA_MCP_EXECUTE_TIMEOUT_SEC",
+                default_read_timeout,
+                low=30,
+                high=600,
+            )
+        )
+    except Exception:
+        read_timeout = default_read_timeout
+    return connect_timeout, max(30, int(read_timeout))
+
+
 def execute_decision(
     agent,
     decision: ActionDecision,
     dom_elements: List[DOMElement],
 ) -> tuple[bool, Optional[str]]:
     """결정된 액션 실행"""
+
+    def _remember_blockable_intent() -> None:
+        if decision.action != ActionType.CLICK or selected_element is None:
+            return
+        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block":
+            return
+        try:
+            agent._last_goal_blockable_intent = {
+                "action": decision.action.value,
+                "ref_id": str(ref_id or ""),
+                "text": str(getattr(selected_element, "text", "") or ""),
+                "aria_label": str(getattr(selected_element, "aria_label", "") or ""),
+                "title": str(getattr(selected_element, "title", "") or ""),
+                "container_ref_id": str(getattr(selected_element, "container_ref_id", "") or ""),
+                "container_name": str(getattr(selected_element, "container_name", "") or ""),
+                "context_text": str(getattr(selected_element, "context_text", "") or ""),
+                "role": str(getattr(selected_element, "role", "") or ""),
+                "tag": str(getattr(selected_element, "tag", "") or ""),
+                "selector": str(selector or ""),
+                "full_selector": str(full_selector or ""),
+                "reasoning": str(getattr(decision, "reasoning", "") or ""),
+            }
+        except Exception:
+            pass
+
+    def _remember_auth_submit() -> None:
+        if decision.action != ActionType.CLICK or selected_element is None:
+            return
+        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() != "handle_auth_or_block":
+            return
+        try:
+            loginish = any(
+                agent._contains_login_hint(field)
+                for field in (
+                    getattr(selected_element, "text", None),
+                    getattr(selected_element, "aria_label", None),
+                    getattr(selected_element, "title", None),
+                    selector,
+                    full_selector,
+                )
+            )
+        except Exception:
+            loginish = False
+        if loginish:
+            agent._last_auth_submit_at = time.time()
+
+    def _remember_auth_fill() -> None:
+        if decision.action != ActionType.FILL or selected_element is None:
+            return
+        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() != "handle_auth_or_block":
+            return
+        try:
+            fill_blob = agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(selected_element, "text", "") or ""),
+                        str(getattr(selected_element, "aria_label", "") or ""),
+                        str(getattr(selected_element, "placeholder", "") or ""),
+                        str(getattr(selected_element, "title", "") or ""),
+                        str(getattr(selected_element, "type", "") or ""),
+                        str(selector or ""),
+                        str(full_selector or ""),
+                    ]
+                )
+            )
+        except Exception:
+            fill_blob = ""
+        if any(token in fill_blob for token in ("password", "비밀번호")):
+            agent._auth_password_done = True
+        elif any(token in fill_blob for token in ("username", "email", "이메일", "아이디", "user")):
+            agent._auth_identifier_done = True
 
     agent._last_exec_result = None
 
@@ -31,7 +130,7 @@ def execute_decision(
         ActionType.SCROLL,
         ActionType.SELECT,
     }
-    if decision.element_id is not None:
+    if decision.element_id is not None and requires_ref:
         selector = agent._element_selectors.get(decision.element_id)
         full_selector = agent._element_full_selectors.get(decision.element_id)
         ref_id = agent._element_ref_ids.get(decision.element_id)
@@ -152,7 +251,6 @@ def execute_decision(
             ActionType.FILL,
             ActionType.PRESS,
             ActionType.HOVER,
-            ActionType.SCROLL,
             ActionType.SELECT,
         } and decision.element_id is None:
             agent._last_exec_result = ActionExecResult(
@@ -196,7 +294,24 @@ def execute_decision(
             reasoning_norm = agent._normalize_text(decision.reasoning)
             if any(token in reasoning_norm for token in ("닫", "close", "dismiss", "x 버튼", "우상단 x")):
                 click_value = "__close_intent__"
-            return _execute_with_ref_recovery("click", action_value=click_value)
+            ok, err = _execute_with_ref_recovery("click", action_value=click_value)
+            if ok:
+                _remember_auth_submit()
+                _remember_blockable_intent()
+            elif (
+                selected_element is not None
+                and str(getattr(agent, "_goal_policy_phase", "") or "").strip() in {"reveal_destination_surface", "act_on_target", "verify_removal", "verify_empty"}
+                and str(getattr(getattr(agent, "_goal_semantics", None), "goal_kind", "") or "") in {"remove_from_list", "clear_list"}
+                and str(getattr(getattr(agent, "_last_exec_result", None), "reason_code", "") or "") == "not_actionable"
+            ):
+                container_ref = str(getattr(selected_element, "container_ref_id", "") or "").strip()
+                if container_ref:
+                    agent._active_scoped_container_ref = container_ref
+                    try:
+                        agent._record_reason_code("row_secondary_affordance_scope")
+                    except Exception:
+                        pass
+            return ok, err
 
         if decision.action == ActionType.FILL:
             if not decision.value:
@@ -207,7 +322,10 @@ def execute_decision(
                     reason="fill 액션에 value가 필요함",
                 )
                 return False, "fill 액션에 value가 필요함"
-            return _execute_with_ref_recovery("fill", action_value=decision.value)
+            ok, err = _execute_with_ref_recovery("fill", action_value=decision.value)
+            if ok:
+                _remember_auth_fill()
+            return ok, err
 
         if decision.action == ActionType.PRESS:
             return _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
@@ -230,7 +348,26 @@ def execute_decision(
             wait_value = decision.value
             if wait_value is None or (isinstance(wait_value, str) and not wait_value.strip()):
                 wait_value = {"timeMs": 700}
-            agent._last_exec_result = execute_action(agent, "wait", value=wait_value)
+            wait_payload = parse_wait_payload(wait_value)
+            if not wait_payload or ("text" in wait_payload and _is_placeholder_wait_text(wait_payload.get("text"))):
+                wait_payload = {"time_ms": 700}
+            simple_wait_only = bool(wait_payload) and set(wait_payload.keys()).issubset({"time_ms", "timeMs"})
+            if simple_wait_only:
+                wait_ms = wait_payload.get("time_ms", wait_payload.get("timeMs", 700))
+                try:
+                    wait_ms = max(0, int(wait_ms))
+                except Exception:
+                    wait_ms = 700
+                time.sleep(min(wait_ms, 1500) / 1000.0)
+                agent._last_exec_result = ActionExecResult(
+                    success=True,
+                    effective=True,
+                    reason_code="ok",
+                    reason="local_wait",
+                    state_change={},
+                )
+                return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
+            agent._last_exec_result = execute_action(agent, "wait", value=wait_payload)
             return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
 
         if decision.action == ActionType.NAVIGATE:
@@ -279,7 +416,6 @@ def execute_action(
         "fill",
         "press",
         "hover",
-        "scroll",
         "scrollIntoView",
         "select",
         "dragAndDrop",
@@ -320,6 +456,10 @@ def execute_action(
     else:
         if action == "wait":
             wait_payload = parse_wait_payload(value)
+            if not wait_payload:
+                wait_payload = {"time_ms": 1000}
+            if "text" in wait_payload and _is_placeholder_wait_text(wait_payload.get("text")):
+                wait_payload = {"time_ms": 1000}
             simple_wait_only = bool(wait_payload) and set(wait_payload.keys()).issubset({"time_ms", "timeMs"})
             if simple_wait_only:
                 wait_ms = wait_payload.get("time_ms", wait_payload.get("timeMs", 1000))
@@ -338,6 +478,15 @@ def execute_action(
                 params = {"session_id": agent.session_id}
                 params.update(wait_payload)
                 request_action = "browser_wait"
+        elif action == "scroll":
+            params = {
+                "session_id": agent.session_id,
+                "selector": full_selector or selector or "",
+                "action": "scroll",
+                "value": value,
+                "url": url or "",
+            }
+            request_action = "execute_action"
         else:
             params = {
                 "session_id": agent.session_id,
@@ -352,19 +501,20 @@ def execute_action(
             request_action = "browser_act"
 
     try:
+        request_timeout = _execute_request_timeout(agent, request_action, action)
+
         def _post_execute():
             return requests.post(
                 f"{agent.mcp_host_url}/execute",
                 json={"action": request_action, "params": params},
-                timeout=(10, 120),
+                timeout=request_timeout,
             )
 
         try:
             response = _post_execute()
         except Exception as exc:
             if (
-                request_action == "browser_wait"
-                and is_mcp_transport_error(str(exc))
+                is_mcp_transport_error(str(exc))
                 and recover_mcp_host(agent, context=f"action:{request_action}")
             ):
                 response = _post_execute()

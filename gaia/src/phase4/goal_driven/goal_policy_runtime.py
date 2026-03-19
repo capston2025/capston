@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List
 
 from .execute_goal_intervention import handle_login_intervention
@@ -37,6 +38,19 @@ def resolve_goal_policy_interrupts(
     login_intervention_asked: bool,
     modal_open_hint: bool,
 ) -> Dict[str, Any]:
+    auth_prompt_now = bool(login_gate_visible)
+    if auth_prompt_now and not bool(getattr(agent, "_auth_interrupt_active", False)):
+        candidate_intent = getattr(agent, "_last_goal_blockable_intent", {}) or {}
+        if isinstance(candidate_intent, dict) and candidate_intent:
+            agent._blocked_intent = dict(candidate_intent)
+            agent._blocked_intent_resumed = False
+        agent._auth_interrupt_started_at = time.time()
+        agent._auth_identifier_done = False
+        agent._auth_password_done = False
+    if not auth_prompt_now:
+        agent._auth_identifier_done = False
+        agent._auth_password_done = False
+    agent._auth_interrupt_active = auth_prompt_now
     policy_evidence = agent._build_goal_policy_evidence_bundle(
         goal=goal,
         dom_elements=dom_elements,
