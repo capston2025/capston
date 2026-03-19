@@ -93,9 +93,15 @@ def build_goal_policy_evidence_bundle(
     destination_terms = [agent._normalize_text(term) for term in (semantics.destination_terms or []) if str(term).strip()]
     page_fragments: List[str] = []
     destination_anchor_found = False
+    destination_surface_actionable = False
     target_in_destination = False
     target_hits: List[str] = []
     empty_state_visible = False
+    target_action_cta_visible = False
+    destination_reveal_action_available = False
+    target_row_secondary_reveal_available = False
+    scanned_elements: List[tuple[Any, str, bool, List[str], str, str, str, List[str], bool, bool, bool, str]] = []
+    target_container_refs: set[str] = set()
 
     def _element_blob(el: DOMElement) -> str:
         labels = getattr(el, "group_action_labels", None) or []
@@ -123,14 +129,109 @@ def build_goal_policy_evidence_bundle(
         page_fragments.append(blob)
         has_destination = bool(destination_terms) and any(term and term in blob for term in destination_terms)
         matched_targets = [term for term in target_terms if term and term in blob]
+        role = str(getattr(el, "role", "") or "").lower()
+        tag = str(getattr(el, "tag", "") or "").lower()
+        container_role = str(getattr(el, "container_role", "") or "").lower()
+        group_labels = getattr(el, "group_action_labels", None) or []
+        is_actionable = bool(getattr(el, "is_enabled", True)) and (
+            role in {"button", "link", "tab"}
+            or tag in {"button", "a"}
+        )
+        remove_like = any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우"))
+        reveal_like = any(
+            token in blob
+            for token in (
+                "위시리스트",
+                "wishlist",
+                "장바구니",
+                "cart",
+                "시간표",
+                "timetable",
+                "내 목록",
+                "saved",
+                "favorites",
+                "선택 목록",
+                "selected",
+                "더보기",
+                "show more",
+                "view all",
+                "expand",
+                "펼치",
+                "열기",
+            )
+        )
+        container_ref = str(getattr(el, "container_ref_id", "") or "").strip()
+        scanned_elements.append(
+            (el, blob, has_destination, matched_targets, role, tag, container_role, group_labels, is_actionable, remove_like, reveal_like, container_ref)
+        )
+        if matched_targets and container_ref:
+            target_container_refs.add(container_ref)
         if has_destination:
             destination_anchor_found = True
+        destination_surface_like = has_destination and (
+            bool(matched_targets)
+            or any(token in blob for token in ("비어", "empty", "없음", "0개", "0학점", "총", "개", "학점"))
+            or container_role in {"listitem", "row", "article", "region", "group"}
+            or role in {"tabpanel", "region", "list", "listitem", "row", "grid", "table"}
+            or tag in {"li", "tr", "section", "article", "table"}
+            or (isinstance(group_labels, list) and len([x for x in group_labels if str(x or "").strip()]) >= 2)
+            or (is_actionable and (remove_like or reveal_like))
+        )
+        if destination_surface_like:
+            destination_surface_actionable = True
         if matched_targets:
             target_hits.extend(matched_targets)
         if has_destination and matched_targets:
             target_in_destination = True
+        if is_actionable and remove_like and (has_destination or matched_targets):
+            target_action_cta_visible = True
+        if is_actionable and reveal_like and (has_destination or any(term and term in blob for term in destination_terms)):
+            destination_reveal_action_available = True
         if has_destination and any(token in blob for token in ("비어", "empty", "없음", "0개", "0학점")):
             empty_state_visible = True
+
+    for (
+        _el,
+        blob,
+        _has_destination,
+        matched_targets,
+        _role,
+        _tag,
+        _container_role,
+        group_labels,
+        is_actionable,
+        remove_like,
+        _reveal_like,
+        container_ref,
+    ) in scanned_elements:
+        same_target_container = bool(container_ref) and container_ref in target_container_refs
+        if not same_target_container or not is_actionable:
+            continue
+        secondary_reveal_like = any(
+            token in blob
+            for token in (
+                "더보기",
+                "show more",
+                "view all",
+                "expand",
+                "펼치",
+                "열기",
+                "menu",
+                "옵션",
+                "option",
+                "more",
+                "편집",
+                "edit",
+                "상세",
+                "details",
+                "⋯",
+                "...",
+            )
+        )
+        if remove_like:
+            target_action_cta_visible = True
+        if secondary_reveal_like or (isinstance(group_labels, list) and len([x for x in group_labels if str(x or "").strip()]) >= 2):
+            target_row_secondary_reveal_available = True
 
     evidence = agent._last_snapshot_evidence if isinstance(agent._last_snapshot_evidence, dict) else {}
     text_digest = str(evidence.get("text_digest") or "").strip()
@@ -139,13 +240,12 @@ def build_goal_policy_evidence_bundle(
     live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
     page_fragments.extend(str(item or "").strip() for item in live_texts[:12] if str(item or "").strip())
     page_blob = agent._normalize_text(" ".join(page_fragments))
-    if not destination_anchor_found and destination_terms and any(term and term in page_blob for term in destination_terms):
-        destination_anchor_found = True
-    if not target_in_destination and destination_terms and target_terms:
-        if any(term and term in page_blob for term in destination_terms) and any(term and term in page_blob for term in target_terms):
-            target_in_destination = True
-    if destination_anchor_found and any(token in page_blob for token in ("비어", "empty", "없음", "0개", "0학점")):
+    if destination_surface_actionable and any(token in page_blob for token in ("비어", "empty", "없음", "0개", "0학점")):
         empty_state_visible = True
+    if destination_anchor_found:
+        agent._goal_policy_destination_anchor_seen = True
+    if target_in_destination:
+        agent._goal_policy_target_seen_in_destination = True
 
     aggregate_metric = agent._estimate_goal_metric_from_dom(dom_elements) if dom_elements else None
     baseline_bundle = getattr(agent, "_goal_policy_baseline_evidence", None)
@@ -153,17 +253,24 @@ def build_goal_policy_evidence_bundle(
         baseline_bundle = EvidenceBundle(
             raw={"auth_prompt_visible": auth_prompt_visible, "modal_open": modal_open},
             derived={
-                "destination_anchor_found": destination_anchor_found,
-                "target_in_destination": target_in_destination,
-                "target_hits": list(dict.fromkeys(target_hits[:6])),
-                "empty_state_visible": empty_state_visible,
+            "destination_anchor_found": destination_anchor_found,
+            "target_in_destination": target_in_destination,
+            "target_hits": list(dict.fromkeys(target_hits[:6])),
+            "empty_state_visible": empty_state_visible,
+                "target_seen_during_run": bool(getattr(agent, "_goal_policy_target_seen_in_destination", False)),
+                "destination_anchor_seen_during_run": bool(getattr(agent, "_goal_policy_destination_anchor_seen", False)),
+                "target_action_cta_visible": target_action_cta_visible,
+                "destination_reveal_action_available": destination_reveal_action_available,
+                "target_row_secondary_reveal_available": target_row_secondary_reveal_available,
             },
             baseline={},
             current={
                 "aggregate_metric": aggregate_metric,
                 "target_in_destination": target_in_destination,
                 "destination_anchor_found": destination_anchor_found,
+                "destination_surface_actionable": destination_surface_actionable,
                 "empty_state_visible": empty_state_visible,
+                "target_action_cta_visible": target_action_cta_visible,
             },
             delta={},
         )
@@ -195,17 +302,26 @@ def build_goal_policy_evidence_bundle(
         derived={
             "target_hits": list(dict.fromkeys(target_hits[:6])),
             "destination_anchor_found": destination_anchor_found,
+            "destination_surface_actionable": destination_surface_actionable,
             "target_in_destination": target_in_destination,
             "already_satisfied": bool(target_in_destination and semantics.already_satisfied_ok and not semantics.mutate_required),
             "filter_validation_passed": filter_validation_passed,
             "empty_state_visible": empty_state_visible,
+            "target_seen_during_run": bool(getattr(agent, "_goal_policy_target_seen_in_destination", False)),
+            "destination_anchor_seen_during_run": bool(getattr(agent, "_goal_policy_destination_anchor_seen", False)),
+            "target_action_cta_visible": target_action_cta_visible,
+            "destination_reveal_action_available": destination_reveal_action_available,
+            "target_row_secondary_reveal_available": target_row_secondary_reveal_available,
         },
         baseline=baseline_current,
         current={
             "aggregate_metric": aggregate_metric,
             "target_in_destination": target_in_destination,
             "destination_anchor_found": destination_anchor_found,
+            "destination_surface_actionable": destination_surface_actionable,
             "empty_state_visible": empty_state_visible,
+            "target_action_cta_visible": target_action_cta_visible,
+            "target_row_secondary_reveal_available": target_row_secondary_reveal_available,
         },
         delta={"aggregate_metric_delta": aggregate_metric_delta},
     )

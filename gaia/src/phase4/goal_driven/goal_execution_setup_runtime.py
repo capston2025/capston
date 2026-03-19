@@ -39,12 +39,16 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._auth_interrupt_active = False
     agent._auth_interrupt_started_at = 0.0
     agent._last_auth_submit_at = 0.0
+    agent._auth_identifier_done = False
+    agent._auth_password_done = False
     agent._blocked_intent = {}
     agent._blocked_intent_resumed = False
     agent._last_goal_blockable_intent = {}
     agent._last_container_source_summary = {}
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
+    agent._goal_policy_target_seen_in_destination = False
+    agent._goal_policy_destination_anchor_seen = False
     agent._goal_tokens = agent._derive_goal_tokens(goal)
     agent._goal_constraints = agent._derive_goal_constraints(goal)
     initialize_goal_policy_runtime(agent, goal)

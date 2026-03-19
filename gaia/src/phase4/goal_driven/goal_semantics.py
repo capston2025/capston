@@ -28,6 +28,7 @@ _MUTATION_REQUIRED_TOKENS = (
 @dataclass
 class GoalSemantics:
     goal_kind: GoalKind
+    mutation_direction: str = ""
     target_terms: List[str] = field(default_factory=list)
     destination_terms: List[str] = field(default_factory=list)
     destination_aliases: Dict[str, List[str]] = field(default_factory=dict)
@@ -150,6 +151,7 @@ def extract_goal_semantics(
         )
     return GoalSemantics(
         goal_kind=goal_kind,
+        mutation_direction=mutation_direction,
         target_terms=target_terms,
         destination_terms=destination_terms,
         destination_aliases={k: list(v) for k, v in destination_aliases.items()},

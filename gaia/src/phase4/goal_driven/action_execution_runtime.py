@@ -91,6 +91,32 @@ def execute_decision(
         if loginish:
             agent._last_auth_submit_at = time.time()
 
+    def _remember_auth_fill() -> None:
+        if decision.action != ActionType.FILL or selected_element is None:
+            return
+        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() != "handle_auth_or_block":
+            return
+        try:
+            fill_blob = agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(selected_element, "text", "") or ""),
+                        str(getattr(selected_element, "aria_label", "") or ""),
+                        str(getattr(selected_element, "placeholder", "") or ""),
+                        str(getattr(selected_element, "title", "") or ""),
+                        str(getattr(selected_element, "type", "") or ""),
+                        str(selector or ""),
+                        str(full_selector or ""),
+                    ]
+                )
+            )
+        except Exception:
+            fill_blob = ""
+        if any(token in fill_blob for token in ("password", "비밀번호")):
+            agent._auth_password_done = True
+        elif any(token in fill_blob for token in ("username", "email", "이메일", "아이디", "user")):
+            agent._auth_identifier_done = True
+
     agent._last_exec_result = None
 
     selector = None
@@ -141,7 +167,7 @@ def execute_decision(
                 )
                 return False, agent._last_exec_result.as_error_message()
     selected_element = None
-    if decision.element_id is not None and decision.action == ActionType.CLICK:
+    if decision.element_id is not None:
         try:
             selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
         except Exception:
@@ -225,7 +251,6 @@ def execute_decision(
             ActionType.FILL,
             ActionType.PRESS,
             ActionType.HOVER,
-            ActionType.SCROLL,
             ActionType.SELECT,
         } and decision.element_id is None:
             agent._last_exec_result = ActionExecResult(
@@ -273,6 +298,19 @@ def execute_decision(
             if ok:
                 _remember_auth_submit()
                 _remember_blockable_intent()
+            elif (
+                selected_element is not None
+                and str(getattr(agent, "_goal_policy_phase", "") or "").strip() in {"reveal_destination_surface", "act_on_target", "verify_removal", "verify_empty"}
+                and str(getattr(getattr(agent, "_goal_semantics", None), "goal_kind", "") or "") in {"remove_from_list", "clear_list"}
+                and str(getattr(getattr(agent, "_last_exec_result", None), "reason_code", "") or "") == "not_actionable"
+            ):
+                container_ref = str(getattr(selected_element, "container_ref_id", "") or "").strip()
+                if container_ref:
+                    agent._active_scoped_container_ref = container_ref
+                    try:
+                        agent._record_reason_code("row_secondary_affordance_scope")
+                    except Exception:
+                        pass
             return ok, err
 
         if decision.action == ActionType.FILL:
@@ -284,7 +322,10 @@ def execute_decision(
                     reason="fill 액션에 value가 필요함",
                 )
                 return False, "fill 액션에 value가 필요함"
-            return _execute_with_ref_recovery("fill", action_value=decision.value)
+            ok, err = _execute_with_ref_recovery("fill", action_value=decision.value)
+            if ok:
+                _remember_auth_fill()
+            return ok, err
 
         if decision.action == ActionType.PRESS:
             return _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
@@ -375,7 +416,6 @@ def execute_action(
         "fill",
         "press",
         "hover",
-        "scroll",
         "scrollIntoView",
         "select",
         "dragAndDrop",
@@ -438,6 +478,15 @@ def execute_action(
                 params = {"session_id": agent.session_id}
                 params.update(wait_payload)
                 request_action = "browser_wait"
+        elif action == "scroll":
+            params = {
+                "session_id": agent.session_id,
+                "selector": full_selector or selector or "",
+                "action": "scroll",
+                "value": value,
+                "url": url or "",
+            }
+            request_action = "execute_action"
         else:
             params = {
                 "session_id": agent.session_id,

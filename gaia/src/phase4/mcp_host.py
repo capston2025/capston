@@ -2093,13 +2093,27 @@ async def capture_screenshot(
         session.current_url = page.url
 
     # 현재 페이지(위치와 관계없이)를 캡처합니다
-    screenshot_bytes = await _screenshot_with_retry(page, full_page=False)
-    screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+    screenshot_base64 = ""
+    screenshot_warning = ""
+    try:
+        screenshot_bytes = await _screenshot_with_retry(page, full_page=False)
+        screenshot_base64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+    except Exception as exc:
+        logger.warning("capture_screenshot best-effort fallback: %s", exc)
+        screenshot_warning = str(exc)
+    title_text = ""
+    try:
+        title_text = await _title_with_retry(page)
+    except Exception as exc:
+        logger.warning("capture_screenshot title best-effort fallback: %s", exc)
+        if not screenshot_warning:
+            screenshot_warning = str(exc)
 
     return {
         "screenshot": screenshot_base64,
         "url": page.url,
-        "title": await _title_with_retry(page),
+        "title": title_text,
+        "warning": screenshot_warning,
     }
 
 
