@@ -122,7 +122,7 @@ def _resolve_mcp_target() -> tuple[str, int, str]:
     if parsed.port:
         port = parsed.port
     else:
-        port = 443 if scheme == "https" else 80
+        port = 443 if scheme == "https" else 8001
     base_url = f"{scheme}://{host}:{int(port)}"
     return host, int(port), base_url
 

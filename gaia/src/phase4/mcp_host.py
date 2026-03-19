@@ -117,22 +117,14 @@ from gaia.src.phase4.mcp_ref_snapshot_helpers import (
 
 
 from gaia.src.phase4.mcp_dom_snapshot_runtime import (
-    apply_selector_strategy as _apply_selector_strategy_impl,
-    build_snapshot_dom_hash as _build_snapshot_dom_hash_impl,
-)
-
-from gaia.src.phase4.mcp_dom_snapshot_runtime import (
-    analyze_page_elements as _analyze_page_elements_impl,
-    apply_selector_strategy as _apply_selector_strategy_impl,
-    build_snapshot_dom_hash as _build_snapshot_dom_hash_impl,
-)
-
-from gaia.src.phase4.mcp_dom_snapshot_runtime import (
     analyze_page_elements as _analyze_page_elements_impl,
     apply_selector_strategy as _apply_selector_strategy_impl,
     build_snapshot_dom_hash as _build_snapshot_dom_hash_impl,
     snapshot_page as _snapshot_page_impl,
 )
+
+if os.name == "nt" and hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 logger = logging.getLogger("gaia.mcp_host")
 

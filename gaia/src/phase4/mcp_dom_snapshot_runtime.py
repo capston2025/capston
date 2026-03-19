@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json as json_module
+import time
 from typing import Any, Dict, List
 
 
@@ -986,12 +987,12 @@ async def snapshot_page(
 
     # 세션을 가져오거나 생성합니다
     session = ctx["ensure_session"](
-    active_sessions=ctx["active_sessions"],
-    session_id=session_id,
-    playwright_getter=ctx["get_playwright_instance"],
-    screencast_subscribers=ctx["screencast_subscribers"],
-    frame_setter=ctx["set_current_screencast_frame"],
-    logger=ctx["logger"],
+        active_sessions=ctx["active_sessions"],
+        session_id=session_id,
+        playwright_getter=ctx["get_playwright_instance"],
+        screencast_subscribers=ctx["screencast_subscribers"],
+        frame_setter=ctx["set_current_screencast_frame"],
+        logger=ctx["logger"],
     )
 
     page = await session.get_or_create_page()
