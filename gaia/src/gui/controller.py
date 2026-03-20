@@ -271,6 +271,15 @@ class AppController(QObject):
         self._sync_execution_status()
 
     def _goal_intervention_callback(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        kind = str((payload or {}).get("kind") or "").strip().lower()
+        if kind == "no_progress":
+            reason = str(payload.get("question") or "상태 변화가 반복 감지되어 진행 전략을 조정합니다.").strip()
+            self._window.append_chat_message("GAIA", f"진행 전략 조정: {reason}")
+            self._window.append_chat_message("GAIA", "기본값으로 계속 진행합니다. 중단하려면 /cancel 을 입력하세요.")
+            self._blocked_reason = ""
+            self._sync_execution_status()
+            return {"action": "continue", "proceed": True}
+
         event = threading.Event()
         self._pending_intervention = dict(payload or {})
         self._pending_intervention_event = event

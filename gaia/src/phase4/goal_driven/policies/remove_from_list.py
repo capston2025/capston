@@ -15,7 +15,7 @@ class RemoveFromListPolicy:
     def next_phase(self, current_phase: str, event: str, evidence: Any, budgets: Dict[str, Any]) -> str:
         if event == "blocked_auth":
             return "handle_auth_or_block"
-        if current_phase == "handle_auth_or_block" and event in {"action_ok", "wait_progress"}:
+        if current_phase == "handle_auth_or_block" and event == "auth_resolved":
             return "reveal_destination_surface"
         if current_phase == "locate_target" and event in {"action_ok", "action_no_state_change"}:
             return "reveal_destination_surface"

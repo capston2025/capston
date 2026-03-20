@@ -60,6 +60,45 @@ def _is_retryable_page_detach_error(exc: BaseException) -> bool:
     )
 
 
+def _is_driver_disconnect_error(exc_or_message: Any) -> bool:
+    message = str(exc_or_message or "").strip().lower()
+    if not message:
+        return False
+    return (
+        "connection closed while reading from the driver" in message
+        or "target page, context or browser has been closed" in message
+        or "frame has been detached" in message
+        or "browser has been closed" in message
+        or "target closed" in message
+        or "connection closed" in message
+        or "transport closed" in message
+    )
+
+
+async def _best_effort_close_broken_session(
+    session: Any,
+    *,
+    active_sessions: Optional[Dict[str, Any]] = None,
+    session_id: str = "",
+) -> None:
+    try:
+        await session.close()
+    except Exception:
+        pass
+    try:
+        session.current_url = ""
+        session.current_snapshot_id = ""
+        session.current_dom_hash = ""
+        session.snapshots = {}
+    except Exception:
+        pass
+    if isinstance(active_sessions, dict) and session_id:
+        try:
+            active_sessions.pop(session_id, None)
+        except Exception:
+            pass
+
+
 async def _safe_capture_page_screenshot_base64(page: Any) -> Optional[str]:
     try:
         screenshot_bytes = await page.screenshot(full_page=False)
@@ -133,7 +172,16 @@ async def execute_ref_action_with_snapshot_impl(
         current_normalized = normalize_url(page.url)
         requested_normalized = normalize_url(url)
         if current_normalized != requested_normalized:
-            await _goto_with_retry(page, url, timeout=60000, wait_for_networkidle=True)
+            try:
+                await _goto_with_retry(page, url, timeout=60000, wait_for_networkidle=True)
+            except Exception as exc:
+                if _is_driver_disconnect_error(exc):
+                    await _best_effort_close_broken_session(
+                        session,
+                        active_sessions=active_sessions,
+                        session_id=session_id,
+                    )
+                raise
             await page.wait_for_timeout(1000)
 
     try:
@@ -325,25 +373,52 @@ async def execute_ref_action_with_snapshot_impl(
     transport_success = True
     locator_found = False
     interaction_success = False
-    context_prep = await prepare_ref_action_execution_context(
-        action=action,
-        value=value,
-        selector_hint=selector_hint,
-        verify=verify,
-        requested_meta=requested_meta,
-        requested_snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
-        page=page,
-        snapshot_id=snapshot_id,
-        ref_id=ref_id,
-        retry_path=retry_path,
-        attempt_logs=attempt_logs,
-        stale_recovered=stale_recovered,
-        max_action_seconds=max_action_seconds,
-        collect_page_evidence_fn=_collect_page_evidence,
-        collect_modal_regions_from_snapshot_fn=_collect_modal_regions_from_snapshot,
-        is_close_intent_ref_fn=_is_close_intent_ref,
-        is_modal_corner_close_candidate_fn=_is_modal_corner_close_candidate,
-    )
+    try:
+        context_prep = await prepare_ref_action_execution_context(
+            action=action,
+            value=value,
+            selector_hint=selector_hint,
+            verify=verify,
+            requested_meta=requested_meta,
+            requested_snapshot=requested_snapshot if isinstance(requested_snapshot, dict) else None,
+            page=page,
+            snapshot_id=snapshot_id,
+            ref_id=ref_id,
+            retry_path=retry_path,
+            attempt_logs=attempt_logs,
+            stale_recovered=stale_recovered,
+            max_action_seconds=max_action_seconds,
+            collect_page_evidence_fn=_collect_page_evidence,
+            collect_modal_regions_from_snapshot_fn=_collect_modal_regions_from_snapshot,
+            is_close_intent_ref_fn=_is_close_intent_ref,
+            is_modal_corner_close_candidate_fn=_is_modal_corner_close_candidate,
+        )
+    except Exception as exc:
+        if not _is_driver_disconnect_error(exc):
+            raise
+        transport_success = False
+        reason_code = "request_exception"
+        await _best_effort_close_broken_session(
+            session,
+            active_sessions=active_sessions,
+            session_id=session_id,
+        )
+        return build_full_failure_response(
+            reason_code=reason_code,
+            snapshot_id=snapshot_id,
+            ref_id=ref_id,
+            stale_recovered=stale_recovered,
+            transport_success=transport_success,
+            locator_found=locator_found,
+            interaction_success=interaction_success,
+            state_change={},
+            live_texts=last_live_texts,
+            retry_path=retry_path,
+            attempt_logs=attempt_logs,
+            screenshot_base64=None,
+            current_url="",
+            tab_id=tab_id,
+        )
     state_change = context_prep.get("state_change") if isinstance(context_prep, dict) else {}
     if not isinstance(state_change, dict):
         state_change = {}
@@ -378,15 +453,42 @@ async def execute_ref_action_with_snapshot_impl(
             )
             break
         retry_path.append(f"{attempt_idx}:{mode}")
-        locator_resolution = await resolve_locator_for_attempt(
-            page=page,
-            requested_meta=requested_meta,
-            candidate_selector=candidate_selector,
-            attempt_idx=attempt_idx,
-            mode=mode,
-            attempt_logs=attempt_logs,
-            resolve_locator_from_ref_fn=_resolve_locator_from_ref,
-        )
+        try:
+            locator_resolution = await resolve_locator_for_attempt(
+                page=page,
+                requested_meta=requested_meta,
+                candidate_selector=candidate_selector,
+                attempt_idx=attempt_idx,
+                mode=mode,
+                attempt_logs=attempt_logs,
+                resolve_locator_from_ref_fn=_resolve_locator_from_ref,
+            )
+        except Exception as exc:
+            if not _is_driver_disconnect_error(exc):
+                raise
+            transport_success = False
+            reason_code = "request_exception"
+            await _best_effort_close_broken_session(
+                session,
+                active_sessions=active_sessions,
+                session_id=session_id,
+            )
+            return build_full_failure_response(
+                reason_code=reason_code,
+                snapshot_id=snapshot_id,
+                ref_id=ref_id,
+                stale_recovered=stale_recovered,
+                transport_success=transport_success,
+                locator_found=locator_found,
+                interaction_success=interaction_success,
+                state_change=state_change,
+                live_texts=last_live_texts,
+                retry_path=retry_path,
+                attempt_logs=attempt_logs,
+                screenshot_base64=None,
+                current_url="",
+                tab_id=tab_id,
+            )
         if not bool(locator_resolution.get("ok")):
             reason_code = str(locator_resolution.get("reason_code") or "not_found")
             continue
@@ -395,16 +497,43 @@ async def execute_ref_action_with_snapshot_impl(
         resolved_selector = str(locator_resolution.get("resolved_selector") or candidate_selector)
 
         locator_found = True
-        before_state = await capture_before_state(
-            page=page,
-            locator=locator,
-            submit_like_click=submit_like_click,
-            collect_page_evidence_fn=_collect_page_evidence,
-            collect_page_evidence_light_fn=_collect_page_evidence_light,
-            compute_runtime_dom_hash_fn=_compute_runtime_dom_hash,
-            read_focus_signature_fn=_read_focus_signature,
-            safe_read_target_state_fn=_safe_read_target_state,
-        )
+        try:
+            before_state = await capture_before_state(
+                page=page,
+                locator=locator,
+                submit_like_click=submit_like_click,
+                collect_page_evidence_fn=_collect_page_evidence,
+                collect_page_evidence_light_fn=_collect_page_evidence_light,
+                compute_runtime_dom_hash_fn=_compute_runtime_dom_hash,
+                read_focus_signature_fn=_read_focus_signature,
+                safe_read_target_state_fn=_safe_read_target_state,
+            )
+        except Exception as exc:
+            if not _is_driver_disconnect_error(exc):
+                raise
+            transport_success = False
+            reason_code = "request_exception"
+            await _best_effort_close_broken_session(
+                session,
+                active_sessions=active_sessions,
+                session_id=session_id,
+            )
+            return build_full_failure_response(
+                reason_code=reason_code,
+                snapshot_id=snapshot_id,
+                ref_id=ref_id,
+                stale_recovered=stale_recovered,
+                transport_success=transport_success,
+                locator_found=locator_found,
+                interaction_success=interaction_success,
+                state_change=state_change,
+                live_texts=last_live_texts,
+                retry_path=retry_path,
+                attempt_logs=attempt_logs,
+                screenshot_base64=None,
+                current_url="",
+                tab_id=tab_id,
+            )
         before_state_unpack = unpack_before_state(
             before_state=before_state if isinstance(before_state, dict) else {},
             fallback_url=page.url,
@@ -498,6 +627,7 @@ async def execute_ref_action_with_snapshot_impl(
         except Exception as action_exc:
             friendly_msg = to_ai_friendly_error(action_exc, ref_id=ref_id)
             retry_path.append(f"action_error:{friendly_msg}")
+            fatal_driver_disconnect = _is_driver_disconnect_error(action_exc) or _is_driver_disconnect_error(friendly_msg)
             recovery_result = await handle_action_exception_recovery(
                 action_exc=action_exc,
                 action=action,
@@ -533,6 +663,25 @@ async def execute_ref_action_with_snapshot_impl(
             )
             if isinstance(recovery_result.get("return_response"), dict):
                 return recovery_result["return_response"]
+            if fatal_driver_disconnect and not bool(recovery_result.get("continue_loop")):
+                transport_success = False
+                reason_code = "request_exception"
+                await _best_effort_close_broken_session(
+                    session,
+                    active_sessions=active_sessions,
+                    session_id=session_id,
+                )
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": reason_code,
+                        "error": friendly_msg,
+                    }
+                )
+                break
             state_change = recovery_result.get("state_change") or state_change
             if isinstance(state_change, dict) and bool(state_change.get("resnapshot_required")):
                 post_click_snapshot_id = await _maybe_resnapshot("exception_recovery")

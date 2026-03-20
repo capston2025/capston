@@ -277,6 +277,15 @@ def build_goal_policy_evidence_bundle(
         agent._goal_policy_baseline_evidence = baseline_bundle
 
     baseline_current = dict(getattr(baseline_bundle, "current", {}) or {})
+    already_satisfied_pre_action = bool(
+        baseline_current.get("target_in_destination")
+        and baseline_current.get("destination_anchor_found")
+        and baseline_current.get("destination_surface_actionable")
+    )
+    remediation_needed = bool(
+        str(getattr(semantics, "remediation_trigger", "") or "").strip().lower() == "already_present"
+        and already_satisfied_pre_action
+    )
     baseline_metric = baseline_current.get("aggregate_metric")
     aggregate_metric_delta = None
     if isinstance(aggregate_metric, (int, float)) and isinstance(baseline_metric, (int, float)):
@@ -304,6 +313,8 @@ def build_goal_policy_evidence_bundle(
             "destination_anchor_found": destination_anchor_found,
             "destination_surface_actionable": destination_surface_actionable,
             "target_in_destination": target_in_destination,
+            "already_satisfied_pre_action": already_satisfied_pre_action,
+            "remediation_needed": remediation_needed,
             "already_satisfied": bool(target_in_destination and semantics.already_satisfied_ok and not semantics.mutate_required),
             "filter_validation_passed": filter_validation_passed,
             "empty_state_visible": empty_state_visible,

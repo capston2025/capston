@@ -15,7 +15,7 @@ class ClearListPolicy:
     def next_phase(self, current_phase: str, event: str, evidence: Any, budgets: Dict[str, Any]) -> str:
         if event == "blocked_auth":
             return "handle_auth_or_block"
-        if current_phase == "handle_auth_or_block" and event in {"action_ok", "wait_progress"}:
+        if current_phase == "handle_auth_or_block" and event == "auth_resolved":
             return "reveal_destination_surface"
         if current_phase == "reveal_destination_surface" and event in {"action_ok", "wait_progress"}:
             destination_surface_actionable = bool(getattr(evidence, "derived", {}).get("destination_surface_actionable"))

@@ -5,7 +5,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
-from playwright.async_api import Browser, CDPSession, Page, Playwright
+from playwright.async_api import Browser, BrowserContext, CDPSession, Page, Playwright
 
 from gaia.src.phase4.observability import SessionObservability
 
@@ -29,6 +29,7 @@ class BrowserSession:
         self._logger = logger
 
         self.browser: Optional[Browser] = None
+        self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.current_url: str = ""
         self.cdp_session: Optional[CDPSession] = None
@@ -103,7 +104,23 @@ class BrowserSession:
         self.screencast_active = False
         self.dialog_listener_armed = False
         self.file_chooser_listener_armed = False
-        self.page = await self.browser.new_page()
+        if self.page is not None:
+            try:
+                if not self.page.is_closed():
+                    await self.page.close()
+            except Exception:
+                pass
+            finally:
+                self.page = None
+        if self.context is not None:
+            try:
+                await self.context.close()
+            except Exception:
+                pass
+            finally:
+                self.context = None
+        self.context = await self.browser.new_context()
+        self.page = await self.context.new_page()
         await self._apply_page_stealth(self.page)
         await self.start_screencast()
         if self.current_url:
@@ -160,7 +177,8 @@ class BrowserSession:
                     ) from exc
                 raise
 
-            self.page = await self.browser.new_page()
+            self.context = await self.browser.new_context()
+            self.page = await self.context.new_page()
             await self._apply_page_stealth(self.page)
             await self.start_screencast()
         elif not self._page_alive():
@@ -311,8 +329,14 @@ class BrowserSession:
                 self._log_warning("[CDP Screencast] Failed to stop: %s", exc)
 
     async def close(self):
-        for task in list(self._screencast_tasks):
+        pending_tasks = list(self._screencast_tasks)
+        for task in pending_tasks:
             task.cancel()
+        if pending_tasks:
+            try:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            except Exception:
+                pass
         self._screencast_tasks.clear()
         if self.screencast_active:
             try:
@@ -339,14 +363,25 @@ class BrowserSession:
             finally:
                 self.page = None
 
+        if self.context:
+            try:
+                await self.context.close()
+            except Exception as exc:
+                self._log_warning("[BrowserSession.close] context close failed: %s", exc)
+            finally:
+                self.context = None
+
         if self.browser:
             try:
-                if self.browser.is_connected():
-                    await self.browser.close()
+                await self.browser.close()
             except Exception as exc:
                 self._log_warning("[BrowserSession.close] browser close failed: %s", exc)
             finally:
                 self.browser = None
+        self.current_url = ""
+        self.current_snapshot_id = ""
+        self.current_dom_hash = ""
+        self.snapshots = {}
 
 
 def ensure_session(

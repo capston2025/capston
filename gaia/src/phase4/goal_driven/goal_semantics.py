@@ -29,6 +29,10 @@ _MUTATION_REQUIRED_TOKENS = (
 class GoalSemantics:
     goal_kind: GoalKind
     mutation_direction: str = ""
+    remediation_direction: str = ""
+    remediation_trigger: str = ""
+    conditional_remediation: bool = False
+    requires_pre_action_membership_check: bool = False
     target_terms: List[str] = field(default_factory=list)
     destination_terms: List[str] = field(default_factory=list)
     destination_aliases: Dict[str, List[str]] = field(default_factory=dict)
@@ -136,6 +140,10 @@ def extract_goal_semantics(
     goal_kind = _extract_goal_kind(texts, goal_constraints, filter_style, verification_style, destination_aliases)
     explicit_auth_goal = goal_kind == GoalKind.AUTH
     mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
+    remediation_direction = str(goal_constraints.get("remediation_direction") or "").strip().lower()
+    remediation_trigger = str(goal_constraints.get("remediation_trigger") or "").strip().lower()
+    conditional_remediation = bool(goal_constraints.get("conditional_remediation"))
+    requires_pre_action_membership_check = bool(goal_constraints.get("requires_pre_action_membership_check"))
     joined = " ".join(str(t or "") for t in texts).lower()
     explicit_mutation_request = any(token in joined for token in _MUTATION_REQUIRED_TOKENS)
     mutate_required = goal_constraints.get("mutate_required", None)
@@ -149,15 +157,24 @@ def extract_goal_semantics(
                 GoalKind.APPLY_SELECTION,
             }
         )
+    if remediation_trigger:
+        mutate_required = True
+    already_satisfied_ok = bool(goal_constraints.get("already_satisfied_ok", True))
+    if remediation_trigger:
+        already_satisfied_ok = False
     return GoalSemantics(
         goal_kind=goal_kind,
         mutation_direction=mutation_direction,
+        remediation_direction=remediation_direction,
+        remediation_trigger=remediation_trigger,
+        conditional_remediation=conditional_remediation,
+        requires_pre_action_membership_check=requires_pre_action_membership_check,
         target_terms=target_terms,
         destination_terms=destination_terms,
         destination_aliases={k: list(v) for k, v in destination_aliases.items()},
         constraints=goal_constraints,
         quoted_targets=quoted_targets,
-        already_satisfied_ok=bool(goal_constraints.get("already_satisfied_ok", True)),
+        already_satisfied_ok=already_satisfied_ok,
         mutate_required=bool(mutate_required),
         explicit_auth_goal=explicit_auth_goal,
         require_no_navigation=bool(goal_constraints.get("require_no_navigation")),

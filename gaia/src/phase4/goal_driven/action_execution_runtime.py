@@ -67,6 +67,16 @@ def execute_decision(
                 "full_selector": str(full_selector or ""),
                 "reasoning": str(getattr(decision, "reasoning", "") or ""),
             }
+            container_ref = str(getattr(selected_element, "container_ref_id", "") or "").strip()
+            if container_ref:
+                agent._active_interaction_surface = {
+                    "kind": "target",
+                    "ref_id": container_ref,
+                    "source": "successful-click",
+                    "sticky_until": time.time() + 20.0,
+                }
+                agent._active_scoped_container_ref = container_ref
+                agent._surface_reacquire_pending = False
         except Exception:
             pass
 
@@ -90,6 +100,12 @@ def execute_decision(
             loginish = False
         if loginish:
             agent._last_auth_submit_at = time.time()
+            agent._auth_submit_attempted = True
+            agent._auth_submit_attempts = int(getattr(agent, "_auth_submit_attempts", 0) or 0) + 1
+            pre_auth_surface_ref = str(getattr(agent, "_pre_auth_surface_ref", "") or "").strip()
+            if pre_auth_surface_ref:
+                agent._active_scoped_container_ref = pre_auth_surface_ref
+            agent._surface_reacquire_pending = True
 
     def _remember_auth_fill() -> None:
         if decision.action != ActionType.FILL or selected_element is None:
@@ -298,19 +314,34 @@ def execute_decision(
             if ok:
                 _remember_auth_submit()
                 _remember_blockable_intent()
+                if getattr(agent, "_pending_resume_element_id", None) == decision.element_id:
+                    agent._blocked_intent_resumed = True
+                    agent._auth_resume_pending = False
+                    agent._pending_resume_element_id = None
             elif (
                 selected_element is not None
-                and str(getattr(agent, "_goal_policy_phase", "") or "").strip() in {"reveal_destination_surface", "act_on_target", "verify_removal", "verify_empty"}
-                and str(getattr(getattr(agent, "_goal_semantics", None), "goal_kind", "") or "") in {"remove_from_list", "clear_list"}
                 and str(getattr(getattr(agent, "_last_exec_result", None), "reason_code", "") or "") == "not_actionable"
             ):
+                goal_kind = str(getattr(getattr(agent, "_goal_semantics", None), "goal_kind", "") or "")
+                mutation_goal = goal_kind in {"add_to_list", "remove_from_list", "clear_list", "apply_selection"}
                 container_ref = str(getattr(selected_element, "container_ref_id", "") or "").strip()
-                if container_ref:
+                if mutation_goal and container_ref:
                     agent._active_scoped_container_ref = container_ref
+                    agent._active_interaction_surface = {
+                        "kind": "target",
+                        "ref_id": container_ref,
+                        "source": "not-actionable",
+                        "sticky_until": time.time() + 10.0,
+                    }
+                    agent._surface_reacquire_pending = True
                     try:
                         agent._record_reason_code("row_secondary_affordance_scope")
                     except Exception:
                         pass
+                if getattr(agent, "_pending_resume_element_id", None) == decision.element_id:
+                    agent._blocked_intent_resume_attempts = int(getattr(agent, "_blocked_intent_resume_attempts", 0) or 0) + 1
+                    agent._auth_resume_pending = True
+                    agent._pending_resume_element_id = None
             return ok, err
 
         if decision.action == ActionType.FILL:

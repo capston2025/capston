@@ -884,6 +884,14 @@ def _build_hub_intervention_callback(context: HubContext, sink: HubSink):
             _notify_session_update(context)
             return response
 
+        kind = str((payload or {}).get("kind") or "").strip().lower()
+        if kind == "no_progress":
+            sink.info(
+                "상태 변화가 반복 감지되어 진행 전략을 조정합니다. "
+                "기본값으로 계속 진행합니다. 중단하려면 /cancel 을 사용하세요."
+            )
+            return {"action": "continue", "proceed": True}
+
         question = str((payload or {}).get("question") or "").strip()
         if not question:
             question = "추가 입력이 필요합니다."

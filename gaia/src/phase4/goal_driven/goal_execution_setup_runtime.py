@@ -34,21 +34,46 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._recent_click_element_ids = []
     agent._last_dom_top_ids = []
     agent._active_scoped_container_ref = ""
+    agent._active_interaction_surface = {
+        "kind": "",
+        "ref_id": "",
+        "source": "",
+        "sticky_until": 0.0,
+    }
+    agent._pre_auth_surface_ref = ""
+    agent._surface_reacquire_pending = False
+    agent._active_interaction_surface_kind = ""
+    agent._active_interaction_surface_source = ""
     agent._auth_interrupt_scope_ref = ""
     agent._auth_interrupt_scope_source = ""
     agent._auth_interrupt_active = False
     agent._auth_interrupt_started_at = 0.0
+    agent._auth_resume_pending = False
+    agent._auth_resolved_at = 0.0
+    agent._auth_submit_attempted = False
+    agent._auth_submit_attempts = 0
     agent._last_auth_submit_at = 0.0
     agent._auth_identifier_done = False
     agent._auth_password_done = False
+    agent._captcha_observer_executor = None
+    agent._captcha_observer_future = None
+    agent._captcha_observer_last_key = ""
+    agent._captcha_observer_last_started_at = 0.0
+    agent._captcha_observer_last_result = {}
+    agent._captcha_observer_confirmed = False
+    agent._captcha_observer_state = {}
     agent._blocked_intent = {}
     agent._blocked_intent_resumed = False
+    agent._blocked_intent_resume_attempts = 0
+    agent._pending_resume_element_id = None
     agent._last_goal_blockable_intent = {}
     agent._last_container_source_summary = {}
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
     agent._goal_policy_target_seen_in_destination = False
     agent._goal_policy_destination_anchor_seen = False
+    agent._goal_conditional_remediation_active = False
+    agent._goal_conditional_remediation_done = False
     agent._goal_tokens = agent._derive_goal_tokens(goal)
     agent._goal_constraints = agent._derive_goal_constraints(goal)
     initialize_goal_policy_runtime(agent, goal)

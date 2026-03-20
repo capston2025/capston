@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from urllib.parse import urlparse
 
 _SPAWNED_PROCESS: Optional[subprocess.Popen[str]] = None
 _SPAWNED_LOG_FILE: Optional[IO[str]] = None
+_SPAWNED_PID_FILE: Optional[Path] = None
 _CLEANUP_REGISTERED = False
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _THIS_DIR = Path(__file__).resolve().parent
@@ -46,6 +48,86 @@ def _read_existing_pid(pid_file: Path) -> Optional[int]:
     except Exception:
         pass
     return None
+
+
+def _safe_unlink_pid_file(pid_file: Optional[Path], *, expected_pid: Optional[int] = None) -> None:
+    if pid_file is None:
+        return
+    if expected_pid is not None:
+        try:
+            raw = pid_file.read_text(encoding="utf-8").strip()
+            current_pid = int(raw or "0")
+        except Exception:
+            current_pid = 0
+        if current_pid and current_pid != int(expected_pid):
+            return
+    try:
+        pid_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _terminate_pid_tree(pid: int, *, term_timeout: float = 2.5, kill_timeout: float = 2.0) -> None:
+    if int(pid) <= 0:
+        return
+    term_sent = False
+    try:
+        os.killpg(int(pid), signal.SIGTERM)
+        term_sent = True
+    except Exception:
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+            term_sent = True
+        except Exception:
+            pass
+    if not term_sent:
+        return
+    deadline = time.time() + max(0.2, float(term_timeout))
+    while time.time() < deadline:
+        if not _pid_running(pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(int(pid), signal.SIGKILL)
+    except Exception:
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except Exception:
+            pass
+    deadline = time.time() + max(0.2, float(kill_timeout))
+    while time.time() < deadline:
+        if not _pid_running(pid):
+            return
+        time.sleep(0.05)
+
+
+def _register_cleanup_hooks() -> None:
+    global _CLEANUP_REGISTERED
+    if _CLEANUP_REGISTERED:
+        return
+
+    atexit.register(_stop_spawned_mcp_host)
+
+    def _make_signal_handler(previous_handler: Any):
+        def _handler(signum: int, frame: Any) -> None:
+            try:
+                _stop_spawned_mcp_host()
+            finally:
+                if callable(previous_handler):
+                    previous_handler(signum, frame)
+                elif previous_handler == signal.SIG_DFL:
+                    raise SystemExit(128 + int(signum))
+                elif previous_handler == signal.SIG_IGN:
+                    return
+        return _handler
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous = signal.getsignal(signum)
+            signal.signal(signum, _make_signal_handler(previous))
+        except Exception:
+            pass
+    _CLEANUP_REGISTERED = True
 
 
 def resolve_mcp_target(raw_base_url: str | None) -> Tuple[str, int, str]:
@@ -109,7 +191,24 @@ def wait_for_mcp_ready(
 def _stop_spawned_mcp_host() -> None:
     global _SPAWNED_PROCESS
     global _SPAWNED_LOG_FILE
+    global _SPAWNED_PID_FILE
+    proc = _SPAWNED_PROCESS
+    pid_file = _SPAWNED_PID_FILE
     _SPAWNED_PROCESS = None
+    _SPAWNED_PID_FILE = None
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                _terminate_pid_tree(int(proc.pid))
+                try:
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        _safe_unlink_pid_file(pid_file, expected_pid=int(getattr(proc, "pid", 0) or 0))
+    else:
+        _safe_unlink_pid_file(pid_file)
     if _SPAWNED_LOG_FILE is not None:
         try:
             _SPAWNED_LOG_FILE.close()
@@ -125,9 +224,12 @@ def ensure_mcp_host_running(
 ) -> bool:
     global _SPAWNED_PROCESS
     global _SPAWNED_LOG_FILE
+    global _SPAWNED_PID_FILE
     global _CLEANUP_REGISTERED
 
     host, port, base_url = resolve_mcp_target(raw_base_url)
+    if host in _LOCAL_HOSTS and not _CLEANUP_REGISTERED:
+        _register_cleanup_hooks()
     if is_mcp_ready(base_url):
         return True
 
@@ -141,6 +243,9 @@ def ensure_mcp_host_running(
     existing_pid = _read_existing_pid(pid_file)
     if existing_pid and wait_for_mcp_ready(base_url, timeout_sec=min(max(2.0, startup_timeout), 10.0)):
         return True
+    if existing_pid:
+        _terminate_pid_tree(existing_pid)
+        _safe_unlink_pid_file(pid_file, expected_pid=existing_pid)
 
     if _SPAWNED_PROCESS and _SPAWNED_PROCESS.poll() is None:
         return wait_for_mcp_ready(base_url, timeout_sec=min(max(2.0, startup_timeout), 10.0))
@@ -148,6 +253,12 @@ def ensure_mcp_host_running(
     log_dir = Path.home() / ".gaia" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"mcp_host.runtime.{port}.log"
+    if _SPAWNED_LOG_FILE is not None:
+        try:
+            _SPAWNED_LOG_FILE.close()
+        except Exception:
+            pass
+        _SPAWNED_LOG_FILE = None
     _SPAWNED_LOG_FILE = log_path.open("a", encoding="utf-8")
     child_env = os.environ.copy()
     workspace_root = str(_WORKSPACE_ROOT)
@@ -167,6 +278,7 @@ def ensure_mcp_host_running(
         start_new_session=True,
         close_fds=True,
     )
+    _SPAWNED_PID_FILE = pid_file
     try:
         pid_file.write_text(str(int(_SPAWNED_PROCESS.pid)), encoding="utf-8")
     except Exception:

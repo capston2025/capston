@@ -21,6 +21,7 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
+from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
 from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
 from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
@@ -446,7 +447,7 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
     )
 
 
-def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str) -> None:
+def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str, url: str) -> None:
     if not isinstance(goal.test_data, dict):
         goal.test_data = {}
     text = str(query_text or "")
@@ -481,6 +482,11 @@ def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str) -> None:
         goal.test_data.setdefault("return_credentials", True)
         if email:
             goal.test_data.setdefault("email", email)
+        return
+    stored = load_site_credentials(url)
+    if stored:
+        for key, value in stored.items():
+            goal.test_data.setdefault(key, value)
 
 
 def _infer_goal_type(query_text: str) -> str:
@@ -846,6 +852,18 @@ def _run_single_chat_goal(
                 if email:
                     response["email"] = email
                 return response
+            stored = load_site_credentials(url)
+            if stored:
+                response = {
+                    "action": "continue",
+                    "proceed": True,
+                    "username": str(stored.get("username") or ""),
+                    "password": str(stored.get("password") or ""),
+                }
+                stored_email = str(stored.get("email") or "").strip()
+                if stored_email:
+                    response["email"] = stored_email
+                return response
             return {"action": "cancel", "proceed": False}
         return {"action": "cancel", "proceed": False}
 
@@ -853,7 +871,7 @@ def _run_single_chat_goal(
         intervention_callback = _default_intervention_callback
 
     goal = prepared_goal or _build_test_goal(url=url, query=query)
-    _augment_goal_with_env_credentials(goal, query)
+    _augment_goal_with_env_credentials(goal, query, url)
     if isinstance(steering_policy, dict) and steering_policy:
         if not isinstance(goal.test_data, dict):
             goal.test_data = {}

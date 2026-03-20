@@ -13,12 +13,16 @@ def derive_goal_policy_event(
     changed: bool,
     terminal_result: Any = None,
     login_gate_visible: bool = False,
+    auth_resume_pending: bool = False,
+    auth_submit_attempted: bool = False,
 ) -> str:
     action_value = str(getattr(getattr(decision, "action", None), "value", "") or "").strip().lower()
     if terminal_result is not None:
         return "terminal"
     if login_gate_visible:
         return "blocked_auth"
+    if auth_resume_pending and auth_submit_attempted:
+        return "auth_resolved"
     if action_value == "wait":
         return "wait_progress" if changed else "wait_no_progress"
     if success:
@@ -59,6 +63,8 @@ def advance_goal_policy_phase(
         changed=changed,
         terminal_result=terminal_result,
         login_gate_visible=auth_prompt_visible,
+        auth_resume_pending=bool(getattr(agent, "_auth_resume_pending", False)),
+        auth_submit_attempted=bool(getattr(agent, "_auth_submit_attempted", False)),
     )
     next_phase = current_phase
     if evidence is not None and hasattr(policy, "next_phase"):

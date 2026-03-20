@@ -182,11 +182,11 @@ from .runtime import (
     FlowMasterOrchestrator,
     StepSubAgent,
 )
-from gaia.src.phase4.captcha_solver import CaptchaSolver
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from .text_llm_runtime import call_llm_text_only as call_llm_text_only_impl
+from .captcha_observer_runtime import run_captcha_observer as run_captcha_observer_impl
 
 
 class GoalDrivenAgent:
@@ -1512,71 +1512,23 @@ class GoalDrivenAgent:
             # 2. 스크린샷 캡처
             screenshot = self._capture_screenshot()
 
-            # 2.5 CAPTCHA 감지 및 자동 해결
-            captcha_skip_until = int(getattr(self, "_captcha_solver_skip_until_step", 0) or 0)
-            recent_auth_submit_at = float(getattr(self, "_last_auth_submit_at", 0.0) or 0.0)
-            post_auth_cooldown_sec = self._env_int(
-                "GAIA_CAPTCHA_POST_AUTH_COOLDOWN_SEC",
-                20,
-                low=0,
-                high=120,
+            captcha_observer_result = run_captcha_observer_impl(
+                self,
+                goal=goal,
+                dom_elements=dom_elements,
+                screenshot=screenshot,
+                step_count=step_count,
+                steps=steps,
+                start_time=start_time,
             )
-            post_auth_cooldown_active = bool(
-                recent_auth_submit_at > 0.0 and (time.time() - recent_auth_submit_at) < float(post_auth_cooldown_sec)
-            )
-            captcha_solver_allowed = (
-                screenshot
-                and not getattr(self, "_captcha_solver_skip", False)
-                and int(step_count) >= captcha_skip_until
-                and not post_auth_cooldown_active
-            )
-            if captcha_solver_allowed:
-                if not hasattr(self, "_captcha_solver"):
-                    captcha_attempts = self._loop_policy_value("captcha_solver_attempt_limit", 2)
-                    if captcha_attempts <= 0:
-                        captcha_attempts = 2
-                    self._captcha_solver = CaptchaSolver(
-                        vision_client=self.llm,
-                        execute_fn=self._execute_action,
-                        mcp_host_url=self.mcp_host_url,
-                        session_id=self.session_id,
-                        max_attempts=captcha_attempts,
-                        log_fn=self._log,
-                    )
-                captcha_result = self._captcha_solver.detect_and_handle(
-                    screenshot=screenshot,
-                    page_url=getattr(self, "_current_url", goal.start_url or ""),
-                    capture_fn=self._capture_screenshot,
-                )
-                if captcha_result.solved:
-                    self._log(f"🔓 CAPTCHA 해결 완료 ({captcha_result.attempts}회 시도)")
-                    self._captcha_solver_skip_until_step = 0
-                    self._action_history.append(
-                        f"Step {step_count}: captcha_solve - CAPTCHA 자동 해결 ({captcha_result.status})"
-                    )
-                    time.sleep(1)
-                    continue  # DOM 재수집 후 다음 스텝
-                elif captcha_result.status == "gave_up":
-                    self._log("🏳️ CAPTCHA 해결 포기 — 일반 LLM 흐름으로 계속")
-                    cooldown_steps = self._loop_policy_value("captcha_solver_cooldown_steps", 4)
-                    if cooldown_steps <= 0:
-                        cooldown_steps = 4
-                    self._captcha_solver_skip_until_step = int(step_count) + int(cooldown_steps)
-                    self._action_feedback.append(
-                        "CAPTCHA가 감지되었으나 자동 해결에 실패했습니다. "
-                        "가능하면 CAPTCHA를 우회하는 경로를 찾거나, 사용자 개입이 필요합니다."
-                    )
-                    if len(self._action_feedback) > 10:
-                        self._action_feedback = self._action_feedback[-10:]
-            elif screenshot and int(step_count) < captcha_skip_until:
-                self._log(
-                    f"⏭️ CAPTCHA solver cooldown 적용 중(step<{captcha_skip_until}) — 일반 실행 흐름 유지"
-                )
-                # no_captcha 또는 unsupported → 일반 흐름 계속
-            elif screenshot and post_auth_cooldown_active:
-                self._log(
-                    f"⏭️ 인증 직후 CAPTCHA solver 보류({post_auth_cooldown_sec}s) — 일반 실행 흐름 유지"
-                )
+            if isinstance(captcha_observer_result, dict):
+                if bool(captcha_observer_result.get("continue_loop")):
+                    continue
+                terminal_result = captcha_observer_result.get("terminal_result")
+                if terminal_result is not None:
+                    return terminal_result
+            elif captcha_observer_result is not None:
+                return captcha_observer_result
 
             static_verification_reason = self._evaluate_static_verification_on_current_page(
                 goal=goal,

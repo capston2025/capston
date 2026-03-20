@@ -765,6 +765,14 @@ class _TelegramBridge:
                 return kv
             return {"action": "cancel", "proceed": False}
 
+        if kind == "no_progress":
+            if not kv and raw:
+                return {"instruction": raw, "proceed": True}
+            if kv:
+                kv.setdefault("proceed", "true")
+                return kv
+            return {"action": "continue", "proceed": True}
+
         return {"action": "cancel", "proceed": False}
 
     def _build_intervention_callback(self, application, chat_id: int, reply_to_message_id: int | None):
@@ -775,6 +783,27 @@ class _TelegramBridge:
 
             kind = str(payload.get("kind") or "input").strip().lower()
             question = str(payload.get("question") or "추가 입력이 필요합니다.")
+            if kind == "no_progress":
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        self._send_text(
+                            application.bot,
+                            chat_id,
+                            "\n".join(
+                                [
+                                    "상태 변화가 반복 감지되어 진행 전략을 조정합니다.",
+                                    question,
+                                    "기본값으로 계속 진행합니다. 중단하려면 /cancel 을 사용하세요.",
+                                ]
+                            ),
+                            reply_to_message_id,
+                        ),
+                        loop,
+                    )
+                    fut.result(timeout=15)
+                except Exception:
+                    pass
+                return {"action": "continue", "proceed": True}
             fields = payload.get("fields")
             if not isinstance(fields, list):
                 fields = []

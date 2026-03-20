@@ -2119,22 +2119,9 @@ async def capture_screenshot(
 
 async def _reset_session_connection(session: BrowserSession, reason: str = "") -> None:
     try:
-        if session.cdp_session is not None:
-            try:
-                await session.cdp_session.detach()
-            except Exception:
-                pass
-    finally:
-        session.cdp_session = None
-
-    if session.browser is not None:
-        try:
-            await session.browser.close()
-        except Exception:
-            pass
-
-    session.browser = None
-    session.page = None
+        await session.close()
+    except Exception:
+        pass
     session.current_url = ""
     session.screencast_active = False
     session.dialog_listener_armed = False

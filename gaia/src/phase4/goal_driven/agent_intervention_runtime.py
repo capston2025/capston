@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, Optional
 
 from .models import TestGoal
+from .site_auth_store import save_site_credentials
 
 
 def has_login_test_data(goal: TestGoal) -> bool:
@@ -340,6 +341,13 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             )
             agent._log("사용자 요청에 따라 회원가입 모드로 진행합니다.")
             if return_credentials:
+                save_site_credentials(
+                    goal.start_url,
+                    username=str(goal.test_data.get("username") or ""),
+                    password=str(goal.test_data.get("password") or ""),
+                    email=str(goal.test_data.get("email") or ""),
+                )
+            if return_credentials:
                 agent._log(
                     f"회원가입에 사용할 계정: username={goal.test_data.get('username')} "
                     f"email={goal.test_data.get('email')} password={goal.test_data.get('password')}"
@@ -370,6 +378,12 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
                     "grade_year",
                     "return_credentials",
                 },
+            )
+            save_site_credentials(
+                goal.start_url,
+                username=login_id,
+                password=password,
+                email=email or (login_id if "@" in login_id else ""),
             )
             agent._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
             agent._handoff_state["provided"] = True
@@ -426,6 +440,12 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
     if "@" in login_id and not str(goal.test_data.get("email") or "").strip():
         goal.test_data["email"] = login_id
     goal.test_data["password"] = password
+    save_site_credentials(
+        goal.start_url,
+        username=login_id,
+        password=password,
+        email=str(goal.test_data.get("email") or ""),
+    )
     agent._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
     agent._handoff_state["provided"] = True
     agent._handoff_state["mode"] = "login"

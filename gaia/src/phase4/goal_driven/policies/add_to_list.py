@@ -15,10 +15,20 @@ class AddToListPolicy:
     def next_phase(self, current_phase: str, event: str, evidence: Any, budgets: Dict[str, Any]) -> str:
         if event == "blocked_auth":
             return "handle_auth_or_block"
-        if current_phase == "handle_auth_or_block" and event in {"action_ok", "wait_progress"}:
+        if current_phase == "handle_auth_or_block" and event == "auth_resolved":
             return "locate_target"
         if current_phase == "locate_target" and event in {"action_ok", "action_no_state_change"}:
             return "verify_destination_membership"
+        if (
+            current_phase == "verify_destination_membership"
+            and event in {"action_ok", "action_no_state_change", "wait_progress"}
+            and bool(evidence.derived.get("remediation_needed"))
+        ):
+            return "remediate_existing_membership"
+        if current_phase == "remediate_existing_membership" and event in {"action_ok", "action_no_state_change", "wait_progress"}:
+            return "verify_remediation_removal"
+        if current_phase == "verify_remediation_removal" and not bool(evidence.current.get("target_in_destination")):
+            return "locate_target"
         return current_phase
 
     def mandatory_validators(self, phase: str, ctx: Any, semantics: Any, evidence: Any) -> List[str]:
@@ -30,6 +40,15 @@ class AddToListPolicy:
                 "membership_state_validator",
                 "aggregate_delta_validator",
             ],
+            "remediate_existing_membership": [
+                "destination_anchor_validator",
+                "destination_surface_actionable_validator",
+            ],
+            "verify_remediation_removal": [
+                "destination_anchor_validator",
+                "target_present_before_validator",
+                "target_absent_after_validator",
+            ],
         }
         return list(mapping.get(phase, []))
 
@@ -37,6 +56,8 @@ class AddToListPolicy:
         return []
 
     def run_closer(self, phase: str, ctx: Any, semantics: Any, evidence: Any, validation_results: List[Any]) -> CloserResult:
+        if bool(evidence.derived.get("remediation_needed")) and phase == "verify_destination_membership":
+            return CloserResult(status="continue", reason_code="remediation_pending")
         if phase != "verify_destination_membership":
             return CloserResult(status="continue", reason_code="membership_verification_pending")
         mandatory_failed = any(bool(getattr(v, "mandatory", False)) and str(getattr(v, "status", "")) == "fail" for v in validation_results)
@@ -89,6 +110,7 @@ class AddToListPolicy:
                 "destination_anchor_found",
                 "target_in_destination",
                 "aggregate_metric_delta",
+                "destination_surface_actionable",
             ],
             "weak_progress_signals": ["toast_only", "button_state_change_only", "scroll_change_only"],
         }
