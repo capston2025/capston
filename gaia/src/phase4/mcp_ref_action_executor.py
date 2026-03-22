@@ -59,6 +59,11 @@ from gaia.src.phase4.mcp_ref_verify_fallbacks import (
 from gaia.src.phase4.mcp_error_converter import to_ai_friendly_error
 
 
+from gaia.src.phase4.mcp_ref_action_result_context import (
+    collect_ref_action_result_context,
+)
+
+
 
 
 async def execute_ref_action_with_snapshot_impl(
@@ -134,7 +139,7 @@ async def execute_ref_action_with_snapshot_impl(
             return None
         return None
 
-        recovery = await recover_snapshot_ref_state(
+    recovery = await recover_snapshot_ref_state(
         session=session,
         page=page,
         session_id=session_id,
@@ -555,9 +560,14 @@ async def execute_ref_action_with_snapshot_impl(
         )
         print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
         if effective:
-            session.current_url = safe_page_url(page, session.current_url)
-            screenshot_base64 = await safe_capture_page_screenshot_base64(page)
-            tab_id_value = _get_tab_index(page)
+            result_context = await collect_ref_action_result_context(
+                page=page,
+                session=session,
+                get_tab_index_fn=_get_tab_index,
+                safe_page_url_fn=safe_page_url,
+                safe_capture_page_screenshot_base64_fn=safe_capture_page_screenshot_base64,
+            )
+
             if auth_submit_like_click and trace_auth_submit_enabled:
                 print(
                     f"[trace_ref_action] total_ms={int((time.perf_counter() - trace_started_at) * 1000)} "
@@ -575,15 +585,19 @@ async def execute_ref_action_with_snapshot_impl(
                 live_texts=last_live_texts,
                 retry_path=retry_path,
                 attempt_logs=attempt_logs,
-                screenshot_base64=screenshot_base64,
-                current_url=session.current_url,
-                tab_id=tab_id_value,
+                screenshot_base64=result_context.get("screenshot_base64"),
+                current_url=result_context.get("current_url"),
+                tab_id=result_context.get("tab_id"),        
             )
 
-    screenshot = await safe_capture_page_screenshot_base64(page)
+    result_context = await collect_ref_action_result_context(
+        page=page,
+        session=session,
+        get_tab_index_fn=_get_tab_index,
+        safe_page_url_fn=safe_page_url,
+        safe_capture_page_screenshot_base64_fn=safe_capture_page_screenshot_base64,
+    )
 
-    session.current_url = safe_page_url(page, session.current_url)
-    tab_id_value = _get_tab_index(page)
     if auth_submit_like_click and trace_auth_submit_enabled:
         print(
             f"[trace_ref_action] total_ms={int((time.perf_counter() - trace_started_at) * 1000)} "
@@ -601,7 +615,7 @@ async def execute_ref_action_with_snapshot_impl(
         live_texts=last_live_texts,
         retry_path=retry_path,
         attempt_logs=attempt_logs,
-        screenshot_base64=screenshot,
-        current_url=session.current_url,
-        tab_id=tab_id_value,
+        screenshot_base64=result_context.get("screenshot_base64"),
+        current_url=result_context.get("current_url"),
+        tab_id=result_context.get("tab_id"),    
     )

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
-from gaia.src.phase4.mcp_ref_action_snapshot_recovery import (
-    recover_snapshot_ref_state,
-)
 
 
 async def recover_snapshot_ref_state(
