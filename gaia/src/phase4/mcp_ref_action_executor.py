@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import base64
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+
 
 from gaia.src.phase4.mcp_ref_snapshot_helpers import (
     _collect_close_ref_candidates,
@@ -44,55 +45,20 @@ from gaia.src.phase4.mcp_ref_before_state import (
 from gaia.src.phase4.mcp_ref_state_probe import (
     collect_state_change_probe,
 )
+from gaia.src.phase4.mcp_ref_action_snapshot_recovery import (
+    recover_snapshot_ref_state,
+)
+from gaia.src.phase4.mcp_ref_action_transport import (
+    goto_with_retry,
+    safe_capture_page_screenshot_base64,
+    safe_page_url,
+)
 from gaia.src.phase4.mcp_ref_verify_fallbacks import (
     run_verify_fallback_chain,
 )
 from gaia.src.phase4.mcp_error_converter import to_ai_friendly_error
 
 
-def _is_retryable_page_detach_error(exc: BaseException) -> bool:
-    message = str(exc or "").strip().lower()
-    if not message:
-        return False
-    return (
-        "frame has been detached" in message
-        or "target page, context or browser has been closed" in message
-    )
-
-
-async def _safe_capture_page_screenshot_base64(page: Any) -> Optional[str]:
-    try:
-        screenshot_bytes = await page.screenshot(full_page=False)
-    except Exception as exc:
-        if _is_retryable_page_detach_error(exc):
-            return None
-        return None
-    try:
-        return base64.b64encode(screenshot_bytes).decode("utf-8")
-    except Exception:
-        return None
-
-
-def _safe_page_url(page: Any, fallback: str = "") -> str:
-    try:
-        return str(getattr(page, "url", "") or fallback or "")
-    except Exception:
-        return str(fallback or "")
-
-
-async def _goto_with_retry(page: Any, url: str, *, timeout: int, wait_for_networkidle: bool = True) -> None:
-    try:
-        await page.goto(url, timeout=timeout)
-    except Exception as exc:
-        if not _is_retryable_page_detach_error(exc):
-            raise
-        await page.wait_for_timeout(150)
-        await page.goto(url, timeout=timeout)
-    if wait_for_networkidle:
-        try:
-            await page.wait_for_load_state("networkidle", timeout=5000)
-        except Exception:
-            pass
 
 
 async def execute_ref_action_with_snapshot_impl(
@@ -133,7 +99,7 @@ async def execute_ref_action_with_snapshot_impl(
         current_normalized = normalize_url(page.url)
         requested_normalized = normalize_url(url)
         if current_normalized != requested_normalized:
-            await _goto_with_retry(page, url, timeout=60000, wait_for_networkidle=True)
+            await goto_with_retry(page, url, timeout=60000, wait_for_networkidle=True)
             await page.wait_for_timeout(1000)
 
     try:
@@ -168,98 +134,31 @@ async def execute_ref_action_with_snapshot_impl(
             return None
         return None
 
-    requested_snapshot = session.snapshots.get(snapshot_id)
-    requested_meta = (
-        _resolve_ref_meta_from_snapshot(requested_snapshot, ref_id)
-        if requested_snapshot
-        else None
+        recovery = await recover_snapshot_ref_state(
+        session=session,
+        page=page,
+        session_id=session_id,
+        snapshot_id=snapshot_id,
+        ref_id=ref_id,
+        retry_path=retry_path,
+        to_ai_friendly_error_fn=to_ai_friendly_error,
+        snapshot_page_fn=snapshot_page,
+        resolve_ref_meta_from_snapshot_fn=_resolve_ref_meta_from_snapshot,
+        resolve_stale_ref_fn=_resolve_stale_ref,
+        get_tab_index_fn=_get_tab_index,
     )
-    initial_ref_state: Optional[str] = None
-    if isinstance(requested_snapshot, dict):
-        snap_epoch = int(requested_snapshot.get("epoch") or 0)
-        snap_dom_hash = str(requested_snapshot.get("dom_hash") or "")
-        snap_tab_index = int(requested_snapshot.get("tab_index") or 0)
-        parsed_epoch = 0
-        parsed_hash_short = ""
-        try:
-            parts = str(snapshot_id).split(":")
-            if len(parts) >= 3:
-                parsed_epoch = int(parts[-2] or 0)
-                parsed_hash_short = str(parts[-1] or "")
-        except Exception:
-            parsed_epoch = 0
-            parsed_hash_short = ""
-        if parsed_epoch and parsed_epoch != snap_epoch:
-            initial_ref_state = "stale_snapshot"
-        if parsed_hash_short and snap_dom_hash and not snap_dom_hash.startswith(parsed_hash_short):
-            initial_ref_state = "stale_snapshot"
-        if snap_tab_index != _get_tab_index(page):
-            initial_ref_state = "stale_snapshot"
-    if not requested_snapshot:
-        initial_ref_state = "snapshot_not_found"
-    elif requested_meta is None:
-        initial_ref_state = "not_found"
-    elif not str(requested_meta.get("dom_ref") or "").strip():
-        initial_ref_state = "stale_snapshot"
+    requested_snapshot = recovery.get("requested_snapshot")
+    requested_meta = recovery.get("requested_meta")
+    snapshot_id = str(recovery.get("snapshot_id") or snapshot_id)
+    ref_id = str(recovery.get("ref_id") or ref_id)
+    stale_recovered = bool(recovery.get("stale_recovered"))
+    reason_code = str(recovery.get("reason_code") or reason_code)
 
-    if initial_ref_state:
-        retry_path.append(f"recover:{initial_ref_state}")
-        try:
-            fresh_snapshot_result = await snapshot_page(
-                url=(page.url or None), session_id=session_id
-            )
-            fresh_snapshot_id = str(fresh_snapshot_result.get("snapshot_id") or "")
-            fresh_snapshot = (
-                session.snapshots.get(fresh_snapshot_id)
-                if fresh_snapshot_id
-                else None
-            )
-            recovered_meta: Optional[Dict[str, Any]] = None
-            recovered_ref_id = ref_id
+    recovery_response = recovery.get("response")
+    if isinstance(recovery_response, dict):
+        recovery_response.setdefault("attempt_logs", attempt_logs)
+        return recovery_response
 
-            if isinstance(fresh_snapshot, dict):
-                recovered_meta = _resolve_ref_meta_from_snapshot(fresh_snapshot, ref_id)
-                if recovered_meta is None:
-                    recovered_meta = _resolve_stale_ref(requested_meta, fresh_snapshot)
-                    if isinstance(recovered_meta, dict):
-                        recovered_ref_id = str(
-                            recovered_meta.get("ref_id") or recovered_ref_id
-                        )
-                if isinstance(recovered_meta, dict):
-                    requested_snapshot = fresh_snapshot
-                    requested_meta = recovered_meta
-                    snapshot_id = fresh_snapshot_id or snapshot_id
-                    ref_id = recovered_ref_id
-                    stale_recovered = True
-                    reason_code = "stale_ref_recovered"
-                    retry_path.append("recover:ok")
-        except Exception as recover_exc:
-            friendly = to_ai_friendly_error(recover_exc, ref_id=ref_id)
-            retry_path.append(f"recover:error:{friendly}")
-
-    if (
-        not isinstance(requested_snapshot, dict)
-        or not isinstance(requested_meta, dict)
-        or not str(requested_meta.get("dom_ref") or "").strip()
-    ):
-        if initial_ref_state == "snapshot_not_found":
-            fail_message = "snapshot을 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "snapshot_not_found"
-        elif initial_ref_state == "not_found":
-            fail_message = "snapshot 내 ref를 찾을 수 없습니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "not_found"
-        else:
-            fail_message = "snapshot/ref가 stale 상태입니다. 최신 snapshot 기준으로 다시 의사결정하세요."
-            fail_code = "stale_snapshot"
-        return {
-            "success": False,
-            "effective": False,
-            "reason_code": fail_code,
-            "reason": fail_message,
-            "stale_recovered": stale_recovered,
-            "retry_path": retry_path,
-            "attempt_logs": attempt_logs,
-        }
 
     if not isinstance(requested_meta, dict):
         return {
@@ -656,8 +555,8 @@ async def execute_ref_action_with_snapshot_impl(
         )
         print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
         if effective:
-            session.current_url = _safe_page_url(page, session.current_url)
-            screenshot_base64 = await _safe_capture_page_screenshot_base64(page)
+            session.current_url = safe_page_url(page, session.current_url)
+            screenshot_base64 = await safe_capture_page_screenshot_base64(page)
             tab_id_value = _get_tab_index(page)
             if auth_submit_like_click and trace_auth_submit_enabled:
                 print(
@@ -681,9 +580,9 @@ async def execute_ref_action_with_snapshot_impl(
                 tab_id=tab_id_value,
             )
 
-    screenshot = await _safe_capture_page_screenshot_base64(page)
+    screenshot = await safe_capture_page_screenshot_base64(page)
 
-    session.current_url = _safe_page_url(page, session.current_url)
+    session.current_url = safe_page_url(page, session.current_url)
     tab_id_value = _get_tab_index(page)
     if auth_submit_like_click and trace_auth_submit_enabled:
         print(
