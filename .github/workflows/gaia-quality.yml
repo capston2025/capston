@@ -37,14 +37,22 @@ jobs:
           files = sorted(root.glob("*.json"))
           if not files:
               raise SystemExit("no scenario files found")
+          count = 0
           for path in files:
               data = json.loads(path.read_text(encoding="utf-8"))
-              missing = required - set(data.keys())
-              if missing:
-                  raise SystemExit(f"{path}: missing keys {sorted(missing)}")
-              if not isinstance(data["expected_signals"], list):
-                  raise SystemExit(f"{path}: expected_signals must be list")
-          print(f"validated {len(files)} scenario files")
+              # Suite 파일: 최상위에 "scenarios" 배열이 있는 경우
+              if "scenarios" in data and isinstance(data["scenarios"], list):
+                  scenarios = data["scenarios"]
+              else:
+                  scenarios = [data]
+              for scenario in scenarios:
+                  missing = required - set(scenario.keys())
+                  if missing:
+                      raise SystemExit(f"{path}: missing keys {sorted(missing)}")
+                  if not isinstance(scenario["expected_signals"], list):
+                      raise SystemExit(f"{path}: expected_signals must be list")
+                  count += 1
+          print(f"validated {count} scenarios across {len(files)} files")
           PY
 
   smoke:
