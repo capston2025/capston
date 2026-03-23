@@ -1,0 +1,89 @@
+{
+  "suite_id": "gamegoo_public_exploratory_v1",
+  "site": {
+    "name": "GameGoo",
+    "base_url": "https://www.gamegoo.co.kr/",
+    "mode": "public_interactive"
+  },
+  "scenarios": [
+    {
+      "id": "GAMEGOO_001_MAIN_LIST_VISIBLE",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "현재 메인 화면에서 공개 게시판 목록, 카드, 또는 글 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible",
+        "text_visible"
+      ],
+      "time_budget_sec": 60
+    },
+    {
+      "id": "GAMEGOO_002_FILTER_AND_LIST_REFRESH",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "메인 화면에서 '게시판에서 찾기' 카드를 눌러 게시글 목록 화면으로 들어간 뒤, 목록 상단의 필터나 분류 항목 하나를 선택해 게시글 목록이 실제로 갱신되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "dom_changed",
+        "target_value_changed"
+      ],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "GAMEGOO_003_CATEGORY_TAB_SWITCH_REFRESH",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "메인 화면에서 '게시판에서 찾기' 카드를 눌러 게시글 목록 화면으로 들어간 뒤, 목록 상단의 카테고리나 분류 탭 중 현재 선택되지 않은 탭 하나를 선택했을 때 게시글 구성이나 본문이 실제로 바뀌는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "dom_changed",
+        "target_value_changed"
+      ],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "GAMEGOO_004_OPEN_POST_DETAIL",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "메인 화면에서 '게시판에서 찾기' 카드를 눌러 게시글 목록 화면으로 들어간 뒤, 목록에서 글 하나를 열어 제목이나 본문 핵심 텍스트가 보이는 상세 상태에 실제로 도달하는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "dom_changed",
+        "detail_visible"
+      ],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "GAMEGOO_005_RETURN_TO_LIST_FROM_DETAIL",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "메인 화면에서 '게시판에서 찾기' 카드를 눌러 게시글 목록 화면으로 들어간 뒤, 글 하나를 열었다가 뒤로가기나 목록 복귀 동작으로 다시 게시글 목록 화면에 돌아오는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "dom_changed",
+        "url_change",
+        "list_visible"
+      ],
+      "time_budget_sec": 300
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "schema_version": "gaia.benchmark.v1",
+  "suite_id": "gamegoo_public_v1",
+  "site": {
+    "name": "GameGoo",
+    "base_url": "https://www.gamegoo.co.kr/",
+    "mode": "public_interactive"
+  },
+  "started_at": "2026-03-19T18:12:19.270609+09:00",
+  "repeats": 1,
+  "scenario_count": 5,
+  "model": "gpt-5.4",
+  "metrics": {
+    "runs_total": 5,
+    "success_rate": 0.4,
+    "avg_time_seconds": 137.11,
+    "reproducibility": null,
+    "flaky_rate": null
+  },
+  "kpi_metrics": {
+    "scenario_success_rate": 0.4,
+    "reproducibility_rate": null,
+    "progress_stop_failure_rate": 0.6,
+    "self_recovery_rate": null,
+    "intervention_rate": 0.0,
+    "counts": {
+      "success": 2,
+      "blocked": 0,
+      "progress_stop_failures": 3,
+      "recovery_runs": 0,
+      "recovery_success": 0
+    },
+    "targets": {
+      "reproducibility_rate": 0.8,
+      "progress_stop_failure_rate": 0.1,
+      "self_recovery_rate": 0.6,
+      "scenario_success_rate": 0.7,
+      "intervention_rate": 0.2
+    }
+  },
+  "status_counts": {
+    "SUCCESS": 2,
+    "FAIL": 3
+  },
+  "failures": [
+    {
+      "scenario_id": "GAMEGOO_002_FILTER_AND_LIST_REFRESH",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(180s)"
+    },
+    {
+      "scenario_id": "GAMEGOO_003_SORT_OR_TAB_SWITCH_REFRESH",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(180s)"
+    },
+    {
+      "scenario_id": "GAMEGOO_005_DETAIL_CLOSE_RECOVERY",
+      "status": "FAIL",
+      "reason": "benchmark_timeout(180s)"
+    }
+  ]
+}

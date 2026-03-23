@@ -1,0 +1,41 @@
+{
+  "suite_id": "gamegoo_public_smoke_v1",
+  "site": {
+    "name": "GameGoo",
+    "base_url": "https://www.gamegoo.co.kr/",
+    "mode": "public_interactive"
+  },
+  "scenarios": [
+    {
+      "id": "GAMEGOO_001_MAIN_LIST_VISIBLE",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "현재 메인 화면에서 공개 게시판 목록, 카드, 또는 글 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "list_visible",
+        "text_visible"
+      ],
+      "time_budget_sec": 60
+    },
+    {
+      "id": "GAMEGOO_002_ENTER_BOARD_LIST",
+      "url": "https://www.gamegoo.co.kr/",
+      "goal": "메인 화면에서 '게시판에서 찾기' 카드를 한 번 눌러 게시글 목록 화면으로 이동하고, 게시글 목록이나 카드가 보이는 상태에 실제로 도달했는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "dom_changed",
+        "list_visible"
+      ],
+      "time_budget_sec": 180
+    }
+  ]
+}
