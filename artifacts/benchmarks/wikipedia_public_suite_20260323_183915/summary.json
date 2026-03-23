@@ -1,0 +1,45 @@
+{
+  "schema_version": "gaia.benchmark.v1",
+  "suite_id": "wikipedia_public_smoke_v2",
+  "site": {
+    "name": "Wikipedia",
+    "base_url": "https://en.wikipedia.org/wiki/Main_Page",
+    "mode": "public_interactive"
+  },
+  "started_at": "2026-03-23T18:39:15.057205+09:00",
+  "repeats": 1,
+  "scenario_count": 2,
+  "model": "gpt-5.4",
+  "metrics": {
+    "runs_total": 2,
+    "success_rate": 1.0,
+    "avg_time_seconds": 15.02,
+    "reproducibility": null,
+    "flaky_rate": null
+  },
+  "kpi_metrics": {
+    "scenario_success_rate": 1.0,
+    "reproducibility_rate": null,
+    "progress_stop_failure_rate": 0.0,
+    "self_recovery_rate": null,
+    "intervention_rate": 0.0,
+    "counts": {
+      "success": 2,
+      "blocked": 0,
+      "progress_stop_failures": 0,
+      "recovery_runs": 0,
+      "recovery_success": 0
+    },
+    "targets": {
+      "reproducibility_rate": 0.8,
+      "progress_stop_failure_rate": 0.1,
+      "self_recovery_rate": 0.6,
+      "scenario_success_rate": 0.7,
+      "intervention_rate": 0.2
+    }
+  },
+  "status_counts": {
+    "SUCCESS": 2
+  },
+  "failures": []
+}

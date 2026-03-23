@@ -55,6 +55,14 @@ class TestGoal(BaseModel):
         default_factory=dict, description="테스트에 필요한 데이터 (이메일, 비밀번호 등)"
     )
 
+    constraints: Dict[str, Any] = Field(
+        default_factory=dict, description="목표 실행/검증에 필요한 명시적 제약"
+    )
+
+    expected_signals: List[str] = Field(
+        default_factory=list, description="목표 성공 시 기대되는 상태 변화/증거 신호"
+    )
+
     success_criteria: List[str] = Field(
         default_factory=list, description="성공 조건 (예: 환영 메시지 표시)"
     )

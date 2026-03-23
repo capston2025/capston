@@ -262,6 +262,8 @@ def evaluate_static_verification_on_current_page(
         return None
     if is_filter_style_goal(agent, goal):
         return None
+    if bool(agent._goal_constraints.get("require_state_change")):
+        return None
 
     goal_text = agent._normalize_text(
         " ".join(

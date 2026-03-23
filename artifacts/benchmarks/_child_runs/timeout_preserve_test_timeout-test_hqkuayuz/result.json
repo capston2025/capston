@@ -1,0 +1,1 @@
+{"exit_code": 143, "summary": {"status": "FAIL", "final_status": "FAIL", "reason": "child_terminated(SIGTERM)"}, "captured_log": "step 1\n", "partial": true}

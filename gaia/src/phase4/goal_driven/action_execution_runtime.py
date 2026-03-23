@@ -212,6 +212,21 @@ def execute_decision(
         action_value: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         nonlocal selector, full_selector, ref_id
+        selector_hint = str(full_selector or selector or "")
+        value_preview = str(action_value or "")
+        if len(value_preview) > 80:
+            value_preview = value_preview[:77] + "..."
+        try:
+            agent._log(
+                "🚀 액션 실행 요청: "
+                f"action={action_name}, "
+                f"snapshot={getattr(agent, '_active_snapshot_id', '')}, "
+                f"ref={ref_id or ''}, "
+                f"selector_hint={selector_hint}, "
+                f"value={value_preview}"
+            )
+        except Exception:
+            pass
         agent._last_exec_result = execute_action(
             agent,
             action_name,
@@ -220,6 +235,18 @@ def execute_decision(
             ref_id=ref_id,
             value=action_value,
         )
+        try:
+            state_change = getattr(agent._last_exec_result, "state_change", None)
+            agent._log(
+                "✅ 액션 실행 응답: "
+                f"action={action_name}, "
+                f"success={bool(getattr(agent._last_exec_result, 'success', False))}, "
+                f"effective={bool(getattr(agent._last_exec_result, 'effective', False))}, "
+                f"reason_code={str(getattr(agent._last_exec_result, 'reason_code', '') or '')}, "
+                f"state_change={state_change if isinstance(state_change, dict) else {}}"
+            )
+        except Exception:
+            pass
         should_retry = (
             decision.action in element_actions
             and agent._last_exec_result.reason_code in retriable_reason_codes
@@ -237,6 +264,18 @@ def execute_decision(
                     ref_id=ref_id,
                     value=action_value,
                 )
+                try:
+                    state_change = getattr(agent._last_exec_result, "state_change", None)
+                    agent._log(
+                        "🔁 액션 재시도 응답: "
+                        f"action={action_name}, "
+                        f"success={bool(getattr(agent._last_exec_result, 'success', False))}, "
+                        f"effective={bool(getattr(agent._last_exec_result, 'effective', False))}, "
+                        f"reason_code={str(getattr(agent._last_exec_result, 'reason_code', '') or '')}, "
+                        f"state_change={state_change if isinstance(state_change, dict) else {}}"
+                    )
+                except Exception:
+                    pass
                 if (
                     agent._last_exec_result.success
                     and agent._last_exec_result.effective
@@ -502,6 +541,22 @@ def execute_action(
 
     try:
         request_timeout = _execute_request_timeout(agent, request_action, action)
+        try:
+            value_preview = str(params.get("value", ""))
+            if len(value_preview) > 80:
+                value_preview = value_preview[:77] + "..."
+            agent._log(
+                "📡 MCP execute 호출: "
+                f"request_action={request_action}, "
+                f"action={action}, "
+                f"timeout={request_timeout}, "
+                f"snapshot={params.get('snapshot_id', '')}, "
+                f"ref={params.get('ref_id', '')}, "
+                f"selector={params.get('selector_hint', params.get('selector', ''))}, "
+                f"value={value_preview}"
+            )
+        except Exception:
+            pass
 
         def _post_execute():
             return requests.post(
@@ -524,6 +579,20 @@ def execute_action(
             data = response.json()
         except Exception:
             data = {"error": response.text or "invalid_json_response"}
+        try:
+            detail_preview = str(data.get("detail") or data.get("error") or "")
+            if len(detail_preview) > 160:
+                detail_preview = detail_preview[:157] + "..."
+            agent._log(
+                "📨 MCP execute 응답: "
+                f"request_action={request_action}, "
+                f"status={response.status_code}, "
+                f"success={bool(data.get('success'))}, "
+                f"effective={bool(data.get('effective', True))}, "
+                f"detail={detail_preview}"
+            )
+        except Exception:
+            pass
 
         if response.status_code >= 400:
             status_family = "http_4xx" if 400 <= response.status_code < 500 else "http_5xx"

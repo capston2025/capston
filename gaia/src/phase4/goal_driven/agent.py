@@ -302,7 +302,7 @@ class GoalDrivenAgent:
 
     def _log(self, message: str):
         """로그 출력"""
-        print(message)
+        print(message, flush=True)
         if self._log_callback:
             self._log_callback(message)
 
@@ -495,10 +495,23 @@ class GoalDrivenAgent:
 
     @classmethod
     def _derive_goal_constraints(cls, goal: TestGoal) -> Dict[str, Any]:
-        return derive_goal_constraints_impl(
+        derived = derive_goal_constraints_impl(
             cls._goal_text_blob(goal),
             cls._normalize_text,
         )
+        explicit = getattr(goal, "constraints", None)
+        if not isinstance(explicit, dict) or not explicit:
+            return derived
+
+        merged = dict(derived)
+        for key, value in explicit.items():
+            if value is None:
+                continue
+            if key in {"target_terms", "context_terms", "metric_terms"} and isinstance(value, list):
+                merged[key] = list(value)
+            else:
+                merged[key] = value
+        return merged
 
     @classmethod
     def _extract_metric_values_from_text(cls, value: str, metric_terms: List[str]) -> List[int]:

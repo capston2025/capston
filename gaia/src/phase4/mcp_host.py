@@ -2220,9 +2220,26 @@ async def _execute_action_on_locator(
     def _normalize_timeout(raw: Any, default_ms: int) -> int:
         return _normalize_timeout_ms(raw if raw is not None else default_ms, default_ms)
 
+    async def _await_with_guard(label: str, awaitable: Any, *, timeout_ms: int) -> Any:
+        guard_seconds = max(3.0, min(20.0, (float(timeout_ms) / 1000.0) + 2.0))
+        try:
+            return await asyncio.wait_for(awaitable, timeout=guard_seconds)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"{label} timed out after {guard_seconds:.1f}s (timeout_ms={timeout_ms})") from exc
+
     if action == "click":
-        await _reveal_locator_in_scroll_context(locator)
         timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 8000)
+        print(
+            f"[trace_locator_click] start timeout_ms={timeout_ms} "
+            f"double={bool(opts.get('doubleClick') or opts.get('double_click'))}",
+            flush=True,
+        )
+        await _await_with_guard(
+            "reveal_before_click",
+            _reveal_locator_in_scroll_context(locator),
+            timeout_ms=timeout_ms,
+        )
+        print("[trace_locator_click] reveal_done", flush=True)
         button = str(opts.get("button") or "left").strip().lower()
         if button not in {"left", "right", "middle"}:
             button = "left"
@@ -2242,26 +2259,58 @@ async def _execute_action_on_locator(
         if modifiers:
             click_kwargs["modifiers"] = modifiers
         if double_click:
-            await locator.dblclick(**click_kwargs)
+            await _await_with_guard(
+                "locator.dblclick",
+                locator.dblclick(**click_kwargs),
+                timeout_ms=timeout_ms,
+            )
+            print("[trace_locator_click] dblclick_done", flush=True)
         else:
-            await locator.click(**click_kwargs)
+            await _await_with_guard(
+                "locator.click",
+                locator.click(**click_kwargs),
+                timeout_ms=timeout_ms,
+            )
+            print("[trace_locator_click] click_done", flush=True)
         return
     if action == "fill":
         if value is None:
             raise ValueError("fill requires value")
-        await _reveal_locator_in_scroll_context(locator)
         timeout_ms = _normalize_timeout(opts.get("timeoutMs", opts.get("timeout_ms")), 10000)
+        print(
+            f"[trace_locator_fill] start timeout_ms={timeout_ms} "
+            f"slowly={bool(opts.get('slowly') or opts.get('sequentialKeystrokes'))} "
+            f"value_len={len(str(value))}",
+            flush=True,
+        )
+        await _await_with_guard(
+            "reveal_before_fill",
+            _reveal_locator_in_scroll_context(locator),
+            timeout_ms=timeout_ms,
+        )
+        print("[trace_locator_fill] reveal_done", flush=True)
         slowly = bool(opts.get("slowly") or opts.get("sequentialKeystrokes"))
         if slowly:
             # React/Vue 등 keystroke 이벤트가 필요한 프레임워크용
             # locator.fill()은 value 속성을 직접 설정하므로 onChange 미발화
             # locator.type()은 개별 키스트로크를 발생시켜 이벤트 핸들러 동작
-            await locator.clear(timeout=timeout_ms)
+            await _await_with_guard("locator.clear", locator.clear(timeout=timeout_ms), timeout_ms=timeout_ms)
+            print("[trace_locator_fill] clear_done", flush=True)
             delay_ms = int(opts.get("delay", 75))
             delay_ms = max(10, min(300, delay_ms))
-            await locator.type(str(value), delay=delay_ms, timeout=timeout_ms)
+            await _await_with_guard(
+                "locator.type",
+                locator.type(str(value), delay=delay_ms, timeout=timeout_ms),
+                timeout_ms=timeout_ms,
+            )
+            print("[trace_locator_fill] type_done", flush=True)
         else:
-            await locator.fill(str(value), timeout=timeout_ms)
+            await _await_with_guard(
+                "locator.fill",
+                locator.fill(str(value), timeout=timeout_ms),
+                timeout_ms=timeout_ms,
+            )
+            print("[trace_locator_fill] fill_done", flush=True)
         return
     if action == "press":
         key = str(value or "Enter")

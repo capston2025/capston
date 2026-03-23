@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import time
@@ -557,6 +558,35 @@ async def execute_ref_action_with_snapshot_impl(
                 state_change["auth_submit_fast_path"] = True
             if auth_submit_like_click and trace_auth_submit_enabled:
                 print("[trace_ref_action] verify_loop_ms=0 effective=True auth_state_changed=False skipped=auth_submit_verify_false")
+        elif action == "fill" and verify_for_action:
+            try:
+                await page.wait_for_timeout(150)
+            except Exception:
+                pass
+            try:
+                after_target = await asyncio.wait_for(
+                    _safe_read_target_state(locator),
+                    timeout=3.0,
+                )
+            except Exception:
+                after_target = {}
+            if not isinstance(after_target, dict):
+                after_target = {}
+            before_value = before_target.get("value")
+            after_value = after_target.get("value")
+            expected_value = str(value) if value is not None else None
+            target_value_changed = before_value != after_value
+            target_value_matches = (
+                expected_value is not None
+                and after_value is not None
+                and str(after_value) == expected_value
+            )
+            effective = bool(target_value_changed or target_value_matches)
+            if isinstance(state_change, dict):
+                state_change["target_value_changed"] = target_value_changed
+                state_change["target_value_matches"] = target_value_matches
+                state_change["effective"] = effective
+                state_change["fill_fast_path"] = True
         else:
             verify_started_at = time.perf_counter()
             for probe_wait_ms in probe_wait_schedule:

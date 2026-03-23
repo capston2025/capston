@@ -1,0 +1,27 @@
+{
+  "suite_id": "wikipedia_public_exploratory_v2",
+  "site": {
+    "name": "Wikipedia",
+    "base_url": "https://en.wikipedia.org/wiki/Main_Page",
+    "mode": "public_interactive"
+  },
+  "scenarios": [
+    {
+      "id": "WIKI_002_SEARCH_RESULTS_VISIBLE",
+      "url": "https://en.wikipedia.org/wiki/Main_Page",
+      "goal": "Wikipedia 메인 화면에서 검색창에 정확히 'OpenAI'를 입력하고 검색을 실행한 뒤, 검색 결과 목록이나 관련 문서 카드가 실제로 보이는 상태에 도달하는지 확인해줘. 시작 화면에 관련 텍스트가 보여도 검색 실행 전에는 성공으로 판단하지 마.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "url_change",
+        "dom_changed",
+        "list_visible"
+      ],
+      "time_budget_sec": 120
+    }
+  ]
+}

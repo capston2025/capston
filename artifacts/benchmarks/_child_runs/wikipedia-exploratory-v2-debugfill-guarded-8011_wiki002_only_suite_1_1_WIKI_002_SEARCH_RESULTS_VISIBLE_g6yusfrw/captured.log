@@ -1,0 +1,14 @@
+🔐 OpenAI OAuth(Codex) 감지: Codex CLI 경로를 우선 사용합니다.
+🤖 Vision AI: Using OpenAI (gpt-5.4)
+목표 실행: Wikipedia 메인 화면에서 검색창에 정확히 'OpenAI'를 입력하고 검색을 실행한 뒤, 검색 결과 목록이나 관련 문서 카드가 실제로 보이는 상태에 도달하는지 확인해줘. 시작 화면에 관련 텍스트가 보여도 검색 실행 전에는 성공으로 판단하지 마.
+🎯 목표 시작: Wikipedia 메인 화면에서 검색창에 정확히 'OpenAI'를 입력하
+   설명: Wikipedia 메인 화면에서 검색창에 정확히 'OpenAI'를 입력하고 검색을 실행한 뒤, 검색 결과 목록이나 관련 문서 카드가 실제로 보이는 상태에 도달하는지 확인해줘. 시작 화면에 관련 텍스트가 보여도 검색 실행 전에는 성공으로 판단하지 마.
+   성공 조건: ["Wikipedia 메인 화면에서 검색창에 정확히 'OpenAI'를 입력하고 검색을 실행한 뒤, 검색 결과 목록이나 관련 문서 카드가 실제로 보이는 상태에 도달하는지 확인해줘. 시작 화면에 관련 텍스트가 보여도 검색 실행 전에는 성공으로 판단하지 마."]
+📍 시작 URL로 이동: https://en.wikipedia.org/wiki/Main_Page
+📡 MCP execute 호출: request_action=browser_act, action=goto, timeout=(10, 180), snapshot=, ref=, selector=, value=https://en.wikipedia.org/wiki/Main_Page
+📨 MCP execute 응답: request_action=browser_act, status=200, success=True, effective=True, detail=
+
+--- Step 1/40 ---
+규칙 기반 선결정: fill - 목표에 명시된 검색 토큰 `OpenAI`를 검색 입력에 우선 적용합니다.
+🚀 액션 실행 요청: action=fill, snapshot=wikipedia-exploratory-v2-debugfill-guarded-8011_wiki002_only_suite_1_1:1:4eb8830799b0, ref=t0-f0-e0, selector_hint=#searchInput, value=OpenAI
+📡 MCP execute 호출: request_action=browser_act, action=fill, timeout=(10, 120), snapshot=wikipedia-exploratory-v2-debugfill-guarded-8011_wiki002_only_suite_1_1:1:4eb8830799b0, ref=t0-f0-e0, selector=#searchInput, value=OpenAI

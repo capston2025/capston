@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -366,48 +367,56 @@ async def safe_read_target_state(locator) -> Dict[str, Any]:
         "disabled": None,
         "aria_disabled": None,
     }
+
+    async def _attempt(awaitable: Any, *, timeout_sec: float = 1.0) -> Any:
+        return await asyncio.wait_for(awaitable, timeout=timeout_sec)
+
     try:
-        state["visible"] = await locator.is_visible()
+        state["visible"] = await _attempt(locator.is_visible())
     except Exception:
         pass
     try:
-        state["value"] = await locator.input_value(timeout=1000)
+        state["value"] = await _attempt(locator.input_value(timeout=1000))
     except Exception:
         try:
-            state["value"] = await locator.evaluate("el => (el.value !== undefined ? String(el.value) : null)")
+            state["value"] = await _attempt(
+                locator.evaluate("el => (el.value !== undefined ? String(el.value) : null)")
+            )
         except Exception:
             pass
     try:
-        state["focused"] = await locator.evaluate("el => document.activeElement === el")
+        state["focused"] = await _attempt(locator.evaluate("el => document.activeElement === el"))
     except Exception:
         pass
     try:
-        semantic_state = await locator.evaluate(
-            """
-            el => {
-                const readAria = (name) => {
-                    const raw = el.getAttribute(name);
-                    if (raw === null || raw === undefined) return null;
-                    return String(raw).trim().toLowerCase();
-                };
-                const checked =
-                    typeof el.checked === 'boolean'
-                        ? !!el.checked
-                        : null;
-                const disabled =
-                    typeof el.disabled === 'boolean'
-                        ? !!el.disabled
-                        : null;
-                return {
-                    checked,
-                    aria_expanded: readAria('aria-expanded'),
-                    aria_pressed: readAria('aria-pressed'),
-                    aria_selected: readAria('aria-selected'),
-                    disabled,
-                    aria_disabled: readAria('aria-disabled'),
-                };
-            }
-            """
+        semantic_state = await _attempt(
+            locator.evaluate(
+                """
+                el => {
+                    const readAria = (name) => {
+                        const raw = el.getAttribute(name);
+                        if (raw === null || raw === undefined) return null;
+                        return String(raw).trim().toLowerCase();
+                    };
+                    const checked =
+                        typeof el.checked === 'boolean'
+                            ? !!el.checked
+                            : null;
+                    const disabled =
+                        typeof el.disabled === 'boolean'
+                            ? !!el.disabled
+                            : null;
+                    return {
+                        checked,
+                        aria_expanded: readAria('aria-expanded'),
+                        aria_pressed: readAria('aria-pressed'),
+                        aria_selected: readAria('aria-selected'),
+                        disabled,
+                        aria_disabled: readAria('aria-disabled'),
+                    };
+                }
+                """
+            )
         )
         if isinstance(semantic_state, dict):
             state.update(semantic_state)

@@ -9,6 +9,7 @@ import os
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -39,19 +40,58 @@ def _normalize_status(summary: Dict[str, Any], exit_code: int) -> str:
     return "SUCCESS" if int(exit_code) == 0 else "FAIL"
 
 
-def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
-    payload = json.dumps({"scenario": scenario, "session_id": session_id}, ensure_ascii=False)
+def _slugify(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "unknown"
+    normalized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in text)
+    normalized = normalized.strip("_")
+    return normalized[:80] or "unknown"
+
+
+def _prepare_child_artifact_paths(session_id: str, scenario_id: Any) -> Dict[str, Path]:
+    root = WORKSPACE_ROOT / "artifacts" / "benchmarks" / "_child_runs"
+    root.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"{_slugify(session_id)}_{_slugify(scenario_id)}_",
+            dir=str(root),
+        )
+    )
+    return {
+        "run_dir": run_dir,
+        "report_path": run_dir / "result.json",
+        "log_path": run_dir / "captured.log",
+    }
+
+
+def _build_child_code(scenario: Dict[str, Any], session_id: str, artifact_paths: Dict[str, Path]) -> str:
+    payload = json.dumps(
+        {
+            "scenario": scenario,
+            "session_id": session_id,
+            "report_path": str(artifact_paths["report_path"]),
+            "log_path": str(artifact_paths["log_path"]),
+        },
+        ensure_ascii=False,
+    )
     return f"""
-import contextlib, io, json, sys
-import os
+import contextlib, io, json, os, signal, sys
+from pathlib import Path
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
 from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
 payload = json.loads({payload!r})
 scenario = payload['scenario']
 session_id = payload['session_id']
+report_path = Path(payload['report_path'])
+log_path = Path(payload['log_path'])
+report_path.parent.mkdir(parents=True, exist_ok=True)
 ensure_mcp_host_running(None, startup_timeout=10.0)
 prepared_goal = _build_test_goal(url=scenario['url'], query=scenario['goal'])
 constraints = scenario.get('constraints') if isinstance(scenario.get('constraints'), dict) else {{}}
+expected_signals = scenario.get('expected_signals') if isinstance(scenario.get('expected_signals'), list) else []
+prepared_goal.constraints = dict(constraints)
+prepared_goal.expected_signals = list(expected_signals)
 goal_test_data = dict(getattr(prepared_goal, 'test_data', {{}}) or {{}})
 if constraints.get('requires_test_credentials'):
     username = (os.getenv('GAIA_TEST_USERNAME') or os.getenv('GAIA_AUTH_USERNAME') or '').strip()
@@ -66,20 +106,127 @@ if constraints.get('requires_test_credentials'):
             goal_test_data['email'] = email
 prepared_goal.test_data = goal_test_data
 buf = io.StringIO()
-with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-    code, summary = run_chat_terminal_once(
+log_fp = open(log_path, 'w', encoding='utf-8', buffering=1)
+
+class _TeeIO:
+    def __init__(self, *targets):
+        self._targets = targets
+
+    def write(self, text):
+        for target in self._targets:
+            target.write(text)
+        self.flush()
+        return len(text)
+
+    def flush(self):
+        for target in self._targets:
+            flush = getattr(target, 'flush', None)
+            if callable(flush):
+                flush()
+
+    def isatty(self):
+        return False
+
+def _write_result(exit_code, summary=None, *, partial=False):
+    payload = {{
+        'exit_code': int(exit_code),
+        'summary': summary if isinstance(summary, dict) else {{}},
+        'captured_log': buf.getvalue(),
+        'partial': bool(partial),
+        'session_id': session_id,
+        'scenario_id': scenario.get('id'),
+    }}
+    report_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+
+def _termination_summary(signum):
+    signame = signal.Signals(signum).name
+    return {{
+        'status': 'FAIL',
+        'final_status': 'FAIL',
+        'reason': f'child_terminated({{signame}})',
+        'reason_code_summary': {{'child_terminated': 1}},
+        'step_timeline': [],
+        'attachments': [],
+    }}
+
+def _handle_termination(signum, _frame):
+    with contextlib.suppress(Exception):
+        _write_result(128 + int(signum), _termination_summary(signum), partial=True)
+    with contextlib.suppress(Exception):
+        log_fp.flush()
+        log_fp.close()
+    os._exit(128 + int(signum))
+
+signal.signal(signal.SIGTERM, _handle_termination)
+signal.signal(signal.SIGINT, _handle_termination)
+
+tee = _TeeIO(buf, log_fp)
+exit_code = 1
+summary = {{}}
+partial = True
+with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+    exit_code, summary = run_chat_terminal_once(
         url=scenario['url'],
         query=scenario['goal'],
         session_id=session_id,
         prepared_goal=prepared_goal,
     )
+    partial = False
+_write_result(exit_code, summary, partial=partial)
+log_fp.flush()
+log_fp.close()
 result = {{
-    'exit_code': int(code),
-    'summary': summary,
+    'exit_code': int(exit_code),
+    'summary': summary if isinstance(summary, dict) else {{}},
     'captured_log': buf.getvalue(),
+    'partial': bool(partial),
 }}
 print(json.dumps(result, ensure_ascii=False))
 """
+
+
+def _read_text_if_exists(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _read_child_payload(stdout: str, artifact_paths: Dict[str, Path]) -> Dict[str, Any]:
+    report_path = artifact_paths["report_path"]
+    if report_path.exists():
+        try:
+            parsed = json.loads(report_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    if stdout:
+        last_line = stdout.strip().splitlines()[-1]
+        try:
+            parsed = json.loads(last_line)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
+def _build_timeout_summary(timeout_sec: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    summary = payload.get("summary")
+    if isinstance(summary, dict) and summary:
+        merged = dict(summary)
+        merged.setdefault("timeout_capture", True)
+        merged.setdefault("timeout_capture_reason", str(summary.get("reason") or ""))
+        return merged
+    return {
+        "status": "FAIL",
+        "final_status": "FAIL",
+        "reason": f"benchmark_timeout({timeout_sec}s)",
+        "reason_code_summary": {"benchmark_timeout": 1},
+        "step_timeline": [],
+        "attachments": [],
+        "timeout_capture": True,
+    }
 
 
 def _run_scenario_once(
@@ -90,42 +237,55 @@ def _run_scenario_once(
     timeout_sec: int,
     env: Dict[str, str],
 ) -> Dict[str, Any]:
-    code = _build_child_code(scenario, session_id)
+    artifact_paths = _prepare_child_artifact_paths(session_id, scenario.get("id"))
+    code = _build_child_code(scenario, session_id, artifact_paths)
     started = time.monotonic()
+    proc = subprocess.Popen(
+        [python_executable, "-c", code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=str(WORKSPACE_ROOT),
+    )
     try:
-        proc = subprocess.run(
-            [python_executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            env=env,
-            cwd=str(WORKSPACE_ROOT),
-            check=False,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
         duration = round(time.monotonic() - started, 2)
     except subprocess.TimeoutExpired as exc:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        payload = _read_child_payload((stdout or "") + "\n" + str(exc.stdout or ""), artifact_paths)
+        timeout_summary = _build_timeout_summary(timeout_sec, payload)
+        timeout_reason = timeout_summary.get("timeout_capture_reason") or timeout_summary.get("reason") or ""
+        reason = f"benchmark_timeout({timeout_sec}s)"
+        if timeout_reason and timeout_reason != reason:
+            reason = f"{reason}; {timeout_reason}"
         return {
             "scenario_id": scenario.get("id"),
             "goal": scenario.get("goal"),
             "status": "FAIL",
-            "reason": f"benchmark_timeout({timeout_sec}s)",
+            "reason": reason,
             "exit_code": 124,
             "duration_seconds": round(time.monotonic() - started, 2),
-            "summary": {},
-            "captured_log": str(exc.stdout or "") + str(exc.stderr or ""),
+            "summary": timeout_summary,
+            "captured_log": (
+                payload.get("captured_log")
+                if isinstance(payload.get("captured_log"), str)
+                else _read_text_if_exists(artifact_paths["log_path"]) or str(exc.stdout or "") + str(exc.stderr or "") + str(stdout or "") + str(stderr or "")
+            ),
+            "artifacts": {key: str(path) for key, path in artifact_paths.items()},
         }
 
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
-    payload: Dict[str, Any] = {}
-    if stdout:
-        last_line = stdout.splitlines()[-1]
-        try:
-            parsed = json.loads(last_line)
-            if isinstance(parsed, dict):
-                payload = parsed
-        except Exception:
-            payload = {}
+    stdout = (stdout or "").strip()
+    stderr = (stderr or "").strip()
+    payload = _read_child_payload(stdout, artifact_paths)
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else proc.returncode)
     status = _normalize_status(summary, exit_code)
@@ -138,7 +298,12 @@ def _run_scenario_once(
         "exit_code": exit_code,
         "duration_seconds": duration,
         "summary": summary,
-        "captured_log": payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stderr,
+        "captured_log": (
+            payload.get("captured_log")
+            if isinstance(payload.get("captured_log"), str)
+            else _read_text_if_exists(artifact_paths["log_path"]) or stderr
+        ),
+        "artifacts": {key: str(path) for key, path in artifact_paths.items()},
     }
 
 
