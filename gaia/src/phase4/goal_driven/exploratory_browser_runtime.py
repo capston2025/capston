@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
-import requests
+from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
 
 
 def capture_screenshot(agent) -> Optional[str]:
@@ -28,33 +28,24 @@ def capture_screenshot(agent) -> Optional[str]:
         except Exception:
             connect_timeout = 3
             read_timeout = 8
-        response = None
-        last_exc: Optional[Exception] = None
         payload = {
             "action": "capture_screenshot",
             "params": {"session_id": agent.session_id},
         }
-        for attempt in range(2):
-            try:
-                response = requests.post(
-                    f"{agent.mcp_host_url}/execute",
-                    json=payload,
-                    timeout=(connect_timeout, read_timeout),
-                )
-                last_exc = None
-                break
-            except Exception as exc:
-                last_exc = exc
-                if (
-                    attempt == 0
-                    and agent._is_mcp_transport_error(str(exc))
-                    and agent._recover_mcp_host(context="capture_screenshot")
-                ):
-                    continue
-                raise
-        if response is None and last_exc is not None:
-            raise last_exc
-        data = response.json()
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=agent.mcp_host_url,
+            action=str(payload.get("action") or ""),
+            params=dict(payload.get("params") or {}),
+            timeout=(connect_timeout, read_timeout),
+            attempts=2,
+            is_transport_error=agent._is_mcp_transport_error,
+            recover_host=agent._recover_mcp_host,
+            context="capture_screenshot",
+        )
+        if hasattr(response, "json"):
+            data = response.json()
+        else:
+            data = response.payload
         screenshot = data.get("screenshot")
 
         if screenshot and agent._screenshot_callback:
@@ -69,33 +60,24 @@ def capture_screenshot(agent) -> Optional[str]:
 
 def check_console_errors(agent) -> List[str]:
     try:
-        response = None
-        last_exc: Optional[Exception] = None
         payload = {
             "action": "get_console_logs",
             "params": {"session_id": agent.session_id, "type": "error"},
         }
-        for attempt in range(2):
-            try:
-                response = requests.post(
-                    f"{agent.mcp_host_url}/execute",
-                    json=payload,
-                    timeout=(3, 10),
-                )
-                last_exc = None
-                break
-            except Exception as exc:
-                last_exc = exc
-                if (
-                    attempt == 0
-                    and agent._is_mcp_transport_error(str(exc))
-                    and agent._recover_mcp_host(context="console_logs")
-                ):
-                    continue
-                raise
-        if response is None and last_exc is not None:
-            raise last_exc
-        data = response.json()
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=agent.mcp_host_url,
+            action=str(payload.get("action") or ""),
+            params=dict(payload.get("params") or {}),
+            timeout=(3, 10),
+            attempts=2,
+            is_transport_error=agent._is_mcp_transport_error,
+            recover_host=agent._recover_mcp_host,
+            context="console_logs",
+        )
+        if hasattr(response, "json"):
+            data = response.json()
+        else:
+            data = response.payload
         logs = data.get("logs", [])
         if not isinstance(logs, list):
             return []
@@ -117,33 +99,24 @@ def check_console_errors(agent) -> List[str]:
 
 def get_current_url(agent) -> str:
     try:
-        response = None
-        last_exc: Optional[Exception] = None
         payload = {
             "action": "get_current_url",
             "params": {"session_id": agent.session_id},
         }
-        for attempt in range(2):
-            try:
-                response = requests.post(
-                    f"{agent.mcp_host_url}/execute",
-                    json=payload,
-                    timeout=(3, 10),
-                )
-                last_exc = None
-                break
-            except Exception as exc:
-                last_exc = exc
-                if (
-                    attempt == 0
-                    and agent._is_mcp_transport_error(str(exc))
-                    and agent._recover_mcp_host(context="current_url")
-                ):
-                    continue
-                raise
-        if response is None and last_exc is not None:
-            raise last_exc
-        data = response.json()
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=agent.mcp_host_url,
+            action=str(payload.get("action") or ""),
+            params=dict(payload.get("params") or {}),
+            timeout=(3, 10),
+            attempts=2,
+            is_transport_error=agent._is_mcp_transport_error,
+            recover_host=agent._recover_mcp_host,
+            context="current_url",
+        )
+        if hasattr(response, "json"):
+            data = response.json()
+        else:
+            data = response.payload
         return data.get("url", agent._current_url)
 
     except Exception:

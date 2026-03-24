@@ -437,6 +437,39 @@ def _role_snapshot_stats(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> Dict
     }
 
 
+def _build_role_tree(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    lines = str(snapshot or "").split("\n")
+    tree: List[Dict[str, Any]] = []
+    stack: List[Dict[str, Any]] = []
+    for line in lines:
+        stripped = str(line or "").strip()
+        if not stripped:
+            continue
+        depth = _snapshot_line_depth(line)
+        match = re.match(r'^-\s*(\w+)(?:\s+"([^"]*)")?', stripped)
+        role = str(match.group(1) or "").strip().lower() if match else ""
+        name = str(match.group(2) or "").strip() if match else ""
+        ref = _parse_ai_ref(stripped)
+        nth_match = re.search(r"\[nth=(\d+)\]", stripped)
+        nth = int(nth_match.group(1)) if nth_match else None
+        while stack and int(stack[-1].get("depth", 0) or 0) >= depth:
+            stack.pop()
+        ancestor_names = [str(item.get("name") or "").strip() for item in stack if str(item.get("name") or "").strip()]
+        node = {
+            "depth": depth,
+            "role": role or str((refs.get(ref or "") or {}).get("role") or "").strip().lower(),
+            "name": name or str((refs.get(ref or "") or {}).get("name") or "").strip(),
+            "ref": ref or None,
+            "nth": nth,
+            "parent_ref": str(stack[-1].get("ref") or "").strip() or None if stack else None,
+            "line": stripped,
+            "ancestor_names": ancestor_names,
+        }
+        tree.append(node)
+        stack.append({"depth": depth, "ref": node.get("ref"), "name": node.get("name"), "role": node.get("role")})
+    return tree
+
+
 def _build_role_snapshot_from_aria_text(
     aria_snapshot: str,
     *,
@@ -524,6 +557,7 @@ def _build_role_snapshot_from_aria_text(
     return {
         "snapshot": snapshot,
         "refs": refs,
+        "tree": _build_role_tree(snapshot, refs),
         "truncated": truncated,
         "stats": _role_snapshot_stats(snapshot, refs),
     }
@@ -577,6 +611,7 @@ def _build_role_snapshot_from_ai_text(
     return {
         "snapshot": snapshot,
         "refs": refs,
+        "tree": _build_role_tree(snapshot, refs),
         "truncated": truncated,
         "stats": _role_snapshot_stats(snapshot, refs),
     }
@@ -663,6 +698,7 @@ def _build_role_snapshot_from_elements(
         "snapshot": snapshot,
         "refs_mode": "role",
         "refs": refs,
+        "tree": _build_role_tree(snapshot, refs),
         "truncated": truncated,
         "stats": _role_snapshot_stats(snapshot, refs),
     }

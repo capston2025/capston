@@ -10,6 +10,13 @@ from .goal_policy_phase_runtime import advance_goal_policy_phase
 from .models import ActionType, TestGoal
 
 
+def _is_discovery_no_progress(agent: Any, decision: Any) -> bool:
+    current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+    if current_phase != "locate_target":
+        return False
+    return getattr(decision, "action", None) in {ActionType.FILL, ActionType.PRESS, ActionType.SELECT}
+
+
 def handle_post_action_runtime(
     agent,
     *,
@@ -39,6 +46,7 @@ def handle_post_action_runtime(
     action_intent_key: str,
     master_orchestrator,
 ) -> Dict[str, Any]:
+    post_action_started = time.perf_counter()
     progress_eval = evaluate_post_action_progress(
         agent=agent,
         goal=goal,
@@ -54,7 +62,13 @@ def handle_post_action_runtime(
     state_change = progress_eval.get("state_change")
     changed = bool(progress_eval.get("changed"))
     if isinstance(state_change, dict):
-        changed = agent._state_change_indicates_progress(state_change)
+        changed = bool(changed or agent._state_change_indicates_progress(state_change))
+    backend_trace = {}
+    if isinstance(state_change, dict) and isinstance(state_change.get("backend_trace"), dict):
+        backend_trace = dict(state_change.get("backend_trace") or {})
+    elif isinstance(getattr(agent, "_last_backend_trace", None), dict):
+        backend_trace = dict(getattr(agent, "_last_backend_trace", None) or {})
+    llm_trace = dict(getattr(agent, "_last_llm_trace", None) or {}) if isinstance(getattr(agent, "_last_llm_trace", None), dict) else {}
     terminal_result = progress_eval.get("terminal_result")
     phase_update = advance_goal_policy_phase(
         agent,
@@ -75,6 +89,29 @@ def handle_post_action_runtime(
             f"🧭 goal phase 전환: {previous_goal_phase} -> {current_goal_phase}"
             f" ({phase_update.get('event')})"
         )
+    post_action_eval_ms = int((time.perf_counter() - post_action_started) * 1000)
+    owner = "gaia_post_action"
+    if llm_trace.get("used_llm") and int(llm_trace.get("llm_ms", 0) or 0) >= max(1500, post_action_eval_ms):
+        owner = "llm"
+    elif isinstance(backend_trace, dict) and str(backend_trace.get("owner") or "").strip():
+        owner = str(backend_trace.get("owner") or "")
+    step_trace = {
+        "phase": current_goal_phase,
+        "phase_intent": str(getattr(agent, "_goal_phase_intent", "") or ""),
+        "llm": llm_trace,
+        "backend": backend_trace,
+        "gaia": {
+            "post_action_eval_ms": post_action_eval_ms,
+            "phase_event": str(phase_update.get("event") or ""),
+            "changed": bool(changed),
+        },
+        "owner": owner,
+    }
+    openclaw_agentic_mode = str(
+        getattr(agent, "_browser_backend_name", "") or ""
+    ).strip().lower() == "openclaw"
+    agent._last_step_trace = step_trace
+    agent._log(f"🧪 step trace: {step_trace}")
     if terminal_result is not None:
         return {
             "terminal_result": terminal_result,
@@ -231,16 +268,33 @@ def handle_post_action_runtime(
         agent._progress_counter += 1
         agent._no_progress_counter = 0
         agent._weak_progress_streak = 0
+        setattr(agent, "_discovery_no_progress_streak", 0)
     else:
-        agent._no_progress_counter += 1
-        if weak_only:
-            agent._weak_progress_streak += 1
-            weak_limit = max(1, agent._loop_policy_value("weak_progress_streak_limit", 3))
-            if agent._weak_progress_streak >= weak_limit:
-                agent._record_reason_code("weak_progress_only")
-                force_context_shift = True
+        if openclaw_agentic_mode:
+            setattr(agent, "_discovery_no_progress_streak", 0)
+            agent._no_progress_counter += 1
         else:
-            agent._weak_progress_streak = 0
+            discovery_no_progress = _is_discovery_no_progress(agent, decision)
+            if discovery_no_progress:
+                discovery_streak = int(getattr(agent, "_discovery_no_progress_streak", 0) or 0) + 1
+                setattr(agent, "_discovery_no_progress_streak", discovery_streak)
+                grace_limit = max(1, int(agent._loop_policy_value("discovery_no_progress_grace", 2)))
+                if discovery_streak <= grace_limit:
+                    agent._record_reason_code("discovery_no_progress_grace")
+                    agent._no_progress_counter = 0
+                else:
+                    agent._no_progress_counter += 1
+            else:
+                setattr(agent, "_discovery_no_progress_streak", 0)
+                agent._no_progress_counter += 1
+            if weak_only:
+                agent._weak_progress_streak += 1
+                weak_limit = max(1, agent._loop_policy_value("weak_progress_streak_limit", 3))
+                if agent._weak_progress_streak >= weak_limit:
+                    agent._record_reason_code("weak_progress_only")
+                    force_context_shift = True
+            else:
+                agent._weak_progress_streak = 0
 
     master_orchestrator.record_progress(
         changed=changed,
@@ -281,7 +335,7 @@ def handle_post_action_runtime(
         success=success,
         changed=changed,
     )
-    if action_intent_key:
+    if action_intent_key and not openclaw_agentic_mode:
         intent_soft_fail_streaks = getattr(agent, "_intent_soft_fail_streaks", {}) or {}
         if success and changed:
             intent_soft_fail_streaks.pop(action_intent_key, None)
@@ -334,66 +388,68 @@ def handle_post_action_runtime(
                 "terminal_result": None,
             }
 
-    recovery_result = handle_action_recovery(
-        agent=agent,
-        goal=goal,
-        decision=decision,
-        success=success,
-        changed=changed,
-        reason_code=reason_code,
-        login_gate_visible=login_gate_visible,
-        has_login_test_data=has_login_test_data,
-        post_dom=post_dom,
-        force_context_shift=force_context_shift,
-        ineffective_action_streak=ineffective_action_streak,
-    )
-    force_context_shift = bool(recovery_result.get("force_context_shift", force_context_shift))
-    ineffective_action_streak = int(
-        recovery_result.get("ineffective_action_streak", ineffective_action_streak)
-    )
-    if bool(recovery_result.get("continue_loop")):
-        return {
-            "continue_loop": True,
-            "filter_semantic_attempts": filter_semantic_attempts,
-            "scroll_streak": scroll_streak,
-            "ineffective_action_streak": ineffective_action_streak,
-            "force_context_shift": force_context_shift,
-            "context_shift_fail_streak": context_shift_fail_streak,
-            "context_shift_cooldown": context_shift_cooldown,
-            "post_dom": post_dom,
-            "changed": changed,
-            "state_change": state_change,
-            "terminal_result": None,
-        }
+    if not openclaw_agentic_mode:
+        recovery_result = handle_action_recovery(
+            agent=agent,
+            goal=goal,
+            decision=decision,
+            success=success,
+            changed=changed,
+            reason_code=reason_code,
+            login_gate_visible=login_gate_visible,
+            has_login_test_data=has_login_test_data,
+            post_dom=post_dom,
+            force_context_shift=force_context_shift,
+            ineffective_action_streak=ineffective_action_streak,
+        )
+        force_context_shift = bool(recovery_result.get("force_context_shift", force_context_shift))
+        ineffective_action_streak = int(
+            recovery_result.get("ineffective_action_streak", ineffective_action_streak)
+        )
+        if bool(recovery_result.get("continue_loop")):
+            return {
+                "continue_loop": True,
+                "filter_semantic_attempts": filter_semantic_attempts,
+                "scroll_streak": scroll_streak,
+                "ineffective_action_streak": ineffective_action_streak,
+                "force_context_shift": force_context_shift,
+                "context_shift_fail_streak": context_shift_fail_streak,
+                "context_shift_cooldown": context_shift_cooldown,
+                "post_dom": post_dom,
+                "changed": changed,
+                "state_change": state_change,
+                "terminal_result": None,
+            }
 
-    streak_result = update_action_streaks_and_loops(
-        agent=agent,
-        goal=goal,
-        decision=decision,
-        success=success,
-        changed=changed,
-        click_intent_key=click_intent_key,
-        scroll_streak=scroll_streak,
-        ineffective_action_streak=ineffective_action_streak,
-        force_context_shift=force_context_shift,
-        context_shift_fail_streak=context_shift_fail_streak,
-        context_shift_cooldown=context_shift_cooldown,
-        steps=steps,
-        step_count=step_count,
-        start_time=start_time,
-    )
-    scroll_streak = int(streak_result.get("scroll_streak", scroll_streak))
-    ineffective_action_streak = int(
-        streak_result.get("ineffective_action_streak", ineffective_action_streak)
-    )
-    force_context_shift = bool(streak_result.get("force_context_shift", force_context_shift))
-    context_shift_fail_streak = int(
-        streak_result.get("context_shift_fail_streak", context_shift_fail_streak)
-    )
-    context_shift_cooldown = int(
-        streak_result.get("context_shift_cooldown", context_shift_cooldown)
-    )
-    terminal_result = streak_result.get("terminal_result")
+        streak_result = update_action_streaks_and_loops(
+            agent=agent,
+            goal=goal,
+            decision=decision,
+            success=success,
+            changed=changed,
+            click_intent_key=click_intent_key,
+            scroll_streak=scroll_streak,
+            ineffective_action_streak=ineffective_action_streak,
+            force_context_shift=force_context_shift,
+            context_shift_fail_streak=context_shift_fail_streak,
+            context_shift_cooldown=context_shift_cooldown,
+            steps=steps,
+            post_dom=post_dom,
+            step_count=step_count,
+            start_time=start_time,
+        )
+        scroll_streak = int(streak_result.get("scroll_streak", scroll_streak))
+        ineffective_action_streak = int(
+            streak_result.get("ineffective_action_streak", ineffective_action_streak)
+        )
+        force_context_shift = bool(streak_result.get("force_context_shift", force_context_shift))
+        context_shift_fail_streak = int(
+            streak_result.get("context_shift_fail_streak", context_shift_fail_streak)
+        )
+        context_shift_cooldown = int(
+            streak_result.get("context_shift_cooldown", context_shift_cooldown)
+        )
+        terminal_result = streak_result.get("terminal_result")
     return {
         "terminal_result": terminal_result,
         "continue_loop": False,

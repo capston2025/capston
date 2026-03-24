@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List
 
-import requests
+from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
 
 
 def execute_action_with_self_healing(
@@ -246,12 +246,17 @@ def execute_action(
 
         payload = {"action": "browser_act", "params": act_params}
 
-        response = requests.post(
-            f"{orchestrator.mcp_config.host_url}/execute",
-            json=payload,
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=orchestrator.mcp_config.host_url,
+            action="browser_act",
+            params=act_params,
             timeout=90,
+            attempts=2,
+            is_transport_error=getattr(orchestrator, "_is_mcp_transport_error", None),
+            recover_host=getattr(orchestrator, "_recover_mcp_host", None),
+            context=f"orchestrator_action:{action_name}",
         )
-        data = response.json()
+        data = response.payload if not hasattr(response, "json") else response.json()
 
         success = bool(data.get("success", False))
         effective = bool(data.get("effective", True))
@@ -302,12 +307,17 @@ def execute_coordinate_click(orchestrator, x: int, y: int, url: str) -> bool:
     }
 
     try:
-        response = requests.post(
-            f"{orchestrator.mcp_config.host_url}/execute",
-            json=payload,
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=orchestrator.mcp_config.host_url,
+            action="browser_act",
+            params=dict(payload.get("params") or {}),
             timeout=90,
+            attempts=2,
+            is_transport_error=getattr(orchestrator, "_is_mcp_transport_error", None),
+            recover_host=getattr(orchestrator, "_recover_mcp_host", None),
+            context="orchestrator_coordinate_click",
         )
-        data = response.json()
+        data = response.payload if not hasattr(response, "json") else response.json()
         return data.get("success", False)
     except Exception as e:
         print(f"Coordinate click failed: {e}")

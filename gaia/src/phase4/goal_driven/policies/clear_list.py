@@ -21,7 +21,7 @@ class ClearListPolicy:
             destination_surface_actionable = bool(getattr(evidence, "derived", {}).get("destination_surface_actionable"))
             target_cta_visible = bool(getattr(evidence, "derived", {}).get("target_action_cta_visible"))
             return "act_on_target" if destination_surface_actionable and target_cta_visible else current_phase
-        if current_phase == "act_on_target" and event in {"action_ok", "action_no_state_change"}:
+        if current_phase == "act_on_target" and event == "action_ok":
             return "verify_empty"
         return current_phase
 

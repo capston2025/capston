@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from .models import GoalResult, StepResult, TestGoal
 from .goal_policy_runtime import initialize_goal_policy_runtime
+from .goal_replanning_runtime import initialize_goal_replanning_state
 
 
 def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any]:
@@ -23,6 +24,8 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._context_shift_round = 0
     agent._last_context_shift_intent = ""
     agent._runtime_phase = "COLLECT"
+    agent._goal_phase_intent = ""
+    agent._goal_phase_resume_after_auth = ""
     agent._progress_counter = 0
     agent._no_progress_counter = 0
     agent._modal_opened_once = False
@@ -53,8 +56,23 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._auth_submit_attempted = False
     agent._auth_submit_attempts = 0
     agent._last_auth_submit_at = 0.0
+    agent._last_auth_surface_signature = ""
+    agent._auth_surface_progressed = False
+    agent._auth_last_planned_fill = None
     agent._auth_identifier_done = False
     agent._auth_password_done = False
+    auth_test_data = goal.test_data if isinstance(goal.test_data, dict) else {}
+    agent._auth_identifier_values_norm = {
+        agent._normalize_text(str(auth_test_data.get(key) or ""))
+        for key in ("username", "email", "login_id", "user_id")
+    }
+    agent._auth_identifier_values_norm = {
+        value for value in agent._auth_identifier_values_norm if value
+    }
+    agent._auth_password_value_norm = agent._normalize_text(
+        str(auth_test_data.get("password") or "")
+    )
+    agent._auth_fill_memory = set()
     agent._captcha_observer_executor = None
     agent._captcha_observer_future = None
     agent._captcha_observer_last_key = ""
@@ -67,16 +85,34 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._blocked_intent_resume_attempts = 0
     agent._pending_resume_element_id = None
     agent._last_goal_blockable_intent = {}
+    agent._verify_reclick_block_ref_id = ""
+    agent._verify_reclick_block_container_ref = ""
+    agent._verify_reclick_block_until = 0.0
+    agent._evidence_only_proof_signature = None
+    agent._evidence_only_proof_expires_at = 0.0
+    agent._verify_settle_wait_armed = False
+    agent._verify_evidence_wait_armed = False
+    agent._evidence_only_wait_count = 0
+    agent._evidence_only_wait_budget = agent._env_int(
+        "GAIA_EVIDENCE_ONLY_WAIT_BUDGET",
+        1,
+        low=0,
+        high=10,
+    )
     agent._last_container_source_summary = {}
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
     agent._goal_policy_target_seen_in_destination = False
     agent._goal_policy_destination_anchor_seen = False
-    agent._goal_conditional_remediation_active = False
-    agent._goal_conditional_remediation_done = False
+    agent._goal_plan_requires_precheck = False
+    agent._goal_plan_precheck_done = False
+    agent._goal_plan_precheck_result = ""
+    agent._goal_plan_remediation_completed = False
+    agent._locate_target_search_consumed = False
     agent._goal_tokens = agent._derive_goal_tokens(goal)
     agent._goal_constraints = agent._derive_goal_constraints(goal)
     initialize_goal_policy_runtime(agent, goal)
+    initialize_goal_replanning_state(agent, goal)
     agent._activate_steering_policy(goal)
     agent._goal_metric_value = None
     agent._last_filter_semantic_report = None

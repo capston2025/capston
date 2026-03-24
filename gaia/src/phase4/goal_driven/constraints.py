@@ -25,6 +25,21 @@ _TARGET_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
     }
 )
 
+_METRIC_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
+    {
+        "바로",
+        "버튼",
+        "클릭",
+        "눌러서",
+        "누른다음에",
+        "반영",
+        "테스트",
+        "테스트해봐",
+        "추가되어있었으면",
+        "삭제한뒤에",
+    }
+)
+
 
 def _classify_metric_unit(value: str) -> str:
     token = str(value or "").strip().lower()
@@ -79,6 +94,28 @@ def _derive_context_terms(text: str, normalize_text: NormalizeTextFn) -> List[st
         if len(results) >= 8:
             break
     return results
+
+
+def _looks_like_instructional_target_token(token: str) -> bool:
+    value = str(token or "").strip().lower()
+    if not value:
+        return True
+    if value in _TARGET_TERM_STOPWORDS:
+        return True
+    instructional_hints = (
+        "시간표",
+        "테스트",
+        "버튼",
+        "클릭",
+        "추가",
+        "삭제",
+        "제거",
+        "반영",
+        "로그인",
+        "검증",
+        "확인",
+    )
+    return any(hint in value for hint in instructional_hints)
 
 
 def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> Dict[str, Any]:
@@ -170,11 +207,11 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     for group in re.findall(r"\"([^\"]{2,})\"|'([^']{2,})'", str(goal_blob or "")):
         token = next((part for part in group if part), "")
         normalized = normalize_text(token)
-        if normalized and normalized not in _TARGET_TERM_STOPWORDS:
+        if normalized and not _looks_like_instructional_target_token(normalized):
             target_terms.append(str(token).strip())
     if not target_terms:
         for token in context_terms:
-            if len(token) < 4 or token in _TARGET_TERM_STOPWORDS or token.isdigit():
+            if len(token) < 4 or token.isdigit() or _looks_like_instructional_target_token(token):
                 continue
             target_terms.append(token)
             if len(target_terms) >= 4:
@@ -186,7 +223,7 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         value = int(str(match.group(1)).replace(",", ""))
         numeric_values.append(value)
         maybe_term = (match.group(2) or "").strip()
-        if maybe_term:
+        if maybe_term and maybe_term not in _METRIC_TERM_STOPWORDS:
             metric_terms.append(maybe_term)
 
     if not numeric_values:
@@ -263,6 +300,28 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         top_terms = _extract_quantity_metric_terms(text)
     metric_label = top_terms[0] if top_terms else _infer_metric_label_from_text(text)
     metric_unit = _classify_metric_unit(metric_label)
+    if len(numeric_values) == 1 and metric_unit == "generic":
+        payload = {
+            "require_no_navigation": require_no_navigation,
+        }
+        if current_view_only:
+            payload["current_view_only"] = True
+        if forbid_search_action:
+            payload["forbid_search_action"] = True
+        if mutation_direction:
+            payload["mutation_direction"] = mutation_direction
+            payload["context_terms"] = context_terms
+        if remediation_direction:
+            payload["remediation_direction"] = remediation_direction
+        if remediation_trigger:
+            payload["conditional_remediation"] = True
+            payload["requires_pre_action_membership_check"] = True
+            payload["remediation_trigger"] = remediation_trigger
+            payload["already_satisfied_ok"] = False
+            payload["mutate_required"] = True
+        if target_terms:
+            payload["target_terms"] = target_terms
+        return payload
     require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
 
     payload = {

@@ -23,6 +23,23 @@ _MUTATION_REQUIRED_TOKENS = (
     "삭제", "제거", "remove", "clear", "비우",
     "적용", "apply", "select",
 )
+_TARGET_TERM_NOISE_TOKENS = {
+    "버튼", "버튼을", "클릭", "눌러서", "누른다음에", "테스트", "테스트해봐",
+    "반영", "반영이", "추가", "삭제", "제거", "있으면", "있다면", "있었으면",
+    "추가되어있었으면", "추가되어 있었으면", "already", "already_present",
+}
+_TARGET_TERM_NOISE_SUFFIXES = (
+    "해봐",
+    "해주세요",
+    "해줘",
+    "되는지",
+    "했는지",
+    "있는지",
+    "있었으면",
+    "있으면",
+    "이었다면",
+    "라면",
+)
 
 
 @dataclass
@@ -114,6 +131,35 @@ def _extract_goal_kind(texts: Iterable[str], constraints: Dict[str, Any], filter
     return GoalKind.GENERIC_FALLBACK
 
 
+def _sanitize_target_terms(
+    target_terms: Sequence[str],
+    destination_aliases: Dict[str, List[str]],
+    normalize_fn: Callable[[str], str],
+) -> List[str]:
+    destination_norms = {
+        normalize_fn(alias)
+        for aliases in destination_aliases.values()
+        for alias in aliases
+        if normalize_fn(alias)
+    }
+    output: List[str] = []
+    seen: set[str] = set()
+    for term in target_terms:
+        raw = str(term or "").strip()
+        norm = normalize_fn(raw)
+        if not norm or norm in seen:
+            continue
+        if norm in _TARGET_TERM_NOISE_TOKENS:
+            continue
+        if any(norm.endswith(suffix) for suffix in _TARGET_TERM_NOISE_SUFFIXES):
+            continue
+        if any(dest == norm or dest in norm or norm in dest for dest in destination_norms):
+            continue
+        seen.add(norm)
+        output.append(raw)
+    return output
+
+
 def extract_goal_semantics(
     goal: Any,
     constraints: Dict[str, Any] | None,
@@ -137,6 +183,7 @@ def extract_goal_semantics(
         for alias in aliases:
             if alias not in destination_terms:
                 destination_terms.append(alias)
+    target_terms = _sanitize_target_terms(target_terms, destination_aliases, normalize)
     goal_kind = _extract_goal_kind(texts, goal_constraints, filter_style, verification_style, destination_aliases)
     explicit_auth_goal = goal_kind == GoalKind.AUTH
     mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()

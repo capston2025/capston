@@ -284,27 +284,31 @@ class MasterOrchestrator:
         """
         try:
             # Analyze DOM and capture screenshot
-            import requests
             import json
+            from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 
             dom_payload = {"action": "analyze_page", "params": {"url": url, "session_id": self.session_id}}
-            response = requests.post(
-                f"{self.mcp_config.host_url}/execute",
-                json=dom_payload,
-                timeout=90  # Increased from 30s to 90s for complex operations
+            response = execute_mcp_action(
+                self.mcp_config.host_url,
+                action="analyze_page",
+                params=dict(dom_payload.get("params") or {}),
+                timeout=90,
             )
-            response.raise_for_status()
-            dom_data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+            dom_data = response.payload if not hasattr(response, "json") else response.json()
             dom_elements = dom_data.get("elements", [])
 
             screenshot_payload = {"action": "capture_screenshot", "params": {"url": url, "session_id": self.session_id}}
-            response = requests.post(
-                f"{self.mcp_config.host_url}/execute",
-                json=screenshot_payload,
-                timeout=90  # Increased from 30s to 90s for complex operations
+            response = execute_mcp_action(
+                self.mcp_config.host_url,
+                action="capture_screenshot",
+                params=dict(screenshot_payload.get("params") or {}),
+                timeout=90,
             )
-            response.raise_for_status()
-            screenshot_data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+            screenshot_data = response.payload if not hasattr(response, "json") else response.json()
             screenshot = screenshot_data.get("screenshot", "")
 
             if not dom_elements or not screenshot:
@@ -387,7 +391,7 @@ class MasterOrchestrator:
         Returns:
             True if navigation succeeded, False otherwise
         """
-        import requests
+        from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 
         payload = {
             "action": "execute_action",
@@ -401,13 +405,15 @@ class MasterOrchestrator:
         }
 
         try:
-            response = requests.post(
-                f"{self.mcp_config.host_url}/execute",
-                json=payload,
-                timeout=90  # Increased from 30s to 90s for complex operations
+            response = execute_mcp_action(
+                self.mcp_config.host_url,
+                action="execute_action",
+                params=dict(payload.get("params") or {}),
+                timeout=90,
             )
-            response.raise_for_status()
-            data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+            data = response.payload if not hasattr(response, "json") else response.json()
             success = data.get("success", False)
             if success:
                 self._log(f"  ✅ Navigation successful: loaded {url}", None)

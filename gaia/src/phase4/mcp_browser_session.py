@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
@@ -49,6 +50,11 @@ class BrowserSession:
         self.file_chooser_files: List[str] = []
         self.env_overrides: Dict[str, Any] = {}
         self._screencast_tasks: set[asyncio.Task[Any]] = set()
+        self._lifecycle_lock = asyncio.Lock()
+        self.last_target_abort_reason: str = ""
+        self.last_target_abort_at: float = 0.0
+        self._teardown_in_progress: bool = False
+        self._closed: bool = False
 
     def _browser_alive(self) -> bool:
         if self.browser is None:
@@ -58,13 +64,68 @@ class BrowserSession:
         except Exception:
             return False
 
+    def _context_alive(self) -> bool:
+        if self.context is None or not self._browser_alive():
+            return False
+        try:
+            _ = self.context.pages
+            return True
+        except Exception:
+            return False
+
     def _page_alive(self) -> bool:
-        if self.page is None:
+        if self.page is None or self.context is None or not self._browser_alive():
             return False
         try:
             return not bool(self.page.is_closed())
         except Exception:
             return False
+
+    def _should_start_screencast(self) -> bool:
+        if self._screencast_subscribers:
+            return True
+        value = str(
+            self.env_overrides.get("force_screencast")
+            or os.getenv("GAIA_ENABLE_IDLE_SCREENCAST", "0")
+        ).strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _reset_page_runtime_state(self, *, preserve_current_url: bool) -> None:
+        self.screencast_active = False
+        self.dialog_listener_armed = False
+        self.file_chooser_listener_armed = False
+        self.current_snapshot_id = ""
+        self.current_dom_hash = ""
+        self.snapshots = {}
+        self.stored_css_values = {}
+        if not preserve_current_url:
+            self.current_url = ""
+
+    def _mark_target_abort(self, reason: str) -> None:
+        self.last_target_abort_reason = str(reason or "").strip()
+        self.last_target_abort_at = asyncio.get_event_loop().time()
+
+    async def _ensure_cdp_session(self) -> Optional[CDPSession]:
+        if self.cdp_session is not None:
+            return self.cdp_session
+        if not self.page or not self.context or not self._page_alive():
+            return None
+        try:
+            self.cdp_session = await self.page.context.new_cdp_session(self.page)
+            return self.cdp_session
+        except Exception:
+            return None
+
+    async def _terminate_target_execution(self, *, reason: str = "") -> None:
+        session = await self._ensure_cdp_session()
+        if session is None:
+            return
+        try:
+            await session.send("Runtime.terminateExecution")
+            if reason:
+                self._mark_target_abort(reason)
+        except Exception:
+            pass
 
     async def _apply_page_stealth(self, page: Page) -> None:
         await page.add_init_script("""
@@ -95,15 +156,14 @@ class BrowserSession:
     async def _recreate_page(self) -> Page:
         if self.browser is None:
             raise HTTPException(status_code=503, detail="Browser not initialized")
+        await self._terminate_target_execution(reason="recreate_page")
         if self.cdp_session is not None:
             try:
                 await self.cdp_session.detach()
             except Exception:
                 pass
             self.cdp_session = None
-        self.screencast_active = False
-        self.dialog_listener_armed = False
-        self.file_chooser_listener_armed = False
+        self._reset_page_runtime_state(preserve_current_url=True)
         if self.page is not None:
             try:
                 if not self.page.is_closed():
@@ -112,17 +172,31 @@ class BrowserSession:
                 pass
             finally:
                 self.page = None
-        if self.context is not None:
+        reused_existing_context = False
+        if self._context_alive():
             try:
-                await self.context.close()
+                self.page = await self.context.new_page()
+                reused_existing_context = True
             except Exception:
-                pass
-            finally:
-                self.context = None
-        self.context = await self.browser.new_context()
-        self.page = await self.context.new_page()
+                try:
+                    await self.context.close()
+                except Exception:
+                    pass
+                finally:
+                    self.context = None
+        if not reused_existing_context:
+            if self.context is not None:
+                try:
+                    await self.context.close()
+                except Exception:
+                    pass
+                finally:
+                    self.context = None
+            self.context = await self.browser.new_context()
+            self.page = await self.context.new_page()
         await self._apply_page_stealth(self.page)
-        await self.start_screencast()
+        if self._should_start_screencast():
+            await self.start_screencast()
         if self.current_url:
             try:
                 await self.page.goto(self.current_url, timeout=30000)
@@ -148,47 +222,49 @@ class BrowserSession:
 
     async def get_or_create_page(self) -> Page:
         """기존 페이지를 가져오거나 새 브라우저 세션을 생성합니다."""
-        if not self._browser_alive():
-            playwright_instance = self._playwright_getter()
-            if not playwright_instance:
-                raise HTTPException(status_code=503, detail="Playwright not initialized")
+        async with self._lifecycle_lock:
+            if not self._browser_alive():
+                playwright_instance = self._playwright_getter()
+                if not playwright_instance:
+                    raise HTTPException(status_code=503, detail="Playwright not initialized")
 
-            try:
-                self.browser = await playwright_instance.chromium.launch(
-                    headless=False,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-dev-shm-usage",
-                        "--disable-web-security",
-                        "--disable-features=IsolateOrigins,site-per-process",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                    ],
-                )
-            except Exception as exc:
-                msg = str(exc)
-                if "Executable doesn't exist" in msg or "browserType.launch" in msg:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "Chromium executable not found. "
-                            "Run: python -m playwright install chromium"
-                        ),
-                    ) from exc
-                raise
+                try:
+                    self.browser = await playwright_instance.chromium.launch(
+                        headless=False,
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-dev-shm-usage",
+                            "--disable-web-security",
+                            "--disable-features=IsolateOrigins,site-per-process",
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                        ],
+                    )
+                except Exception as exc:
+                    msg = str(exc)
+                    if "Executable doesn't exist" in msg or "browserType.launch" in msg:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=(
+                                "Chromium executable not found. "
+                                "Run: python -m playwright install chromium"
+                            ),
+                        ) from exc
+                    raise
 
-            self.context = await self.browser.new_context()
-            self.page = await self.context.new_page()
-            await self._apply_page_stealth(self.page)
-            await self.start_screencast()
-        elif not self._page_alive():
-            await self._recreate_page()
+                self.context = await self.browser.new_context()
+                self.page = await self.context.new_page()
+                await self._apply_page_stealth(self.page)
+                if self._should_start_screencast():
+                    await self.start_screencast()
+            elif not self._page_alive():
+                await self._recreate_page()
 
-        if self.page:
-            self.observability.attach_page(self.page)
-            self._ensure_dialog_listener()
-            self._ensure_file_chooser_listener()
-        return self.page
+            if self.page:
+                self.observability.attach_page(self.page)
+                self._ensure_dialog_listener()
+                self._ensure_file_chooser_listener()
+            return self.page
 
     def _ensure_dialog_listener(self) -> None:
         if not self.page or self.dialog_listener_armed:
@@ -217,7 +293,9 @@ class BrowserSession:
                 )
 
         def _on_dialog(dialog: Any):
-            asyncio.create_task(_handle_dialog(dialog))
+            if self._teardown_in_progress or self._closed:
+                return
+            self._track_background_task(asyncio.create_task(_handle_dialog(dialog)))
 
         self.page.on("dialog", _on_dialog)
         self.dialog_listener_armed = True
@@ -238,16 +316,22 @@ class BrowserSession:
                 )
 
         def _on_file_chooser(file_chooser: Any):
-            asyncio.create_task(_handle_file_chooser(file_chooser))
+            if self._teardown_in_progress or self._closed:
+                return
+            self._track_background_task(asyncio.create_task(_handle_file_chooser(file_chooser)))
 
         self.page.on("filechooser", _on_file_chooser)
         self.file_chooser_listener_armed = True
 
     async def start_screencast(self):
         """CDP 스크린캐스트를 시작합니다."""
+        if not self._should_start_screencast():
+            return
         if self.page and not self.cdp_session:
             try:
-                self.cdp_session = await self.page.context.new_cdp_session(self.page)
+                self.cdp_session = await self._ensure_cdp_session()
+                if not self.cdp_session:
+                    return
                 self.cdp_session.on("Page.screencastFrame", self._handle_screencast_frame)
                 await self.cdp_session.send(
                     "Page.startScreencast",
@@ -271,6 +355,8 @@ class BrowserSession:
             self._screencast_tasks.discard(done_task)
             try:
                 done_task.result()
+            except asyncio.CancelledError:
+                pass
             except Exception as exc:
                 self._log_warning("[CDP Screencast] Background task failed: %s", exc)
 
@@ -295,8 +381,12 @@ class BrowserSession:
         for ws in disconnected_clients:
             if ws in self._screencast_subscribers:
                 self._screencast_subscribers.remove(ws)
+        if not self._screencast_subscribers and self.screencast_active:
+            self._track_background_task(asyncio.create_task(self.stop_screencast()))
 
     async def _handle_screencast_frame(self, payload: Dict[str, Any]):
+        if self._teardown_in_progress or self._closed:
+            return
         frame_data = payload.get("data")
         session_ack = payload.get("sessionId")
 
@@ -328,60 +418,117 @@ class BrowserSession:
             except Exception as exc:
                 self._log_warning("[CDP Screencast] Failed to stop: %s", exc)
 
+    async def force_disconnect_target(self, *, reason: str = "", hard: bool = False) -> None:
+        async with self._lifecycle_lock:
+            self._teardown_in_progress = True
+            pending_tasks = list(self._screencast_tasks)
+            for task in pending_tasks:
+                task.cancel()
+            if pending_tasks:
+                try:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                except Exception:
+                    pass
+            self._screencast_tasks.clear()
+            if self._page_alive():
+                await self._terminate_target_execution(reason=reason or "force_disconnect_target")
+            if self.screencast_active:
+                try:
+                    await self.stop_screencast()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.force_disconnect_target] stop_screencast failed: %s", exc)
+                finally:
+                    self.screencast_active = False
+            if self.cdp_session:
+                try:
+                    await self.cdp_session.detach()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.force_disconnect_target] cdp detach failed: %s", exc)
+                finally:
+                    self.cdp_session = None
+            if self.page:
+                try:
+                    if not self.page.is_closed():
+                        await self.page.close()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.force_disconnect_target] page close failed: %s", exc)
+                finally:
+                    self.page = None
+            if hard and self.context:
+                try:
+                    await self.context.close()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.force_disconnect_target] context close failed: %s", exc)
+                finally:
+                    self.context = None
+            if hard and self.browser:
+                try:
+                    await self.browser.close()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.force_disconnect_target] browser close failed: %s", exc)
+                finally:
+                    self.browser = None
+            self._reset_page_runtime_state(preserve_current_url=True)
+            self._teardown_in_progress = False
+            if reason:
+                self._log_warning("[BrowserSession.force_disconnect_target] session=%s reason=%s", self.session_id, reason)
+
     async def close(self):
-        pending_tasks = list(self._screencast_tasks)
-        for task in pending_tasks:
-            task.cancel()
-        if pending_tasks:
-            try:
-                await asyncio.gather(*pending_tasks, return_exceptions=True)
-            except Exception:
-                pass
-        self._screencast_tasks.clear()
-        if self.screencast_active:
-            try:
-                await self.stop_screencast()
-            except Exception as exc:
-                self._log_warning("[BrowserSession.close] stop_screencast failed: %s", exc)
-            finally:
-                self.screencast_active = False
+        async with self._lifecycle_lock:
+            self._teardown_in_progress = True
+            pending_tasks = list(self._screencast_tasks)
+            for task in pending_tasks:
+                task.cancel()
+            if pending_tasks:
+                try:
+                    await asyncio.gather(*pending_tasks, return_exceptions=True)
+                except Exception:
+                    pass
+            self._screencast_tasks.clear()
+            if self._page_alive():
+                await self._terminate_target_execution(reason="session_close")
+            if self.screencast_active:
+                try:
+                    await self.stop_screencast()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.close] stop_screencast failed: %s", exc)
+                finally:
+                    self.screencast_active = False
 
-        if self.cdp_session:
-            try:
-                await self.cdp_session.detach()
-            except Exception as exc:
-                self._log_warning("[BrowserSession.close] cdp detach failed: %s", exc)
-            finally:
-                self.cdp_session = None
+            if self.cdp_session:
+                try:
+                    await self.cdp_session.detach()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.close] cdp detach failed: %s", exc)
+                finally:
+                    self.cdp_session = None
 
-        if self.page:
-            try:
-                if not self.page.is_closed():
-                    await self.page.close()
-            except Exception as exc:
-                self._log_warning("[BrowserSession.close] page close failed: %s", exc)
-            finally:
-                self.page = None
+            if self.page:
+                try:
+                    if not self.page.is_closed():
+                        await self.page.close()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.close] page close failed: %s", exc)
+                finally:
+                    self.page = None
 
-        if self.context:
-            try:
-                await self.context.close()
-            except Exception as exc:
-                self._log_warning("[BrowserSession.close] context close failed: %s", exc)
-            finally:
-                self.context = None
+            if self.context:
+                try:
+                    await self.context.close()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.close] context close failed: %s", exc)
+                finally:
+                    self.context = None
 
-        if self.browser:
-            try:
-                await self.browser.close()
-            except Exception as exc:
-                self._log_warning("[BrowserSession.close] browser close failed: %s", exc)
-            finally:
-                self.browser = None
-        self.current_url = ""
-        self.current_snapshot_id = ""
-        self.current_dom_hash = ""
-        self.snapshots = {}
+            if self.browser:
+                try:
+                    await self.browser.close()
+                except Exception as exc:
+                    self._log_warning("[BrowserSession.close] browser close failed: %s", exc)
+                finally:
+                    self.browser = None
+            self._reset_page_runtime_state(preserve_current_url=False)
+            self._closed = True
 
 
 def ensure_session(

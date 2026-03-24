@@ -4,9 +4,8 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-import requests
-
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 
 
 def _expire_steering_policy(self, code: str = "steering_expired") -> None:
@@ -228,22 +227,17 @@ def _pick_steering_candidate(
 def _capture_screenshot(self) -> Optional[str]:
     """스크린샷 캡처"""
     try:
-        response = requests.post(
-            f"{self.mcp_host_url}/execute",
-            json={
-                "action": "capture_screenshot",
-                "params": {
-                    "session_id": self.session_id,
-                },
+        response = execute_mcp_action(
+            self.mcp_host_url,
+            action="capture_screenshot",
+            params={
+                "session_id": self.session_id,
             },
             timeout=30,
         )
-        try:
-            data = response.json()
-        except Exception:
-            data = {"error": response.text or "invalid_json_response"}
+        data = response.payload if not hasattr(response, "json") else response.json()
         if response.status_code >= 400:
-            detail = data.get("detail") or data.get("error") or response.reason
+            detail = data.get("detail") or data.get("error") or getattr(response, "text", "") or "HTTP error"
             self._log(f"스크린샷 캡처 오류: HTTP {response.status_code} - {detail}")
             return None
         screenshot = data.get("screenshot")

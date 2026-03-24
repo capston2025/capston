@@ -17,13 +17,15 @@ class RemoveFromListPolicy:
             return "handle_auth_or_block"
         if current_phase == "handle_auth_or_block" and event == "auth_resolved":
             return "reveal_destination_surface"
-        if current_phase == "locate_target" and event in {"action_ok", "action_no_state_change"}:
+        if current_phase == "locate_target" and event in {"discovery_progress", "discovery_no_state_change"}:
+            return "locate_target"
+        if current_phase == "locate_target" and event == "action_ok":
             return "reveal_destination_surface"
         if current_phase == "reveal_destination_surface" and event in {"action_ok", "wait_progress"}:
             destination_surface_actionable = bool(getattr(evidence, "derived", {}).get("destination_surface_actionable"))
             target_cta_visible = bool(getattr(evidence, "derived", {}).get("target_action_cta_visible"))
             return "act_on_target" if destination_surface_actionable and target_cta_visible else current_phase
-        if current_phase == "act_on_target" and event in {"action_ok", "action_no_state_change"}:
+        if current_phase == "act_on_target" and event == "action_ok":
             return "verify_removal"
         return current_phase
 

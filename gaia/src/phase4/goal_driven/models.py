@@ -120,6 +120,9 @@ class ActionDecision(BaseModel):
     """
 
     action: ActionType = Field(..., description="수행할 액션")
+    ref_id: Optional[str] = Field(
+        default=None, description="대상 요소 ref ID (OpenClaw 경로에서 우선 사용)"
+    )
     element_id: Optional[int] = Field(
         default=None, description="대상 요소 ID (click, fill 등에 필요)"
     )

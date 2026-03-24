@@ -13,6 +13,21 @@ def build_deterministic_goal_preplan(
     dom_elements: List[DOMElement],
     steps: Optional[List[StepResult]] = None,
 ) -> Optional[ActionDecision]:
+    def _element_goal_blob(element: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(element.text or ""),
+                    str(element.aria_label or ""),
+                    str(getattr(element, "title", None) or ""),
+                    str(getattr(element, "container_name", None) or ""),
+                    str(getattr(element, "context_text", None) or ""),
+                    str(getattr(element, "placeholder", None) or ""),
+                    str(getattr(element, "role_ref_name", None) or ""),
+                ]
+            )
+        )
+
     goal_text = agent._normalize_text(
         " ".join(
             [
@@ -33,8 +48,52 @@ def build_deterministic_goal_preplan(
     open_hints = ("열어", "open", "상세", "detail")
     forbid_search_action = bool(agent._goal_constraints.get("forbid_search_action"))
     current_view_only = bool(agent._goal_constraints.get("current_view_only"))
+    current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+    locate_target_search_consumed = bool(getattr(agent, "_locate_target_search_consumed", False))
+    target_content_visible = False
+    target_actionable_visible = False
+    if current_phase not in {"locate_target", "precheck_destination_membership"}:
+        locate_target_search_consumed = False
+        agent._locate_target_search_consumed = False
+    normalized_query_tokens = [agent._normalize_text(token) for token in query_tokens if agent._normalize_text(token)]
+    if normalized_query_tokens:
+        for el in dom_elements:
+            if not bool(el.is_visible):
+                continue
+            blob = _element_goal_blob(el)
+            if not blob:
+                continue
+            if any(token in blob for token in normalized_query_tokens):
+                target_content_visible = True
+                tag = agent._normalize_text(el.tag)
+                role = agent._normalize_text(getattr(el, "role", None))
+                if bool(getattr(el, "is_enabled", True)) and (
+                    role in {"button", "link", "option", "menuitem", "tab"}
+                    or tag in {"button", "a", "option"}
+                    or (tag == "input" and agent._normalize_text(getattr(el, "type", None)) in {"button", "submit", "checkbox", "radio"})
+                ):
+                    target_actionable_visible = True
+                    break
 
-    if any(hint in goal_text for hint in search_hints) and not (forbid_search_action or current_view_only):
+    if target_actionable_visible:
+        agent._locate_target_search_consumed = False
+        return None
+
+    if target_content_visible:
+        agent._locate_target_search_consumed = False
+        return None
+
+    should_use_search_preplan = (
+        not (forbid_search_action or current_view_only)
+        and not target_content_visible
+        and not locate_target_search_consumed
+        and (
+            any(hint in goal_text for hint in search_hints)
+            or current_phase in {"locate_target", "precheck_destination_membership"}
+        )
+    )
+
+    if should_use_search_preplan:
         search_candidates: List[tuple[float, DOMElement]] = []
         for el in dom_elements:
             if not bool(el.is_visible and el.is_enabled):
@@ -105,21 +164,23 @@ def build_deterministic_goal_preplan(
                 if submit_candidates:
                     submit_candidates.sort(key=lambda item: item[0], reverse=True)
                     submit_target = submit_candidates[0][1]
+                    agent._locate_target_search_consumed = True
                     return ActionDecision(
                         action=ActionType.CLICK,
                         element_id=submit_target.id,
                         value=None,
                         reasoning=f"같은 검색어 `{query_value}` 입력이 이미 끝났으므로 검색 CTA를 바로 실행합니다.",
-                        confidence=0.94,
+                        confidence=0.95,
                         is_goal_achieved=False,
                         goal_achievement_reason=None,
                     )
+                agent._locate_target_search_consumed = True
                 return ActionDecision(
                     action=ActionType.PRESS,
                     element_id=search_input.id,
                     value="Enter",
-                    reasoning=f"같은 검색어 `{query_value}` 입력이 이미 끝났으므로 Enter로 검색을 제출합니다.",
-                    confidence=0.93,
+                    reasoning=f"같은 검색어 `{query_value}` 입력이 이미 끝났으므로 검색 입력에서 Enter로 직접 제출합니다.",
+                    confidence=0.95,
                     is_goal_achieved=False,
                     goal_achievement_reason=None,
                 )

@@ -198,6 +198,52 @@ def _run_suite(
     }
 
 
+def _run_harness(
+    *,
+    task_ids: List[str],
+    suite_ids: List[str],
+    tags: List[str],
+    contains: List[str],
+    repeats: int,
+    timeout_sec: int,
+    env: Dict[str, str],
+) -> Dict[str, Any]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "gaia.cli",
+        "harness",
+        "run",
+        "--json",
+        "--repeats",
+        str(repeats),
+        "--timeout-sec",
+        str(timeout_sec),
+    ]
+    for task_id in task_ids:
+        cmd.extend(["--task-id", task_id])
+    for suite_id in suite_ids:
+        cmd.extend(["--suite-id", suite_id])
+    for tag in tags:
+        cmd.extend(["--tag", tag])
+    for term in contains:
+        cmd.extend(["--contains", term])
+    proc = subprocess.run(
+        cmd,
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "harness run failed")
+    payload = json.loads(proc.stdout)
+    if not isinstance(payload, dict):
+        raise ValueError("harness run returned non-object payload")
+    return payload
+
+
 def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines: List[str] = []
     lines.append(f"# KPI benchmark pack: {report['pack_id']}")
@@ -231,6 +277,30 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
         lines.append(f"- self_recovery_rate: {kpis.get('self_recovery_rate')}")
         lines.append(f"- intervention_rate: {kpis.get('intervention_rate')}")
         lines.append("")
+    harness = report.get("harness")
+    if isinstance(harness, dict):
+        lines.append("## Harness")
+        lines.append("")
+        lines.append(f"- artifact_dir: {harness.get('artifact_dir')}")
+        summary = harness.get("summary") if isinstance(harness.get("summary"), dict) else {}
+        for key in (
+            "task_count",
+            "repeats",
+            "pass_at_1",
+            "pass_at_k",
+            "pass_all_k",
+            "reason_code_total",
+        ):
+            if key in summary:
+                lines.append(f"- {key}: {summary.get(key)}")
+        top_reason_codes = harness.get("top_reason_codes")
+        if isinstance(top_reason_codes, list) and top_reason_codes:
+            lines.append("")
+            lines.append("### Harness top reason codes")
+            for item in top_reason_codes[:10]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(f"- {item.get('reason_code')}: {item.get('count')}")
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
@@ -240,6 +310,12 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--timeout-cap", type=int, default=180)
     parser.add_argument("--session-prefix", default="kpi-pack")
+    parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
+    parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
+    parser.add_argument("--harness-tag", action="append", default=[], dest="harness_tags")
+    parser.add_argument("--harness-contains", action="append", default=[], dest="harness_contains")
+    parser.add_argument("--harness-repeats", type=int)
+    parser.add_argument("--harness-timeout-sec", type=int)
     args = parser.parse_args()
 
     env = os.environ.copy()
@@ -263,6 +339,26 @@ def main() -> None:
         all_rows.extend(suite_report["rows"])
 
     overall_kpis = _compute_pack_kpis(all_rows, max(1, int(args.repeats)))
+    harness_report: Dict[str, Any] | None = None
+    if args.harness_task_ids or args.harness_suite_ids or args.harness_tags or args.harness_contains:
+        harness_payload = _run_harness(
+            task_ids=[str(v) for v in args.harness_task_ids],
+            suite_ids=[str(v) for v in args.harness_suite_ids],
+            tags=[str(v) for v in args.harness_tags],
+            contains=[str(v) for v in args.harness_contains],
+            repeats=max(1, int(args.harness_repeats or args.repeats)),
+            timeout_sec=max(10, int(args.harness_timeout_sec or args.timeout_cap)),
+            env=env,
+        )
+        harness_report = {
+            "run_id": harness_payload.get("run_id"),
+            "artifact_dir": harness_payload.get("artifact_dir"),
+            "selection": harness_payload.get("selection"),
+            "summary": harness_payload.get("summary"),
+            "grade_summary": harness_payload.get("grade_summary"),
+            "reason_code_summary": harness_payload.get("reason_code_summary"),
+            "top_reason_codes": harness_payload.get("top_reason_codes"),
+        }
     report = {
         "pack_id": pack_id,
         "generated_at": timestamp,
@@ -279,6 +375,8 @@ def main() -> None:
         ],
         "overall_kpis": overall_kpis,
     }
+    if harness_report is not None:
+        report["harness"] = harness_report
     (out_dir / "summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out_dir / "results.json").write_text(json.dumps(all_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _write_markdown(out_dir / "summary.md", report)

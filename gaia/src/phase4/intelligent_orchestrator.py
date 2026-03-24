@@ -11,9 +11,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-import requests
-
 from gaia.src.phase4.llm_vision_client import LLMVisionClient, get_vision_client
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 from gaia.src.phase4.orchestrator_init_runtime import initialize_runtime_state
 from gaia.src.phase4.orchestrator_healed_cache import (
     get_healed_selector as get_healed_selector_from_cache,
@@ -404,13 +403,15 @@ Return ONLY a JSON array:
             params["url"] = url
         payload = {"action": "analyze_page", "params": params}
         try:
-            response = requests.post(
-                f"{self.mcp_config.host_url}/execute",
-                json=payload,
-                timeout=90  # Increased from 30s to 90s for complex operations
+            response = execute_mcp_action(
+                self.mcp_config.host_url,
+                action="analyze_page",
+                params=params,
+                timeout=90,
             )
-            response.raise_for_status()
-            data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+            data = response.payload if not hasattr(response, "json") else response.json()
             elements_raw = data.get("elements", [])
 
             elements: List[DomElement] = []
@@ -436,13 +437,15 @@ Return ONLY a JSON array:
             params["url"] = url
         payload = {"action": "capture_screenshot", "params": params}
         try:
-            response = requests.post(
-                f"{self.mcp_config.host_url}/execute",
-                json=payload,
-                timeout=90  # Increased from 30s to 90s for complex operations
+            response = execute_mcp_action(
+                self.mcp_config.host_url,
+                action="capture_screenshot",
+                params=params,
+                timeout=90,
             )
-            response.raise_for_status()
-            data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+            data = response.payload if not hasattr(response, "json") else response.json()
             screenshot = data.get("screenshot", "")
 
             # Send screenshot to GUI if requested (without click animation)

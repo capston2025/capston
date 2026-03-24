@@ -9,9 +9,9 @@ from __future__ import annotations
 import time
 import os
 import re
-import requests
 from typing import Any, Dict, List, Optional, Callable
 from types import SimpleNamespace
+from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session
 
 from .models import (
     TestGoal,
@@ -70,6 +70,7 @@ from .goal_achievement_runtime import (
     has_signup_completion_evidence as has_signup_completion_evidence_impl,
     validate_goal_achievement_claim as validate_goal_achievement_claim_impl,
 )
+from .goal_policy_phase_runtime import goal_phase_intent
 from .steering_runtime import (
     activate_steering_policy as activate_steering_policy_impl,
     build_goal_constraint_prompt as build_goal_constraint_prompt_impl,
@@ -422,7 +423,8 @@ class GoalDrivenAgent:
         if recovered:
             return recovered
         now = time.time()
-        auth_phase = str(getattr(self, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block"
+        current_phase = str(getattr(self, "_goal_policy_phase", "") or "").strip()
+        auth_phase = str(getattr(self, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) == "auth"
         auth_recent = bool(getattr(self, "_auth_interrupt_active", False))
         last_auth_submit_at = float(getattr(self, "_last_auth_submit_at", 0.0) or 0.0)
         last_auth_interrupt_at = float(getattr(self, "_auth_interrupt_started_at", 0.0) or 0.0)
@@ -449,14 +451,9 @@ class GoalDrivenAgent:
         start_url = str(getattr(goal, "start_url", "") or "").strip()
         self._log("🛠️ DOM 강제 복구: 현재 브라우저 세션을 재생성합니다.")
         try:
-            requests.post(
-                f"{self.mcp_host_url.rstrip('/')}/close_session",
-                json={
-                    "action": "close_session",
-                    "params": {
-                        "session_id": self.session_id,
-                    },
-                },
+            close_mcp_session(
+                self.mcp_host_url,
+                session_id=self.session_id,
                 timeout=(5, 15),
             )
         except Exception as exc:
@@ -758,6 +755,7 @@ class GoalDrivenAgent:
         if not isinstance(state_change, dict):
             return False
         strong_progress_keys = (
+            "backend_progress",
             "url_changed",
             "target_visibility_changed",
             "target_value_changed",
@@ -1278,7 +1276,6 @@ class GoalDrivenAgent:
         )
 
     @classmethod
-    @classmethod
     def _goal_text_blob(cls, goal: TestGoal) -> str:
         return goal_text_blob_impl(cls, goal)
 
@@ -1652,12 +1649,6 @@ class GoalDrivenAgent:
                     decision=decision,
                     dom_elements=dom_elements,
                 )
-                if not reasoning_only_wait_reason:
-                    reasoning_only_wait_reason = self._evaluate_explicit_reasoning_proof_completion(
-                        goal=goal,
-                        decision=decision,
-                        dom_elements=dom_elements,
-                    )
                 if reasoning_only_wait_reason:
                     self._log(f"✅ 목표 달성! 이유: {reasoning_only_wait_reason}")
                     result = GoalResult(
@@ -1831,12 +1822,13 @@ class GoalDrivenAgent:
                 ]
             modal_open_now = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
             overlay_intercept_pending = bool(getattr(self, "_overlay_intercept_pending", False))
+            auth_phase_runtime = str(getattr(self, "_goal_phase_intent", "") or "").strip().lower() == "auth"
             active_goal_text_norm = self._normalize_text(self._active_goal_text or "")
             x_button_goal_required = any(
                 token in active_goal_text_norm
                 for token in ("x 버튼", "x버튼", "우상단 x", "닫기 버튼", "close button", "x icon", "x 아이콘")
             )
-            if x_button_goal_required and decision.action == ActionType.PRESS:
+            if x_button_goal_required and decision.action == ActionType.PRESS and not auth_phase_runtime:
                 modal_regions_hint = []
                 if isinstance(self._last_snapshot_evidence, dict):
                     raw_regions = self._last_snapshot_evidence.get("modal_regions")
@@ -1873,10 +1865,15 @@ class GoalDrivenAgent:
                             selected_element.text,
                             selected_element.aria_label,
                             getattr(selected_element, "title", None),
-                            self._element_full_selectors.get(selected_element.id),
-                            self._element_selectors.get(selected_element.id),
                         ]
                     self._log("🧭 X 버튼 요구 목표: press 액션을 닫기 클릭으로 변환합니다.")
+            selected_fields = []
+            if selected_element is not None:
+                selected_fields = [
+                    selected_element.text,
+                    selected_element.aria_label,
+                    getattr(selected_element, "title", None),
+                ]
             selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
             if not selected_close_signal and selected_element is not None:
                 selected_close_signal = self._normalize_text(selected_element.text) in {"x", "×", "닫기", "close"}
@@ -1898,6 +1895,7 @@ class GoalDrivenAgent:
                 overlay_intercept_pending
                 and decision.action == ActionType.CLICK
                 and not selected_close_signal
+                and not auth_phase_runtime
             ):
                 modal_regions_hint = []
                 if isinstance(self._last_snapshot_evidence, dict):
@@ -1933,8 +1931,6 @@ class GoalDrivenAgent:
                             selected_element.text,
                             selected_element.aria_label,
                             getattr(selected_element, "title", None),
-                            self._element_full_selectors.get(selected_element.id),
-                            self._element_selectors.get(selected_element.id),
                         ]
                     selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
                     if not selected_close_signal and selected_element is not None:
@@ -1945,6 +1941,7 @@ class GoalDrivenAgent:
                 and decision.action == ActionType.CLICK
                 and reasoning_close_intent
                 and not selected_close_signal
+                and not auth_phase_runtime
             ):
                 modal_regions_hint = []
                 if isinstance(self._last_snapshot_evidence, dict):
@@ -1982,8 +1979,6 @@ class GoalDrivenAgent:
                             selected_element.text,
                             selected_element.aria_label,
                             getattr(selected_element, "title", None),
-                            self._element_full_selectors.get(selected_element.id),
-                            self._element_selectors.get(selected_element.id),
                         ]
                     selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
                     if not selected_close_signal and selected_element is not None:
@@ -2122,10 +2117,43 @@ class GoalDrivenAgent:
         url: Optional[str] = None,
         scope_container_ref_id: Optional[str] = None,
     ) -> List[DOMElement]:
-        return analyze_dom_impl(self, url=url, scope_container_ref_id=scope_container_ref_id)
+        trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
+        started = time.perf_counter()
+        if trace_enabled:
+            self._log(
+                "🧪 collect trace(start): "
+                f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
+                f"intent={str(getattr(self, '_goal_phase_intent', '') or '')} "
+                f"scope={str(scope_container_ref_id or '') or '<default>'}"
+            )
+        result = analyze_dom_impl(self, url=url, scope_container_ref_id=scope_container_ref_id)
+        if trace_enabled:
+            self._log(
+                "🧪 collect trace(end): "
+                f"ms={int((time.perf_counter() - started) * 1000)} "
+                f"dom_count={len(result or [])} "
+                f"snapshot_id={str(getattr(self, '_active_snapshot_id', '') or '')} "
+                f"url={str(getattr(self, '_current_url', '') or '')}"
+            )
+        return result
 
     def _capture_screenshot(self) -> Optional[str]:
-        return capture_screenshot_impl(self)
+        trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
+        started = time.perf_counter()
+        if trace_enabled:
+            self._log(
+                "🧪 screenshot trace(start): "
+                f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
+                f"intent={str(getattr(self, '_goal_phase_intent', '') or '')}"
+            )
+        result = capture_screenshot_impl(self)
+        if trace_enabled:
+            self._log(
+                "🧪 screenshot trace(end): "
+                f"ms={int((time.perf_counter() - started) * 1000)} "
+                f"has_image={bool(result)}"
+            )
+        return result
 
     def run_filter_semantic_validation(
         self,
@@ -2167,13 +2195,31 @@ class GoalDrivenAgent:
         memory_context: str = "",
     ) -> ActionDecision:
         """LLM에게 다음 액션 결정 요청"""
-        return decide_next_action_impl(
+        trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
+        started = time.perf_counter()
+        if trace_enabled:
+            self._log(
+                "🧪 decide trace(start): "
+                f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
+                f"intent={str(getattr(self, '_goal_phase_intent', '') or '')} "
+                f"dom_count={len(dom_elements or [])} "
+                f"has_screenshot={bool(screenshot)}"
+            )
+        decision = decide_next_action_impl(
             self,
             dom_elements,
             goal,
             screenshot=screenshot,
             memory_context=memory_context,
         )
+        if trace_enabled:
+            self._log(
+                "🧪 decide trace(end): "
+                f"ms={int((time.perf_counter() - started) * 1000)} "
+                f"action={str(getattr(decision, 'action', '') or '')} "
+                f"element_id={str(getattr(decision, 'element_id', '') or '')}"
+            )
+        return decision
 
     def _format_dom_for_llm(self, elements: List[DOMElement]) -> str:
         return format_dom_for_llm_impl(self, elements)

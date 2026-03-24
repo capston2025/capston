@@ -10,7 +10,6 @@ import json
 import math
 import os
 import re
-import requests
 from typing import Any, Dict, List, Optional, Set, Callable, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -1512,9 +1511,12 @@ class ExploratoryAgent:
             last_exc: Optional[Exception] = None
             for attempt in range(2):
                 try:
-                    response = requests.post(
-                        f"{self.mcp_host_url}/execute",
-                        json=payload,
+                    from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
+
+                    response = execute_mcp_action(
+                        self.mcp_host_url,
+                        action="browser_snapshot",
+                        params=dict(payload.get("params") or {}),
                         timeout=(5, 25),
                     )
                     last_exc = None
@@ -1530,13 +1532,16 @@ class ExploratoryAgent:
                     raise
             if response is None and last_exc is not None:
                 raise last_exc
-            try:
-                data = response.json()
-            except Exception:
-                data = {"error": response.text or "invalid_json_response"}
+            if hasattr(response, "json"):
+                try:
+                    data = response.json()
+                except Exception:
+                    data = {"error": response.text or "invalid_json_response"}
+            else:
+                data = response.payload or {"error": response.text or "invalid_json_response"}
 
             if response.status_code >= 400:
-                detail = data.get("detail") or data.get("error") or response.reason
+                detail = data.get("detail") or data.get("error") or getattr(response, "text", "") or "HTTP error"
                 self._log(f"DOM 분석 오류: HTTP {response.status_code} - {detail}")
                 return []
 
@@ -2049,12 +2054,15 @@ class ExploratoryAgent:
             if value is not None:
                 ref_params["value"] = value
             try:
-                response = requests.post(
-                    f"{self.mcp_host_url}/execute",
-                    json={"action": "browser_act", "params": ref_params},
+                from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
+
+                response = execute_mcp_action(
+                    self.mcp_host_url,
+                    action="browser_act",
+                    params=ref_params,
                     timeout=(10, request_timeout),
                 )
-                data = response.json()
+                data = response.payload if not hasattr(response, "json") else response.json()
                 success = bool(data.get("success"))
                 effective = bool(data.get("effective", True))
                 if success and effective:
@@ -2105,12 +2113,13 @@ class ExploratoryAgent:
                         retry_params: Dict[str, object] = dict(ref_params)
                         retry_params["snapshot_id"] = self._active_snapshot_id
                         retry_params["ref_id"] = refreshed_ref_id
-                        retry_response = requests.post(
-                            f"{self.mcp_host_url}/execute",
-                            json={"action": "browser_act", "params": retry_params},
+                        retry_response = execute_mcp_action(
+                            self.mcp_host_url,
+                            action="browser_act",
+                            params=retry_params,
                             timeout=(10, request_timeout),
                         )
-                        retry_data = retry_response.json()
+                        retry_data = retry_response.payload if not hasattr(retry_response, "json") else retry_response.json()
                         retry_success = bool(retry_data.get("success"))
                         retry_effective = bool(retry_data.get("effective", True))
                         if retry_success and retry_effective:
@@ -2171,17 +2180,20 @@ class ExploratoryAgent:
             params["selector"] = selector
 
         try:
-            response = requests.post(
-                f"{self.mcp_host_url}/execute",
-                json={"action": "browser_act", "params": params},
+            from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
+
+            response = execute_mcp_action(
+                self.mcp_host_url,
+                action="browser_act",
+                params=params,
                 timeout=(10, request_timeout),
             )
 
             # HTTP 상태 코드 로깅
             if response.status_code != 200:
-                self._log(f"⚠️  HTTP {response.status_code}: {response.text[:200]}")
+                self._log(f"⚠️  HTTP {response.status_code}: {str(getattr(response, 'text', '') or '')[:200]}")
 
-            data = response.json()
+            data = response.payload if not hasattr(response, "json") else response.json()
 
             if data.get("success"):
                 self._last_exec_meta = {

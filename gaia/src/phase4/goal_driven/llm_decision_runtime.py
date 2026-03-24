@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import time
 from typing import List, Optional
 
+from .goal_policy_phase_runtime import goal_phase_intent
+from .goal_replanning_runtime import sync_goal_replanning_state
 from .goal_kinds import GoalKind
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
@@ -14,6 +19,23 @@ def decide_next_action(
     screenshot: Optional[str] = None,
     memory_context: str = "",
 ) -> ActionDecision:
+    agent._last_llm_trace = {
+        "used_llm": False,
+        "llm_ms": 0,
+        "path": "deterministic_or_cached",
+        "owner": "gaia_pre_llm",
+    }
+    current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+    current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase))
+    goal_state = sync_goal_replanning_state(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+        current_phase=current_phase,
+        current_intent=current_phase_intent,
+        event="decision_turn",
+    )
+
     def _label_blob(element: DOMElement) -> str:
         return agent._normalize_text(
             " ".join(
@@ -30,6 +52,68 @@ def decide_next_action(
     def _find_auth_phase_fallback() -> Optional[ActionDecision]:
         username_done = bool(getattr(agent, "_auth_identifier_done", False))
         password_done = bool(getattr(agent, "_auth_password_done", False))
+        fill_memory = getattr(agent, "_auth_fill_memory", None)
+        auth_test_data = (goal.test_data or {}) if isinstance(goal.test_data, dict) else {}
+        identifier_value = str(
+            auth_test_data.get("username")
+            or auth_test_data.get("email")
+            or auth_test_data.get("login_id")
+            or auth_test_data.get("user_id")
+            or ""
+        )
+        password_value = str(auth_test_data.get("password") or "")
+
+        def _field_key(element: DOMElement) -> str:
+            try:
+                return str(
+                    agent._element_ref_ids.get(element.id)
+                    or agent._element_full_selectors.get(element.id)
+                    or agent._element_selectors.get(element.id)
+                    or _label_blob(element)
+                    or ""
+                ).strip()
+            except Exception:
+                return _label_blob(element)
+
+        def _memory_has(kind: str, element: Optional[DOMElement], value: str) -> bool:
+            if not isinstance(fill_memory, set) or element is None:
+                return False
+            key = _field_key(element)
+            value_norm = agent._normalize_text(value)
+            try:
+                for entry in fill_memory:
+                    if not (isinstance(entry, tuple) and len(entry) >= 3):
+                        continue
+                    if str(entry[0] or "") != kind:
+                        continue
+                    if key and str(entry[1] or "") != key:
+                        continue
+                    if value_norm and str(entry[2] or "") != value_norm:
+                        continue
+                    return True
+            except Exception:
+                return False
+            return False
+
+        def _planned_fill_sig(kind: str, element: Optional[DOMElement], value: str) -> tuple[str, int | None, str]:
+            return (
+                str(kind or ""),
+                getattr(element, "id", None) if element is not None else None,
+                agent._normalize_text(value),
+            )
+
+        if isinstance(fill_memory, set) and fill_memory:
+            try:
+                username_done = username_done or any(
+                    isinstance(entry, tuple) and len(entry) >= 1 and str(entry[0] or "") == "identifier"
+                    for entry in fill_memory
+                )
+                password_done = password_done or any(
+                    isinstance(entry, tuple) and len(entry) >= 1 and str(entry[0] or "") == "password"
+                    for entry in fill_memory
+                )
+            except Exception:
+                pass
         login_button: Optional[DOMElement] = None
         username_field: Optional[DOMElement] = None
         password_field: Optional[DOMElement] = None
@@ -43,48 +127,91 @@ def decide_next_action(
                 elif any(token in blob for token in ("아이디", "username", "email", "이메일", "user")) and username_field is None:
                     username_field = element
             elif (
-                str(getattr(element, "role", "") or "").lower() == "button"
-                or str(getattr(element, "tag", "") or "").lower() == "button"
+                str(getattr(element, "role", "") or "").lower() in {"button", "link", "tab", "menuitem"}
+                or str(getattr(element, "tag", "") or "").lower() in {"button", "a"}
             ):
                 if any(token in blob for token in ("로그인", "login", "sign in", "signin")) and login_button is None:
                     login_button = element
+        if username_field is not None and _memory_has("identifier", username_field, identifier_value):
+            username_done = True
+        if password_field is not None and _memory_has("password", password_field, password_value):
+            password_done = True
+        last_planned_fill = getattr(agent, "_auth_last_planned_fill", None)
+        if username_field is not None and last_planned_fill == _planned_fill_sig("identifier", username_field, identifier_value):
+            username_done = True
+        if password_field is not None and last_planned_fill == _planned_fill_sig("password", password_field, password_value):
+            password_done = True
         if auth_has_credentials:
-            if not username_done and username_field is not None:
+            submit_attempted = bool(getattr(agent, "_auth_submit_attempted", False))
+            last_submit_at = float(getattr(agent, "_last_auth_submit_at", 0.0) or 0.0)
+            submit_attempts = int(getattr(agent, "_auth_submit_attempts", 0) or 0)
+            if submit_attempted and last_submit_at > 0.0:
+                since_submit = time.time() - last_submit_at
+                settle_window = 3.0 if submit_attempts <= 1 else 8.0
+                settle_ms = 900 if submit_attempts <= 1 else 2500
+                if since_submit < settle_window:
+                    return ActionDecision(
+                        action=ActionType.WAIT,
+                        value=json.dumps({"time_ms": settle_ms}),
+                        reasoning="AUTH 단계 강제 규칙: 제출 직후에는 재입력보다 전환/리다이렉트 settle을 먼저 기다립니다.",
+                        confidence=0.82,
+                    )
+            if not username_done and username_field is not None and identifier_value.strip():
+                agent._auth_identifier_done = True
+                agent._auth_last_planned_fill = _planned_fill_sig("identifier", username_field, identifier_value)
                 return ActionDecision(
                     action=ActionType.FILL,
                     element_id=username_field.id,
-                    value=str(
-                        (goal.test_data or {}).get("username")
-                        or (goal.test_data or {}).get("email")
-                        or ""
-                    ),
+                    value=identifier_value,
                     reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 로그인 식별자 입력을 우선합니다.",
                     confidence=0.95,
                 )
-            if not password_done and password_field is not None:
+            if not password_done and password_field is not None and password_value.strip():
+                agent._auth_password_done = True
+                agent._auth_last_planned_fill = _planned_fill_sig("password", password_field, password_value)
                 return ActionDecision(
                     action=ActionType.FILL,
                     element_id=password_field.id,
-                    value=str((goal.test_data or {}).get("password") or ""),
+                    value=password_value,
                     reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 비밀번호 입력을 우선합니다.",
                     confidence=0.95,
                 )
-            submit_attempts = int(getattr(agent, "_auth_submit_attempts", 0) or 0)
+            if (not username_done and username_field is None) or (not password_done and password_field is None):
+                return ActionDecision(
+                    action=ActionType.WAIT,
+                    value='{"time_ms": 300}',
+                    reasoning="AUTH 단계 강제 규칙: 제출보다 입력 필드 재획득이 우선이므로 최신 인증 UI를 다시 기다립니다.",
+                    confidence=0.7,
+                )
             last_submit_at = float(getattr(agent, "_last_auth_submit_at", 0.0) or 0.0)
+            retry_cooldown = 4.0 if submit_attempts <= 1 else 8.0
             can_retry_submit = (
                 login_button is not None
+                and username_done
+                and password_done
                 and submit_attempts < 3
-                and (not bool(getattr(agent, "_auth_submit_attempted", False)) or (time.time() - last_submit_at) >= 3.0)
+                and (not bool(getattr(agent, "_auth_submit_attempted", False)) or (time.time() - last_submit_at) >= retry_cooldown)
             )
             if can_retry_submit:
+                submit_element_id = getattr(login_button, "id", None)
+                if submit_element_id:
+                    agent._auth_last_planned_fill = None
+                    return ActionDecision(
+                        action=ActionType.CLICK,
+                        element_id=submit_element_id,
+                        reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 로그인 제출을 우선합니다.",
+                        confidence=0.95,
+                    )
+                agent._auth_last_planned_fill = None
                 return ActionDecision(
-                    action=ActionType.CLICK,
-                    element_id=login_button.id,
-                    reasoning="AUTH 단계 강제 규칙: 닫기/X 대신 로그인 제출을 우선합니다.",
+                    action=ActionType.PRESS,
+                    value="Enter",
+                    reasoning="AUTH 단계 강제 규칙: submit control id가 불안정해 Enter 제출을 우선합니다.",
                     confidence=0.95,
                 )
         return ActionDecision(
             action=ActionType.WAIT,
+            value='{"time_ms": 300}',
             reasoning="AUTH 단계 강제 규칙: 로그인 게이트가 열려 있어 닫기/X 대신 사용자 개입 또는 인증 입력을 우선합니다.",
             confidence=0.6,
         )
@@ -139,6 +266,19 @@ def decide_next_action(
                 return True
         return False
 
+    def _has_auth_submit_control(elements: List[DOMElement]) -> bool:
+        for element in elements:
+            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+                continue
+            role = str(getattr(element, "role", "") or "").lower()
+            tag = str(getattr(element, "tag", "") or "").lower()
+            if role not in {"button", "link"} and tag not in {"button", "a"}:
+                continue
+            blob = _label_blob(element)
+            if any(token in blob for token in ("로그인", "login", "sign in", "signin", "continue", "submit")):
+                return True
+        return False
+
     def _auth_dom_for_prompt() -> List[DOMElement]:
         auth_elements = list(dom_elements or [])
         if _has_auth_fields(auth_elements):
@@ -167,69 +307,6 @@ def decide_next_action(
         agent._record_reason_code("auth_interrupt_unscoped")
         return full_dom
 
-    def _find_post_auth_resume_decision(resume_elements: List[DOMElement]) -> Optional[ActionDecision]:
-        blocked_intent = getattr(agent, "_blocked_intent", {}) or {}
-        if not isinstance(blocked_intent, dict) or not blocked_intent:
-            return None
-        if bool(getattr(agent, "_blocked_intent_resumed", False)):
-            return None
-        if int(getattr(agent, "_blocked_intent_resume_attempts", 0) or 0) > 0:
-            return None
-        target_blob = agent._normalize_text(
-            " ".join(
-                [
-                    str(blocked_intent.get("text") or ""),
-                    str(blocked_intent.get("aria_label") or ""),
-                    str(blocked_intent.get("title") or ""),
-                    str(blocked_intent.get("container_name") or ""),
-                    str(blocked_intent.get("context_text") or ""),
-                ]
-            )
-        )
-        best_element: Optional[DOMElement] = None
-        best_score = 0.0
-        for element in resume_elements:
-            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
-                continue
-            if str(getattr(element, "role", "") or "").lower() not in {"button", "link"} and str(getattr(element, "tag", "") or "").lower() not in {"button", "a"}:
-                continue
-            element_blob = agent._normalize_text(
-                " ".join(
-                    [
-                        str(getattr(element, "text", "") or ""),
-                        str(getattr(element, "aria_label", "") or ""),
-                        str(getattr(element, "title", "") or ""),
-                        str(getattr(element, "container_name", "") or ""),
-                        str(getattr(element, "context_text", "") or ""),
-                    ]
-                )
-            )
-            score = 0.0
-            if target_blob and element_blob:
-                if target_blob == element_blob:
-                    score += 8.0
-                if str(getattr(element, "container_ref_id", "") or "").strip() and str(getattr(element, "container_ref_id", "") or "").strip() == str(blocked_intent.get("container_ref_id") or "").strip():
-                    score += 4.0
-                overlap = sum(
-                    1
-                    for token in target_blob.split()
-                    if len(token) >= 2 and token in element_blob
-                )
-                score += min(overlap, 6)
-            if score > best_score:
-                best_score = score
-                best_element = element
-        if best_element is None or best_score < 4.0:
-            return None
-        agent._pending_resume_element_id = best_element.id
-        agent._record_reason_code("post_auth_resume")
-        return ActionDecision(
-            action=ActionType.CLICK,
-            element_id=best_element.id,
-            reasoning="AUTH interrupt 해제 후 원래 막혔던 CTA intent를 1회 재개합니다.",
-            confidence=0.92,
-        )
-
     def _find_interaction_surface_ref(surface_elements: List[DOMElement]) -> str:
         active_surface = getattr(agent, "_active_interaction_surface", {}) or {}
         preferred_refs: List[str] = []
@@ -246,35 +323,213 @@ def decide_next_action(
                 return ref
         return ""
 
-    def _find_post_auth_reacquire_decision(reacquire_elements: List[DOMElement]) -> Optional[ActionDecision]:
-        blocked_intent = getattr(agent, "_blocked_intent", {}) or {}
-        if not isinstance(blocked_intent, dict) or not blocked_intent:
-            return None
-        if bool(getattr(agent, "_blocked_intent_resumed", False)):
-            return None
+    def _role_prefilter_elements(candidates: List[DOMElement]) -> List[DOMElement]:
+        role_snapshot = getattr(agent, "_last_role_snapshot", None)
+        if not isinstance(role_snapshot, dict) or not candidates:
+            return candidates
+        goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
+        if not goal_tokens:
+            return candidates
+        quoted_matches = [agent._normalize_text(v) for v in re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or "")) if agent._normalize_text(v)]
+        tree_nodes = role_snapshot.get("tree") if isinstance(role_snapshot.get("tree"), list) else []
+        tree_score_by_ref = {}
+        if tree_nodes:
+            for node in tree_nodes:
+                if not isinstance(node, dict):
+                    continue
+                ref = str(node.get("ref") or "").strip()
+                if not ref:
+                    continue
+                node_name = agent._normalize_text(str(node.get("name") or ""))
+                node_role = agent._normalize_text(str(node.get("role") or ""))
+                ancestor_blob = agent._normalize_text(" ".join(node.get("ancestor_names") or []))
+                score = 0.0
+                score += 1.5 * len(goal_tokens.intersection(set(agent._tokenize_text(node_name))))
+                score += 1.0 * len(goal_tokens.intersection(set(agent._tokenize_text(ancestor_blob))))
+                if node_role in {"button", "link", "tab", "menuitem", "option"}:
+                    score += 0.75
+                for phrase in quoted_matches:
+                    if phrase and phrase in node_name:
+                        score += 3.0
+                    if phrase and phrase in ancestor_blob:
+                        score += 1.5
+                if score > 0.0:
+                    tree_score_by_ref[ref] = max(float(tree_score_by_ref.get(ref, 0.0)), score)
+        ranked: List[tuple[float, DOMElement]] = []
+        for element in candidates:
+            role_name = agent._normalize_text(str(getattr(element, "role_ref_name", None) or ""))
+            role_role = agent._normalize_text(str(getattr(element, "role_ref_role", None) or ""))
+            if not role_name and not role_role:
+                ref_id = str((getattr(agent, "_element_ref_ids", {}) or {}).get(getattr(element, "id", -1)) or "").strip()
+                if not ref_id or ref_id not in tree_score_by_ref:
+                    continue
+            score = 0.0
+            score += 1.5 * len(goal_tokens.intersection(set(agent._tokenize_text(role_name))))
+            if role_role in {"button", "link", "tab", "menuitem", "option"}:
+                score += 0.75
+            for phrase in quoted_matches:
+                if phrase and phrase in role_name:
+                    score += 3.0
+            if str(getattr(element, "container_source", None) or "") == "semantic-first":
+                score += 1.0
+            ref_id = str((getattr(agent, "_element_ref_ids", {}) or {}).get(getattr(element, "id", -1)) or "").strip()
+            if ref_id:
+                score += float(tree_score_by_ref.get(ref_id, 0.0))
+            if score > 0.0:
+                ranked.append((score, element))
+        if not ranked:
+            return candidates
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        kept: List[DOMElement] = []
+        keep_container_refs = {
+            str(getattr(element, "container_ref_id", "") or "").strip()
+            for score, element in ranked[: min(6, len(ranked))]
+            if score >= max(2.0, ranked[0][0] - 2.0)
+        }
+        for element in candidates:
+            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
+            if container_ref and container_ref in keep_container_refs:
+                kept.append(element)
+                continue
+            if any(id(element) == id(candidate) for _, candidate in ranked[: min(8, len(ranked))]):
+                kept.append(element)
+        if 0 < len(kept) < len(candidates):
+            agent._record_reason_code("role_snapshot_prefilter")
+            return kept
+        return candidates
 
-        target_blob = agent._normalize_text(
+    def _find_deterministic_verify_completion(verify_elements: List[DOMElement]) -> Optional[ActionDecision]:
+        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+        if current_phase.startswith("precheck"):
+            return None
+        if str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) != "evidence_only":
+            return None
+        completion_reason = agent._evaluate_goal_target_completion(
+            goal=goal,
+            dom_elements=verify_elements or [],
+        )
+        if not completion_reason:
+            return None
+        agent._record_reason_code("deterministic_verify_completion")
+        return ActionDecision(
+            action=ActionType.WAIT,
+            reasoning="현재 DOM 증거만으로 목표 달성이 확인되어 추가 추론 없이 종료합니다.",
+            confidence=0.98,
+            is_goal_achieved=True,
+            goal_achievement_reason=completion_reason,
+        )
+
+    def _decision_is_verify_blocked_mutation(decision: ActionDecision, candidates: List[DOMElement]) -> bool:
+        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+        if str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) != "evidence_only":
+            return False
+        if decision.action not in {ActionType.CLICK, ActionType.SELECT, ActionType.PRESS}:
+            return False
+        semantics = getattr(agent, "_goal_semantics", None)
+        mutation_direction = str(getattr(semantics, "mutation_direction", "") or "").strip().lower()
+        if mutation_direction not in {"increase", "decrease", "clear"}:
+            return False
+        selected_element = next(
+            (el for el in candidates if int(getattr(el, "id", -1)) == int(decision.element_id or -9999)),
+            None,
+        )
+        if selected_element is None:
+            return False
+        role = str(getattr(selected_element, "role", "") or "").lower()
+        tag = str(getattr(selected_element, "tag", "") or "").lower()
+        if role not in {"button", "link", "tab"} and tag not in {"button", "a"}:
+            return False
+        blob = agent._normalize_text(
             " ".join(
                 [
-                    str(blocked_intent.get("text") or ""),
-                    str(blocked_intent.get("aria_label") or ""),
-                    str(blocked_intent.get("title") or ""),
-                    str(blocked_intent.get("container_name") or ""),
-                    str(blocked_intent.get("context_text") or ""),
-                    str(getattr(goal, "name", "") or ""),
-                    str(getattr(goal, "description", "") or ""),
+                    str(getattr(selected_element, "text", "") or ""),
+                    str(getattr(selected_element, "aria_label", "") or ""),
+                    str(getattr(selected_element, "title", "") or ""),
+                    str(getattr(selected_element, "container_name", "") or ""),
+                    str(getattr(selected_element, "context_text", "") or ""),
                 ]
             )
         )
-        target_tokens = [token for token in target_blob.split() if len(token) >= 2]
-        if not target_tokens:
-            return None
+        if mutation_direction == "increase":
+            return any(token in blob for token in ("추가", "담기", "바로 추가", "add", "append", "apply", "select", "반영", "넣기"))
+        if mutation_direction == "decrease":
+            return any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우"))
+        return any(token in blob for token in ("전체 삭제", "전부 삭제", "clear", "empty", "remove all", "비우"))
 
-        visible_target_context = False
-        footer_pagination_score = 0.0
-        for element in reacquire_elements:
-            if not bool(getattr(element, "is_visible", True)):
-                continue
+    auth_phase_active = bool(
+        str(getattr(agent, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block"
+        or bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
+    )
+    goal_state_membership_belief = str((goal_state or {}).get("membership_belief") or "").strip().lower()
+    try:
+        goal_state_membership_confidence = float((goal_state or {}).get("membership_confidence") or 0.0)
+    except Exception:
+        goal_state_membership_confidence = 0.0
+    branch_requires_removal = bool(
+        str((goal_state or {}).get("target_locus") or "").strip().lower() == "destination"
+        and goal_state_membership_belief == "present"
+        and goal_state_membership_confidence >= 0.7
+        and not bool(getattr(agent, "_goal_plan_remediation_completed", False))
+    )
+    auth_mode = str(((goal.test_data or {}) if isinstance(goal.test_data, dict) else {}).get("auth_mode") or "").strip().lower()
+    auth_has_credentials = bool(agent._has_login_test_data(goal))
+    handoff_mode = str((getattr(agent, "_handoff_state", {}) or {}).get("mode") or "").strip().lower()
+    auth_close_allowed = auth_mode in {"skip", "declined", "dismiss", "close", "no_login"} or handoff_mode in {"declined", "skip"}
+    prompt_phase_intent = str(
+        getattr(agent, "_goal_phase_intent", "")
+        or goal_phase_intent(str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower())
+    )
+    prompt_goal_kind_raw = getattr(getattr(agent, "_goal_semantics", None), "goal_kind", None)
+    prompt_goal_kind = str(getattr(prompt_goal_kind_raw, "value", prompt_goal_kind_raw) or "").strip().lower()
+    browser_backend_name = str(
+        getattr(agent, "_browser_backend_name", "")
+        or os.getenv("GAIA_BROWSER_BACKEND", "")
+        or ""
+    ).strip().lower()
+    openclaw_agentic_mode = bool(browser_backend_name == "openclaw")
+    base_dom_elements = dom_elements
+    if auth_phase_active and not auth_close_allowed and not openclaw_agentic_mode:
+        base_dom_elements = _auth_dom_for_prompt()
+    else:
+        if (
+            bool(getattr(agent, "_auth_interrupt_active", False))
+            and not bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
+            and not _has_auth_fields(base_dom_elements)
+        ):
+            setattr(agent, "_auth_interrupt_active", False)
+        agent._auth_interrupt_scope_ref = ""
+        agent._auth_interrupt_scope_source = ""
+        if browser_backend_name != "openclaw":
+            base_dom_elements = _role_prefilter_elements(base_dom_elements)
+    mutate_target_visible_in_base_dom = False
+    if prompt_phase_intent == "mutate" and prompt_goal_kind in {"add_to_list", "apply_selection"}:
+        target_terms_for_scope = [
+            agent._normalize_text(term)
+            for term in list(getattr(getattr(agent, "_goal_semantics", None), "target_terms", []) or [])
+            if str(term or "").strip()
+        ]
+        if target_terms_for_scope:
+            for element in base_dom_elements or []:
+                blob = agent._normalize_text(
+                    " ".join(
+                        [
+                            str(getattr(element, "text", "") or ""),
+                            str(getattr(element, "aria_label", "") or ""),
+                            str(getattr(element, "title", "") or ""),
+                            str(getattr(element, "container_name", "") or ""),
+                            str(getattr(element, "context_text", "") or ""),
+                        ]
+                    )
+                )
+                if any(term in blob for term in target_terms_for_scope):
+                    mutate_target_visible_in_base_dom = True
+                    break
+    if branch_requires_removal and browser_backend_name != "openclaw":
+        def _is_increase_candidate(element: DOMElement) -> bool:
+            role = str(getattr(element, "role", "") or "").lower()
+            tag = str(getattr(element, "tag", "") or "").lower()
+            if role not in {"button", "link", "tab"} and tag not in {"button", "a"}:
+                return False
             blob = agent._normalize_text(
                 " ".join(
                     [
@@ -286,323 +541,113 @@ def decide_next_action(
                     ]
                 )
             )
-            if any(token in blob for token in target_tokens):
-                visible_target_context = True
-                break
-            if any(token in blob for token in ("페이지", "pagination", "pager", "next", "prev", "이전", "다음", "page ")):
-                footer_pagination_score += 1.0
-            role = str(getattr(element, "role", "") or "").lower()
-            tag = str(getattr(element, "tag", "") or "").lower()
-            if role in {"link", "button"} or tag in {"a", "button"}:
-                if blob.isdigit():
-                    footer_pagination_score += 0.5
-        if visible_target_context:
-            return None
-        if footer_pagination_score >= 2.0:
-            agent._record_reason_code("post_auth_reacquire_home")
-            return ActionDecision(
-                action=ActionType.PRESS,
-                value="Home",
-                reasoning="인증 직후 현재 DOM에 원래 목표 카드 문맥이 보이지 않고 하단 페이지네이션/목록 하부만 노출되어 있어, 먼저 상단으로 복귀해 원래 타깃 카드를 다시 확보합니다.",
-                confidence=0.88,
-            )
-        return None
+            return any(token in blob for token in ("추가", "담기", "바로 추가", "add", "append", "apply", "select", "반영", "넣기"))
 
-    def _find_destination_surface_reveal_decision(reveal_elements: List[DOMElement]) -> Optional[ActionDecision]:
-        semantics = getattr(agent, "_goal_semantics", None)
-        if semantics is None or getattr(semantics, "goal_kind", None) not in {GoalKind.REMOVE_FROM_LIST, GoalKind.CLEAR_LIST}:
-            return None
-        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
-        if current_phase not in {"reveal_destination_surface", "act_on_target", "verify_removal", "verify_empty"}:
-            return None
-        destination_terms = [
-            agent._normalize_text(term)
-            for term in list(getattr(semantics, "destination_terms", []) or [])
-            if str(term or "").strip()
-        ]
-        target_terms = [
-            agent._normalize_text(term)
-            for term in list(getattr(semantics, "target_terms", []) or [])
-            if str(term or "").strip()
-        ]
-        if not destination_terms:
-            return None
-
-        def _blob(el: DOMElement) -> str:
-            return agent._normalize_text(
-                " ".join(
-                    [
-                        str(getattr(el, "text", "") or ""),
-                        str(getattr(el, "aria_label", "") or ""),
-                        str(getattr(el, "title", "") or ""),
-                        str(getattr(el, "container_name", "") or ""),
-                        str(getattr(el, "context_text", "") or ""),
-                    ]
-                )
-            )
-
-        target_container_refs: set[str] = set()
-        for element in reveal_elements:
-            blob = _blob(element)
-            if any(term in blob for term in target_terms):
-                container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
-                if container_ref:
-                    target_container_refs.add(container_ref)
-
-        remove_visible = False
-        for element in reveal_elements:
-            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
-                continue
-            blob = _blob(element)
-            same_target_container = bool(str(getattr(element, "container_ref_id", "") or "").strip()) and str(
-                getattr(element, "container_ref_id", "") or ""
-            ).strip() in target_container_refs
-            if any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우")) and (
-                same_target_container or any(term in blob for term in destination_terms)
-            ):
-                remove_visible = True
-                break
-        if remove_visible:
-            return None
-
-        best_secondary_element: Optional[DOMElement] = None
-        best_secondary_score = 0.0
-        for element in reveal_elements:
-            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
-                continue
-            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
-            if not container_ref or container_ref not in target_container_refs:
-                continue
-            blob = _blob(element)
-            tag = str(getattr(element, "tag", "") or "").lower()
-            role = str(getattr(element, "role", "") or "").lower()
-            score = 0.0
-            if role in {"button", "link", "tab"} or tag in {"button", "a"}:
-                score += 6.0
-            if any(term in blob for term in target_terms):
-                score += 5.0
-            if any(token in blob for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "menu", "옵션", "option", "more", "편집", "edit", "상세", "details", "⋯", "...")):
-                score += 6.0
-            labels = getattr(element, "group_action_labels", None) or []
-            if isinstance(labels, list) and len([x for x in labels if str(x or "").strip()]) >= 2:
-                score += 3.0
-            if any(token in blob for token in ("페이지", "pagination", "next", "prev", "정렬", "sort", "filter", "검색", "search")):
-                score -= 8.0
-            if score > best_secondary_score:
-                best_secondary_score = score
-                best_secondary_element = element
-        if best_secondary_element is not None and best_secondary_score >= 8.0:
-            agent._record_reason_code("target_row_secondary_reveal")
-            return ActionDecision(
-                action=ActionType.CLICK,
-                element_id=best_secondary_element.id,
-                reasoning="목표 항목이 있는 행/카드 내부에서 보조 affordance를 먼저 열어 제거 CTA를 드러냅니다.",
-                confidence=0.9,
-            )
-
-        best_element: Optional[DOMElement] = None
-        best_score = 0.0
-        for element in reveal_elements:
-            if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
-                continue
-            blob = _blob(element)
-            tag = str(getattr(element, "tag", "") or "").lower()
-            role = str(getattr(element, "role", "") or "").lower()
-            score = 0.0
-            if any(term in blob for term in destination_terms):
-                score += 10.0
-            if role in {"button", "link", "tab"} or tag in {"button", "a"}:
-                score += 3.0
-            if any(token in blob for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "내 목록", "saved", "favorites", "selected")):
-                score += 2.0
-            if any(token in blob for token in ("페이지", "pagination", "next", "prev", "정렬", "sort", "filter", "검색", "search")):
-                score -= 8.0
-            if score > best_score:
-                best_score = score
-                best_element = element
-        if best_element is not None and best_score >= 8.0:
-            agent._record_reason_code("destination_surface_reveal")
-            return ActionDecision(
-                action=ActionType.CLICK,
-                element_id=best_element.id,
-                reasoning="목적지 영역은 확인되지만 제거 CTA가 직접 보이지 않아, 목적지 surface를 먼저 드러내는 컨트롤을 선택합니다.",
-                confidence=0.9,
-            )
-
-        return None
-
-    def _find_target_row_affordance_decision(surface_elements: List[DOMElement]) -> Optional[ActionDecision]:
-        semantics = getattr(agent, "_goal_semantics", None)
-        if semantics is None:
-            return None
-        goal_kind = getattr(semantics, "goal_kind", None)
-        if goal_kind not in {GoalKind.ADD_TO_LIST, GoalKind.APPLY_SELECTION, GoalKind.REMOVE_FROM_LIST, GoalKind.CLEAR_LIST}:
-            return None
-        if auth_phase_active:
-            return None
-
-        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
-        allowed_phases = {
-            GoalKind.ADD_TO_LIST: {"locate_target", "verify_destination_membership"},
-            GoalKind.APPLY_SELECTION: {"locate_target", "verify_destination_membership"},
-            GoalKind.REMOVE_FROM_LIST: {"reveal_destination_surface", "act_on_target", "verify_removal"},
-            GoalKind.CLEAR_LIST: {"reveal_destination_surface", "act_on_target", "verify_empty"},
-        }
-        if current_phase not in allowed_phases.get(goal_kind, set()):
-            return None
-
-        mutation_direction = str(getattr(semantics, "mutation_direction", "") or "").strip().lower()
-        target_terms = [
-            agent._normalize_text(term)
-            for term in list(getattr(semantics, "target_terms", []) or [])
-            if str(term or "").strip()
-        ]
-        active_ref = str(getattr(agent, "_active_scoped_container_ref", "") or "").strip()
-        if not target_terms and not active_ref:
-            return None
-
-        def _blob(el: DOMElement) -> str:
-            return agent._normalize_text(
-                " ".join(
-                    [
-                        str(getattr(el, "text", "") or ""),
-                        str(getattr(el, "aria_label", "") or ""),
-                        str(getattr(el, "title", "") or ""),
-                        str(getattr(el, "container_name", "") or ""),
-                        str(getattr(el, "context_text", "") or ""),
-                    ]
-                )
-            )
-
-        def _is_actionable(el: DOMElement) -> bool:
-            role = str(getattr(el, "role", "") or "").lower()
-            tag = str(getattr(el, "tag", "") or "").lower()
-            return bool(getattr(el, "is_visible", True)) and bool(getattr(el, "is_enabled", True)) and (
-                role in {"button", "link", "tab"} or tag in {"button", "a"}
-            )
-
-        def _matches_primary_mutation(blob: str) -> bool:
-            if mutation_direction == "increase":
-                return any(token in blob for token in ("추가", "담기", "바로 추가", "add", "append", "apply", "select", "반영", "넣기"))
-            if mutation_direction == "decrease":
-                return any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우"))
-            if mutation_direction == "clear":
-                return any(token in blob for token in ("전체 삭제", "전부 삭제", "clear", "empty", "remove all", "비우"))
-            return False
-
-        target_container_refs: set[str] = set()
-        for element in surface_elements:
-            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
-            if not container_ref:
-                continue
-            blob = _blob(element)
-            if any(term in blob for term in target_terms):
-                target_container_refs.add(container_ref)
-        if not target_container_refs and active_ref:
-            target_container_refs.add(active_ref)
-        if not target_container_refs:
-            return None
-
-        for element in surface_elements:
-            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
-            if container_ref not in target_container_refs or not _is_actionable(element):
-                continue
-            if _matches_primary_mutation(_blob(element)):
-                return None
-
-        best_element: Optional[DOMElement] = None
-        best_score = 0.0
-        for element in surface_elements:
-            container_ref = str(getattr(element, "container_ref_id", "") or "").strip()
-            if container_ref not in target_container_refs or not _is_actionable(element):
-                continue
-            blob = _blob(element)
-            score = 0.0
-            if any(token in blob for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "menu", "옵션", "option", "more", "편집", "edit", "상세", "details", "⋯", "...")):
-                score += 7.0
-            labels = getattr(element, "group_action_labels", None) or []
-            if isinstance(labels, list) and len([x for x in labels if str(x or "").strip()]) >= 2:
-                score += 3.0
-            if active_ref and container_ref == active_ref:
-                score += 2.0
-            if any(token in blob for token in ("페이지", "pagination", "pager", "next", "prev", "정렬", "sort", "filter", "검색", "search")):
-                score -= 8.0
-            if score > best_score:
-                best_score = score
-                best_element = element
-        if best_element is None or best_score < 7.0:
-            return None
-        agent._record_reason_code("target_row_affordance_reveal")
-        return ActionDecision(
-            action=ActionType.CLICK,
-            element_id=best_element.id,
-            reasoning="현재 활성 행/카드에서 직접 mutation CTA가 보이지 않아, 같은 행 내부의 보조 affordance를 먼저 열어 후속 액션을 노출합니다.",
-            confidence=0.88,
-        )
-
-    auth_phase_active = bool(
-        str(getattr(agent, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block"
-        or bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
-    )
-    auth_mode = str(((goal.test_data or {}) if isinstance(goal.test_data, dict) else {}).get("auth_mode") or "").strip().lower()
-    auth_has_credentials = bool(agent._has_login_test_data(goal))
-    handoff_mode = str((getattr(agent, "_handoff_state", {}) or {}).get("mode") or "").strip().lower()
-    auth_close_allowed = auth_mode in {"skip", "declined", "dismiss", "close", "no_login"} or handoff_mode in {"declined", "skip"}
-
-    base_dom_elements = dom_elements
-    if auth_phase_active and not auth_close_allowed:
-        base_dom_elements = _auth_dom_for_prompt()
-    else:
-        if bool(getattr(agent, "_auth_interrupt_active", False)) and not bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible")):
-            setattr(agent, "_auth_interrupt_active", False)
-        agent._auth_interrupt_scope_ref = ""
-        agent._auth_interrupt_scope_source = ""
+        removal_filtered = [element for element in base_dom_elements if not _is_increase_candidate(element)]
+        if removal_filtered and len(removal_filtered) < len(base_dom_elements):
+            base_dom_elements = removal_filtered
+            agent._record_reason_code("conditional_branch_removal_filter")
 
     elements_for_prompt = base_dom_elements
-    if auth_phase_active and not auth_close_allowed:
+    if browser_backend_name == "openclaw":
+        scoped_ref_id = ""
+        scoped_name = ""
+        scoped_source = ""
+        scoped_score = 0.0
+        scoped_ambiguous = False
+        agent._active_scoped_container_ref = ""
+    elif auth_phase_active and not auth_close_allowed:
         scoped_ref_id = str(getattr(agent, "_auth_interrupt_scope_ref", "") or "").strip()
         scoped_name = "auth-interrupt-surface" if scoped_ref_id else ""
         scoped_source = str(getattr(agent, "_auth_interrupt_scope_source", "") or "").strip()
         scoped_score = 0.0
         scoped_ambiguous = False
     else:
-        preferred_surface_ref = ""
-        if bool(getattr(agent, "_surface_reacquire_pending", False)) or bool(getattr(agent, "_auth_resume_pending", False)):
-            preferred_surface_ref = _find_interaction_surface_ref(base_dom_elements)
-        if preferred_surface_ref:
-            rescoped_dom = agent._analyze_dom(scope_container_ref_id=preferred_surface_ref)
-            if rescoped_dom and 0 < len(rescoped_dom) <= len(base_dom_elements):
-                elements_for_prompt = rescoped_dom
-                scoped_ref_id = str(preferred_surface_ref)
-                scoped_name = "active-interaction-surface"
-                scoped_source = "interaction-surface"
-                scoped_score = 1.0
-                scoped_ambiguous = False
-                agent._active_scoped_container_ref = str(scoped_ref_id)
-                agent._record_reason_code("interaction_surface_reacquired")
-            else:
-                scoped_ref_id = ""
-                scoped_name = ""
-                scoped_source = ""
-                scoped_score = 0.0
-                scoped_ambiguous = False
+        def _reject_small_mutate_scope(scoped_dom: List[DOMElement]) -> bool:
+            if prompt_phase_intent != "mutate" or not scoped_dom or len(scoped_dom) > 3:
+                return False
+            for element in scoped_dom:
+                blob = agent._normalize_text(
+                    " ".join(
+                        [
+                            str(getattr(element, "text", "") or ""),
+                            str(getattr(element, "aria_label", "") or ""),
+                            str(getattr(element, "title", "") or ""),
+                            str(getattr(element, "container_name", "") or ""),
+                            str(getattr(element, "context_text", "") or ""),
+                        ]
+                    )
+                )
+                if any(token in blob for token in ("로그아웃", "logout", "닫기", "close", "dismiss")):
+                    return True
+            return False
+
+        if (
+            prompt_phase_intent == "evidence_only"
+            or mutate_target_visible_in_base_dom
+        ):
+            scoped_ref_id = ""
+            scoped_name = ""
+            scoped_source = ""
+            scoped_score = 0.0
+            scoped_ambiguous = False
+            agent._active_scoped_container_ref = ""
+            if mutate_target_visible_in_base_dom:
+                agent._record_reason_code("mutate_visible_target_skip_scope")
         else:
-            scoped_ref_id, scoped_name, scoped_source, scoped_score, scoped_ambiguous = agent._pick_scoped_container(base_dom_elements)
-            if scoped_ambiguous:
-                agent._record_reason_code("context_target_ambiguous")
-            elif scoped_ref_id:
-                rescoped_dom = agent._analyze_dom(scope_container_ref_id=scoped_ref_id)
-                if rescoped_dom and 0 < len(rescoped_dom) < len(base_dom_elements):
+            preferred_surface_ref = ""
+            if bool(getattr(agent, "_surface_reacquire_pending", False)) or bool(getattr(agent, "_auth_resume_pending", False)):
+                preferred_surface_ref = _find_interaction_surface_ref(base_dom_elements)
+            if preferred_surface_ref:
+                rescoped_dom = agent._analyze_dom(scope_container_ref_id=preferred_surface_ref)
+                if _reject_small_mutate_scope(rescoped_dom):
+                    scoped_ref_id = ""
+                    scoped_name = ""
+                    scoped_source = ""
+                    scoped_score = 0.0
+                    scoped_ambiguous = False
+                    agent._active_scoped_container_ref = ""
+                    agent._record_reason_code("mutate_scope_rejected")
+                elif rescoped_dom and 0 < len(rescoped_dom) <= len(base_dom_elements):
                     elements_for_prompt = rescoped_dom
+                    scoped_ref_id = str(preferred_surface_ref)
+                    scoped_name = "active-interaction-surface"
+                    scoped_source = "interaction-surface"
+                    scoped_score = 1.0
+                    scoped_ambiguous = False
                     agent._active_scoped_container_ref = str(scoped_ref_id)
-                    if scoped_source == "semantic-first":
-                        agent._record_reason_code("semantic_container_scoped")
+                    agent._record_reason_code("interaction_surface_reacquired")
+                else:
+                    scoped_ref_id = ""
+                    scoped_name = ""
+                    scoped_source = ""
+                    scoped_score = 0.0
+                    scoped_ambiguous = False
+            else:
+                scoped_ref_id, scoped_name, scoped_source, scoped_score, scoped_ambiguous = agent._pick_scoped_container(base_dom_elements)
+                if scoped_ambiguous:
+                    agent._record_reason_code("context_target_ambiguous")
+                elif scoped_ref_id:
+                    rescoped_dom = agent._analyze_dom(scope_container_ref_id=scoped_ref_id)
+                    if _reject_small_mutate_scope(rescoped_dom):
+                        scoped_ref_id = ""
+                        scoped_name = ""
+                        scoped_source = ""
+                        scoped_score = 0.0
+                        scoped_ambiguous = False
+                        agent._active_scoped_container_ref = ""
+                        agent._record_reason_code("mutate_scope_rejected")
+                    elif rescoped_dom and 0 < len(rescoped_dom) < len(base_dom_elements):
+                        elements_for_prompt = rescoped_dom
+                        agent._active_scoped_container_ref = str(scoped_ref_id)
+                        if scoped_source == "semantic-first":
+                            agent._record_reason_code("semantic_container_scoped")
+                        else:
+                            agent._record_reason_code("container_scoped_snapshot")
                     else:
-                        agent._record_reason_code("container_scoped_snapshot")
+                        agent._record_reason_code("container_context_missing")
                 else:
                     agent._record_reason_code("container_context_missing")
-            else:
-                agent._record_reason_code("container_context_missing")
 
     elements_text = agent._format_dom_for_llm(elements_for_prompt)
     scoped_hint = "없음"
@@ -610,37 +655,76 @@ def decide_next_action(
         scoped_hint = f'{scoped_name} (ref={scoped_ref_id}, source={scoped_source or "unknown"}, score={scoped_score:.2f})'
     recent_repeated = agent._recent_click_element_ids[-8:]
     recent_block_text = ", ".join(str(x) for x in recent_repeated) if recent_repeated else "없음"
+    auth_ui_still_present = bool(
+        _has_auth_fields(elements_for_prompt or base_dom_elements or dom_elements)
+        or _has_auth_submit_control(elements_for_prompt or base_dom_elements or dom_elements)
+    )
     auth_prompt_visible_now = bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
+    auth_submit_attempts_now = int(getattr(agent, "_auth_submit_attempts", 0) or 0)
+    last_auth_submit_at = float(getattr(agent, "_last_auth_submit_at", 0.0) or 0.0)
+    auth_surface_progressed = bool(getattr(agent, "_auth_surface_progressed", False))
+    auth_fallback_escalated = bool(
+        auth_phase_active
+        and auth_ui_still_present
+        and (
+            auth_surface_progressed
+            or (
+                auth_submit_attempts_now >= 2
+                and last_auth_submit_at > 0.0
+                and (time.time() - last_auth_submit_at) >= 5.0
+            )
+        )
+    )
+    if (
+        auth_phase_active
+        and not auth_close_allowed
+        and bool(getattr(agent, "_auth_submit_attempted", False))
+        and not auth_ui_still_present
+    ):
+        auth_phase_active = False
+        auth_prompt_visible_now = False
+        agent._auth_interrupt_scope_ref = ""
+        agent._auth_interrupt_scope_source = ""
+    current_phase_norm = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+    current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase_norm))
     likely_post_auth_resume = bool(
+        (not openclaw_agentic_mode)
+        and
         not auth_phase_active
         and not auth_prompt_visible_now
+        and not branch_requires_removal
+        and current_phase_intent != "evidence_only"
         and bool(getattr(agent, "_auth_resume_pending", False))
         and (
             bool(getattr(agent, "_auth_submit_attempted", False))
             or float(getattr(agent, "_auth_resolved_at", 0.0) or 0.0) > 0.0
         )
     )
-    if likely_post_auth_resume:
-        if bool(getattr(agent, "_surface_reacquire_pending", False)) or int(
-            getattr(agent, "_blocked_intent_resume_attempts", 0) or 0
-        ) > 0:
-            reacquire_decision = _find_post_auth_reacquire_decision(elements_for_prompt or base_dom_elements or dom_elements)
-            if reacquire_decision is not None:
-                return reacquire_decision
-        resumed_decision = _find_post_auth_resume_decision(elements_for_prompt or base_dom_elements or dom_elements)
-        if resumed_decision is not None:
-            return resumed_decision
-        reacquire_decision = _find_post_auth_reacquire_decision(elements_for_prompt or base_dom_elements or dom_elements)
-        if reacquire_decision is not None:
-            return reacquire_decision
+    if (
+        auth_phase_active
+        and not auth_close_allowed
+        and auth_ui_still_present
+        and not auth_fallback_escalated
+        and not openclaw_agentic_mode
+    ):
+        auth_fallback = _find_auth_phase_fallback()
+        if auth_fallback is not None:
+            return auth_fallback
+    if auth_fallback_escalated:
+        agent._record_reason_code("auth_fallback_escalated_to_llm")
+    verify_completion_elements = (
+        dom_elements
+        if current_phase_intent == "evidence_only"
+        else (elements_for_prompt or base_dom_elements or dom_elements)
+    )
+    if not openclaw_agentic_mode:
+        verify_completion_decision = _find_deterministic_verify_completion(
+            verify_completion_elements
+        )
+        if verify_completion_decision is not None:
+            return verify_completion_decision
     if scoped_ref_id and bool(getattr(agent, "_surface_reacquire_pending", False)):
         agent._surface_reacquire_pending = False
-    row_affordance_decision = _find_target_row_affordance_decision(elements_for_prompt or base_dom_elements or dom_elements)
-    if row_affordance_decision is not None:
-        return row_affordance_decision
-    reveal_decision = _find_destination_surface_reveal_decision(elements_for_prompt or base_dom_elements or dom_elements)
-    if reveal_decision is not None:
-        return reveal_decision
     resume_after_auth_rule = ""
     if likely_post_auth_resume:
         resume_after_auth_rule = """
@@ -692,9 +776,109 @@ def decide_next_action(
    - 입력값 채움 + 제출 버튼 클릭 + 완료 신호(완료 문구/로그인 상태 변화) 확인 전까지 is_goal_achieved=false를 유지하세요.
 """
     constraint_rule = agent._build_goal_constraint_prompt()
+    goal_state_summary = "없음"
+    if isinstance(goal_state, dict) and goal_state:
+        summary_target_locus = goal_state.get("target_locus")
+        summary_subgoal = goal_state.get("subgoal")
+        if goal_state_membership_belief not in {"present", "absent"} or goal_state_membership_confidence < 0.7:
+            summary_target_locus = None
+            summary_subgoal = None
+        proof_summary = {}
+        raw_proof = goal_state.get("proof")
+        if isinstance(raw_proof, dict):
+            proof_summary = {
+                str(key): value
+                for key, value in raw_proof.items()
+                if bool(value)
+            }
+        goal_state_summary = json.dumps(
+            {
+                "membership_belief": goal_state.get("membership_belief"),
+                "membership_confidence": goal_state.get("membership_confidence"),
+                "target_locus": summary_target_locus,
+                "subgoal": summary_subgoal,
+                "proof": proof_summary,
+                "contradiction_signals": list(goal_state.get("contradiction_signals") or [])[-4:],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    openclaw_agentic_rule = ""
+    if openclaw_agentic_mode:
+        openclaw_agentic_rule = """
+12. **OpenClaw agentic replanning 규칙(강화)**
+   - 현재 턴에서는 phase 이름보다 최신 DOM/스크린샷과 상태 캐시를 더 신뢰하세요.
+   - OpenClaw 경로에서는 숫자 `element_id`보다 각 요소 줄에 함께 보이는 `ref="..."`를 우선 사용하세요.
+   - 로컬 heuristic이나 직전 필드 추정치를 믿지 말고, 현재 스크린샷에 실제로 보이는 입력창/버튼/에러 문구를 기준으로 다음 행동을 고르세요.
+   - 인증 모달이 열려 있으면 현재 보이는 surface를 새 화면으로 보고 다시 읽으세요. 이전 surface의 element_id나 필드 의미를 그대로 가정하지 마세요.
+   - 인증 오류 문구가 보이면, 그 오류가 붙은 현재 surface에서 아이디/비밀번호/제출 순서를 다시 계획하세요.
+   - 상태 캐시의 `membership_belief`가 `present`이고 confidence가 높거나, 이미 removal proof가 일부라도 있으면 destination row/slot/action을 우선 탐색하세요.
+   - 그 확신이 약하면 source 카드와 destination evidence를 둘 다 다시 비교하고, source 카드의 직접 매칭 CTA를 먼저 고려하세요.
+   - `subgoal`이 `activate_destination_row`, `remove_membership`, `verify_final_presence`, `source_readd` 중 하나로 확정돼 있을 때만 그 의미에 맞는 다음 행동을 직접 다시 계획하세요.
+   - 코드가 미리 고른 reveal/scroll 후보를 맹신하지 말고, 현재 화면에서 목표 과목명과 직접 연결된 요소를 우선 선택하세요.
+   - 현재 보이는 요소의 self label(text/title/aria)에 목표 과목명이 직접 없으면, 그 row/action을 목표 row로 가정하지 마세요.
+"""
 
-    prompt = f"""당신은 웹 테스트 자동화 에이전트입니다.
-현재 화면의 DOM 요소와 목표를 분석하고, 다음에 수행할 액션을 결정하세요.
+    if openclaw_agentic_mode:
+        compact_test_data = {}
+        if auth_phase_active:
+            compact_test_data = goal.test_data if isinstance(goal.test_data, dict) else {}
+        prompt = f"""당신은 OpenClaw 스타일의 웹 작업 에이전트입니다.
+현재 화면과 직전 결과를 다시 읽고, 다음 한 단계만 결정하세요.
+
+## 목표
+- 이름: {goal.name}
+- 설명: {goal.description}
+- 성공 조건: {', '.join(goal.success_criteria)}
+- 실패 조건: {', '.join(goal.failure_criteria) if goal.failure_criteria else '없음'}
+
+## 사용 가능한 테스트 데이터
+{json.dumps(compact_test_data, ensure_ascii=False, indent=2)}
+
+## 최근 액션 기록
+{chr(10).join(agent._action_history[-3:]) if agent._action_history else '없음'}
+
+## 최근 실행 피드백
+{chr(10).join(agent._action_feedback[-3:]) if agent._action_feedback else '없음'}
+
+## 현재 상태 캐시
+{goal_state_summary}
+
+## 현재 화면의 DOM 요소와 목표 관련 증거
+{elements_text}
+
+## 현재 우선 컨테이너
+{scoped_hint}
+
+## 작업 규칙
+1. phase 이름보다 최신 DOM/스크린샷을 우선 신뢰하세요.
+2. 목표 과목/대상과 직접 연결된 카드, 행(row/slot/card), 버튼을 먼저 찾으세요.
+3. source 카드에서 액션이 no-op 이었거나 상태 캐시가 destination 쪽을 가리키면, source CTA 반복 대신 destination row/slot/action을 먼저 보세요.
+4. 삭제/제거 버튼이 안 보이면 목표 row/slot/card를 먼저 활성화하세요.
+5. 스크롤은 목표와 직접 연결된 row/card/action이 정말 안 보일 때만 고르세요.
+6. 로그인/인증 surface가 보이면 현재 surface를 새 화면으로 간주하고 다시 읽으세요.
+7. 목표 대상명을 직접 포함하지 않는 토스트/경고/에러/충돌 메시지는 우선순위가 낮습니다. 목표와 무관한 토스트를 닫거나 해결하려고 먼저 움직이지 마세요.
+8. 모달/오버레이가 실제로 열려 있지 않다면 닫기/close/dismiss를 고르지 마세요.
+9. 로그아웃, 다운로드, PDF 저장, 전체삭제 같은 전역/파괴적 컨트롤은 목표가 직접 요구하지 않는 한 선택하지 마세요.
+10. 목표가 이미 달성됐다고 판단되면 `is_goal_achieved=true`와 이유를 반환하세요.
+11. OpenClaw 경로에서는 클릭/입력 대상이 보이면 `ref_id`를 함께 반환하세요. `element_id`는 없으면 null이어도 됩니다.
+
+## 응답 형식 (JSON만, 마크다운 없이)
+{{
+    \"action\": \"click\" | \"fill\" | \"press\" | \"scroll\" | \"wait\" | \"select\",
+    \"ref_id\": 요소 ref ID (문자열, OpenClaw 경로에서는 이것을 우선 사용),
+    \"element_id\": 요소ID (숫자, 없으면 null 허용),
+    \"value\": \"입력값 (fill), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms)\",
+    \"reasoning\": \"현재 화면 기준으로 이 행동이 왜 다음 단계인지\",
+    \"confidence\": 0.0~1.0,
+    \"is_goal_achieved\": true | false,
+    \"goal_achievement_reason\": \"목표 달성 판단 이유 (is_goal_achieved가 true인 경우)\"
+}}
+
+JSON 응답:"""
+    else:
+        prompt = f"""당신은 웹 테스트 자동화 에이전트입니다.
+현재 화면의 DOM 요소와 화면 증거를 분석하고, 다음에 수행할 액션을 결정하세요.
 
 ## 목표
 - 이름: {goal.name}
@@ -724,7 +908,10 @@ def decide_next_action(
 ## 도메인 실행 기억(KB)
 {memory_context or '없음'}
 
-## 현재 화면의 DOM 요소 (클릭/입력 가능한 요소들)
+## 현재 agentic 상태 캐시
+{goal_state_summary}
+
+## 현재 화면의 DOM 요소와 목표 관련 증거
 {elements_text}
 
 ## 현재 선택된 우선 컨테이너
@@ -732,6 +919,10 @@ def decide_next_action(
 
 ## 중요 지시사항
 0. **키워드 우선 탐색**: 키워드와 관련된 요소를 먼저 찾아서 목표 달성에 활용하세요.
+1. **source-card 기본 규칙**: membership 상태가 아직 불확실하면, 목표 과목명이 같은 카드/컨테이너 안에 직접 보이고 그 카드 안에 하나의 적절한 CTA가 있으면 scroll보다 그 CTA 클릭을 우선하세요.
+2. **목적지 증거 우선(조건부)**: membership이 이미 present로 강하게 확인됐거나 removal proof가 일부라도 있으면, source 쪽 추가 버튼보다 destination row·slot·card 증거를 우선 신뢰하세요.
+3. **row 활성화 우선(조건부)**: 삭제 버튼이 바로 안 보여도 목표 과목명이 직접 보이는 destination row/slot이 있으면 먼저 그 row/slot을 활성화해 후속 action을 드러내세요.
+4. **scroll은 마지막 수단**: 목표 과목명이 직접 보이는 row/slot/card 또는 source 카드 CTA가 하나라도 있으면, 먼저 그 요소를 클릭/활성화하세요. scroll은 해당 요소 자체가 안 보일 때만 선택하세요.
 1. **탭/섹션 UI 확인**: role=\"tab\"인 요소가 있으면 먼저 해당 탭을 클릭해야 합니다!
    - 예: 로그인 탭, 회원가입 탭이 있으면 → 먼저 로그인 탭 클릭 → 그 다음 폼 입력
 
@@ -759,6 +950,7 @@ def decide_next_action(
 {resume_after_auth_rule}
 {auth_gate_rule}
 {remediation_rule}
+{openclaw_agentic_rule}
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
@@ -774,26 +966,164 @@ def decide_next_action(
 JSON 응답:"""
 
     try:
+        llm_started = time.perf_counter()
         if screenshot:
             response_text = agent.llm.analyze_with_vision(prompt, screenshot)
         else:
             response_text = agent._call_llm_text_only(prompt)
+        agent._last_llm_trace = {
+            "used_llm": True,
+            "llm_ms": int((time.perf_counter() - llm_started) * 1000),
+            "path": "vision" if screenshot else "text_only",
+            "owner": "llm",
+        }
+        agent._log(f"🧪 llm trace: {agent._last_llm_trace}")
         decision = agent._parse_decision(response_text)
-        if auth_phase_active and not auth_close_allowed:
+        if (not openclaw_agentic_mode) and _decision_is_verify_blocked_mutation(decision, elements_for_prompt or dom_elements):
+            agent._record_reason_code("verify_mutation_guard")
+            return ActionDecision(
+                action=ActionType.WAIT,
+                value='{"time_ms": 700}',
+                reasoning="verify 단계에서 같은 종류의 mutation CTA 재실행은 차단되었습니다. 목적지 반영 증거를 먼저 수집합니다.",
+                confidence=0.95,
+            )
+        selected_element = None
+        if openclaw_agentic_mode and getattr(decision, "ref_id", None):
+            selected_element = next(
+                (
+                    el for el in (elements_for_prompt or dom_elements)
+                    if str(getattr(el, "ref_id", "") or "").strip() == str(getattr(decision, "ref_id", "") or "").strip()
+                ),
+                None,
+            )
+        if selected_element is None:
             selected_element = next(
                 (el for el in (elements_for_prompt or dom_elements) if int(getattr(el, "id", -1)) == int(decision.element_id or -9999)),
                 None,
             )
-            reasoning_norm = agent._normalize_text(str(getattr(decision, "reasoning", "") or ""))
-            selected_blob = _label_blob(selected_element) if selected_element is not None else ""
-            close_intent = any(
-                token in reasoning_norm or token in selected_blob
-                for token in ("닫", "close", "dismiss", "x 버튼", "x버튼", "우상단 x", "닫기")
+        if openclaw_agentic_mode and selected_element is not None:
+            ref_id = str((getattr(agent, "_element_ref_ids", {}) or {}).get(getattr(selected_element, "id", -1)) or "").strip()
+            decision_ref_id = str(getattr(decision, "ref_id", "") or "").strip()
+            line_parts = [f"[{getattr(selected_element, 'id', None)}] <{getattr(selected_element, 'tag', '') or ''}>"]
+            if decision_ref_id:
+                line_parts.append(f'decision-ref="{decision_ref_id}"')
+            container_name = str(getattr(selected_element, "container_name", "") or "").strip()
+            if container_name:
+                line_parts.append(f'within="{container_name}"')
+            selected_text_raw = str(getattr(selected_element, "text", "") or "").strip()
+            if selected_text_raw:
+                line_parts.append(f'"{selected_text_raw}"')
+            selected_role_raw = str(getattr(selected_element, "role", "") or "").strip()
+            if selected_role_raw:
+                line_parts.append(f"role={selected_role_raw}")
+            selected_context_raw = str(getattr(selected_element, "context_text", "") or "").strip()
+            if selected_context_raw:
+                line_parts.append(f'context="{selected_context_raw}"')
+            action_labels = list(getattr(selected_element, "group_action_labels", None) or [])
+            if action_labels:
+                line_parts.append(f'actions=[{" | ".join(str(v) for v in action_labels[:5])}]')
+            selected_aria_raw = str(getattr(selected_element, "aria_label", "") or "").strip()
+            if selected_aria_raw:
+                line_parts.append(f'aria-label="{selected_aria_raw}"')
+            selected_title_raw = str(getattr(selected_element, "title", "") or "").strip()
+            if selected_title_raw:
+                line_parts.append(f'title="{selected_title_raw}"')
+            line_parts.append(f"ref_id={ref_id or '<none>'}")
+            agent._log(
+                "🧪 selected-element trace: "
+                + " ".join(line_parts)
             )
+        selected_blob = _label_blob(selected_element) if selected_element is not None else ""
+        reasoning_norm = agent._normalize_text(str(getattr(decision, "reasoning", "") or ""))
+        close_tokens = ("닫", "close", "dismiss", "x 버튼", "x버튼", "우상단 x", "닫기", "취소", "cancel")
+        close_intent = any(token in reasoning_norm or token in selected_blob for token in close_tokens)
+        selected_role = str(getattr(selected_element, "role", "") or "").strip().lower()
+        selected_text = agent._normalize_text(str(getattr(selected_element, "text", "") or ""))
+        selected_name = agent._normalize_text(str(getattr(selected_element, "name", "") or ""))
+        selected_aria = agent._normalize_text(str(getattr(selected_element, "aria_label", "") or ""))
+        selected_placeholder = agent._normalize_text(str(getattr(selected_element, "placeholder", "") or ""))
+        close_control_signal = " ".join(
+            part for part in (selected_text, selected_name, selected_aria, selected_placeholder, selected_blob) if part
+        )
+        looks_like_close_control = bool(
+            selected_element is not None
+            and selected_role in {"button", "link", "menuitem", "menuitemcheckbox", "menuitemradio"}
+            and (
+                any(token in close_control_signal for token in close_tokens)
+                or selected_text in {"x", "×", "✕", "✖", "close"}
+                or selected_name in {"x", "×", "✕", "✖", "close"}
+            )
+        )
+        if (((auth_phase_active and not openclaw_agentic_mode) or (current_phase_intent == "evidence_only" and not openclaw_agentic_mode))) and close_intent and not looks_like_close_control:
+            agent._surface_reacquire_pending = True
+            agent._record_reason_code("close_control_guard")
+            return ActionDecision(
+                action=ActionType.WAIT,
+                value='{"time_ms": 300}',
+                reasoning="닫기 의도는 확인됐지만 선택된 요소가 실제 close-like control로 보이지 않아 재탐색합니다.",
+                confidence=0.95,
+            )
+        close_like_decision = (
+            current_phase_intent == "evidence_only"
+            and decision.action in {ActionType.CLICK, ActionType.PRESS}
+            and close_intent
+        )
+        if close_like_decision and not openclaw_agentic_mode:
+            agent._surface_reacquire_pending = True
+            agent._record_reason_code("verify_close_guard")
+            return ActionDecision(
+                action=ActionType.WAIT,
+                value='{"time_ms": 300}',
+                reasoning="verify 단계에서 같은 close/unblock affordance를 반복하지 않고, 화면 문맥을 다시 확보해 목적지 증거를 수집합니다.",
+                confidence=0.95,
+            )
+        if openclaw_agentic_mode and selected_element is not None and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}:
+            destructive_self_blob = agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(selected_element, "text", "") or ""),
+                        str(getattr(selected_element, "aria_label", "") or ""),
+                        str(getattr(selected_element, "title", "") or ""),
+                        str(getattr(selected_element, "placeholder", "") or ""),
+                    ]
+                )
+            )
+            if any(
+                token in destructive_self_blob
+                for token in (
+                    "로그아웃",
+                    "logout",
+                    "pdf",
+                    "download",
+                    "다운로드",
+                    "내보내기",
+                    "export",
+                    "시간표를 pdf로 저장",
+                    "전체 삭제",
+                    "전부 삭제",
+                    "remove all",
+                    "clear all",
+                )
+            ):
+                agent._record_reason_code("openclaw_forbidden_global_control")
+                return ActionDecision(
+                    action=ActionType.WAIT,
+                    value='{"time_ms": 400}',
+                    reasoning="전역 또는 파괴적 컨트롤로 보여 재계획합니다.",
+                    confidence=0.9,
+                )
+        if auth_phase_active and not auth_close_allowed and not openclaw_agentic_mode:
             if close_intent:
                 return _find_auth_phase_fallback()
         return decision
     except Exception as e:
+        agent._last_llm_trace = {
+            "used_llm": True,
+            "llm_ms": int((time.perf_counter() - llm_started) * 1000) if "llm_started" in locals() else 0,
+            "path": "exception",
+            "owner": "llm",
+        }
+        agent._log(f"🧪 llm trace: {agent._last_llm_trace}")
         agent._log(f"LLM 결정 실패: {e}")
         return ActionDecision(
             action=ActionType.WAIT,

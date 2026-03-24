@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import List, Optional
 
-import requests
-
+from .goal_policy_phase_runtime import goal_phase_intent
 from .models import ActionDecision, ActionType, DOMElement
 from .parsing import parse_multi_values, parse_wait_payload
 from .runtime import ActionExecResult
 from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
+from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
 
 
 def _is_placeholder_wait_text(value: object) -> bool:
@@ -45,11 +46,15 @@ def execute_decision(
     dom_elements: List[DOMElement],
 ) -> tuple[bool, Optional[str]]:
     """결정된 액션 실행"""
+    openclaw_agentic_mode = str(
+        getattr(agent, "_browser_backend_name", "") or os.getenv("GAIA_BROWSER_BACKEND", "") or ""
+    ).strip().lower() == "openclaw"
 
     def _remember_blockable_intent() -> None:
         if decision.action != ActionType.CLICK or selected_element is None:
             return
-        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block":
+        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
+        if str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) == "auth":
             return
         try:
             agent._last_goal_blockable_intent = {
@@ -68,7 +73,7 @@ def execute_decision(
                 "reasoning": str(getattr(decision, "reasoning", "") or ""),
             }
             container_ref = str(getattr(selected_element, "container_ref_id", "") or "").strip()
-            if container_ref:
+            if container_ref and not openclaw_agentic_mode:
                 agent._active_interaction_surface = {
                     "kind": "target",
                     "ref_id": container_ref,
@@ -81,27 +86,35 @@ def execute_decision(
             pass
 
     def _remember_auth_submit() -> None:
-        if decision.action != ActionType.CLICK or selected_element is None:
+        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
+        if str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) != "auth":
             return
-        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() != "handle_auth_or_block":
-            return
-        try:
-            loginish = any(
-                agent._contains_login_hint(field)
-                for field in (
-                    getattr(selected_element, "text", None),
-                    getattr(selected_element, "aria_label", None),
-                    getattr(selected_element, "title", None),
-                    selector,
-                    full_selector,
+        loginish = False
+        if decision.action == ActionType.CLICK and selected_element is not None:
+            try:
+                loginish = any(
+                    agent._contains_login_hint(field)
+                    for field in (
+                        getattr(selected_element, "text", None),
+                        getattr(selected_element, "aria_label", None),
+                        getattr(selected_element, "title", None),
+                        selector,
+                        full_selector,
+                    )
                 )
-            )
-        except Exception:
-            loginish = False
+            except Exception:
+                loginish = False
+        elif decision.action == ActionType.PRESS:
+            try:
+                pressed = str(getattr(decision, "value", "") or "").strip().lower()
+            except Exception:
+                pressed = ""
+            loginish = pressed in {"enter", "return"}
         if loginish:
             agent._last_auth_submit_at = time.time()
             agent._auth_submit_attempted = True
             agent._auth_submit_attempts = int(getattr(agent, "_auth_submit_attempts", 0) or 0) + 1
+            agent._auth_last_planned_fill = None
             pre_auth_surface_ref = str(getattr(agent, "_pre_auth_surface_ref", "") or "").strip()
             if pre_auth_surface_ref:
                 agent._active_scoped_container_ref = pre_auth_surface_ref
@@ -110,7 +123,13 @@ def execute_decision(
     def _remember_auth_fill() -> None:
         if decision.action != ActionType.FILL or selected_element is None:
             return
-        if str(getattr(agent, "_goal_policy_phase", "") or "").strip() != "handle_auth_or_block":
+        current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
+        auth_context_active = (
+            str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) == "auth"
+            or bool(getattr(agent, "_auth_interrupt_active", False))
+            or bool(getattr(agent, "_auth_submit_attempted", False))
+        )
+        if not auth_context_active:
             return
         try:
             fill_blob = agent._normalize_text(
@@ -128,28 +147,56 @@ def execute_decision(
             )
         except Exception:
             fill_blob = ""
+        fill_value_norm = agent._normalize_text(str(getattr(decision, "value", "") or ""))
+        identifier_like_values = set(getattr(agent, "_auth_identifier_values_norm", set()) or set())
+        password_like_value = agent._normalize_text(
+            str(getattr(agent, "_auth_password_value_norm", "") or "")
+        )
+        field_key = (
+            str(ref_id or "")
+            or str(full_selector or "")
+            or str(selector or "")
+            or fill_blob
+        ).strip()
+        field_kind = ""
         if any(token in fill_blob for token in ("password", "비밀번호")):
+            field_kind = "password"
+            agent._auth_password_done = True
+        elif fill_value_norm and password_like_value and fill_value_norm == password_like_value:
+            field_kind = "password"
             agent._auth_password_done = True
         elif any(token in fill_blob for token in ("username", "email", "이메일", "아이디", "user")):
+            field_kind = "identifier"
             agent._auth_identifier_done = True
+        elif fill_value_norm and fill_value_norm in identifier_like_values:
+            field_kind = "identifier"
+            agent._auth_identifier_done = True
+        if field_key and field_kind:
+            try:
+                memory = getattr(agent, "_auth_fill_memory", None)
+                if not isinstance(memory, set):
+                    memory = set()
+                    agent._auth_fill_memory = memory
+                memory.add((field_kind, field_key, fill_value_norm))
+            except Exception:
+                pass
 
     agent._last_exec_result = None
 
     selector = None
     full_selector = None
-    ref_id = None
+    ref_id = str(getattr(decision, "ref_id", "") or "").strip() or None
     requires_ref = decision.action in {
         ActionType.CLICK,
         ActionType.FILL,
         ActionType.PRESS,
         ActionType.HOVER,
-        ActionType.SCROLL,
         ActionType.SELECT,
     }
-    if decision.element_id is not None and requires_ref:
+    if requires_ref and decision.element_id is not None:
         selector = agent._element_selectors.get(decision.element_id)
         full_selector = agent._element_full_selectors.get(decision.element_id)
-        ref_id = agent._element_ref_ids.get(decision.element_id)
+        ref_id = ref_id or agent._element_ref_ids.get(decision.element_id)
         if not selector and not full_selector and not ref_id:
             agent._last_exec_result = ActionExecResult(
                 success=False,
@@ -162,7 +209,7 @@ def execute_decision(
             _ = agent._analyze_dom()
             selector = agent._element_selectors.get(decision.element_id)
             full_selector = agent._element_full_selectors.get(decision.element_id)
-            ref_id = agent._element_ref_ids.get(decision.element_id)
+            ref_id = ref_id or agent._element_ref_ids.get(decision.element_id)
             if not ref_id:
                 selector_to_ref = getattr(agent, "_selector_to_ref_id", {}) or {}
                 for candidate in (full_selector, selector):
@@ -183,18 +230,24 @@ def execute_decision(
                 )
                 return False, agent._last_exec_result.as_error_message()
     selected_element = None
-    if decision.element_id is not None:
+    if ref_id:
+        try:
+            selected_element = next(
+                (el for el in dom_elements if str(getattr(el, "ref_id", "") or "").strip() == ref_id),
+                None,
+            )
+        except Exception:
+            selected_element = None
+    if selected_element is None and decision.element_id is not None:
         try:
             selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
         except Exception:
             selected_element = None
-
     element_actions = {
         ActionType.CLICK,
         ActionType.FILL,
         ActionType.PRESS,
         ActionType.HOVER,
-        ActionType.SCROLL,
         ActionType.SELECT,
     }
     retriable_reason_codes = {
@@ -203,8 +256,6 @@ def execute_decision(
         "ref_required",
         "not_found",
         "ambiguous_ref_target",
-        "no_state_change",
-        "not_actionable",
     }
 
     def _refresh_ref_binding() -> None:
@@ -214,7 +265,7 @@ def execute_decision(
         if decision.element_id is not None:
             selector = agent._element_selectors.get(decision.element_id) or selector
             full_selector = agent._element_full_selectors.get(decision.element_id) or full_selector
-            ref_id = agent._element_ref_ids.get(decision.element_id) or ref_id
+            ref_id = ref_id or agent._element_ref_ids.get(decision.element_id) or ref_id
         if not ref_id:
             for candidate in (full_selector, selector):
                 if candidate:
@@ -265,17 +316,16 @@ def execute_decision(
         if decision.action in {
             ActionType.CLICK,
             ActionType.FILL,
-            ActionType.PRESS,
             ActionType.HOVER,
             ActionType.SELECT,
-        } and decision.element_id is None:
+        } and decision.element_id is None and not ref_id:
             agent._last_exec_result = ActionExecResult(
                 success=False,
                 effective=False,
                 reason_code="missing_element_id",
-                reason=f"{decision.action.value} 액션에는 element_id가 필요함",
+                reason=f"{decision.action.value} 액션에는 ref_id 또는 element_id가 필요함",
             )
-            return False, f"{decision.action.value} 액션에는 element_id가 필요함"
+            return False, f"{decision.action.value} 액션에는 ref_id 또는 element_id가 필요함"
         if decision.action == ActionType.CLICK and selected_element is not None and not agent._goal_allows_logout():
             logout_fields = [
                 selected_element.text,
@@ -292,7 +342,11 @@ def execute_decision(
                     reason="목표와 무관한 로그아웃 액션을 차단했습니다.",
                 )
                 return False, agent._last_exec_result.as_error_message()
-        if decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS} and agent._is_ref_temporarily_blocked(ref_id):
+        if (
+            not openclaw_agentic_mode
+            and decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS}
+            and agent._is_ref_temporarily_blocked(ref_id)
+        ):
             agent._last_exec_result = ActionExecResult(
                 success=False,
                 effective=False,
@@ -319,8 +373,11 @@ def execute_decision(
                     agent._auth_resume_pending = False
                     agent._pending_resume_element_id = None
             elif (
+                not openclaw_agentic_mode
+                and (
                 selected_element is not None
                 and str(getattr(getattr(agent, "_last_exec_result", None), "reason_code", "") or "") == "not_actionable"
+                )
             ):
                 goal_kind = str(getattr(getattr(agent, "_goal_semantics", None), "goal_kind", "") or "")
                 mutation_goal = goal_kind in {"add_to_list", "remove_from_list", "clear_list", "apply_selection"}
@@ -359,7 +416,10 @@ def execute_decision(
             return ok, err
 
         if decision.action == ActionType.PRESS:
-            return _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
+            ok, err = _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
+            if ok:
+                _remember_auth_submit()
+            return ok, err
 
         if decision.action == ActionType.SCROLL:
             return _execute_with_ref_recovery("scroll", action_value=decision.value or "down")
@@ -436,6 +496,11 @@ def execute_action(
     url: Optional[str] = None,
 ) -> ActionExecResult:
     """MCP Host를 통해 액션 실행"""
+    try:
+        agent._dom_cache_generation = int(getattr(agent, "_dom_cache_generation", 0) or 0) + 1
+        agent._dom_analyze_cache = {}
+    except Exception:
+        pass
 
     use_ref_protocol = bool(
         ref_id
@@ -445,7 +510,6 @@ def execute_action(
     is_element_action = action in {
         "click",
         "fill",
-        "press",
         "hover",
         "scrollIntoView",
         "select",
@@ -512,12 +576,11 @@ def execute_action(
         elif action == "scroll":
             params = {
                 "session_id": agent.session_id,
-                "selector": full_selector or selector or "",
                 "action": "scroll",
                 "value": value,
                 "url": url or "",
             }
-            request_action = "execute_action"
+            request_action = "browser_act"
         else:
             params = {
                 "session_id": agent.session_id,
@@ -534,27 +597,17 @@ def execute_action(
     try:
         request_timeout = _execute_request_timeout(agent, request_action, action)
 
-        def _post_execute():
-            return requests.post(
-                f"{agent.mcp_host_url}/execute",
-                json={"action": request_action, "params": params},
-                timeout=request_timeout,
-            )
-
-        try:
-            response = _post_execute()
-        except Exception as exc:
-            if (
-                is_mcp_transport_error(str(exc))
-                and recover_mcp_host(agent, context=f"action:{request_action}")
-            ):
-                response = _post_execute()
-            else:
-                raise
-        try:
-            data = response.json()
-        except Exception:
-            data = {"error": response.text or "invalid_json_response"}
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=agent.mcp_host_url,
+            action=request_action,
+            params=params,
+            timeout=request_timeout,
+            attempts=2,
+            is_transport_error=is_mcp_transport_error,
+            recover_host=lambda *, context="": recover_mcp_host(agent, context=context),
+            context=f"action:{request_action}",
+        )
+        data = response.payload or {"error": response.text or "invalid_json_response"}
 
         if response.status_code >= 400:
             status_family = "http_4xx" if 400 <= response.status_code < 500 else "http_5xx"
@@ -563,7 +616,7 @@ def execute_action(
                 reason_code, detail = extract_reason_fields({"detail": detail_raw}, response.status_code)
             else:
                 reason_code = status_family
-                detail = str(data.get("detail") or data.get("error") or response.reason or "HTTP error")
+                detail = str(data.get("detail") or data.get("error") or response.text or "HTTP error")
             attempt_logs = data.get("attempt_logs") if isinstance(data.get("attempt_logs"), list) else []
             retry_path = data.get("retry_path") if isinstance(data.get("retry_path"), list) else []
             attempt_count = int(data.get("attempt_count") or len(attempt_logs) or 0)
@@ -582,6 +635,11 @@ def execute_action(
 
         is_success = bool(data.get("success"))
         is_effective = bool(data.get("effective", True))
+        backend_trace = data.get("backend_trace") if isinstance(data.get("backend_trace"), dict) else {}
+        if backend_trace:
+            agent._last_backend_trace = dict(backend_trace)
+        backend_snapshot = data.get("post_action_snapshot") if isinstance(data.get("post_action_snapshot"), dict) else {}
+        agent._last_backend_post_action_snapshot = dict(backend_snapshot) if backend_snapshot else {}
         attempt_logs = data.get("attempt_logs")
         retry_path = data.get("retry_path")
         attempt_count = int(

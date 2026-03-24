@@ -9,7 +9,7 @@ import base64
 import hashlib
 from pathlib import Path
 from typing import Dict, Any, Optional
-import requests
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 
 
 class TrainingDataCollector:
@@ -144,32 +144,30 @@ nc: {len(self.class_map)}
         """
         try:
             # Use MCP host to get bounding box
-            response = requests.post(
-                f"{mcp_host_url}/execute",
-                json={
+            response = execute_mcp_action(
+                mcp_host_url,
+                action="evaluate",
+                params={
+                    "selector": selector,
                     "action": "evaluate",
-                    "params": {
-                        "selector": selector,
-                        "action": "evaluate",
-                        "value": """
-                            (element) => {
-                                const rect = element.getBoundingClientRect();
-                                return {
-                                    x: rect.x,
-                                    y: rect.y,
-                                    width: rect.width,
-                                    height: rect.height
-                                };
-                            }
-                        """,
-                        "session_id": session_id
-                    }
+                    "value": """
+                        (element) => {
+                            const rect = element.getBoundingClientRect();
+                            return {
+                                x: rect.x,
+                                y: rect.y,
+                                width: rect.width,
+                                height: rect.height
+                            };
+                        }
+                    """,
+                    "session_id": session_id,
                 },
-                timeout=5
+                timeout=5,
             )
 
             if response.status_code == 200:
-                data = response.json()
+                data = response.payload if not hasattr(response, "json") else response.json()
                 if data.get("success"):
                     return data.get("result")
 

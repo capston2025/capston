@@ -57,6 +57,10 @@ def _is_retryable_page_detach_error(exc: BaseException) -> bool:
     return (
         "frame has been detached" in message
         or "target page, context or browser has been closed" in message
+        or "target closed" in message
+        or "connection closed while reading from the driver" in message
+        or "transport closed" in message
+        or "browser has been closed" in message
     )
 
 
@@ -72,6 +76,19 @@ def _is_driver_disconnect_error(exc_or_message: Any) -> bool:
         or "target closed" in message
         or "connection closed" in message
         or "transport closed" in message
+    )
+
+
+def _is_fatal_timeout_abort(exc_or_message: Any) -> bool:
+    message = str(exc_or_message or "").strip().lower()
+    if not message:
+        return False
+    return (
+        "timeouterror" in message
+        or "timeout" in message
+        or "timed out" in message
+        or "deadline exceeded" in message
+        or "action_timeout" in message
     )
 
 
@@ -99,6 +116,26 @@ async def _best_effort_close_broken_session(
             pass
 
 
+async def _best_effort_force_disconnect_target_session(
+    session: Any,
+    *,
+    active_sessions: Optional[Dict[str, Any]] = None,
+    session_id: str = "",
+    reason: str = "",
+) -> None:
+    try:
+        if hasattr(session, "force_disconnect_target"):
+            await session.force_disconnect_target(reason=reason, hard=False)
+            return
+    except Exception:
+        pass
+    await _best_effort_close_broken_session(
+        session,
+        active_sessions=active_sessions,
+        session_id=session_id,
+    )
+
+
 async def _safe_capture_page_screenshot_base64(page: Any) -> Optional[str]:
     try:
         screenshot_bytes = await page.screenshot(full_page=False)
@@ -117,6 +154,13 @@ def _safe_page_url(page: Any, fallback: str = "") -> str:
         return str(getattr(page, "url", "") or fallback or "")
     except Exception:
         return str(fallback or "")
+
+
+def _session_accepts_followup_io(session: Any) -> bool:
+    try:
+        return not bool(getattr(session, "_teardown_in_progress", False) or getattr(session, "_closed", False))
+    except Exception:
+        return False
 
 
 async def _goto_with_retry(page: Any, url: str, *, timeout: int, wait_for_networkidle: bool = True) -> None:
@@ -176,10 +220,11 @@ async def execute_ref_action_with_snapshot_impl(
                 await _goto_with_retry(page, url, timeout=60000, wait_for_networkidle=True)
             except Exception as exc:
                 if _is_driver_disconnect_error(exc):
-                    await _best_effort_close_broken_session(
+                    await _best_effort_force_disconnect_target_session(
                         session,
                         active_sessions=active_sessions,
                         session_id=session_id,
+                        reason="goto_disconnect",
                     )
                 raise
             await page.wait_for_timeout(1000)
@@ -205,6 +250,8 @@ async def execute_ref_action_with_snapshot_impl(
 
     async def _maybe_resnapshot(reason: str) -> Optional[str]:
         if not _resnapshot_on_strong_signal:
+            return None
+        if not _session_accepts_followup_io(session):
             return None
         try:
             snap = await snapshot_page(session_id=session_id, url=page.url, tab_id=tab_id)
@@ -398,10 +445,11 @@ async def execute_ref_action_with_snapshot_impl(
             raise
         transport_success = False
         reason_code = "request_exception"
-        await _best_effort_close_broken_session(
+        await _best_effort_force_disconnect_target_session(
             session,
             active_sessions=active_sessions,
             session_id=session_id,
+            reason="prepare_context_disconnect",
         )
         return build_full_failure_response(
             reason_code=reason_code,
@@ -468,10 +516,11 @@ async def execute_ref_action_with_snapshot_impl(
                 raise
             transport_success = False
             reason_code = "request_exception"
-            await _best_effort_close_broken_session(
+            await _best_effort_force_disconnect_target_session(
                 session,
                 active_sessions=active_sessions,
                 session_id=session_id,
+                reason="resolve_locator_disconnect",
             )
             return build_full_failure_response(
                 reason_code=reason_code,
@@ -513,10 +562,11 @@ async def execute_ref_action_with_snapshot_impl(
                 raise
             transport_success = False
             reason_code = "request_exception"
-            await _best_effort_close_broken_session(
+            await _best_effort_force_disconnect_target_session(
                 session,
                 active_sessions=active_sessions,
                 session_id=session_id,
+                reason="capture_before_state_disconnect",
             )
             return build_full_failure_response(
                 reason_code=reason_code,
@@ -628,6 +678,27 @@ async def execute_ref_action_with_snapshot_impl(
             friendly_msg = to_ai_friendly_error(action_exc, ref_id=ref_id)
             retry_path.append(f"action_error:{friendly_msg}")
             fatal_driver_disconnect = _is_driver_disconnect_error(action_exc) or _is_driver_disconnect_error(friendly_msg)
+            fatal_timeout_abort = _is_fatal_timeout_abort(action_exc) or _is_fatal_timeout_abort(friendly_msg)
+            if fatal_driver_disconnect or fatal_timeout_abort:
+                transport_success = False
+                reason_code = "request_exception" if fatal_driver_disconnect else "action_timeout"
+                await _best_effort_force_disconnect_target_session(
+                    session,
+                    active_sessions=active_sessions,
+                    session_id=session_id,
+                    reason="action_disconnect" if fatal_driver_disconnect else "action_timeout_abort",
+                )
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": reason_code,
+                        "error": friendly_msg,
+                    }
+                )
+                break
             recovery_result = await handle_action_exception_recovery(
                 action_exc=action_exc,
                 action=action,
@@ -663,25 +734,6 @@ async def execute_ref_action_with_snapshot_impl(
             )
             if isinstance(recovery_result.get("return_response"), dict):
                 return recovery_result["return_response"]
-            if fatal_driver_disconnect and not bool(recovery_result.get("continue_loop")):
-                transport_success = False
-                reason_code = "request_exception"
-                await _best_effort_close_broken_session(
-                    session,
-                    active_sessions=active_sessions,
-                    session_id=session_id,
-                )
-                attempt_logs.append(
-                    {
-                        "attempt": attempt_idx,
-                        "mode": mode,
-                        "selector": resolved_selector,
-                        "frame_index": frame_index,
-                        "reason_code": reason_code,
-                        "error": friendly_msg,
-                    }
-                )
-                break
             state_change = recovery_result.get("state_change") or state_change
             if isinstance(state_change, dict) and bool(state_change.get("resnapshot_required")):
                 post_click_snapshot_id = await _maybe_resnapshot("exception_recovery")
@@ -806,7 +858,11 @@ async def execute_ref_action_with_snapshot_impl(
         print(f"[execute_ref_action] step={attempt_idx} mode={mode} reason={reason_code}")
         if effective:
             session.current_url = _safe_page_url(page, session.current_url)
-            screenshot_base64 = await _safe_capture_page_screenshot_base64(page)
+            screenshot_base64 = (
+                await _safe_capture_page_screenshot_base64(page)
+                if _session_accepts_followup_io(session)
+                else None
+            )
             tab_id_value = _get_tab_index(page)
             if auth_submit_like_click and trace_auth_submit_enabled:
                 print(
@@ -830,7 +886,11 @@ async def execute_ref_action_with_snapshot_impl(
                 tab_id=tab_id_value,
             )
 
-    screenshot = await _safe_capture_page_screenshot_base64(page)
+    screenshot = (
+        await _safe_capture_page_screenshot_base64(page)
+        if _session_accepts_followup_io(session)
+        else None
+    )
 
     session.current_url = _safe_page_url(page, session.current_url)
     tab_id_value = _get_tab_index(page)

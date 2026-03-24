@@ -9,7 +9,6 @@ ELEMENT_ACTIONS = {
     "fill",
     "press",
     "hover",
-    "scroll",
     "scrollIntoView",
     "select",
     "dragAndDrop",

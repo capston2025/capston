@@ -3,9 +3,8 @@ from __future__ import annotations
 import time
 from typing import List, Tuple
 
-import requests
-
 from gaia.src.utils.models import DomElement, TestStep
+from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
 
 
 def get_page_state(orchestrator) -> Tuple[str, List[DomElement], str]:
@@ -16,13 +15,19 @@ def get_page_state(orchestrator) -> Tuple[str, List[DomElement], str]:
         "params": {"session_id": orchestrator.session_id, "url": None},
     }
     try:
-        response = requests.post(
-            f"{orchestrator.mcp_config.host_url}/execute",
-            json=payload,
+        response = execute_mcp_action_with_recovery(
+            raw_base_url=orchestrator.mcp_config.host_url,
+            action="analyze_page",
+            params=dict(payload.get("params") or {}),
             timeout=30,
+            attempts=2,
+            is_transport_error=getattr(orchestrator, "_is_mcp_transport_error", None),
+            recover_host=getattr(orchestrator, "_recover_mcp_host", None),
+            context="orchestrator_page_state",
         )
-        response.raise_for_status()
-        data = response.json()
+        if response.status_code >= 400:
+            raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+        data = response.payload if not hasattr(response, "json") else response.json()
 
         raw_dom_elements = data.get("dom_elements", []) or []
         orchestrator._active_snapshot_id = str(data.get("snapshot_id") or "")

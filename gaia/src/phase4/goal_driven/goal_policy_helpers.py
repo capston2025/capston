@@ -103,6 +103,42 @@ def build_goal_policy_evidence_bundle(
     scanned_elements: List[tuple[Any, str, bool, List[str], str, str, str, List[str], bool, bool, bool, str]] = []
     target_container_refs: set[str] = set()
 
+    def _self_blob(el: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                ]
+            )
+        )
+
+    def _row_local_blob(el: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "container_role", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+        )
+
+    def _destination_blob(el: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "container_role", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+        )
+
     def _element_blob(el: DOMElement) -> str:
         labels = getattr(el, "group_action_labels", None) or []
         label_blob = " ".join(str(x or "") for x in labels if str(x or "").strip()) if isinstance(labels, list) else ""
@@ -123,16 +159,29 @@ def build_goal_policy_evidence_bundle(
     for el in dom_elements:
         if not bool(getattr(el, "is_visible", True)):
             continue
+        self_blob = _self_blob(el)
+        row_local_blob = _row_local_blob(el)
+        destination_blob = _destination_blob(el)
         blob = _element_blob(el)
         if not blob:
             continue
         page_fragments.append(blob)
-        has_destination = bool(destination_terms) and any(term and term in blob for term in destination_terms)
-        matched_targets = [term for term in target_terms if term and term in blob]
         role = str(getattr(el, "role", "") or "").lower()
         tag = str(getattr(el, "tag", "") or "").lower()
         container_role = str(getattr(el, "container_role", "") or "").lower()
         group_labels = getattr(el, "group_action_labels", None) or []
+        row_like = (
+            container_role in {"listitem", "row", "article", "region", "group"}
+            or role in {"tabpanel", "region", "list", "listitem", "row", "grid", "table"}
+            or tag in {"li", "tr", "section", "article", "table"}
+        )
+        has_destination = bool(destination_terms) and any(
+            term and (term in destination_blob or term in self_blob)
+            for term in destination_terms
+        )
+        self_target_hits = [term for term in target_terms if term and term in self_blob]
+        row_target_hits = [term for term in target_terms if term and term in row_local_blob]
+        matched_targets = self_target_hits if self_target_hits else (row_target_hits if row_like else [])
         is_actionable = bool(getattr(el, "is_enabled", True)) and (
             role in {"button", "link", "tab"}
             or tag in {"button", "a"}
@@ -161,6 +210,7 @@ def build_goal_policy_evidence_bundle(
             )
         )
         container_ref = str(getattr(el, "container_ref_id", "") or "").strip()
+        strong_destination_target = bool(has_destination and matched_targets and (row_like or remove_like))
         scanned_elements.append(
             (el, blob, has_destination, matched_targets, role, tag, container_role, group_labels, is_actionable, remove_like, reveal_like, container_ref)
         )
@@ -181,7 +231,7 @@ def build_goal_policy_evidence_bundle(
             destination_surface_actionable = True
         if matched_targets:
             target_hits.extend(matched_targets)
-        if has_destination and matched_targets:
+        if strong_destination_target:
             target_in_destination = True
         if is_actionable and remove_like and (has_destination or matched_targets):
             target_action_cta_visible = True

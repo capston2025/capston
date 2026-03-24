@@ -1,0 +1,137 @@
+{
+  "pack_id": "kpi_pack_20260320_200429",
+  "generated_at": "20260320_200429",
+  "repeats": 1,
+  "timeout_cap": 90,
+  "suites": [
+    {
+      "suite_id": "boj_kpi_smoke",
+      "suite_path": "/private/tmp/gaia_kpi_smoke_suite.json",
+      "artifact_dir": "/Users/coldmans/Documents/GitHub/capston/artifacts/benchmarks/gaia_kpi_smoke_suite_20260320_200429",
+      "summary": {
+        "schema_version": "gaia.benchmark.v1",
+        "suite_id": "boj_kpi_smoke",
+        "site": {
+          "name": "Baekjoon Online Judge",
+          "base_url": "https://www.acmicpc.net/",
+          "mode": "read_only_public"
+        },
+        "started_at": "2026-03-20T20:04:29.406024+09:00",
+        "repeats": 1,
+        "scenario_count": 1,
+        "model": "gpt-5.4",
+        "metrics": {
+          "runs_total": 1,
+          "success_rate": 1.0,
+          "avg_time_seconds": 12.27,
+          "reproducibility": null,
+          "flaky_rate": null
+        },
+        "kpi_metrics": {
+          "scenario_success_rate": 1.0,
+          "reproducibility_rate": null,
+          "progress_stop_failure_rate": 0.0,
+          "self_recovery_rate": null,
+          "intervention_rate": 0.0,
+          "counts": {
+            "success": 1,
+            "blocked": 0,
+            "progress_stop_failures": 0,
+            "recovery_runs": 0,
+            "recovery_success": 0
+          },
+          "targets": {
+            "reproducibility_rate": 0.8,
+            "progress_stop_failure_rate": 0.1,
+            "self_recovery_rate": 0.6,
+            "scenario_success_rate": 0.7,
+            "intervention_rate": 0.2
+          }
+        },
+        "status_counts": {
+          "SUCCESS": 1
+        },
+        "failures": []
+      }
+    }
+  ],
+  "overall_kpis": {
+    "scenario_success_rate": 1.0,
+    "reproducibility_rate": null,
+    "progress_stop_failure_rate": 0.0,
+    "self_recovery_rate": null,
+    "intervention_rate": 0.0,
+    "avg_time_seconds": 12.27,
+    "flaky_rate": null,
+    "counts": {
+      "runs_total": 1,
+      "success": 1,
+      "blocked": 0,
+      "progress_stop_failures": 0,
+      "recovery_runs": 0,
+      "recovery_success": 0
+    }
+  },
+  "harness": {
+    "run_id": "harness_20260320_200452",
+    "artifact_dir": "/Users/coldmans/Documents/GitHub/capston/artifacts/harness/harness_20260320_200452",
+    "selection": {
+      "task_id": "BOJ_001_HOME_LOGIN_VISIBLE",
+      "limit": null,
+      "suite_ids": [],
+      "tags": [],
+      "contains": []
+    },
+    "summary": {
+      "runs_total": 1,
+      "task_count": 1,
+      "attempts_total": 1,
+      "success_count": 0,
+      "failed_count": 1,
+      "attempt_success_count": 1,
+      "attempt_failed_count": 0,
+      "pass_at_1": 0.0,
+      "pass_at_k": 0.0,
+      "pass_all_k": 0.0,
+      "pass_rate": 1.0,
+      "task_pass_at_1": 0.0,
+      "task_pass_at_k": 0.0,
+      "task_pass_all_k": 0.0,
+      "task_status_counts": {
+        "SUCCESS": 1
+      },
+      "attempt_status_counts": {
+        "SUCCESS": 1
+      },
+      "other_status_counts": {},
+      "reason_code_counts": {
+        "rail_skipped_no_suite": 1,
+        "static_verification_pass": 1
+      },
+      "reason_code_total": 2,
+      "top_reason_codes": [
+        {
+          "reason_code": "rail_skipped_no_suite",
+          "count": 1
+        },
+        {
+          "reason_code": "static_verification_pass",
+          "count": 1
+        }
+      ],
+      "avg_duration_seconds": 11.05
+    },
+    "grade_summary": {
+      "status": {
+        "pass": 1,
+        "fail": 0
+      },
+      "reason_codes": {
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    "reason_code_summary": null,
+    "top_reason_codes": null
+  }
+}

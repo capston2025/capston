@@ -228,6 +228,23 @@ async def metrics_middleware(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
+    target_abort_state = []
+    for sid, session in list(active_sessions.items()):
+        try:
+            reason = str(getattr(session, "last_target_abort_reason", "") or "").strip()
+            at = float(getattr(session, "last_target_abort_at", 0.0) or 0.0)
+        except Exception:
+            reason = ""
+            at = 0.0
+        if reason:
+            target_abort_state.append(
+                {
+                    "session_id": sid,
+                    "abort_scope": "target",
+                    "reason": reason,
+                    "timestamp": at,
+                }
+            )
     return {
         "status": "ok",
         "uptime_sec": round(max(0.0, time.time() - MCP_STARTED_AT), 3),
@@ -236,6 +253,7 @@ async def health() -> Dict[str, Any]:
         "pid": os.getpid(),
         "ppid": os.getppid(),
         "boot_id": MCP_BOOT_ID,
+        "target_abort_state": target_abort_state[-8:],
     }
 
 

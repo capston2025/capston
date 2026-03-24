@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterable, Optional
 
 from gaia.src.phase4.captcha_solver import CaptchaSolver
+from .goal_policy_phase_runtime import goal_phase_intent
 
 
 def _iter_element_blobs(dom_elements: Iterable[Any]) -> Iterable[str]:
@@ -115,6 +116,11 @@ def _should_start_captcha_observer(agent: Any, dom_elements: Iterable[Any], scre
         return False
     if getattr(agent, "_captcha_observer_future", None) is not None:
         return False
+    current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+    current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase))
+    captcha_surface_present = _has_captcha_surface_signal(dom_elements)
+    if current_phase_intent == "evidence_only" and not captcha_surface_present:
+        return False
     screenshot_key = str((screenshot or "")[:128])
     if screenshot_key and screenshot_key == str(getattr(agent, "_captcha_observer_last_key", "") or ""):
         return False
@@ -125,7 +131,11 @@ def _should_start_captcha_observer(agent: Any, dom_elements: Iterable[Any], scre
     watch_sec = float(getattr(agent, "_captcha_observer_watch_window_sec", 30.0) or 30.0)
     recent_auth_submit_at = float(getattr(agent, "_last_auth_submit_at", 0.0) or 0.0)
     auth_window_active = recent_auth_submit_at > 0.0 and (time.time() - recent_auth_submit_at) < watch_sec
-    return bool(auth_window_active or _has_captcha_surface_signal(dom_elements))
+    if auth_window_active and not captcha_surface_present:
+        auth_active = current_phase_intent == "auth"
+        if not auth_active:
+            return False
+    return bool(auth_window_active or captcha_surface_present)
 
 
 def run_captcha_observer(

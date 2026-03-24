@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from .models import ActionDecision, DOMElement, TestGoal
+from .goal_completion_helpers import evaluate_goal_target_completion
+from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
 
 def goal_text_blob(agent_cls, goal: TestGoal) -> str:
@@ -65,6 +66,18 @@ def validate_goal_achievement_claim(
 ) -> tuple[bool, Optional[str]]:
     if not decision.is_goal_achieved:
         return True, None
+
+    if decision.action == ActionType.WAIT:
+        wait_proof = evaluate_goal_target_completion(
+            agent,
+            goal=goal,
+            dom_elements=dom_elements,
+        )
+        if not wait_proof:
+            return (
+                False,
+                "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거가 필요합니다.",
+            )
 
     if goal_mentions_signup(agent.__class__, goal):
         if not has_signup_completion_evidence(agent.__class__, dom_elements):

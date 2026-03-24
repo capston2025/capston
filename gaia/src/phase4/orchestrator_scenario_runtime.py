@@ -1,11 +1,11 @@
 """Scenario execution runtime for IntelligentOrchestrator."""
 from __future__ import annotations
 
-import requests
 import time
 from typing import Any, Dict, List
 
 from gaia.src.phase4.llm_vision_client import get_vision_client
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 from gaia.src.utils.models import DomElement, TestScenario
 
 
@@ -73,12 +73,14 @@ def execute_single_scenario_impl(
                 },
             }
             try:
-                response = requests.post(
-                    f"{orchestrator.mcp_config.host_url}/execute",
-                    json=payload,
-                    timeout=30
+                response = execute_mcp_action(
+                    orchestrator.mcp_config.host_url,
+                    action="browser_act",
+                    params=dict(payload.get("params") or {}),
+                    timeout=30,
                 )
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    raise RuntimeError(str(getattr(response, "text", "") or response.payload))
             except Exception as e:
                 orchestrator._log(f"  ⚠️ Browser state clear failed (non-critical): {e}", progress_callback)
 

@@ -88,6 +88,17 @@ def handle_forced_context_shift(
     modal_open_now = bool(
         (getattr(agent, "_last_snapshot_evidence", {}) or {}).get("modal_open")
     )
+    phase_intent = str(getattr(agent, "_goal_phase_intent", "") or "").strip().lower()
+    if phase_intent == "auth":
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
+        _emit_reason(agent, "auth_skip_context_shift")
+        return {
+            "continue_loop": False,
+            "force_context_shift": False,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
     if modal_open_now:
         setattr(agent, "_forced_context_shift_loop_streak", 0)
         _emit_reason(agent, "context_shift_blocked_modal_open")
@@ -138,6 +149,61 @@ def handle_forced_context_shift(
     no_progress_context_shift_min = max(1, _policy_int(agent, "no_progress_context_shift_min", 2))
     if (not collect_unmet) and int(getattr(agent, "_no_progress_counter", 0)) < no_progress_context_shift_min:
         setattr(agent, "_forced_context_shift_loop_streak", 0)
+        return {
+            "continue_loop": False,
+            "force_context_shift": False,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
+
+    semantics = getattr(agent, "_goal_semantics", None)
+    raw_goal_kind = getattr(semantics, "goal_kind", "") if semantics is not None else ""
+    goal_kind = str(getattr(raw_goal_kind, "value", raw_goal_kind) or "").strip().lower()
+    target_terms = [
+        agent._normalize_text(term)
+        for term in list(getattr(semantics, "target_terms", []) or [])
+        if str(term or "").strip()
+    ] if semantics is not None else []
+    target_visible_now = False
+    if target_terms:
+        for element in dom_elements:
+            blob = agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(element, "text", "") or ""),
+                        str(getattr(element, "aria_label", "") or ""),
+                        str(getattr(element, "title", "") or ""),
+                        str(getattr(element, "container_name", "") or ""),
+                        str(getattr(element, "context_text", "") or ""),
+                    ]
+                )
+            )
+            if any(term in blob for term in target_terms):
+                target_visible_now = True
+                break
+    if not collect_unmet and phase_intent == "evidence_only":
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
+        _emit_reason(agent, "evidence_only_skip_context_shift")
+        return {
+            "continue_loop": False,
+            "force_context_shift": False,
+            "context_shift_fail_streak": context_shift_fail_streak,
+            "context_shift_cooldown": context_shift_cooldown,
+            "ineffective_action_streak": ineffective_action_streak,
+        }
+    auth_prompt_visible = bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
+    modal_open_now = bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("modal_open"))
+    if (
+        not collect_unmet
+        and (
+            (goal_kind in {"add_to_list", "apply_selection"} and target_visible_now)
+            or auth_prompt_visible
+            or modal_open_now
+        )
+    ):
+        setattr(agent, "_forced_context_shift_loop_streak", 0)
+        _emit_reason(agent, "target_visible_skip_context_shift")
         return {
             "continue_loop": False,
             "force_context_shift": False,

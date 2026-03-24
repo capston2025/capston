@@ -16,6 +16,10 @@ def truncate_for_prompt(text: str, limit: int = 120) -> str:
 
 def fields_for_element(agent: Any, el: DOMElement) -> List[str]:
     selector = agent._element_full_selectors.get(el.id) or agent._element_selectors.get(el.id) or ""
+    backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
+    group_action_blob = ""
+    if backend_name != "openclaw":
+        group_action_blob = " ".join(str(v) for v in (getattr(el, "group_action_labels", None) or []) if v)
     return [
         str(el.text or ""),
         str(el.aria_label or ""),
@@ -30,7 +34,7 @@ def fields_for_element(agent: Any, el: DOMElement) -> List[str]:
         str(getattr(el, "container_role", None) or ""),
         str(getattr(el, "container_source", None) or ""),
         str(getattr(el, "context_text", None) or ""),
-        " ".join(str(v) for v in (getattr(el, "group_action_labels", None) or []) if v),
+        group_action_blob,
         str(getattr(el, "role_ref_role", None) or ""),
         str(getattr(el, "role_ref_name", None) or ""),
     ]
@@ -52,28 +56,57 @@ def context_match_tokens(agent: Any, el: DOMElement) -> List[str]:
     return sorted(matched)
 
 
+def role_ref_alignment_score(agent: Any, el: DOMElement) -> float:
+    goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
+    if not goal_tokens:
+        return 0.0
+    backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
+    role_name = str(getattr(el, "role_ref_name", None) or "")
+    role_role = str(getattr(el, "role_ref_role", None) or "")
+    score = 0.0
+    score += 1.5 * len(goal_tokens.intersection(set(agent._tokenize_text(role_name))))
+    if role_role.lower() in {"row", "listitem", "gridcell", "cell", "article"}:
+        score += 1.25
+    elif backend_name != "openclaw" and role_role.lower() in {"button", "link", "tab", "menuitem", "option"}:
+        score += 0.75
+    quoted_matches = re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or ""))
+    for phrase in quoted_matches:
+        normalized_phrase = agent._normalize_text(phrase)
+        if normalized_phrase and normalized_phrase in agent._normalize_text(role_name):
+            score += 3.0
+    return float(score)
+
+
 def context_score(agent: Any, el: DOMElement) -> float:
     goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
     if not goal_tokens:
         return 0.0
+    backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
     text_tokens = set(agent._tokenize_text(getattr(el, "text", "") or ""))
     container_tokens = set(agent._tokenize_text(getattr(el, "container_name", "") or ""))
     context_tokens = set(agent._tokenize_text(getattr(el, "context_text", "") or ""))
     score = 0.0
-    score += 1.25 * len(goal_tokens.intersection(text_tokens))
-    score += 2.0 * len(goal_tokens.intersection(container_tokens))
-    score += 0.75 * len(goal_tokens.intersection(context_tokens))
+    if backend_name == "openclaw":
+        score += 1.5 * len(goal_tokens.intersection(text_tokens))
+        score += 3.0 * len(goal_tokens.intersection(container_tokens))
+        score += 1.5 * len(goal_tokens.intersection(context_tokens))
+    else:
+        score += 1.25 * len(goal_tokens.intersection(text_tokens))
+        score += 2.0 * len(goal_tokens.intersection(container_tokens))
+        score += 0.75 * len(goal_tokens.intersection(context_tokens))
+    score += role_ref_alignment_score(agent, el)
     quoted_matches = re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or ""))
     for phrase in quoted_matches:
         normalized_phrase = agent._normalize_text(phrase)
         if normalized_phrase and normalized_phrase in agent._normalize_text(getattr(el, "container_name", "") or ""):
             score += 4.0
         elif normalized_phrase and normalized_phrase in agent._normalize_text(getattr(el, "context_text", "") or ""):
-            score += 2.5
-    action_labels = [agent._normalize_text(v) for v in (getattr(el, "group_action_labels", None) or []) if v]
-    duplicate_label = agent._normalize_text(getattr(el, "text", "") or "")
-    if duplicate_label and action_labels.count(duplicate_label) > 1 and goal_tokens.intersection(container_tokens):
-        score += 1.5
+            score += 3.5 if backend_name == "openclaw" else 2.5
+    if backend_name != "openclaw":
+        action_labels = [agent._normalize_text(v) for v in (getattr(el, "group_action_labels", None) or []) if v]
+        duplicate_label = agent._normalize_text(getattr(el, "text", "") or "")
+        if duplicate_label and action_labels.count(duplicate_label) > 1 and goal_tokens.intersection(container_tokens):
+            score += 1.5
     return float(score)
 
 
@@ -168,14 +201,16 @@ def pick_scoped_container(
 def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     phase = (agent._runtime_phase or "COLLECT").upper()
     lines = []
+    backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
 
     role_snapshot = getattr(agent, "_last_role_snapshot", None)
     if isinstance(role_snapshot, dict):
         snapshot_text = str(role_snapshot.get("snapshot") or "").strip()
+        tree_nodes = role_snapshot.get("tree") if isinstance(role_snapshot.get("tree"), list) else []
         refs_mode = str(role_snapshot.get("refs_mode") or "").strip()
         stats = role_snapshot.get("stats") if isinstance(role_snapshot.get("stats"), dict) else {}
-        if snapshot_text:
-            lines.append("## 역할 스냅샷")
+        if tree_nodes or snapshot_text:
+            lines.append("## 역할 트리")
             meta_parts = []
             if refs_mode:
                 meta_parts.append(f"refs_mode={refs_mode}")
@@ -194,10 +229,56 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 )
             if meta_parts:
                 lines.append(f'- {" ".join(meta_parts)}')
-            snapshot_lines = snapshot_text.split("\n")
-            lines.extend(snapshot_lines[:24])
-            if len(snapshot_lines) > 24:
-                lines.append(f"... ({len(snapshot_lines) - 24} more role lines omitted)")
+            if tree_nodes:
+                goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
+                quoted_matches = [
+                    agent._normalize_text(v)
+                    for v in re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or ""))
+                    if agent._normalize_text(v)
+                ]
+                def _tree_score(node: Dict[str, Any]) -> float:
+                    role = str(node.get("role") or "").strip().lower()
+                    name = str(node.get("name") or "").strip()
+                    ancestors = " ".join(str(v).strip() for v in (node.get("ancestor_names") or []) if str(v).strip())
+                    score = 0.0
+                    score += 2.0 * len(goal_tokens.intersection(set(agent._tokenize_text(name))))
+                    score += 1.25 * len(goal_tokens.intersection(set(agent._tokenize_text(ancestors))))
+                    if role in {"row", "listitem", "gridcell", "cell", "article"}:
+                        score += 1.75
+                    elif role in {"button", "link", "tab", "menuitem"}:
+                        score += 0.5
+                    for phrase in quoted_matches:
+                        if phrase and phrase in agent._normalize_text(name):
+                            score += 4.0
+                        elif phrase and phrase in agent._normalize_text(ancestors):
+                            score += 2.0
+                    return score
+                ranked_tree_nodes = sorted(tree_nodes, key=_tree_score, reverse=True)
+                tree_limit = 6 if backend_name == "openclaw" else 24
+                tree_render_nodes = ranked_tree_nodes[:tree_limit]
+                rendered_tree = []
+                for node in tree_render_nodes:
+                    depth = max(0, min(int(node.get("depth", 0) or 0), 6))
+                    role = str(node.get("role") or "").strip() or "generic"
+                    name = str(node.get("name") or "").strip()
+                    ref = str(node.get("ref") or "").strip()
+                    nth = node.get("nth")
+                    line = f'{"  " * depth}- {role}'
+                    if name:
+                        line += f' "{name}"'
+                    if ref and backend_name != "openclaw":
+                        line += f" [ref={ref}]"
+                    if nth is not None and backend_name != "openclaw":
+                        line += f" [nth={nth}]"
+                    rendered_tree.append(line)
+                lines.extend(rendered_tree)
+                if len(tree_nodes) > len(tree_render_nodes):
+                    lines.append(f"... ({len(tree_nodes) - len(tree_render_nodes)} more role tree lines omitted)")
+            else:
+                snapshot_lines = snapshot_text.split("\n")
+                lines.extend(snapshot_lines[:24])
+                if len(snapshot_lines) > 24:
+                    lines.append(f"... ({len(snapshot_lines) - 24} more role lines omitted)")
             lines.append("")
 
     def _score(el: DOMElement) -> float:
@@ -205,6 +286,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         aria = agent._normalize_text(el.aria_label)
         role = agent._normalize_text(el.role)
         tag = agent._normalize_text(el.tag)
+        backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
         selector = agent._element_full_selectors.get(el.id) or agent._element_selectors.get(el.id) or ""
         fields = agent._fields_for_element(el)
 
@@ -221,6 +303,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
 
         score = 0.0
         local_context_score = agent._context_score(el)
+        role_alignment_score = role_ref_alignment_score(agent, el)
         host_context_score = 0.0
         try:
             host_context_score = float(getattr(el, "context_score_hint", 0.0) or 0.0)
@@ -236,12 +319,35 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         if has_login_hint:
             score += 2.0
 
+        row_like = role in {"row", "listitem", "cell", "gridcell", "article"}
         if role in {"button", "tab", "link", "menuitem"}:
             score += 2.5
         if tag in {"button", "a", "input", "select"}:
             score += 1.7
+        if row_like:
+            score += 2.4
+        if role == "generic" and getattr(el, "group_action_labels", None):
+            score += 1.2
+        if backend_name == "openclaw" and phase in {"COLLECT", "APPLY"}:
+            if role == "button" and has_add_like:
+                score += 5.0
+            elif role == "link" and not has_add_like and not has_progress:
+                score -= 2.0
+            elif role == "generic" and not getattr(el, "group_action_labels", None):
+                score -= 2.5
 
         normalized_selector = agent._normalize_text(selector)
+        normalized_container_name = agent._normalize_text(getattr(el, "container_name", None) or "")
+        normalized_context_text = agent._normalize_text(getattr(el, "context_text", None) or "")
+        self_blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                ]
+            )
+        )
         if any(k in normalized_selector for k in ("pagination", "pager", "page", "tab", "tabs")):
             score += 2.0
         if any(k in normalized_selector for k in ("prev", "previous", "back", "이전")):
@@ -282,7 +388,35 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 score -= 3.0
 
         score += local_context_score
-        score += max(0.0, min(0.75, host_context_score * 0.12))
+        score += role_alignment_score
+        if backend_name == "openclaw":
+            score += max(0.0, min(4.0, host_context_score * 0.35))
+            phrase_in_self = any(phrase and phrase in self_blob for phrase in normalized_phrases)
+            if role in {"button", "tab", "link", "menuitem", "option"}:
+                phrase_in_container = any(phrase and phrase in normalized_container_name for phrase in normalized_phrases)
+                phrase_in_context = any(phrase and phrase in normalized_context_text for phrase in normalized_phrases)
+                if role == "button" and has_add_like:
+                    if phrase_in_self:
+                        score += 8.0
+                    elif phrase_in_container:
+                        score += 7.0
+                    elif phrase_in_context:
+                        score += 4.0
+                elif phrase_in_container:
+                    score += 3.0
+                elif phrase_in_context:
+                    score += 2.0
+                elif normalized_container_name and not goal_tokens.intersection(container_tokens):
+                    score -= 1.5
+                if role in {"link", "menuitem", "option"} and not phrase_in_self and (phrase_in_container or phrase_in_context):
+                    score -= 4.0
+            elif role == "generic":
+                phrase_in_container = any(phrase and phrase in normalized_container_name for phrase in normalized_phrases)
+                phrase_in_context = any(phrase and phrase in normalized_context_text for phrase in normalized_phrases)
+                if not phrase_in_self and (phrase_in_container or phrase_in_context):
+                    score -= 5.0
+        else:
+            score += max(0.0, min(0.75, host_context_score * 0.12))
         if container_source == "semantic-first":
             score += 1.0
         score += agent._selector_bias_for_fields(fields)
@@ -318,10 +452,20 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     except Exception:
         dom_limit = 260
     dom_limit = max(80, min(dom_limit, 800))
+    if backend_name == "openclaw":
+        dom_limit = min(dom_limit, 140)
     selected: List[DOMElement] = ranked[:dom_limit]
 
     for el in selected:
-        parts = [f"[{el.id}] <{el.tag}>"]
+        if backend_name == "openclaw" and getattr(el, "ref_id", None):
+            parts = [f'[ref={el.ref_id}] <{el.tag}>']
+        else:
+            parts = [f"[{el.id}] <{el.tag}>"]
+        interactive_role = str(getattr(el, "role", "") or "").strip().lower()
+        openclaw_interactive = backend_name == "openclaw" and interactive_role in {"button", "link", "tab", "menuitem", "option"}
+
+        if openclaw_interactive and getattr(el, "container_name", None):
+            parts.append(f'within="{el.container_name}"')
 
         if el.text:
             parts.append(f'"{el.text}"')
@@ -329,7 +473,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
             parts.append(f"role={el.role}")
         if el.type and el.type != "button":
             parts.append(f"type={el.type}")
-        if getattr(el, "container_name", None):
+        if getattr(el, "container_name", None) and not openclaw_interactive:
             parts.append(f'container="{el.container_name}"')
         if getattr(el, "container_role", None):
             parts.append(f'container-role="{el.container_role}"')
@@ -373,7 +517,10 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 "items": [],
             },
         )
-        bucket["items"].append(f'[{el.id} {el.text or el.aria_label or el.tag}]')
+        if backend_name == "openclaw" and getattr(el, "ref_id", None):
+            bucket["items"].append(f'[ref={el.ref_id} {el.text or el.aria_label or el.tag}]')
+        else:
+            bucket["items"].append(f'[{el.id} {el.text or el.aria_label or el.tag}]')
     if grouped:
         lines.append("")
         lines.append("## 컨텍스트 그룹")

@@ -1,0 +1,213 @@
+{
+  "run_id": "harness_20260320_211800",
+  "generated_at": "2026-03-20T21:18:00",
+  "registry": null,
+  "task_count": 1,
+  "repeats": 1,
+  "selection": {
+    "task_id": "INUU_006_LOGIN_AND_ADD_WISHLIST",
+    "limit": null,
+    "suite_ids": [],
+    "tags": [],
+    "contains": []
+  },
+  "results": [
+    {
+      "task_id": "INUU_006_LOGIN_AND_ADD_WISHLIST",
+      "suite_id": "inuu_service_v1",
+      "goal": "로그인 후 과목 하나를 위시리스트에 담고 위시리스트 수치가 증가했는지 확인해줘.",
+      "url": "https://inuu-timetable.vercel.app/",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "status": "FAIL",
+      "final_status": "FAIL",
+      "reason": "harness_timeout(240s)",
+      "exit_code": 124,
+      "duration_seconds": 240.01,
+      "summary": {},
+      "captured_log": "",
+      "task_index": 1,
+      "repeat_index": 1,
+      "repeat_count": 1,
+      "grades": [
+        {
+          "grader": "status",
+          "passed": false,
+          "score": 0.0,
+          "reason": "status did not match expected value",
+          "observed": "failed",
+          "expected": "passed",
+          "details": {
+            "status_paths": [
+              "status",
+              "summary.status",
+              "result.status",
+              "report.status",
+              "validation_summary.status"
+            ],
+            "expected_statuses": [
+              "passed"
+            ],
+            "raw_status": "FAIL"
+          }
+        },
+        {
+          "grader": "reason_codes",
+          "passed": true,
+          "score": 1.0,
+          "reason": "reason codes satisfied",
+          "observed": "none",
+          "expected": "!user_intervention_missing",
+          "details": {
+            "reason_code_paths": [
+              "reason_code_summary",
+              "validation_reason_counts",
+              "summary.reason_code_summary",
+              "summary.validation_reason_counts",
+              "report.reason_code_summary"
+            ],
+            "counts": {},
+            "missing": [],
+            "failed_thresholds": [],
+            "forbidden_present": []
+          }
+        },
+        {
+          "grader": "membership",
+          "passed": false,
+          "score": 0.0,
+          "reason": "membership state could not be determined",
+          "observed": "unknown",
+          "expected": "present",
+          "details": {
+            "raw_membership_value": null,
+            "normalized": "",
+            "membership_paths": [
+              "membership_present",
+              "membership_verified",
+              "membership_state",
+              "membership_summary.present",
+              "membership_summary.verified",
+              "membership_summary.is_member",
+              "membership_summary.state",
+              "membership_summary.status",
+              "summary.membership_present",
+              "summary.membership_verified",
+              "summary.membership_state"
+            ],
+            "observed_label": "unknown",
+            "destination_terms": [
+              "위시리스트"
+            ],
+            "target_terms": []
+          }
+        },
+        {
+          "grader": "blocked_vs_fail",
+          "passed": false,
+          "score": 0.0,
+          "reason": "true failure detected",
+          "observed": "failed",
+          "expected": "status in ['blocked_user_action']; or markers in ['captcha', '로그인', '사용자 개입']; without fail markers ['dom_snapshot_retry_exhausted', 'exception', 'request_exception', 'timeout']",
+          "details": {
+            "final_status_paths": [
+              "final_status",
+              "summary.final_status",
+              "result.final_status",
+              "report.final_status",
+              "validation_summary.final_status"
+            ],
+            "reason_paths": [
+              "reason",
+              "summary.reason",
+              "result.reason",
+              "report.reason",
+              "validation_summary.reason"
+            ],
+            "reason_code_summary_paths": [
+              "reason_code_summary",
+              "validation_reason_counts",
+              "summary.reason_code_summary",
+              "summary.validation_reason_counts",
+              "report.reason_code_summary"
+            ],
+            "allowed_blocked_statuses": [
+              "blocked_user_action"
+            ],
+            "allowed_blocked_markers": [
+              "사용자 개입",
+              "captcha",
+              "로그인"
+            ],
+            "forbidden_fail_markers": [
+              "timeout",
+              "exception",
+              "request_exception",
+              "dom_snapshot_retry_exhausted"
+            ],
+            "forbidden_fail_statuses": [
+              "failed"
+            ],
+            "raw_final_status": "FAIL",
+            "raw_reason": "harness_timeout(240s)",
+            "raw_reason_code_summary": null,
+            "matched_blocked_marker": null,
+            "matched_forbidden_marker": "timeout",
+            "matched_forbidden_status": true
+          }
+        }
+      ],
+      "overall_pass": false
+    }
+  ],
+  "summary": {
+    "runs_total": 1,
+    "task_count": 1,
+    "attempts_total": 1,
+    "success_count": 0,
+    "failed_count": 1,
+    "attempt_success_count": 0,
+    "attempt_failed_count": 1,
+    "pass_at_1": 0.0,
+    "pass_at_k": 0.0,
+    "pass_all_k": 0.0,
+    "pass_rate": 0.0,
+    "task_pass_at_1": 0.0,
+    "task_pass_at_k": 0.0,
+    "task_pass_all_k": 0.0,
+    "task_status_counts": {
+      "FAIL": 1
+    },
+    "attempt_status_counts": {
+      "FAIL": 1
+    },
+    "other_status_counts": {},
+    "reason_code_counts": {},
+    "reason_code_total": 0,
+    "top_reason_codes": [],
+    "avg_duration_seconds": 240.01
+  },
+  "grade_summary": {
+    "status": {
+      "pass": 0,
+      "fail": 1
+    },
+    "reason_codes": {
+      "pass": 1,
+      "fail": 0
+    },
+    "membership": {
+      "pass": 0,
+      "fail": 1
+    },
+    "blocked_vs_fail": {
+      "pass": 0,
+      "fail": 1
+    }
+  },
+  "artifact_dir": "/Users/coldmans/Documents/GitHub/capston/artifacts/harness/harness_20260320_211800"
+}
