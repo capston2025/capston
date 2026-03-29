@@ -34,6 +34,12 @@ _CHROME_EXECUTABLE_CANDIDATES = (
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 )
 
+_PLAYWRIGHT_CACHE_DIR_CANDIDATES = (
+    Path.home() / "Library" / "Caches" / "ms-playwright",
+    Path.home() / ".cache" / "ms-playwright",
+    Path.home() / "AppData" / "Local" / "ms-playwright",
+)
+
 _PORT_CANDIDATES = (
     (18789, 18791, 18800),
     (19001, 19003, 19012),
@@ -119,10 +125,38 @@ def detect_browser_executable() -> str | None:
     override = str(os.getenv("GAIA_OPENCLAW_BROWSER_EXECUTABLE", "") or "").strip()
     if override:
         return override if Path(override).exists() else None
+    playwright_browser = _detect_playwright_chromium_executable()
+    if playwright_browser:
+        return playwright_browser
     for candidate in _CHROME_EXECUTABLE_CANDIDATES:
         if Path(candidate).exists():
             return candidate
     return None
+
+
+def _detect_playwright_chromium_executable() -> str | None:
+    discovered: list[tuple[int, str]] = []
+    for cache_dir in _PLAYWRIGHT_CACHE_DIR_CANDIDATES:
+        if not cache_dir.exists():
+            continue
+        for entry in cache_dir.glob("chromium-*"):
+            try:
+                version = int(str(entry.name).split("chromium-", 1)[1] or "0")
+            except Exception:
+                version = 0
+            candidates = (
+                entry / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                entry / "chrome-linux" / "chrome",
+                entry / "chrome-win" / "chrome.exe",
+            )
+            for candidate in candidates:
+                if candidate.exists():
+                    discovered.append((version, str(candidate)))
+                    break
+    if not discovered:
+        return None
+    discovered.sort(key=lambda item: (int(item[0]), str(item[1])))
+    return str(discovered[-1][1])
 
 
 def build_embedded_openclaw_config(
@@ -180,6 +214,7 @@ def _write_config(*, gateway_port: int, cdp_port: int) -> Path:
 
 def _bootstrap_env(*, gateway_port: int, config_path: Path) -> Dict[str, str]:
     env = dict(os.environ)
+    env["OPENCLAW_CONFIG_DIR"] = str(_state_dir())
     env["OPENCLAW_STATE_DIR"] = str(_state_dir())
     env["OPENCLAW_CONFIG_PATH"] = str(config_path)
     env["OPENCLAW_GATEWAY_PORT"] = str(int(gateway_port))
@@ -191,6 +226,22 @@ def _bootstrap_env(*, gateway_port: int, config_path: Path) -> Dict[str, str]:
     else:
         env.pop("CI", None)
     return env
+
+
+def _ensure_browser_profile_started(base_url: str) -> None:
+    response = requests.post(
+        f"{base_url.rstrip('/')}/start",
+        params={"profile": "openclaw"},
+        timeout=(2.0, 12.0),
+    )
+    try:
+        data = response.json()
+    except Exception:
+        data = {"error": response.text or "invalid_json_response"}
+    if response.status_code >= 400:
+        raise RuntimeError(str(data.get("error") or response.text or "openclaw profile start failed"))
+    if isinstance(data, dict) and data.get("ok") is False:
+        raise RuntimeError(str(data.get("error") or "openclaw profile start failed"))
 
 
 def _browser_server_ready(base_url: str) -> bool:
@@ -309,10 +360,12 @@ def ensure_embedded_openclaw_base_url() -> str:
     with _RUNTIME_LOCK:
         base_url = str(_RUNTIME_STATE.get("base_url") or "").strip()
         if base_url and _browser_server_ready(base_url):
+            _ensure_browser_profile_started(base_url)
             return base_url
         existing_server = _probe_existing_browser_server()
         if existing_server is not None:
             reused_base_url, gateway_port, control_port, cdp_port = existing_server
+            _ensure_browser_profile_started(reused_base_url)
             _RUNTIME_STATE.update(
                 {
                     "process": None,
@@ -374,6 +427,7 @@ def ensure_embedded_openclaw_base_url() -> str:
         deadline = time.time() + _SERVER_READY_TIMEOUT_S
         while time.time() < deadline:
             if _browser_server_ready(base_url):
+                _ensure_browser_profile_started(base_url)
                 _RUNTIME_STATE.update(
                     {
                         "process": proc,

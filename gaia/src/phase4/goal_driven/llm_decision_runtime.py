@@ -161,35 +161,68 @@ def _build_auth_surface_summary(
     dom_elements: List[DOMElement],
     prompt_test_data: dict[str, Any],
 ) -> str:
-    identifier_field: Optional[DOMElement] = None
-    password_field: Optional[DOMElement] = None
-    submit_field: Optional[DOMElement] = None
+    identifier_candidates: List[DOMElement] = []
+    password_candidates: List[DOMElement] = []
+    submit_candidates: List[DOMElement] = []
     background_mutations: List[DOMElement] = []
+
+    def _auth_candidate_score(element: DOMElement) -> tuple[int, int]:
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(element, "text", "") or ""),
+                    str(getattr(element, "placeholder", "") or ""),
+                    str(getattr(element, "aria_label", "") or ""),
+                    str(getattr(element, "title", "") or ""),
+                    str(getattr(element, "role_ref_name", "") or ""),
+                    str(getattr(element, "container_name", "") or ""),
+                    str(getattr(element, "context_text", "") or ""),
+                ]
+            )
+        )
+        score = 0
+        if any(token in blob for token in ("아이디", "username", "email", "비밀번호", "password", "로그인")):
+            score += 4
+        if "로그인" in str(getattr(element, "container_name", "") or ""):
+            score += 4
+        if "아이디" in blob and "비밀번호" in blob:
+            score += 2
+        if "과목 검색" in blob:
+            score -= 3
+        if "바로 추가" in blob:
+            score -= 4
+        return score, -int(getattr(element, "id", 0) or 0)
 
     for element in dom_elements or []:
         tags = set(semantic_tags_for_element(agent, element))
-        if "auth_identifier_field" in tags and identifier_field is None:
-            identifier_field = element
-        if "auth_password_field" in tags and password_field is None:
-            password_field = element
-        if "auth_submit_candidate" in tags and submit_field is None:
-            submit_field = element
+        if "auth_identifier_field" in tags:
+            identifier_candidates.append(element)
+        if "auth_password_field" in tags:
+            password_candidates.append(element)
+        if "auth_submit_candidate" in tags:
+            submit_candidates.append(element)
         if "source_mutation_candidate" in tags and len(background_mutations) < 3:
             background_mutations.append(element)
+
+    identifier_field = max(identifier_candidates, key=_auth_candidate_score, default=None)
+    password_field = max(password_candidates, key=_auth_candidate_score, default=None)
+    submit_field = max(submit_candidates, key=_auth_candidate_score, default=None)
 
     if not any((identifier_field, password_field, submit_field)):
         return ""
 
     auth_lines = ["## 현재 인증 surface"]
+    if prompt_test_data.get("username") or prompt_test_data.get("email") or prompt_test_data.get("user_id") or prompt_test_data.get("password"):
+        auth_lines.append('- `fill_with="..."`는 현재 입력값이 아니라, 이 필드에 직접 타이핑해야 할 자격증명입니다.')
     if identifier_field is not None:
         identifier_value = prompt_test_data.get("username") or prompt_test_data.get("email") or prompt_test_data.get("user_id")
-        identifier_suffix = f' value="{identifier_value}"' if identifier_value else ""
+        identifier_suffix = f' fill_with="{identifier_value}"' if identifier_value else ""
         auth_lines.append(
             f'- identifier input: ref={_ref_for_prompt(identifier_field)} label="{_label_for_prompt(identifier_field)}"{identifier_suffix}'
         )
     if password_field is not None:
         password_value = prompt_test_data.get("password")
-        password_suffix = f' value="{password_value}"' if password_value else ""
+        password_suffix = f' fill_with="{password_value}"' if password_value else ""
         auth_lines.append(
             f'- password input: ref={_ref_for_prompt(password_field)} label="{_label_for_prompt(password_field)}"{password_suffix}'
         )
@@ -455,20 +488,50 @@ def decide_next_action(
     feedback_signal_summary = _build_feedback_signal_summary(agent, dom_elements or [])
     active_surface_summary = _build_active_surface_summary(agent, dom_elements or [])
     target_destination_summary = _build_target_destination_summary(agent, dom_elements or [])
+    wrapper_observation_lines = [
+        summary
+        for summary in (
+            auth_surface_summary,
+            feedback_signal_summary,
+            active_surface_summary,
+            target_destination_summary,
+        )
+        if summary
+    ]
+    wrapper_observation_block = "\n".join(wrapper_observation_lines)
     elements_for_prompt = list(dom_elements or [])
     elements_text = agent._format_dom_for_llm(elements_for_prompt)
+    backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
     recent_block_text = ", ".join(str(x) for x in (getattr(agent, "_recent_click_element_ids", []) or [])[-8:]) or "없음"
     state_cache_title = "현재 wrapper 관찰값(약한 힌트)" if thin_wrapper_mode else "현재 상태 요약(약한 힌트)"
+    pre_dom_wrapper_observation_block = ""
+    post_dom_wrapper_observation_block = wrapper_observation_block
+    if not (backend_name == "openclaw" and thin_wrapper_mode):
+        pre_dom_wrapper_observation_block = wrapper_observation_block
+        post_dom_wrapper_observation_block = ""
+    post_dom_wrapper_observation_section = (
+        f"## Wrapper 보조 관찰(후순위)\n{post_dom_wrapper_observation_block}"
+        if post_dom_wrapper_observation_block
+        else ""
+    )
     semantic_hint_rule = """
 ## 후보 의미 힌트
 - 각 DOM 줄의 `semantics=[...]`는 wrapper가 붙인 약한 힌트입니다. 정답으로 확정하지 말고 현재 DOM 문맥으로 다시 검증하세요.
 - `destination_reveal_candidate`와 `close_like`가 함께 보이면 닫기/취소 계열일 가능성을 먼저 의심하세요.
 - `source_mutation_candidate`가 보여도 최근 피드백이 no-op이거나 duplicate 경고가 있으면 같은 CTA를 반복하지 마세요.
 - `auth_identifier_field`, `auth_password_field`, `auth_submit_candidate`는 로그인 surface 안에서만 참고할 약한 힌트입니다.
+- 인증 surface 요약에 `fill_with="..."`가 보이면 그것은 현재 DOM 값이 아니라, 그 입력칸에 넣어야 할 자격증명입니다.
+- 인증 surface 안에 identifier/password 입력 ref와 `fill_with`가 함께 보이면, 방금 그 ref를 채운 직후가 아닌 한 submit보다 fill을 우선하세요.
 - `surface_close_candidate`는 현재 foreground surface를 닫고 배경으로 돌아가는 약한 힌트입니다.
 - `occluded_background_candidate`는 DOM에 보여도 현재 surface 뒤에 가려져 클릭 실패할 수 있습니다.
 - 상태 요약이 `불확실`이면 wrapper belief를 버리고 현재 DOM과 스크린샷만으로 판단하세요.
 """
+    openclaw_primary_rule = """
+## OpenClaw 원본 우선 규칙
+- `## OpenClaw 원본 역할 트리 (주 입력)`은 wrapper가 재가공하기 전 OpenClaw snapshot 발췌입니다. action을 고를 때 가장 먼저 신뢰하세요.
+- `## 구조화 보조 힌트`와 `semantics=[...]`는 2차 힌트입니다. 원본 role tree의 ref/role/name/트리 위치와 충돌하면 원본 역할 트리를 우선하세요.
+- 같은 이름 CTA가 여러 개면 `ref`, 트리 위치, 같은 row/section 주변 raw line으로 구분하세요.
+""" if backend_name == "openclaw" else ""
     prompt = f"""당신은 OpenClaw 스타일의 웹 작업 에이전트입니다.
 현재 화면과 직전 결과를 다시 읽고, 다음 한 단계만 결정하세요.
 
@@ -481,10 +544,7 @@ def decide_next_action(
 ## 사용 가능한 테스트 데이터
 {json.dumps(prompt_test_data, ensure_ascii=False, indent=2)}
 
-{auth_surface_summary if auth_surface_summary else ''}
-{feedback_signal_summary if feedback_signal_summary else ''}
-{active_surface_summary if active_surface_summary else ''}
-{target_destination_summary if target_destination_summary else ''}
+{pre_dom_wrapper_observation_block}
 
 ## 최근 액션 기록
 {chr(10).join(agent._action_history[-5:]) if agent._action_history else '없음'}
@@ -504,6 +564,9 @@ def decide_next_action(
 ## 현재 화면의 DOM 요소와 목표 관련 증거
 {elements_text}
 
+{post_dom_wrapper_observation_section}
+
+{openclaw_primary_rule}
 {semantic_hint_rule}
 
 ## 작업 규칙

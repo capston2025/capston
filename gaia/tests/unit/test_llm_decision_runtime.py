@@ -136,12 +136,86 @@ def test_build_auth_surface_summary_describes_auth_controls_and_background_ctas(
         {"username": "202101681", "password": "qwer"},
     )
 
+    assert '직접 타이핑해야 할 자격증명' in summary
     assert "identifier input: ref=e677" in summary
-    assert 'value="202101681"' in summary
+    assert 'fill_with="202101681"' in summary
     assert "password input: ref=e680" in summary
-    assert 'value="qwer"' in summary
+    assert 'fill_with="qwer"' in summary
     assert 'submit candidate: ref=e681 label="로그인"' in summary
     assert 'background CTA: ref=e213 "바로 추가"' in summary
+
+
+def test_build_auth_surface_summary_prefers_modal_submit_over_background_login():
+    agent = _FakeAgent()
+    dom = [
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="로그인",
+            aria_label="로그인",
+            title="로그인",
+            ref_id="e15",
+            container_name="과목 검색",
+            container_role="div",
+            context_text="과목 검색 | 시간표에 바로 담거나 위시리스트로 모아 조합을 만들어 보세요. | 로그인",
+            role_ref_role="button",
+            role_ref_name="로그인",
+        ),
+        DOMElement(
+            id=4,
+            tag="input",
+            role="textbox",
+            text="아이디를 입력하세요",
+            aria_label="아이디를 입력하세요",
+            placeholder="아이디를 입력하세요",
+            title="아이디를 입력하세요",
+            ref_id="e677",
+            container_name="로그인",
+            container_role="div",
+            context_text="로그인 | 아이디 | 비밀번호 | 계정이 없으신가요? 회원가입",
+            role_ref_role="textbox",
+            role_ref_name="아이디를 입력하세요",
+        ),
+        DOMElement(
+            id=6,
+            tag="input",
+            role="textbox",
+            text="비밀번호를 입력하세요",
+            aria_label="비밀번호를 입력하세요",
+            placeholder="비밀번호를 입력하세요",
+            title="비밀번호를 입력하세요",
+            ref_id="e680",
+            container_name="로그인",
+            container_role="div",
+            context_text="로그인 | 아이디 | 비밀번호 | 계정이 없으신가요? 회원가입",
+            role_ref_role="textbox",
+            role_ref_name="비밀번호를 입력하세요",
+        ),
+        DOMElement(
+            id=7,
+            tag="button",
+            role="button",
+            text="로그인",
+            aria_label="로그인",
+            title="로그인",
+            ref_id="e681",
+            container_name="로그인",
+            container_role="div",
+            context_text="로그인 | 아이디 | 비밀번호 | 계정이 없으신가요? 회원가입",
+            role_ref_role="button",
+            role_ref_name="로그인",
+        ),
+    ]
+
+    summary = _build_auth_surface_summary(
+        agent,
+        dom,
+        {"username": "202101681", "password": "qwer"},
+    )
+
+    assert 'submit candidate: ref=e681 label="로그인"' in summary
+    assert 'submit candidate: ref=e15' not in summary
 
 
 def test_build_feedback_signal_summary_prefers_destination_inspection_over_close():

@@ -240,14 +240,24 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
         )
     )
     input_like = tag in {"input", "textarea"} or role == "textbox"
-    auth_context_blob = normalize(
+    auth_self_blob = normalize(
         " ".join(
             [
                 self_blob,
+                str(getattr(el, "placeholder", "") or ""),
+                str(getattr(el, "aria_label", "") or ""),
+                str(getattr(el, "title", "") or ""),
+                str(getattr(el, "role_ref_name", "") or ""),
+            ]
+        )
+    )
+    auth_context_blob = normalize(
+        " ".join(
+            [
+                auth_self_blob,
                 str(getattr(el, "container_name", "") or ""),
                 str(getattr(el, "container_role", "") or ""),
                 str(getattr(el, "context_text", "") or ""),
-                label_blob,
             ]
         )
     )
@@ -275,13 +285,46 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
             "pwd",
         )
     )
+    auth_container_blob = normalize(
+        " ".join(
+            [
+                str(getattr(el, "container_name", "") or ""),
+                str(getattr(el, "container_role", "") or ""),
+                str(getattr(el, "context_text", "") or ""),
+            ]
+        )
+    )
     auth_identifier_hit = any(
+        token in auth_self_blob
+        for token in ("username", "user id", "userid", "email", "이메일", "아이디", "identifier")
+    )
+    auth_identifier_context_hit = any(
         token in auth_context_blob
         for token in ("username", "user id", "userid", "email", "이메일", "아이디", "identifier")
     )
-    auth_password_hit = any(token in auth_context_blob for token in ("password", "비밀번호", "passwd", "pwd"))
+    auth_password_hit = any(token in auth_self_blob for token in ("password", "비밀번호", "passwd", "pwd"))
+    auth_password_context_hit = any(token in auth_context_blob for token in ("password", "비밀번호", "passwd", "pwd"))
     role_ref_nth = getattr(el, "role_ref_nth", None)
     second_textbox_hint = input_like and auth_surface_hit and role_ref_nth == 1 and not auth_identifier_hit
+    auth_submit_hit = any(
+        token in auth_self_blob
+        for token in ("로그인", "login", "sign in", "signin", "submit", "continue")
+    )
+    auth_container_hit = any(
+        token in auth_container_blob
+        for token in (
+            "로그인",
+            "login",
+            "sign in",
+            "signin",
+            "username",
+            "email",
+            "아이디",
+            "identifier",
+            "password",
+            "비밀번호",
+        )
+    )
 
     tags: List[str] = []
     if target_hit:
@@ -290,15 +333,24 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
         tags.append("feedback_conflict_signal")
     if feedback_success_hit:
         tags.append("feedback_success_signal")
-    if auth_surface_hit and clickable and any(
-        token in auth_context_blob
-        for token in ("로그인", "login", "sign in", "signin", "submit", "continue")
+    if auth_surface_hit and clickable and auth_submit_hit and (
+        auth_container_hit or not str(getattr(el, "container_name", "") or "").strip()
     ):
         tags.append("auth_submit_candidate")
     if input_like and auth_surface_hit:
-        if auth_password_hit or str(getattr(el, "type", "") or "").lower() == "password" or second_textbox_hint:
+        input_type = str(getattr(el, "type", "") or "").lower()
+        if auth_password_hit or input_type == "password" or second_textbox_hint:
             tags.append("auth_password_field")
-        elif auth_identifier_hit or str(getattr(el, "type", "") or "").lower() in {"email", "text"}:
+        elif (
+            auth_identifier_hit
+            or input_type == "email"
+            or (
+                input_type in {"", "text", "tel"}
+                and (auth_identifier_context_hit or auth_container_hit)
+                and not auth_password_context_hit
+            )
+            or (role_ref_nth == 0 and auth_container_hit and not auth_password_hit)
+        ):
             tags.append("auth_identifier_field")
     if close_hit and clickable:
         tags.append("close_like")
@@ -527,6 +579,158 @@ def pick_scoped_container(
     return best_ref, best_name, best_source, float(best_score), ambiguous
 
 
+def _collect_openclaw_role_tree_focus_refs(
+    agent: Any,
+    elements: List[DOMElement],
+    active_surface_context: Dict[str, Any],
+) -> List[str]:
+    recent_blob = "\n".join(
+        [
+            *(str(item or "") for item in list(getattr(agent, "_action_history", []) or [])[-8:]),
+            *(str(item or "") for item in list(getattr(agent, "_action_feedback", []) or [])[-8:]),
+        ]
+    )
+    recent_refs = {match for match in re.findall(r"\b(e\d+)\b", recent_blob)}
+    focus_refs: List[Tuple[float, int, str]] = []
+    goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
+    normalized_goal_text = agent._normalize_text(str(getattr(agent, "_active_goal_text", "") or ""))
+    normalized_phrases = [
+        agent._normalize_text(v)
+        for v in re.findall(r'["\']([^"\']+)["\']', str(getattr(agent, "_active_goal_text", "") or ""))
+        if agent._normalize_text(v)
+    ]
+    for index, el in enumerate(elements or []):
+        ref_id = str(getattr(el, "ref_id", "") or "").strip()
+        if not ref_id:
+            continue
+        role = str(getattr(el, "role", "") or "").strip().lower()
+        tag = str(getattr(el, "tag", "") or "").strip().lower()
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                    str(getattr(el, "role_ref_name", "") or ""),
+                ]
+            )
+        )
+        overlap = goal_tokens.intersection(set(agent._tokenize_text(blob)))
+        score = 0.0
+        if ref_id in recent_refs:
+            score += 26.0
+        score += min(12.0, 3.0 * len(overlap))
+        if normalized_goal_text and normalized_goal_text in blob:
+            score += 8.0
+        if any(phrase and phrase in blob for phrase in normalized_phrases):
+            score += 10.0
+        if role in {"textbox", "combobox"} and agent._contains_login_hint(blob):
+            score += 18.0
+        elif role in {"button", "link"} and agent._contains_login_hint(blob):
+            score += 12.0
+        elif tag in {"input", "textarea"} and agent._contains_login_hint(blob):
+            score += 15.0
+        if role in {"button", "link", "tab", "menuitem", "option"}:
+            score += 2.0
+        if ref_id in {
+            str(getattr(active_surface_context.get("heading"), "ref_id", "") or "").strip(),
+            str(getattr(active_surface_context.get("close_candidate"), "ref_id", "") or "").strip(),
+        }:
+            score += 6.0
+        if score > 0.0:
+            focus_refs.append((score, index, ref_id))
+    focus_refs.sort(key=lambda item: (-item[0], item[1], item[2]))
+    ordered_unique: List[str] = []
+    for _, _, ref_id in focus_refs:
+        if ref_id and ref_id not in ordered_unique:
+            ordered_unique.append(ref_id)
+    return ordered_unique[:18]
+
+
+def _render_openclaw_raw_role_tree(
+    agent: Any,
+    role_snapshot: Dict[str, Any],
+    elements: List[DOMElement],
+    active_surface_context: Dict[str, Any],
+    snapshot_text_override: Optional[str] = None,
+) -> List[str]:
+    raw_snapshot_text = str(role_snapshot.get("snapshot") or "").strip()
+    snapshot_text = str(snapshot_text_override or raw_snapshot_text or "").strip()
+    if not snapshot_text:
+        return []
+    raw_lines = snapshot_text.splitlines()
+    uses_override_snapshot = bool(snapshot_text_override and snapshot_text_override.strip() and snapshot_text_override.strip() != raw_snapshot_text)
+    ref_line_index = (
+        role_snapshot.get("ref_line_index")
+        if not uses_override_snapshot and isinstance(role_snapshot.get("ref_line_index"), dict)
+        else {}
+    )
+    focus_refs = _collect_openclaw_role_tree_focus_refs(agent, elements, active_surface_context)
+    normalized_phrases = [
+        agent._normalize_text(v)
+        for v in re.findall(r'["\']([^"\']+)["\']', str(getattr(agent, "_active_goal_text", "") or ""))
+        if agent._normalize_text(v)
+    ]
+    goal_tokens = [token for token in set(getattr(agent, "_goal_tokens", set()) or set()) if len(str(token or "")) >= 4]
+    recent_blob = "\n".join(
+        [
+            *(str(item or "") for item in list(getattr(agent, "_action_history", []) or [])[-8:]),
+            *(str(item or "") for item in list(getattr(agent, "_action_feedback", []) or [])[-8:]),
+        ]
+    )
+    recent_refs = {match for match in re.findall(r"\b(e\d+)\b", recent_blob)}
+    try:
+        excerpt_line_limit = int(os.getenv("GAIA_OPENCLAW_RAW_TREE_LINE_LIMIT", "160"))
+    except Exception:
+        excerpt_line_limit = 160
+    excerpt_line_limit = max(40, min(excerpt_line_limit, 320))
+    line_indexes: set[int] = set(range(min(len(raw_lines), 8)))
+    if uses_override_snapshot:
+        line_indexes.update(range(min(len(raw_lines), excerpt_line_limit)))
+    else:
+        for line_index, line in enumerate(raw_lines):
+            normalized_line = agent._normalize_text(line)
+            if recent_refs and any(ref in line for ref in recent_refs):
+                for idx in range(max(0, line_index - 2), min(len(raw_lines), line_index + 3)):
+                    line_indexes.add(idx)
+                continue
+            if any(phrase and phrase in normalized_line for phrase in normalized_phrases):
+                for idx in range(max(0, line_index - 2), min(len(raw_lines), line_index + 4)):
+                    line_indexes.add(idx)
+                continue
+            if any(token and token in normalized_line for token in goal_tokens):
+                for idx in range(max(0, line_index - 1), min(len(raw_lines), line_index + 3)):
+                    line_indexes.add(idx)
+        if focus_refs:
+            for ref_id in focus_refs:
+                try:
+                    center = int(ref_line_index.get(ref_id))
+                except Exception:
+                    center = -1
+                if center < 0:
+                    continue
+                start = max(0, center - 3)
+                end = min(len(raw_lines), center + 4)
+                for idx in range(start, end):
+                    line_indexes.add(idx)
+        else:
+            line_indexes.update(range(min(len(raw_lines), excerpt_line_limit)))
+    ordered_indexes = sorted(line_indexes)
+    if len(ordered_indexes) > excerpt_line_limit:
+        ordered_indexes = ordered_indexes[:excerpt_line_limit]
+    rendered: List[str] = []
+    prev_index = -1
+    for line_index in ordered_indexes:
+        if prev_index >= 0 and line_index > prev_index + 1:
+            rendered.append(f"... ({line_index - prev_index - 1} more raw role lines omitted)")
+        rendered.append(raw_lines[line_index])
+        prev_index = line_index
+    if prev_index >= 0 and prev_index < len(raw_lines) - 1:
+        rendered.append(f"... ({len(raw_lines) - prev_index - 1} more raw role lines omitted)")
+    return rendered
+
+
 def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     phase = (agent._runtime_phase or "COLLECT").upper()
     lines = []
@@ -584,14 +788,30 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     role_snapshot = getattr(agent, "_last_role_snapshot", None)
     if isinstance(role_snapshot, dict):
         snapshot_text = str(role_snapshot.get("snapshot") or "").strip()
+        scoped_snapshot_text = str(role_snapshot.get("scoped_snapshot") or "").strip()
+        scope_applied = bool(role_snapshot.get("scope_applied"))
         tree_nodes = role_snapshot.get("tree") if isinstance(role_snapshot.get("tree"), list) else []
         refs_mode = str(role_snapshot.get("refs_mode") or "").strip()
-        stats = role_snapshot.get("stats") if isinstance(role_snapshot.get("stats"), dict) else {}
+        stats = (
+            role_snapshot.get("scoped_stats")
+            if scope_applied and isinstance(role_snapshot.get("scoped_stats"), dict)
+            else role_snapshot.get("stats")
+        )
+        stats = stats if isinstance(stats, dict) else {}
         if tree_nodes or snapshot_text:
-            lines.append("## 역할 트리")
+            if backend_name == "openclaw":
+                lines.append(
+                    "## OpenClaw scope 역할 트리 (주 입력)"
+                    if scope_applied and scoped_snapshot_text
+                    else "## OpenClaw 원본 역할 트리 (주 입력)"
+                )
+            else:
+                lines.append("## 역할 트리")
             meta_parts = []
             if refs_mode:
                 meta_parts.append(f"refs_mode={refs_mode}")
+            if backend_name == "openclaw" and scope_applied and scoped_snapshot_text:
+                meta_parts.append(f'scope={str(role_snapshot.get("scope_container_ref_id") or "").strip() or "applied"}')
             if stats:
                 meta_parts.append(
                     "stats="
@@ -607,7 +827,17 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 )
             if meta_parts:
                 lines.append(f'- {" ".join(meta_parts)}')
-            if tree_nodes:
+            if backend_name == "openclaw" and snapshot_text:
+                lines.extend(
+                    _render_openclaw_raw_role_tree(
+                        agent,
+                        role_snapshot,
+                        elements or [],
+                        active_surface_context,
+                        snapshot_text_override=scoped_snapshot_text if scope_applied and scoped_snapshot_text else None,
+                    )
+                )
+            elif tree_nodes:
                 def _tree_score(node: Dict[str, Any]) -> float:
                     role = str(node.get("role") or "").strip().lower()
                     name = str(node.get("name") or "").strip()
@@ -893,13 +1123,13 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         dom_limit = 260
     dom_limit = max(80, min(dom_limit, 800))
     if backend_name == "openclaw":
-        dom_limit = min(dom_limit, 140)
+        dom_limit = min(dom_limit, 24)
     selected: List[DOMElement] = ranked[:dom_limit]
 
     # --- goal 관련 interactive 요소 보장 포함 ---
     # 조건 A: 자체+컨텍스트 합산 goal 토큰 2개 이상
     # 조건 B: container/context가 goal quoted phrase를 포함하는 interactive 요소
-    if len(ranked) > dom_limit and goal_tokens:
+    if backend_name != "openclaw" and len(ranked) > dom_limit and goal_tokens:
         selected_ids = {el.id for el in selected}
         interactive_tags = {"button", "a", "input", "select"}
         interactive_roles = {"button", "link", "tab", "menuitem", "option", "checkbox", "radio"}
@@ -996,6 +1226,9 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                     rescued_neighbors += 1
                     if rescued_neighbors >= neighbor_limit:
                         break
+
+    if selected:
+        lines.append("## 구조화 보조 힌트")
 
     for el in selected:
         el_ref = getattr(el, "ref_id", None)

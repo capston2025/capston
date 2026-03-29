@@ -136,6 +136,69 @@ def test_semantic_tags_include_auth_field_hints():
     assert "auth_submit_candidate" in semantic_tags_for_element(agent, submit_button)
 
 
+def test_semantic_tags_do_not_promote_username_field_to_password_from_shared_context():
+    agent = _FakeAgent()
+    username_input = DOMElement(
+        id=10,
+        tag="input",
+        role="textbox",
+        text="",
+        aria_label="아이디를 입력하세요",
+        placeholder="아이디를 입력하세요",
+        ref_id="u10",
+        container_name="로그인",
+        container_role="div",
+        context_text="로그인 | 아이디 | 비밀번호 | 계정이 없으신가요? 회원가입",
+        role_ref_name="아이디를 입력하세요",
+        role_ref_nth=0,
+        type="text",
+    )
+    password_input = DOMElement(
+        id=11,
+        tag="input",
+        role="textbox",
+        text="",
+        aria_label="비밀번호를 입력하세요",
+        placeholder="비밀번호를 입력하세요",
+        ref_id="p11",
+        container_name="로그인",
+        container_role="div",
+        context_text="로그인 | 아이디 | 비밀번호 | 계정이 없으신가요? 회원가입",
+        role_ref_name="비밀번호를 입력하세요",
+        role_ref_nth=1,
+        type="text",
+    )
+
+    assert "auth_identifier_field" in semantic_tags_for_element(agent, username_input)
+    assert "auth_password_field" not in semantic_tags_for_element(agent, username_input)
+    assert "auth_password_field" in semantic_tags_for_element(agent, password_input)
+
+
+def test_semantic_tags_do_not_mark_course_search_input_as_auth_identifier_from_background_actions():
+    agent = _FakeAgent()
+    course_search_input = DOMElement(
+        id=12,
+        tag="input",
+        role="textbox",
+        text="",
+        aria_label="과목명 검색",
+        placeholder="과목명으로 검색...",
+        ref_id="s12",
+        container_name="과목 검색",
+        container_role="div",
+        context_text="과목 검색 | 강의평 | 내 시간표 월 화 수 목 금 토 1교시 2교시",
+        group_action_labels=["로그인", "검색", "강의평", "담기", "바로 추가"],
+        role_ref_name="과목명 검색",
+        role_ref_nth=0,
+        type="text",
+    )
+
+    tags = semantic_tags_for_element(agent, course_search_input)
+
+    assert "auth_identifier_field" not in tags
+    assert "auth_password_field" not in tags
+
+
 def test_semantic_tags_include_feedback_success_signal_for_added_to_timetable_toast():
     agent = _FakeAgent()
     success_toast = DOMElement(
@@ -274,6 +337,141 @@ def test_format_dom_for_llm_prioritizes_auth_controls_over_background_add_button
     assert prompt.index('[ref=e677] <input> "아이디를 입력하세요"') < prompt.index('[ref=e213] <button> within=')
     assert 'semantics=[auth_submit_candidate]' in prompt
     assert 'semantics=[auth_identifier_field]' in prompt
+
+
+def test_format_dom_for_llm_uses_openclaw_raw_role_tree_as_primary_input():
+    agent = _FakeAgent()
+    agent._last_role_snapshot = {
+        "snapshot": "\n".join(
+            [
+                '- heading "과목 검색" [ref=e10]',
+                '  - paragraph "(HUSS국립부경대)포용사회와문화탐방1" [ref=e193]',
+                '  - button "바로 추가" [ref=e213]',
+            ]
+        ),
+        "tree": [
+            {"role": "heading", "name": "과목 검색", "ref": "e10", "depth": 0, "ancestor_names": []},
+            {"role": "paragraph", "name": "(HUSS국립부경대)포용사회와문화탐방1", "ref": "e193", "depth": 1, "ancestor_names": ["과목 검색"]},
+            {"role": "button", "name": "바로 추가", "ref": "e213", "depth": 1, "ancestor_names": ["과목 검색", "(HUSS국립부경대)포용사회와문화탐방1"]},
+        ],
+        "ref_line_index": {"e10": 0, "e193": 1, "e213": 2},
+        "refs_mode": "aria",
+        "stats": {"lines": 3, "refs": 3, "interactive": 1},
+    }
+    elements = [
+        DOMElement(
+            id=74,
+            tag="button",
+            role="button",
+            text="바로 추가",
+            aria_label="바로 추가",
+            title="바로 추가",
+            ref_id="e213",
+            container_name="검색 결과(총 2,894개 중 20개 표시)",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="(HUSS국립부경대)포용사회와문화탐방1 | 검색 결과",
+            role_ref_role="button",
+            role_ref_name="바로 추가",
+        ),
+        DOMElement(
+            id=75,
+            tag="div",
+            role="paragraph",
+            text="(HUSS국립부경대)포용사회와문화탐방1",
+            aria_label="(HUSS국립부경대)포용사회와문화탐방1",
+            title="(HUSS국립부경대)포용사회와문화탐방1",
+            ref_id="e193",
+            container_name="검색 결과(총 2,894개 중 20개 표시)",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="(HUSS국립부경대)포용사회와문화탐방1 | (1학점)",
+            role_ref_role="paragraph",
+            role_ref_name="(HUSS국립부경대)포용사회와문화탐방1",
+        ),
+    ]
+
+    prompt = format_dom_for_llm(agent, elements)
+
+    assert "## OpenClaw 원본 역할 트리 (주 입력)" in prompt
+    assert "## 구조화 보조 힌트" in prompt
+    assert prompt.index('  - button "바로 추가" [ref=e213]') < prompt.index("## 구조화 보조 힌트")
+    assert prompt.index("## OpenClaw 원본 역할 트리 (주 입력)") < prompt.index("## 구조화 보조 힌트")
+
+
+def test_format_dom_for_llm_uses_scoped_snapshot_as_primary_when_scope_applied():
+    agent = _FakeAgent()
+    agent._last_role_snapshot = {
+        "snapshot": "\n".join(
+            [
+                '- heading "과목 검색" [ref=e10]',
+                '  - button "다른 버튼" [ref=e999]',
+                '  - button "바로 추가" [ref=e213]',
+            ]
+        ),
+        "scoped_snapshot": '- button "바로 추가" [ref=e213]',
+        "scope_applied": True,
+        "scope_container_ref_id": "ctx-44",
+        "ref_line_index": {"e10": 0, "e999": 1, "e213": 2},
+        "refs_mode": "aria",
+        "stats": {"lines": 3, "refs": 3, "interactive": 2},
+    }
+    elements = [
+        DOMElement(
+            id=74,
+            tag="button",
+            role="button",
+            text="바로 추가",
+            aria_label="바로 추가",
+            title="바로 추가",
+            ref_id="e213",
+            container_name="검색 결과(총 2,894개 중 20개 표시)",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="(HUSS국립부경대)포용사회와문화탐방1 | 검색 결과",
+            role_ref_role="button",
+            role_ref_name="바로 추가",
+        ),
+    ]
+
+    prompt = format_dom_for_llm(agent, elements)
+
+    assert "## OpenClaw scope 역할 트리 (주 입력)" in prompt
+    assert '- button "바로 추가" [ref=e213]' in prompt
+    assert '[ref=e999]' not in prompt
+
+
+def test_format_dom_for_llm_caps_openclaw_structured_hints_to_small_sidecar():
+    agent = _FakeAgent()
+    agent._last_role_snapshot = None
+    elements = [
+        DOMElement(
+            id=index,
+            tag="button",
+            role="button",
+            text=f"CTA {index}",
+            aria_label=f"CTA {index}",
+            title=f"CTA {index}",
+            ref_id=f"e{index}",
+            container_name="검색 결과",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text=f"검색 결과 | CTA {index}",
+            role_ref_role="button",
+            role_ref_name=f"CTA {index}",
+        )
+        for index in range(1, 41)
+    ]
+
+    prompt = format_dom_for_llm(agent, elements)
+    structured_lines = [
+        line
+        for line in prompt.splitlines()
+        if line.startswith("[ref=e")
+    ]
+
+    assert "## 구조화 보조 힌트" in prompt
+    assert len(structured_lines) == 24
 
 
 def test_format_dom_for_llm_prioritizes_destination_inspection_over_close_on_conflict_signal():

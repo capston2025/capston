@@ -20,6 +20,7 @@ from gaia.src.phase4.mcp_ref_snapshot_helpers import (
 _SESSION_LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _BASE_URL_CACHE: Dict[str, str] = {}
+_DEFAULT_OPENCLAW_REQUEST_TIMEOUT_S = 12.0
 
 _INTERACTIVE_ROLES = {
     "button",
@@ -229,6 +230,19 @@ def _headers() -> Dict[str, str]:
     return headers
 
 
+def _coerce_request_timeout(timeout: Any) -> Any:
+    if timeout is not None:
+        return timeout
+    raw = str(os.getenv("GAIA_OPENCLAW_REQUEST_TIMEOUT_S", "") or "").strip()
+    try:
+        total_timeout_s = float(raw) if raw else _DEFAULT_OPENCLAW_REQUEST_TIMEOUT_S
+    except Exception:
+        total_timeout_s = _DEFAULT_OPENCLAW_REQUEST_TIMEOUT_S
+    total_timeout_s = max(2.0, float(total_timeout_s))
+    connect_timeout_s = min(3.0, max(1.0, total_timeout_s / 3.0))
+    return (connect_timeout_s, total_timeout_s)
+
+
 def _request(
     method: str,
     *,
@@ -247,7 +261,7 @@ def _request(
         params=query,
         json=payload,
         headers=_headers(),
-        timeout=timeout,
+        timeout=_coerce_request_timeout(timeout),
     )
     try:
         data = response.json()
@@ -1206,9 +1220,18 @@ def _build_snapshot_payload(
     elements, role_snapshot = _pseudo_elements_from_role_snapshot(snapshot, refs)
     evidence = _synthesize_snapshot_evidence(elements)
     scoped_elements, context_snapshot, scope_applied = _apply_scope_to_elements(elements, requested_scope_ref_id)
-    effective_role_snapshot = role_snapshot
+    effective_role_snapshot = dict(role_snapshot or {})
     if scope_applied:
-        effective_role_snapshot = _build_role_snapshot_from_elements(scoped_elements)
+        scoped_role_snapshot = _build_role_snapshot_from_elements(scoped_elements)
+        effective_role_snapshot["scoped_snapshot"] = str(scoped_role_snapshot.get("snapshot") or "")
+        effective_role_snapshot["scoped_tree"] = list(scoped_role_snapshot.get("tree") or [])
+        effective_role_snapshot["scoped_refs"] = dict(scoped_role_snapshot.get("refs") or {})
+        effective_role_snapshot["scoped_stats"] = dict(scoped_role_snapshot.get("stats") or {})
+        effective_role_snapshot["scope_applied"] = True
+        effective_role_snapshot["scope_container_ref_id"] = requested_scope_ref_id
+    else:
+        effective_role_snapshot["scope_applied"] = False
+        effective_role_snapshot["scope_container_ref_id"] = ""
     state["snapshot_counter"] = int(state.get("snapshot_counter") or 0) + 1
     snapshot_id = f"openclaw:{session_id}:{state['snapshot_counter']}"
     state["last_snapshot_id"] = snapshot_id
