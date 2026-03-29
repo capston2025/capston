@@ -158,6 +158,7 @@ def analyze_dom(
                         role_ref_name=attrs.get("role_ref_name"),
                         role_ref_nth=attrs.get("role_ref_nth"),
                         context_score_hint=attrs.get("context_score_hint"),
+                        ref_id=ref_id if isinstance(ref_id, str) and ref_id else None,
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=is_enabled,
                     )

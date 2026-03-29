@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from .models import GoalResult, StepResult, TestGoal
 from .goal_policy_runtime import initialize_goal_policy_runtime
 from .goal_replanning_runtime import initialize_goal_replanning_state
+from .wrapper_trace_runtime import thin_wrapper_enabled
 
 
 def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any]:
@@ -113,6 +114,17 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._goal_constraints = agent._derive_goal_constraints(goal)
     initialize_goal_policy_runtime(agent, goal)
     initialize_goal_replanning_state(agent, goal)
+    if thin_wrapper_enabled(agent):
+        # Thin wrapper mode keeps goal semantics/replanning, but strips the legacy
+        # phase machine so OpenClaw-style judgment is driven by the live DOM.
+        agent._goal_policy_phase = ""
+        agent._goal_phase_intent = ""
+        agent._goal_phase_resume_after_auth = ""
+        agent._goal_policy_baseline_evidence = None
+        agent._goal_plan_requires_precheck = False
+        agent._goal_plan_precheck_done = False
+        agent._goal_plan_precheck_result = ""
+        agent._goal_plan_remediation_completed = False
     agent._activate_steering_policy(goal)
     agent._goal_metric_value = None
     agent._last_filter_semantic_report = None

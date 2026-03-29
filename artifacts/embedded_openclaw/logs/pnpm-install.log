@@ -1,0 +1,44 @@
+Scope: all 82 workspace projects
+Lockfile is up to date, resolution step is skipped
+Packages: +1214
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 0, reused 1, downloaded 0, added 0
+Progress: resolved 0, reused 804, downloaded 23, added 71
+Progress: resolved 0, reused 804, downloaded 77, added 425
+Progress: resolved 0, reused 804, downloaded 110, added 753
+Progress: resolved 0, reused 804, downloaded 139, added 942
+Progress: resolved 0, reused 804, downloaded 175, added 992
+Progress: resolved 0, reused 804, downloaded 212, added 1032
+Progress: resolved 0, reused 804, downloaded 242, added 1064
+Progress: resolved 0, reused 804, downloaded 280, added 1116
+Progress: resolved 0, reused 804, downloaded 313, added 1152
+Progress: resolved 0, reused 804, downloaded 339, added 1182
+Progress: resolved 0, reused 804, downloaded 346, added 1191
+Progress: resolved 0, reused 804, downloaded 347, added 1191
+Progress: resolved 0, reused 804, downloaded 349, added 1194
+Progress: resolved 0, reused 804, downloaded 350, added 1195
+Progress: resolved 0, reused 804, downloaded 351, added 1196
+Progress: resolved 0, reused 804, downloaded 352, added 1196
+Progress: resolved 0, reused 804, downloaded 352, added 1197
+Progress: resolved 0, reused 804, downloaded 353, added 1198
+Progress: resolved 0, reused 804, downloaded 354, added 1199
+Progress: resolved 0, reused 804, downloaded 355, added 1200
+Progress: resolved 0, reused 804, downloaded 357, added 1202
+Progress: resolved 0, reused 804, downloaded 358, added 1203
+Progress: resolved 0, reused 804, downloaded 359, added 1203
+Progress: resolved 0, reused 804, downloaded 360, added 1205
+Progress: resolved 0, reused 804, downloaded 361, added 1205
+Progress: resolved 0, reused 804, downloaded 362, added 1214, done
+node_modules/protobufjs postinstall$ node scripts/postinstall
+node_modules/@tloncorp/tlon-skill postinstall$ node scripts/postinstall.js
+node_modules/node-llama-cpp postinstall$ node ./dist/cli/cli.js postinstall
+node_modules/protobufjs postinstall: Done
+node_modules/@tloncorp/tlon-skill postinstall: [tlon-skill] Binary ready: /Users/coldmans/Documents/GitHub/capston/vendor/openclaw/node_modules/@tloncorp/tlon-skill-darwin-arm64/tlon
+node_modules/@tloncorp/tlon-skill postinstall: Done
+node_modules/node-llama-cpp postinstall: Done
+node_modules/@whiskeysockets/baileys preinstall$ node ./engine-requirements.js
+node_modules/@whiskeysockets/baileys preinstall: Done
+
+. prepare$ command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git config core.hooksPath git-hooks || exit 0
+. prepare: Done
+Done in 38.4s using pnpm v10.32.1

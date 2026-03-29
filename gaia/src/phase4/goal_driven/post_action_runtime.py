@@ -4,17 +4,9 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .execute_goal_progress import evaluate_post_action_progress
-from .execute_goal_recovery import handle_action_recovery
-from .execute_goal_streaks import update_action_streaks_and_loops
 from .goal_policy_phase_runtime import advance_goal_policy_phase
 from .models import ActionType, TestGoal
-
-
-def _is_discovery_no_progress(agent: Any, decision: Any) -> bool:
-    current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
-    if current_phase != "locate_target":
-        return False
-    return getattr(decision, "action", None) in {ActionType.FILL, ActionType.PRESS, ActionType.SELECT}
+from .wrapper_trace_runtime import dump_wrapper_trace, serialize_dom_elements, thin_wrapper_enabled, wrapper_mode_name
 
 
 def handle_post_action_runtime(
@@ -70,20 +62,42 @@ def handle_post_action_runtime(
         backend_trace = dict(getattr(agent, "_last_backend_trace", None) or {})
     llm_trace = dict(getattr(agent, "_last_llm_trace", None) or {}) if isinstance(getattr(agent, "_last_llm_trace", None), dict) else {}
     terminal_result = progress_eval.get("terminal_result")
-    phase_update = advance_goal_policy_phase(
-        agent,
-        goal=goal,
-        decision=decision,
-        success=success,
-        changed=changed,
-        dom_elements=dom_elements,
-        post_dom=post_dom if isinstance(post_dom, list) else None,
-        auth_prompt_visible=login_gate_visible,
-        modal_open=modal_open_hint,
-        terminal_result=terminal_result,
-    )
-    previous_goal_phase = str(phase_update.get("previous_phase") or "").strip()
-    current_goal_phase = str(phase_update.get("current_phase") or "").strip()
+    wrapper_mode = wrapper_mode_name(agent)
+    agentic_wrapper_mode = thin_wrapper_enabled(agent)
+    current_goal_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
+    current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or "").strip()
+    if agentic_wrapper_mode:
+        phase_event = "terminal"
+        if terminal_result is None:
+            if login_gate_visible:
+                phase_event = "blocked_auth"
+            elif success:
+                phase_event = "action_ok" if changed else "action_no_state_change"
+            else:
+                phase_event = "action_failed"
+        phase_update = {
+            "event": phase_event,
+            "previous_phase": current_goal_phase,
+            "current_phase": current_goal_phase,
+            "phase_intent": current_phase_intent,
+        }
+        previous_goal_phase = current_goal_phase
+    else:
+        phase_update = advance_goal_policy_phase(
+            agent,
+            goal=goal,
+            decision=decision,
+            success=success,
+            changed=changed,
+            dom_elements=dom_elements,
+            post_dom=post_dom if isinstance(post_dom, list) else None,
+            auth_prompt_visible=login_gate_visible,
+            modal_open=modal_open_hint,
+            terminal_result=terminal_result,
+        )
+        previous_goal_phase = str(phase_update.get("previous_phase") or "").strip()
+        current_goal_phase = str(phase_update.get("current_phase") or "").strip()
+        current_phase_intent = str(phase_update.get("phase_intent") or current_phase_intent).strip()
     if previous_goal_phase and current_goal_phase and previous_goal_phase != current_goal_phase:
         agent._log(
             f"🧭 goal phase 전환: {previous_goal_phase} -> {current_goal_phase}"
@@ -97,7 +111,8 @@ def handle_post_action_runtime(
         owner = str(backend_trace.get("owner") or "")
     step_trace = {
         "phase": current_goal_phase,
-        "phase_intent": str(getattr(agent, "_goal_phase_intent", "") or ""),
+        "phase_intent": current_phase_intent,
+        "wrapper_mode": wrapper_mode,
         "llm": llm_trace,
         "backend": backend_trace,
         "gaia": {
@@ -107,11 +122,28 @@ def handle_post_action_runtime(
         },
         "owner": owner,
     }
-    openclaw_agentic_mode = str(
-        getattr(agent, "_browser_backend_name", "") or ""
-    ).strip().lower() == "openclaw"
     agent._last_step_trace = step_trace
     agent._log(f"🧪 step trace: {step_trace}")
+    dump_wrapper_trace(
+        agent,
+        kind="post_action",
+        payload={
+            "goal": {
+                "id": getattr(goal, "id", ""),
+                "name": getattr(goal, "name", ""),
+            },
+            "decision": decision.model_dump() if hasattr(decision, "model_dump") else str(decision),
+            "success": bool(success),
+            "error": error,
+            "phase_update": dict(phase_update or {}),
+            "step_trace": step_trace,
+            "changed": bool(changed),
+            "state_change": state_change if isinstance(state_change, dict) else {},
+            "post_dom": serialize_dom_elements(post_dom if isinstance(post_dom, list) else [], limit=120, agent=agent),
+            "agentic_wrapper_mode": bool(agentic_wrapper_mode),
+            "wrapper_mode": wrapper_mode,
+        },
+    )
     if terminal_result is not None:
         return {
             "terminal_result": terminal_result,
@@ -270,31 +302,12 @@ def handle_post_action_runtime(
         agent._weak_progress_streak = 0
         setattr(agent, "_discovery_no_progress_streak", 0)
     else:
-        if openclaw_agentic_mode:
-            setattr(agent, "_discovery_no_progress_streak", 0)
-            agent._no_progress_counter += 1
+        setattr(agent, "_discovery_no_progress_streak", 0)
+        agent._no_progress_counter += 1
+        if weak_only:
+            agent._weak_progress_streak += 1
         else:
-            discovery_no_progress = _is_discovery_no_progress(agent, decision)
-            if discovery_no_progress:
-                discovery_streak = int(getattr(agent, "_discovery_no_progress_streak", 0) or 0) + 1
-                setattr(agent, "_discovery_no_progress_streak", discovery_streak)
-                grace_limit = max(1, int(agent._loop_policy_value("discovery_no_progress_grace", 2)))
-                if discovery_streak <= grace_limit:
-                    agent._record_reason_code("discovery_no_progress_grace")
-                    agent._no_progress_counter = 0
-                else:
-                    agent._no_progress_counter += 1
-            else:
-                setattr(agent, "_discovery_no_progress_streak", 0)
-                agent._no_progress_counter += 1
-            if weak_only:
-                agent._weak_progress_streak += 1
-                weak_limit = max(1, agent._loop_policy_value("weak_progress_streak_limit", 3))
-                if agent._weak_progress_streak >= weak_limit:
-                    agent._record_reason_code("weak_progress_only")
-                    force_context_shift = True
-            else:
-                agent._weak_progress_streak = 0
+            agent._weak_progress_streak = 0
 
     master_orchestrator.record_progress(
         changed=changed,
@@ -323,6 +336,18 @@ def handle_post_action_runtime(
         error=error,
     )
     reason_code = agent._last_exec_result.reason_code if agent._last_exec_result else "unknown"
+    if (
+        agentic_wrapper_mode
+        and login_gate_visible
+        and decision.action == ActionType.CLICK
+        and reason_code in {"not_found", "not_actionable", "action_timeout", "no_state_change"}
+    ):
+        agent._action_feedback.append(
+            "로그인/인증 surface가 열려 있어 배경 CTA가 차단됐습니다. "
+            "같은 '바로 추가'를 반복하지 말고 현재 인증 surface 내부의 입력/제출 요소를 우선 선택하세요."
+        )
+        if len(agent._action_feedback) > 10:
+            agent._action_feedback = agent._action_feedback[-10:]
     if bool(success and changed):
         agent._overlay_intercept_pending = False
     elif reason_code in {"not_actionable", "no_state_change"} and agent._error_indicates_overlay_intercept(error):
@@ -335,29 +360,6 @@ def handle_post_action_runtime(
         success=success,
         changed=changed,
     )
-    if action_intent_key and not openclaw_agentic_mode:
-        intent_soft_fail_streaks = getattr(agent, "_intent_soft_fail_streaks", {}) or {}
-        if success and changed:
-            intent_soft_fail_streaks.pop(action_intent_key, None)
-        elif reason_code in {
-            "no_state_change",
-            "not_actionable",
-            "ambiguous_ref_target",
-            "blocked_ref_no_progress",
-        }:
-            streak = int(intent_soft_fail_streaks.get(action_intent_key, 0)) + 1
-            intent_soft_fail_streaks[action_intent_key] = streak
-            if streak >= 2:
-                force_context_shift = True
-                intent_soft_fail_streaks[action_intent_key] = 0
-                agent._action_feedback.append(
-                    "같은 의도를 반복했지만 진행 신호가 없습니다. 다른 페이지/섹션/탭으로 전환한 뒤 다음 행동을 선택하세요."
-                )
-                if len(agent._action_feedback) > 10:
-                    agent._action_feedback = agent._action_feedback[-10:]
-        else:
-            intent_soft_fail_streaks.pop(action_intent_key, None)
-        agent._intent_soft_fail_streaks = intent_soft_fail_streaks
     if (
         login_gate_visible
         and decision.action == ActionType.CLICK
@@ -387,69 +389,6 @@ def handle_post_action_runtime(
                 "state_change": state_change,
                 "terminal_result": None,
             }
-
-    if not openclaw_agentic_mode:
-        recovery_result = handle_action_recovery(
-            agent=agent,
-            goal=goal,
-            decision=decision,
-            success=success,
-            changed=changed,
-            reason_code=reason_code,
-            login_gate_visible=login_gate_visible,
-            has_login_test_data=has_login_test_data,
-            post_dom=post_dom,
-            force_context_shift=force_context_shift,
-            ineffective_action_streak=ineffective_action_streak,
-        )
-        force_context_shift = bool(recovery_result.get("force_context_shift", force_context_shift))
-        ineffective_action_streak = int(
-            recovery_result.get("ineffective_action_streak", ineffective_action_streak)
-        )
-        if bool(recovery_result.get("continue_loop")):
-            return {
-                "continue_loop": True,
-                "filter_semantic_attempts": filter_semantic_attempts,
-                "scroll_streak": scroll_streak,
-                "ineffective_action_streak": ineffective_action_streak,
-                "force_context_shift": force_context_shift,
-                "context_shift_fail_streak": context_shift_fail_streak,
-                "context_shift_cooldown": context_shift_cooldown,
-                "post_dom": post_dom,
-                "changed": changed,
-                "state_change": state_change,
-                "terminal_result": None,
-            }
-
-        streak_result = update_action_streaks_and_loops(
-            agent=agent,
-            goal=goal,
-            decision=decision,
-            success=success,
-            changed=changed,
-            click_intent_key=click_intent_key,
-            scroll_streak=scroll_streak,
-            ineffective_action_streak=ineffective_action_streak,
-            force_context_shift=force_context_shift,
-            context_shift_fail_streak=context_shift_fail_streak,
-            context_shift_cooldown=context_shift_cooldown,
-            steps=steps,
-            post_dom=post_dom,
-            step_count=step_count,
-            start_time=start_time,
-        )
-        scroll_streak = int(streak_result.get("scroll_streak", scroll_streak))
-        ineffective_action_streak = int(
-            streak_result.get("ineffective_action_streak", ineffective_action_streak)
-        )
-        force_context_shift = bool(streak_result.get("force_context_shift", force_context_shift))
-        context_shift_fail_streak = int(
-            streak_result.get("context_shift_fail_streak", context_shift_fail_streak)
-        )
-        context_shift_cooldown = int(
-            streak_result.get("context_shift_cooldown", context_shift_cooldown)
-        )
-        terminal_result = streak_result.get("terminal_result")
     return {
         "terminal_result": terminal_result,
         "continue_loop": False,

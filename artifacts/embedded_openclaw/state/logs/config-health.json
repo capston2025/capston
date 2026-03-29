@@ -1,0 +1,16 @@
+{
+  "entries": {
+    "/Users/coldmans/Documents/GitHub/capston/artifacts/embedded_openclaw/openclaw.json": {
+      "lastKnownGood": {
+        "hash": "767cf78df291b70d4b625fe558810260f918775e750b8f57b32cd516be475e64",
+        "bytes": 519,
+        "mtimeMs": 1774768753085.6902,
+        "ctimeMs": 1774768753085.6902,
+        "hasMeta": false,
+        "gatewayMode": "local",
+        "observedAt": "2026-03-29T07:19:13.944Z"
+      },
+      "lastObservedSuspiciousSignature": null
+    }
+  }
+}

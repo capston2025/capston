@@ -1,0 +1,29 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 18789,
+    "auth": {
+      "mode": "none"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "browser": {
+        "enabled": true
+      }
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "headless": false,
+    "defaultProfile": "openclaw",
+    "cdpPortRangeStart": 18800,
+    "profiles": {
+      "openclaw": {
+        "cdpPort": 18800,
+        "color": "#FF4500"
+      }
+    },
+    "executablePath": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  }
+}

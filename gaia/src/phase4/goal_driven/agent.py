@@ -188,6 +188,7 @@ from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from .text_llm_runtime import call_llm_text_only as call_llm_text_only_impl
 from .captcha_observer_runtime import run_captcha_observer as run_captcha_observer_impl
+from .wrapper_trace_runtime import thin_wrapper_enabled
 
 
 class GoalDrivenAgent:
@@ -1139,8 +1140,9 @@ class GoalDrivenAgent:
     @staticmethod
     def _decision_signature(decision: ActionDecision) -> str:
         element = decision.element_id if decision.element_id is not None else -1
+        ref_id = str(getattr(decision, "ref_id", "") or "").strip().lower()
         value = (decision.value or "").strip().lower()
-        return f"{decision.action.value}:{element}:{value}"
+        return f"{decision.action.value}:{element}:{ref_id}:{value}"
 
     @classmethod
     def _looks_like_modal_close_loop(cls, decision: ActionDecision) -> bool:
@@ -1371,11 +1373,12 @@ class GoalDrivenAgent:
         last_metric_value: Optional[float] = None
         collect_metric_stall_count = 0
         context_shift_cooldown = 0
+        thin_wrapper_mode = thin_wrapper_enabled(self)
 
         while orchestrator.can_continue():
             step_count = orchestrator.begin_step()
             step_start = time.time()
-            if context_shift_cooldown > 0:
+            if (not thin_wrapper_mode) and context_shift_cooldown > 0:
                 context_shift_cooldown -= 1
 
             self._log(f"\n--- Step {step_count}/{orchestrator.max_steps} ---")
@@ -1443,7 +1446,7 @@ class GoalDrivenAgent:
                         start_time=start_time,
                         reason=orchestrator.stop_reason,
                     )
-            if hasattr(orchestrator, "consume_oscillation") and bool(orchestrator.consume_oscillation()):
+            if (not thin_wrapper_mode) and hasattr(orchestrator, "consume_oscillation") and bool(orchestrator.consume_oscillation()):
                 self._log("🧭 화면 진동(ABAB) 패턴 감지: 컨텍스트 전환을 잠시 중단하고 직접 상호작용 후보를 우선 시도합니다.")
                 force_context_shift = False
                 context_shift_used_elements.clear()
@@ -1480,15 +1483,23 @@ class GoalDrivenAgent:
             )
             if (heuristic_login_gate or prominent_auth_form) and not login_gate_visible:
                 self._log("ℹ️ 로그인 힌트는 감지됐지만 modal_open/compact_auth/auth_form 조건이 없어 AUTH 분기를 보류합니다.")
-            interrupt_payload = resolve_goal_policy_interrupts(
-                self,
-                goal=goal,
-                dom_elements=dom_elements,
-                login_gate_visible=login_gate_visible,
-                has_login_test_data=has_login_test_data,
-                login_intervention_asked=login_intervention_asked,
-                modal_open_hint=modal_open_hint,
-            )
+            interrupt_payload = {
+                "login_intervention": {
+                    "has_login_test_data": has_login_test_data,
+                    "login_intervention_asked": login_intervention_asked,
+                    "aborted": False,
+                }
+            }
+            if (not thin_wrapper_mode) or (login_gate_visible and not has_login_test_data):
+                interrupt_payload = resolve_goal_policy_interrupts(
+                    self,
+                    goal=goal,
+                    dom_elements=dom_elements,
+                    login_gate_visible=login_gate_visible,
+                    has_login_test_data=has_login_test_data,
+                    login_intervention_asked=login_intervention_asked,
+                    modal_open_hint=modal_open_hint,
+                )
             login_intervention = dict(interrupt_payload.get("login_intervention") or {})
             has_login_test_data = bool(login_intervention.get("has_login_test_data", has_login_test_data))
             login_intervention_asked = bool(
@@ -1557,9 +1568,11 @@ class GoalDrivenAgent:
                 has_login_test_data=has_login_test_data,
                 close_element_id=None,
             )
-            master_directive = master_orchestrator.next_directive(
-                auth_required=bool(login_gate_visible and not has_login_test_data)
-            )
+            master_directive = None
+            if not thin_wrapper_mode:
+                master_directive = master_orchestrator.next_directive(
+                    auth_required=bool(login_gate_visible and not has_login_test_data)
+                )
 
             if directive.kind == "stop":
                 return self._build_failure_result(
@@ -1570,67 +1583,70 @@ class GoalDrivenAgent:
                     reason=directive.reason or "마스터 오케스트레이터가 실행을 중단했습니다.",
                 )
 
-            handoff_result = handle_master_handoff(
-                agent=self,
-                goal=goal,
-                master_directive=master_directive,
-                context_shift_fail_streak=context_shift_fail_streak,
-                context_shift_cooldown=context_shift_cooldown,
-                force_context_shift=force_context_shift,
-            )
-            force_context_shift = bool(handoff_result.get("force_context_shift", force_context_shift))
-            if bool(handoff_result.get("aborted")):
-                return self._build_failure_result(
+            if not thin_wrapper_mode:
+                handoff_result = handle_master_handoff(
+                    agent=self,
                     goal=goal,
-                    steps=steps,
+                    master_directive=master_directive,
+                    context_shift_fail_streak=context_shift_fail_streak,
+                    context_shift_cooldown=context_shift_cooldown,
+                    force_context_shift=force_context_shift,
+                )
+                force_context_shift = bool(handoff_result.get("force_context_shift", force_context_shift))
+                if bool(handoff_result.get("aborted")):
+                    return self._build_failure_result(
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=str(handoff_result.get("abort_reason") or "사용자 요청으로 실행을 중단했습니다."),
+                    )
+
+                if collect_unmet and collect_metric_stall_count >= 2 and context_shift_cooldown <= 0:
+                    force_context_shift = True
+                    self._action_feedback.append(
+                        "수집 지표가 정체되어 페이지/탭/섹션 전환을 강제합니다."
+                    )
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+
+                context_shift_result = handle_forced_context_shift(
+                    agent=self,
+                    goal=goal,
+                    orchestrator=orchestrator,
                     step_count=step_count,
-                    start_time=start_time,
-                    reason=str(handoff_result.get("abort_reason") or "사용자 요청으로 실행을 중단했습니다."),
+                    step_start=step_start,
+                    dom_elements=dom_elements,
+                    before_signature=before_signature,
+                    collect_unmet=collect_unmet,
+                    sub_agent=sub_agent,
+                    steps=steps,
+                    context_shift_used_elements=context_shift_used_elements,
+                    context_shift_fail_streak=context_shift_fail_streak,
+                    force_context_shift=force_context_shift,
+                    context_shift_cooldown=context_shift_cooldown,
+                    ineffective_action_streak=ineffective_action_streak,
                 )
-
-            if collect_unmet and collect_metric_stall_count >= 2 and context_shift_cooldown <= 0:
-                force_context_shift = True
-                self._action_feedback.append(
-                    "수집 지표가 정체되어 페이지/탭/섹션 전환을 강제합니다."
+                force_context_shift = bool(context_shift_result.get("force_context_shift", force_context_shift))
+                context_shift_fail_streak = int(
+                    context_shift_result.get("context_shift_fail_streak", context_shift_fail_streak)
                 )
-                if len(self._action_feedback) > 10:
-                    self._action_feedback = self._action_feedback[-10:]
+                context_shift_cooldown = int(
+                    context_shift_result.get("context_shift_cooldown", context_shift_cooldown)
+                )
+                ineffective_action_streak = int(
+                    context_shift_result.get("ineffective_action_streak", ineffective_action_streak)
+                )
+                if bool(context_shift_result.get("continue_loop")):
+                    continue
 
-            context_shift_result = handle_forced_context_shift(
-                agent=self,
-                goal=goal,
-                orchestrator=orchestrator,
-                step_count=step_count,
-                step_start=step_start,
-                dom_elements=dom_elements,
-                before_signature=before_signature,
-                collect_unmet=collect_unmet,
-                sub_agent=sub_agent,
-                steps=steps,
-                context_shift_used_elements=context_shift_used_elements,
-                context_shift_fail_streak=context_shift_fail_streak,
-                force_context_shift=force_context_shift,
-                context_shift_cooldown=context_shift_cooldown,
-                ineffective_action_streak=ineffective_action_streak,
-            )
-            force_context_shift = bool(context_shift_result.get("force_context_shift", force_context_shift))
-            context_shift_fail_streak = int(
-                context_shift_result.get("context_shift_fail_streak", context_shift_fail_streak)
-            )
-            context_shift_cooldown = int(
-                context_shift_result.get("context_shift_cooldown", context_shift_cooldown)
-            )
-            ineffective_action_streak = int(
-                context_shift_result.get("ineffective_action_streak", ineffective_action_streak)
-            )
-            if bool(context_shift_result.get("continue_loop")):
-                continue
-
-            deterministic_preplan = self._build_deterministic_goal_preplan(
-                goal=goal,
-                dom_elements=dom_elements,
-                steps=steps,
-            )
+            deterministic_preplan = None
+            if not thin_wrapper_mode:
+                deterministic_preplan = self._build_deterministic_goal_preplan(
+                    goal=goal,
+                    dom_elements=dom_elements,
+                    steps=steps,
+                )
             if deterministic_preplan is not None:
                 decision = deterministic_preplan
                 self._log(f"규칙 기반 선결정: {decision.action.value} - {decision.reasoning}")
@@ -1708,6 +1724,7 @@ class GoalDrivenAgent:
                 if wait_completion_reason:
                     decision = ActionDecision(
                         action=decision.action,
+                        ref_id=decision.ref_id,
                         element_id=decision.element_id,
                         value=decision.value,
                         reasoning=decision.reasoning,
@@ -1755,6 +1772,7 @@ class GoalDrivenAgent:
                     self._log(f"⚠️ 목표 달성 판정 보류: {invalid_reason}")
                     decision = ActionDecision(
                         action=decision.action,
+                        ref_id=decision.ref_id,
                         element_id=decision.element_id,
                         value=decision.value,
                         reasoning=f"{decision.reasoning} | 보류 사유: {invalid_reason}",

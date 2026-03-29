@@ -28,6 +28,27 @@ _TARGET_TERM_NOISE_TOKENS = {
     "반영", "반영이", "추가", "삭제", "제거", "있으면", "있다면", "있었으면",
     "추가되어있었으면", "추가되어 있었으면", "already", "already_present",
 }
+_TARGET_TERM_ACTION_TOKENS = {
+    "바로추가",
+    "추가",
+    "담기",
+    "삭제",
+    "제거",
+    "시간표에서제거",
+    "위시리스트에담기",
+    "강의평",
+    "강의평보기",
+    "상세정보보기",
+    "내시간표보기",
+    "보기",
+    "열기",
+    "로그인",
+    "login",
+    "remove",
+    "delete",
+    "add",
+    "apply",
+}
 _TARGET_TERM_NOISE_SUFFIXES = (
     "해봐",
     "해주세요",
@@ -40,6 +61,11 @@ _TARGET_TERM_NOISE_SUFFIXES = (
     "이었다면",
     "라면",
 )
+
+
+def _is_actionish_target_term(normalized_term: str) -> bool:
+    compact = re.sub(r"\s+", "", str(normalized_term or "").strip().lower())
+    return bool(compact and compact in _TARGET_TERM_ACTION_TOKENS)
 
 
 @dataclass
@@ -150,6 +176,8 @@ def _sanitize_target_terms(
         if not norm or norm in seen:
             continue
         if norm in _TARGET_TERM_NOISE_TOKENS:
+            continue
+        if _is_actionish_target_term(norm):
             continue
         if any(norm.endswith(suffix) for suffix in _TARGET_TERM_NOISE_SUFFIXES):
             continue

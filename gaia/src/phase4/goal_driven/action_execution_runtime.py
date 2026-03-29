@@ -40,6 +40,109 @@ def _execute_request_timeout(agent, request_action: str, action: str) -> tuple[i
     return connect_timeout, max(30, int(read_timeout))
 
 
+def _is_stale_like_timeout(result: Optional[ActionExecResult]) -> bool:
+    reason_code = str(getattr(result, "reason_code", "") or "").strip().lower()
+    if reason_code != "action_timeout":
+        return False
+    reason = str(getattr(result, "reason", "") or "")
+    lower_reason = reason.lower()
+    return any(
+        token in lower_reason
+        for token in (
+            "latest snapshot",
+            "최신 snapshot",
+            "다시 확인하세요",
+            "찾을 수 없거나 표시되지",
+            "찾을 수 없거나",
+            "not visible",
+            "to be visible",
+            "waiting for locator",
+            "detached from dom",
+        )
+    )
+
+
+def _normalized_binding_text(agent, value: object) -> str:
+    try:
+        return agent._normalize_text(value)
+    except Exception:
+        return str(value or "").strip().lower()
+
+
+def _find_rebound_element(agent, prior_element: Optional[DOMElement], live_dom: List[DOMElement]) -> Optional[DOMElement]:
+    if prior_element is None or not isinstance(live_dom, list) or not live_dom:
+        return None
+
+    prior_text = _normalized_binding_text(agent, getattr(prior_element, "text", ""))
+    prior_aria = _normalized_binding_text(agent, getattr(prior_element, "aria_label", ""))
+    prior_title = _normalized_binding_text(agent, getattr(prior_element, "title", ""))
+    prior_tag = _normalized_binding_text(agent, getattr(prior_element, "tag", ""))
+    prior_role = _normalized_binding_text(agent, getattr(prior_element, "role", ""))
+    prior_container = _normalized_binding_text(agent, getattr(prior_element, "container_name", ""))
+    prior_context = _normalized_binding_text(agent, getattr(prior_element, "context_text", ""))
+    prior_role_ref_role = _normalized_binding_text(agent, getattr(prior_element, "role_ref_role", ""))
+    prior_role_ref_name = _normalized_binding_text(agent, getattr(prior_element, "role_ref_name", ""))
+    try:
+        prior_role_ref_nth = int(getattr(prior_element, "role_ref_nth", 0) or 0)
+    except Exception:
+        prior_role_ref_nth = 0
+
+    best_score = -1
+    best_element: Optional[DOMElement] = None
+    for candidate in live_dom:
+        score = 0
+        if prior_tag and prior_tag == _normalized_binding_text(agent, getattr(candidate, "tag", "")):
+            score += 2
+        if prior_role and prior_role == _normalized_binding_text(agent, getattr(candidate, "role", "")):
+            score += 3
+        candidate_text = _normalized_binding_text(agent, getattr(candidate, "text", ""))
+        candidate_aria = _normalized_binding_text(agent, getattr(candidate, "aria_label", ""))
+        candidate_title = _normalized_binding_text(agent, getattr(candidate, "title", ""))
+        candidate_container = _normalized_binding_text(agent, getattr(candidate, "container_name", ""))
+        candidate_context = _normalized_binding_text(agent, getattr(candidate, "context_text", ""))
+        candidate_role_ref_role = _normalized_binding_text(agent, getattr(candidate, "role_ref_role", ""))
+        candidate_role_ref_name = _normalized_binding_text(agent, getattr(candidate, "role_ref_name", ""))
+        try:
+            candidate_role_ref_nth = int(getattr(candidate, "role_ref_nth", 0) or 0)
+        except Exception:
+            candidate_role_ref_nth = 0
+
+        if prior_text and prior_text == candidate_text:
+            score += 5
+        if prior_aria and prior_aria == candidate_aria:
+            score += 4
+        if prior_title and prior_title == candidate_title:
+            score += 2
+        if prior_container and prior_container == candidate_container:
+            score += 4
+        if prior_context and prior_context == candidate_context:
+            score += 3
+        if prior_role_ref_role and prior_role_ref_role == candidate_role_ref_role:
+            score += 4
+        if prior_role_ref_name and prior_role_ref_name == candidate_role_ref_name:
+            score += 5
+        if (
+            prior_role_ref_role
+            and prior_role_ref_name
+            and prior_role_ref_role == candidate_role_ref_role
+            and prior_role_ref_name == candidate_role_ref_name
+        ):
+            if prior_role_ref_nth == candidate_role_ref_nth:
+                score += 6
+            else:
+                score -= min(abs(candidate_role_ref_nth - prior_role_ref_nth), 3)
+        if prior_text and candidate_text and prior_text in candidate_text:
+            score += 1
+
+        if score > best_score:
+            best_score = score
+            best_element = candidate
+
+    if best_score < 7:
+        return None
+    return best_element
+
+
 def execute_decision(
     agent,
     decision: ActionDecision,
@@ -186,6 +289,7 @@ def execute_decision(
     selector = None
     full_selector = None
     ref_id = str(getattr(decision, "ref_id", "") or "").strip() or None
+    selected_element = None
     requires_ref = decision.action in {
         ActionType.CLICK,
         ActionType.FILL,
@@ -193,6 +297,26 @@ def execute_decision(
         ActionType.HOVER,
         ActionType.SELECT,
     }
+    if ref_id:
+        try:
+            selected_element = next(
+                (el for el in dom_elements if str(getattr(el, "ref_id", "") or "").strip() == ref_id),
+                None,
+            )
+        except Exception:
+            selected_element = None
+    if selected_element is None and decision.element_id is not None:
+        try:
+            selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
+        except Exception:
+            selected_element = None
+    bound_element_id = (
+        int(decision.element_id)
+        if decision.element_id is not None
+        else int(getattr(selected_element, "id", -1))
+        if selected_element is not None and getattr(selected_element, "id", None) is not None
+        else None
+    )
     if requires_ref and decision.element_id is not None:
         selector = agent._element_selectors.get(decision.element_id)
         full_selector = agent._element_full_selectors.get(decision.element_id)
@@ -229,20 +353,10 @@ def execute_decision(
                     ),
                 )
                 return False, agent._last_exec_result.as_error_message()
-    selected_element = None
-    if ref_id:
-        try:
-            selected_element = next(
-                (el for el in dom_elements if str(getattr(el, "ref_id", "") or "").strip() == ref_id),
-                None,
-            )
-        except Exception:
-            selected_element = None
-    if selected_element is None and decision.element_id is not None:
-        try:
-            selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
-        except Exception:
-            selected_element = None
+    if requires_ref and bound_element_id is not None:
+        selector = agent._element_selectors.get(bound_element_id) or selector
+        full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
+        ref_id = ref_id or agent._element_ref_ids.get(bound_element_id)
     element_actions = {
         ActionType.CLICK,
         ActionType.FILL,
@@ -250,7 +364,7 @@ def execute_decision(
         ActionType.HOVER,
         ActionType.SELECT,
     }
-    retriable_reason_codes = {
+    base_retriable_reason_codes = {
         "snapshot_not_found",
         "stale_snapshot",
         "ref_required",
@@ -259,13 +373,21 @@ def execute_decision(
     }
 
     def _refresh_ref_binding() -> None:
-        nonlocal selector, full_selector, ref_id
-        _ = agent._analyze_dom()
+        nonlocal selector, full_selector, ref_id, bound_element_id, selected_element
+        previous_ref_id = ref_id
+        refreshed_dom = agent._analyze_dom() or []
         selector_to_ref = getattr(agent, "_selector_to_ref_id", {}) or {}
-        if decision.element_id is not None:
-            selector = agent._element_selectors.get(decision.element_id) or selector
-            full_selector = agent._element_full_selectors.get(decision.element_id) or full_selector
-            ref_id = ref_id or agent._element_ref_ids.get(decision.element_id) or ref_id
+        ref_id = None
+        rebound_element = _find_rebound_element(agent, selected_element, refreshed_dom)
+        if rebound_element is not None and getattr(rebound_element, "id", None) is not None:
+            bound_element_id = int(getattr(rebound_element, "id"))
+            selected_element = rebound_element
+        if bound_element_id is not None:
+            selector = agent._element_selectors.get(bound_element_id) or selector
+            full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
+            ref_id = agent._element_ref_ids.get(bound_element_id) or None
+        if not ref_id and rebound_element is not None:
+            ref_id = str(getattr(rebound_element, "ref_id", "") or "").strip() or None
         if not ref_id:
             for candidate in (full_selector, selector):
                 if candidate:
@@ -273,6 +395,8 @@ def execute_decision(
                     if mapped_ref:
                         ref_id = mapped_ref
                         break
+        if ref_id and previous_ref_id and ref_id != previous_ref_id:
+            agent._log(f"♻️ ref 재바인딩: {previous_ref_id} -> {ref_id}")
 
     def _execute_with_ref_recovery(
         action_name: str,
@@ -289,7 +413,10 @@ def execute_decision(
         )
         should_retry = (
             decision.action in element_actions
-            and agent._last_exec_result.reason_code in retriable_reason_codes
+            and (
+                agent._last_exec_result.reason_code in base_retriable_reason_codes
+                or _is_stale_like_timeout(agent._last_exec_result)
+            )
         )
         if should_retry:
             prev_snapshot = agent._active_snapshot_id

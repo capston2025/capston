@@ -110,6 +110,335 @@ def context_score(agent: Any, el: DOMElement) -> float:
     return float(score)
 
 
+def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
+    semantics = getattr(agent, "_goal_semantics", None)
+    if semantics is None:
+        return []
+    normalize = getattr(agent, "_normalize_text", None)
+    if not callable(normalize):
+        return []
+    target_terms = [
+        normalize(term)
+        for term in list(getattr(semantics, "target_terms", []) or [])
+        if str(term or "").strip()
+    ]
+    destination_terms = [
+        normalize(term)
+        for term in list(getattr(semantics, "destination_terms", []) or [])
+        if str(term or "").strip()
+    ]
+    group_labels = getattr(el, "group_action_labels", None) or []
+    label_blob = normalize(" ".join(str(item or "") for item in group_labels))
+    self_blob = normalize(
+        " ".join(
+            [
+                str(getattr(el, "text", "") or ""),
+                str(getattr(el, "aria_label", "") or ""),
+                str(getattr(el, "placeholder", "") or ""),
+                str(getattr(el, "title", "") or ""),
+                str(getattr(el, "role_ref_name", "") or ""),
+                str(getattr(el, "role_ref_role", "") or ""),
+                str(getattr(el, "type", "") or ""),
+            ]
+        )
+    )
+    context_blob = normalize(
+        " ".join(
+            [
+                str(getattr(el, "container_name", "") or ""),
+                str(getattr(el, "container_role", "") or ""),
+                str(getattr(el, "context_text", "") or ""),
+            ]
+        )
+    )
+    blob = normalize(" ".join(part for part in (self_blob, context_blob, label_blob) if part))
+    if not blob:
+        return []
+    role = str(getattr(el, "role", "") or "").lower()
+    tag = str(getattr(el, "tag", "") or "").lower()
+    clickable = bool(
+        getattr(el, "is_enabled", True)
+        and (role in {"button", "link", "tab", "menuitem", "option"} or tag in {"button", "a"})
+    )
+    row_like = str(getattr(el, "container_role", "") or "").lower() in {"listitem", "row", "article", "region", "group"}
+    target_hit = any(term and (term in self_blob or term in context_blob) for term in target_terms)
+    destination_hit = any(term and (term in blob or term in label_blob) for term in destination_terms)
+    add_hit = any(token in blob for token in ("바로 추가", "추가", "담기", "add", "append", "apply", "반영", "넣기"))
+    remove_hit = any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우"))
+    reveal_hit = any(
+        token in blob
+        for token in (
+            "위시리스트",
+            "wishlist",
+            "장바구니",
+            "cart",
+            "시간표",
+            "timetable",
+            "내 목록",
+            "saved",
+            "favorites",
+            "선택 목록",
+            "selected",
+            "더보기",
+            "show more",
+            "view all",
+            "expand",
+            "펼치",
+            "열기",
+            "보기",
+            "open",
+            "view",
+        )
+    )
+    secondary_reveal_hit = any(
+        token in blob
+        for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "menu", "옵션", "more", "편집", "edit", "상세", "details")
+    )
+    close_tokens = [token for token in re.split(r"[^0-9A-Za-z가-힣×]+", self_blob) if token]
+    close_hit = any(token in blob for token in ("닫", "close", "취소", "cancel", "dismiss")) or any(
+        token.lower() in {"x", "×"} for token in close_tokens
+    )
+    feedback_conflict_hit = any(
+        token in blob
+        for token in (
+            "이미 시간표에 추가된",
+            "이미 추가",
+            "이미 담은",
+            "시간이 겹쳐",
+            "시간표와 시간이 겹쳐",
+            "충돌",
+            "중복",
+            "duplicate",
+            "already added",
+            "already exists",
+            "conflict",
+            "server 검사",
+        )
+    )
+    feedback_success_hit = any(
+        token in blob
+        for token in (
+            "추가했어요",
+            "추가되었습니다",
+            "추가되었",
+            "담았어요",
+            "saved to",
+            "added to",
+            "successfully added",
+        )
+    ) and any(
+        token in blob
+        for token in (
+            "시간표",
+            "내 시간표",
+            "wishlist",
+            "위시리스트",
+            "장바구니",
+            "cart",
+            "목록",
+            "list",
+        )
+    )
+    input_like = tag in {"input", "textarea"} or role == "textbox"
+    auth_context_blob = normalize(
+        " ".join(
+            [
+                self_blob,
+                str(getattr(el, "container_name", "") or ""),
+                str(getattr(el, "container_role", "") or ""),
+                str(getattr(el, "context_text", "") or ""),
+                label_blob,
+            ]
+        )
+    )
+    auth_surface_hit = any(
+        token in auth_context_blob
+        for token in (
+            "로그인",
+            "login",
+            "sign in",
+            "signin",
+            "회원가입",
+            "sign up",
+            "signup",
+            "auth",
+            "username",
+            "user id",
+            "userid",
+            "email",
+            "이메일",
+            "아이디",
+            "identifier",
+            "password",
+            "비밀번호",
+            "passwd",
+            "pwd",
+        )
+    )
+    auth_identifier_hit = any(
+        token in auth_context_blob
+        for token in ("username", "user id", "userid", "email", "이메일", "아이디", "identifier")
+    )
+    auth_password_hit = any(token in auth_context_blob for token in ("password", "비밀번호", "passwd", "pwd"))
+    role_ref_nth = getattr(el, "role_ref_nth", None)
+    second_textbox_hint = input_like and auth_surface_hit and role_ref_nth == 1 and not auth_identifier_hit
+
+    tags: List[str] = []
+    if target_hit:
+        tags.append("target_match")
+    if feedback_conflict_hit:
+        tags.append("feedback_conflict_signal")
+    if feedback_success_hit:
+        tags.append("feedback_success_signal")
+    if auth_surface_hit and clickable and any(
+        token in auth_context_blob
+        for token in ("로그인", "login", "sign in", "signin", "submit", "continue")
+    ):
+        tags.append("auth_submit_candidate")
+    if input_like and auth_surface_hit:
+        if auth_password_hit or str(getattr(el, "type", "") or "").lower() == "password" or second_textbox_hint:
+            tags.append("auth_password_field")
+        elif auth_identifier_hit or str(getattr(el, "type", "") or "").lower() in {"email", "text"}:
+            tags.append("auth_identifier_field")
+    if close_hit and clickable:
+        tags.append("close_like")
+    if destination_hit and target_hit and row_like:
+        tags.append("destination_target_row")
+    if clickable and add_hit and target_hit and not destination_hit:
+        tags.append("source_mutation_candidate")
+    if clickable and reveal_hit and destination_hit and not close_hit and not add_hit:
+        tags.append("destination_reveal_candidate")
+    if clickable and remove_hit and (destination_hit or target_hit) and not close_hit:
+        tags.append("destination_remove_candidate")
+    if clickable and secondary_reveal_hit and target_hit:
+        tags.append("target_row_secondary_reveal_candidate")
+    return tags
+
+
+def _is_source_like_element(agent: Any, el: DOMElement) -> bool:
+    blob = agent._normalize_text(
+        " ".join(
+            [
+                str(getattr(el, "container_name", "") or ""),
+                str(getattr(el, "context_text", "") or ""),
+                str(getattr(el, "role_ref_name", "") or ""),
+            ]
+        )
+    )
+    return any(
+        token in blob
+        for token in ("검색 결과", "search result", "result list", "과목 검색")
+    )
+
+
+def detect_active_surface_context(
+    agent: Any,
+    elements: List[DOMElement],
+    semantic_tag_cache: Optional[Dict[int, List[str]]] = None,
+) -> Dict[str, Any]:
+    if not isinstance(elements, list) or not elements:
+        return {"active": False}
+
+    tag_cache: Dict[int, List[str]] = semantic_tag_cache or {
+        int(getattr(el, "id", -1)): semantic_tags_for_element(agent, el)
+        for el in elements
+    }
+    snapshot_evidence = (
+        getattr(agent, "_last_snapshot_evidence", None)
+        if isinstance(getattr(agent, "_last_snapshot_evidence", None), dict)
+        else {}
+    )
+    modal_open_hint = bool((snapshot_evidence or {}).get("modal_open"))
+
+    destination_heading_index: Optional[int] = None
+    destination_heading: Optional[DOMElement] = None
+    destination_action_indices: List[int] = []
+    background_indices: List[int] = []
+
+    for index, element in enumerate(elements):
+        tags = set(tag_cache.get(int(getattr(element, "id", -1)), []) or [])
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(element, "text", "") or ""),
+                    str(getattr(element, "aria_label", "") or ""),
+                    str(getattr(element, "title", "") or ""),
+                    str(getattr(element, "role_ref_name", "") or ""),
+                    str(getattr(element, "context_text", "") or ""),
+                ]
+            )
+        )
+        role = str(getattr(element, "role", "") or "").strip().lower()
+        tag = str(getattr(element, "tag", "") or "").strip().lower()
+        if destination_heading is None and role in {"heading", "dialog", "alertdialog"} | {"banner"}:
+            if any(token in blob for token in ("내 시간표", "시간표", "위시리스트", "wishlist", "selected")):
+                destination_heading = element
+                destination_heading_index = index
+        elif destination_heading is None and tag in {"h1", "h2", "h3"}:
+            if any(token in blob for token in ("내 시간표", "시간표", "위시리스트", "wishlist", "selected")):
+                destination_heading = element
+                destination_heading_index = index
+        if (
+            ("destination_remove_candidate" in tags or "destination_reveal_candidate" in tags)
+            and not _is_source_like_element(agent, element)
+        ):
+            destination_action_indices.append(index)
+        if "source_mutation_candidate" in tags and _is_source_like_element(agent, element):
+            background_indices.append(index)
+
+    surface_active = bool(
+        destination_heading is not None
+        and (
+            modal_open_hint
+            or len(destination_action_indices) >= 2
+        )
+    )
+    if not surface_active:
+        return {"active": False}
+
+    close_candidate: Optional[DOMElement] = None
+    explicit_close: Optional[DOMElement] = None
+    if destination_heading_index is not None:
+        for index in range(destination_heading_index, min(len(elements), destination_heading_index + 8)):
+            element = elements[index]
+            role = str(getattr(element, "role", "") or "").strip().lower()
+            tag = str(getattr(element, "tag", "") or "").strip().lower()
+            if role not in {"button", "link"} and tag not in {"button", "a"}:
+                continue
+            label = " ".join(
+                str(getattr(element, key, "") or "")
+                for key in ("text", "aria_label", "title", "role_ref_name")
+            ).strip()
+            if label:
+                continue
+            close_candidate = element
+            break
+        for index, element in enumerate(elements):
+            tags = set(tag_cache.get(int(getattr(element, "id", -1)), []) or [])
+            if "close_like" in tags and not _is_source_like_element(agent, element):
+                if abs(index - destination_heading_index) <= 8:
+                    explicit_close = element
+                    break
+    if explicit_close is not None and close_candidate is None:
+        close_candidate = explicit_close
+
+    action_elements = [elements[index] for index in destination_action_indices[:6]]
+    background_elements = [elements[index] for index in background_indices[:4]]
+    return {
+        "active": True,
+        "kind": "destination_surface",
+        "heading": destination_heading,
+        "heading_index": destination_heading_index,
+        "action_elements": action_elements,
+        "action_ids": {int(getattr(el, "id", -1)) for el in action_elements},
+        "close_candidate": close_candidate,
+        "close_ids": {int(getattr(close_candidate, "id", -1))} if close_candidate is not None else set(),
+        "background_elements": background_elements,
+        "background_ids": {int(getattr(el, "id", -1)) for el in background_elements},
+        "modal_open_hint": modal_open_hint,
+    }
+
+
 def pick_scoped_container(
     agent: Any,
     elements: List[DOMElement],
@@ -202,6 +531,55 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     phase = (agent._runtime_phase or "COLLECT").upper()
     lines = []
     backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
+    goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
+    normalized_phrases = [
+        agent._normalize_text(v)
+        for v in re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or ""))
+        if agent._normalize_text(v)
+    ]
+    semantic_tag_cache: Dict[int, List[str]] = {
+        int(getattr(el, "id", -1)): semantic_tags_for_element(agent, el)
+        for el in (elements or [])
+    }
+    active_surface_context = detect_active_surface_context(agent, elements or [], semantic_tag_cache)
+    if active_surface_context.get("active"):
+        augmented_cache: Dict[int, List[str]] = {
+            element_id: list(tags)
+            for element_id, tags in semantic_tag_cache.items()
+        }
+        heading = active_surface_context.get("heading")
+        if isinstance(heading, DOMElement):
+            heading_id = int(getattr(heading, "id", -1))
+            if heading_id in augmented_cache and "active_surface_heading" not in augmented_cache[heading_id]:
+                augmented_cache[heading_id].append("active_surface_heading")
+        for element_id in set(active_surface_context.get("action_ids") or set()):
+            if element_id in augmented_cache and "active_surface_action" not in augmented_cache[element_id]:
+                augmented_cache[element_id].append("active_surface_action")
+        for element_id in set(active_surface_context.get("close_ids") or set()):
+            if element_id in augmented_cache and "surface_close_candidate" not in augmented_cache[element_id]:
+                augmented_cache[element_id].append("surface_close_candidate")
+        for element_id in set(active_surface_context.get("background_ids") or set()):
+            if element_id in augmented_cache and "occluded_background_candidate" not in augmented_cache[element_id]:
+                augmented_cache[element_id].append("occluded_background_candidate")
+        semantic_tag_cache = augmented_cache
+    auth_field_ids = {
+        element_id
+        for element_id, tags in semantic_tag_cache.items()
+        if "auth_identifier_field" in tags or "auth_password_field" in tags
+    }
+    auth_submit_ids = {
+        element_id for element_id, tags in semantic_tag_cache.items() if "auth_submit_candidate" in tags
+    }
+    auth_surface_active = bool((len(auth_field_ids) >= 2) or (auth_field_ids and auth_submit_ids))
+    feedback_signal_active = any(
+        ("feedback_conflict_signal" in tags) or ("feedback_success_signal" in tags)
+        for tags in semantic_tag_cache.values()
+    )
+    ref_semantic_tag_cache: Dict[str, set[str]] = {
+        str(getattr(el, "ref_id", "") or "").strip(): set(semantic_tag_cache.get(int(getattr(el, "id", -1)), []) or [])
+        for el in (elements or [])
+        if str(getattr(el, "ref_id", "") or "").strip()
+    }
 
     role_snapshot = getattr(agent, "_last_role_snapshot", None)
     if isinstance(role_snapshot, dict):
@@ -230,15 +608,10 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
             if meta_parts:
                 lines.append(f'- {" ".join(meta_parts)}')
             if tree_nodes:
-                goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
-                quoted_matches = [
-                    agent._normalize_text(v)
-                    for v in re.findall(r'"([^"]+)"', str(getattr(agent, "_active_goal_text", "") or ""))
-                    if agent._normalize_text(v)
-                ]
                 def _tree_score(node: Dict[str, Any]) -> float:
                     role = str(node.get("role") or "").strip().lower()
                     name = str(node.get("name") or "").strip()
+                    ref = str(node.get("ref") or "").strip()
                     ancestors = " ".join(str(v).strip() for v in (node.get("ancestor_names") or []) if str(v).strip())
                     score = 0.0
                     score += 2.0 * len(goal_tokens.intersection(set(agent._tokenize_text(name))))
@@ -247,11 +620,42 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                         score += 1.75
                     elif role in {"button", "link", "tab", "menuitem"}:
                         score += 0.5
-                    for phrase in quoted_matches:
+                    for phrase in normalized_phrases:
                         if phrase and phrase in agent._normalize_text(name):
                             score += 4.0
                         elif phrase and phrase in agent._normalize_text(ancestors):
                             score += 2.0
+                    if auth_surface_active:
+                        node_tags = ref_semantic_tag_cache.get(ref, set())
+                        node_blob = agent._normalize_text(" ".join(part for part in (role, name, ancestors) if part))
+                        if "auth_identifier_field" in node_tags or "auth_password_field" in node_tags:
+                            score += 16.0
+                        if "auth_submit_candidate" in node_tags:
+                            score += 13.0
+                        if "source_mutation_candidate" in node_tags:
+                            score -= 12.0
+                        if not node_tags and agent._contains_login_hint(node_blob):
+                            score += 6.0
+                    if feedback_signal_active:
+                        node_tags = ref_semantic_tag_cache.get(ref, set())
+                        if "feedback_conflict_signal" in node_tags:
+                            score += 5.0
+                        if "feedback_success_signal" in node_tags:
+                            score += 4.0
+                        if "destination_reveal_candidate" in node_tags:
+                            score += 9.0
+                        if "close_like" in node_tags:
+                            score -= 6.0
+                    if active_surface_context.get("active"):
+                        node_tags = ref_semantic_tag_cache.get(ref, set())
+                        if "active_surface_heading" in node_tags:
+                            score += 7.0
+                        if "active_surface_action" in node_tags:
+                            score += 8.0
+                        if "surface_close_candidate" in node_tags:
+                            score += 10.0
+                        if "occluded_background_candidate" in node_tags:
+                            score -= 14.0
                     return score
                 ranked_tree_nodes = sorted(tree_nodes, key=_tree_score, reverse=True)
                 tree_limit = 6 if backend_name == "openclaw" else 24
@@ -302,6 +706,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         has_apply = any(agent._contains_apply_hint(f) for f in fields)
 
         score = 0.0
+        semantic_tags = set(semantic_tag_cache.get(int(getattr(el, "id", -1)), []) or [])
         local_context_score = agent._context_score(el)
         role_alignment_score = role_ref_alignment_score(agent, el)
         host_context_score = 0.0
@@ -335,10 +740,45 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 score -= 2.0
             elif role == "generic" and not getattr(el, "group_action_labels", None):
                 score -= 2.5
+        if auth_surface_active:
+            if "auth_identifier_field" in semantic_tags or "auth_password_field" in semantic_tags:
+                score += 18.0
+            if "auth_submit_candidate" in semantic_tags:
+                score += 14.0
+                container_role = str(getattr(el, "container_role", "") or "").strip().lower()
+                if container_role in {"banner", "navigation", "main"}:
+                    score -= 6.0
+            if "source_mutation_candidate" in semantic_tags:
+                score -= 12.0
+            elif has_add_like and role == "button":
+                score -= 7.0
+        if feedback_signal_active:
+            if "feedback_conflict_signal" in semantic_tags:
+                score += 6.0
+            if "feedback_success_signal" in semantic_tags:
+                score += 4.0
+            if "destination_reveal_candidate" in semantic_tags:
+                score += 10.0
+            if "close_like" in semantic_tags:
+                score -= 6.0
+            if "feedback_success_signal" in semantic_tags and "source_mutation_candidate" in semantic_tags:
+                score -= 8.0
+        if active_surface_context.get("active"):
+            if "active_surface_heading" in semantic_tags:
+                score += 7.0
+            if "active_surface_action" in semantic_tags:
+                score += 8.0
+            if "surface_close_candidate" in semantic_tags:
+                score += 10.0
+            if "occluded_background_candidate" in semantic_tags:
+                score -= 14.0
+            elif "source_mutation_candidate" in semantic_tags:
+                score -= 7.0
 
         normalized_selector = agent._normalize_text(selector)
         normalized_container_name = agent._normalize_text(getattr(el, "container_name", None) or "")
         normalized_context_text = agent._normalize_text(getattr(el, "context_text", None) or "")
+        container_tokens = set(agent._tokenize_text(getattr(el, "container_name", "") or ""))
         self_blob = agent._normalize_text(
             " ".join(
                 [
@@ -456,9 +896,111 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         dom_limit = min(dom_limit, 140)
     selected: List[DOMElement] = ranked[:dom_limit]
 
+    # --- goal 관련 interactive 요소 보장 포함 ---
+    # 조건 A: 자체+컨텍스트 합산 goal 토큰 2개 이상
+    # 조건 B: container/context가 goal quoted phrase를 포함하는 interactive 요소
+    if len(ranked) > dom_limit and goal_tokens:
+        selected_ids = {el.id for el in selected}
+        interactive_tags = {"button", "a", "input", "select"}
+        interactive_roles = {"button", "link", "tab", "menuitem", "option", "checkbox", "radio"}
+        rescue_limit = max(10, dom_limit // 10)
+        rescued = 0
+
+        # goal quoted phrases 준비 (예: "포용사회와문화탐방1")
+        _raw_goal_text = str(getattr(agent, "_active_goal_text", "") or "")
+        _quoted = re.findall(r"['\"]([^'\"]+)['\"]", _raw_goal_text)
+        _norm_phrases = [agent._normalize_text(v) for v in _quoted if len(agent._normalize_text(v)) >= 2]
+        # goal 토큰 중 길이 4 이상을 substring 후보로도 사용 (한국어 조사 변형 대응)
+        _long_tokens = [t for t in goal_tokens if len(t) >= 4]
+
+        for el in ranked[dom_limit:]:
+            if rescued >= rescue_limit:
+                break
+            if el.id in selected_ids:
+                continue
+            tag = str(getattr(el, "tag", "") or "").strip().lower()
+            role = str(getattr(el, "role", "") or "").strip().lower()
+            if tag not in interactive_tags and role not in interactive_roles:
+                continue
+            el_text = str(getattr(el, "text", "") or "")
+            el_aria = str(getattr(el, "aria_label", "") or "")
+            el_container = str(getattr(el, "container_name", "") or "")
+            el_context = str(getattr(el, "context_text", "") or "")
+            self_blob = agent._normalize_text(f"{el_text} {el_aria}")
+            ctx_blob = agent._normalize_text(f"{el_container} {el_context}")
+
+            # 토큰 정확 매칭
+            self_tokens = set(agent._tokenize_text(f"{el_text} {el_aria}"))
+            ctx_tokens = set(agent._tokenize_text(f"{el_container} {el_context}"))
+            self_overlap = goal_tokens.intersection(self_tokens)
+            ctx_overlap = goal_tokens.intersection(ctx_tokens)
+            total_overlap = self_overlap | ctx_overlap
+
+            # 조건 A: 자체 1개+ & 합산 2개+
+            if len(self_overlap) >= 1 and len(total_overlap) >= 2:
+                selected.append(el)
+                selected_ids.add(el.id)
+                rescued += 1
+                continue
+
+            # 조건 B: container/context가 goal quoted phrase 포함 → 해당 팝업/카드 안의 모든 interactive 요소 rescue
+            phrase_in_ctx = any(p and p in ctx_blob for p in _norm_phrases)
+            if phrase_in_ctx:
+                selected.append(el)
+                selected_ids.add(el.id)
+                rescued += 1
+                continue
+
+            # 조건 C: 자체 텍스트에 goal long token이 substring으로 포함 (조사 변형 대응: 시간표→시간표에서)
+            substr_self = sum(1 for t in _long_tokens if t in self_blob)
+            substr_ctx = sum(1 for t in _long_tokens if t in ctx_blob)
+            if substr_self >= 1 and (substr_self + substr_ctx) >= 2:
+                selected.append(el)
+                selected_ids.add(el.id)
+                rescued += 1
+                continue
+
+        # 현재 목적지 surface 안의 목표 증거/이웃 액션은 top-N 밖이어도 보존
+        neighbor_limit = max(4, dom_limit // 20)
+        rescued_neighbors = 0
+        for index, el in enumerate(elements):
+            if rescued_neighbors >= neighbor_limit:
+                break
+            tags = set(semantic_tag_cache.get(int(getattr(el, "id", -1)), []) or [])
+            if "target_match" not in tags or _is_source_like_element(agent, el):
+                continue
+            if el.id not in selected_ids:
+                selected.append(el)
+                selected_ids.add(el.id)
+                rescued_neighbors += 1
+            neighbor_window_start = max(0, index - 2)
+            neighbor_window_end = min(
+                len(elements),
+                index + (7 if _is_source_like_element(agent, el) else 3),
+            )
+            for neighbor in elements[neighbor_window_start:neighbor_window_end]:
+                neighbor_role = str(getattr(neighbor, "role", "") or "").strip().lower()
+                neighbor_tag = str(getattr(neighbor, "tag", "") or "").strip().lower()
+                neighbor_tags = set(semantic_tag_cache.get(int(getattr(neighbor, "id", -1)), []) or [])
+                if neighbor.id in selected_ids:
+                    continue
+                if _is_source_like_element(agent, neighbor):
+                    continue
+                if (
+                    neighbor_role in {"button", "link", "tab", "menuitem", "option"}
+                    or neighbor_tag in {"button", "a"}
+                    or "active_surface_action" in neighbor_tags
+                ):
+                    selected.append(neighbor)
+                    selected_ids.add(neighbor.id)
+                    rescued_neighbors += 1
+                    if rescued_neighbors >= neighbor_limit:
+                        break
+
     for el in selected:
-        if backend_name == "openclaw" and getattr(el, "ref_id", None):
-            parts = [f'[ref={el.ref_id}] <{el.tag}>']
+        el_ref = getattr(el, "ref_id", None)
+        if el_ref:
+            parts = [f'[ref={el_ref}] <{el.tag}>']
         else:
             parts = [f"[{el.id}] <{el.tag}>"]
         interactive_role = str(getattr(el, "role", "") or "").strip().lower()
@@ -484,6 +1026,9 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
         action_labels = getattr(el, "group_action_labels", None) or []
         if action_labels:
             parts.append(f'actions=[{" | ".join(str(v) for v in action_labels[:5])}]')
+        semantic_tags = semantic_tag_cache.get(int(getattr(el, "id", -1)), []) or []
+        if semantic_tags:
+            parts.append(f'semantics=[{" | ".join(semantic_tags[:6])}]')
         role_ref_role = getattr(el, "role_ref_role", None)
         role_ref_name = getattr(el, "role_ref_name", None)
         if role_ref_role and role_ref_name:
@@ -517,8 +1062,9 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 "items": [],
             },
         )
-        if backend_name == "openclaw" and getattr(el, "ref_id", None):
-            bucket["items"].append(f'[ref={el.ref_id} {el.text or el.aria_label or el.tag}]')
+        grp_ref = getattr(el, "ref_id", None)
+        if grp_ref:
+            bucket["items"].append(f'[ref={grp_ref} {el.text or el.aria_label or el.tag}]')
         else:
             bucket["items"].append(f'[{el.id} {el.text or el.aria_label or el.tag}]')
     if grouped:

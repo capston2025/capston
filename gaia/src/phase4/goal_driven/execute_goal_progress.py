@@ -384,82 +384,6 @@ def evaluate_post_action_progress(
                 step_count=step_count,
                 duration_seconds=terminal_result.duration_seconds,
             )
-    openclaw_agentic_mode = str(
-        getattr(agent, "_browser_backend_name", "") or ""
-    ).strip().lower() == "openclaw"
-    if terminal_result is None:
-        if current_phase_intent == "evidence_only" and not openclaw_agentic_mode:
-            locked_signature = getattr(agent, "_evidence_only_proof_signature", None)
-            locked_expires_at = float(getattr(agent, "_evidence_only_proof_expires_at", 0.0) or 0.0)
-            if locked_signature and (time.time() > locked_expires_at or locked_signature != after_signature):
-                agent._evidence_only_proof_signature = None
-                agent._evidence_only_proof_expires_at = 0.0
-                agent._verify_settle_wait_armed = False
-        if (
-            current_phase_intent == "evidence_only"
-            and not openclaw_agentic_mode
-            and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
-            and bool(getattr(recent_exec, "success", False))
-            and bool(getattr(recent_exec, "effective", False))
-            and str(getattr(recent_exec, "reason_code", "") or "").strip().lower() == "ok"
-        ):
-            agent._evidence_only_proof_signature = after_signature
-            agent._evidence_only_proof_expires_at = time.time() + 20.0
-            agent._verify_settle_wait_armed = True
-            agent._verify_evidence_wait_armed = True
-            time.sleep(0.45)
-            settled_dom = agent._analyze_dom()
-            if settled_dom:
-                post_dom = settled_dom
-                agent._evidence_only_proof_signature = agent._dom_progress_signature(post_dom)
-                settle_reason = agent._evaluate_goal_target_completion(
-                    goal=goal,
-                    dom_elements=post_dom or [],
-                )
-                if settle_reason:
-                    _emit_reason(agent, "verify_settle_completion")
-                    agent._log(f"✅ 목표 달성! 이유: {settle_reason}")
-                    terminal_result = GoalResult(
-                        goal_id=goal.id,
-                        goal_name=goal.name,
-                        success=True,
-                        steps_taken=steps,
-                        total_steps=step_count,
-                        final_reason=settle_reason,
-                        duration_seconds=time.time() - start_time,
-                    )
-                    agent._record_goal_summary(
-                        goal=goal,
-                        status="success",
-                        reason=terminal_result.final_reason,
-                        step_count=step_count,
-                        duration_seconds=terminal_result.duration_seconds,
-                    )
-                    agent._evidence_only_proof_signature = None
-                    agent._evidence_only_proof_expires_at = 0.0
-                    agent._verify_settle_wait_armed = False
-                    agent._verify_evidence_wait_armed = False
-        if (
-            terminal_result is None
-            and current_phase_intent == "evidence_only"
-            and not openclaw_agentic_mode
-            and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
-            and bool(getattr(recent_exec, "success", False))
-            and bool(getattr(recent_exec, "effective", False))
-        ):
-            blocked_ref = str(getattr(recent_exec, "ref_id_used", "") or "").strip()
-            if blocked_ref:
-                agent._verify_reclick_block_ref_id = blocked_ref
-                agent._verify_reclick_block_container_ref = str(
-                    ((getattr(agent, "_last_goal_blockable_intent", {}) or {}).get("container_ref_id") or "")
-                ).strip()
-                agent._verify_reclick_block_until = time.time() + 20.0
-                _emit_reason(agent, "verify_reclick_blocked")
-                agent._action_feedback.append(
-                    "verify 단계에서 같은 CTA를 다시 누르지 말고 목적지 반영 증거를 먼저 수집하세요."
-                )
-                if len(agent._action_feedback) > 10:
-                    agent._action_feedback = agent._action_feedback[-10:]
     if terminal_result is None and decision.action == ActionType.WAIT:
         current_phase_name = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
         if current_phase_name.startswith("precheck"):
@@ -497,25 +421,6 @@ def evaluate_post_action_progress(
                 step_count=step_count,
                 duration_seconds=terminal_result.duration_seconds,
             )
-            agent._evidence_only_proof_signature = None
-            agent._evidence_only_proof_expires_at = 0.0
-            agent._verify_settle_wait_armed = False
-            agent._verify_evidence_wait_armed = False
-        elif current_phase_intent == "evidence_only" and not openclaw_agentic_mode:
-            evidence_wait_count = int(getattr(agent, "_evidence_only_wait_count", 0) or 0) + 1
-            agent._evidence_only_wait_count = evidence_wait_count
-            evidence_wait_budget = int(getattr(agent, "_evidence_only_wait_budget", 0) or 0)
-            if evidence_wait_budget >= 0 and evidence_wait_count >= max(1, evidence_wait_budget):
-                agent._surface_reacquire_pending = True
-                agent._no_progress_counter = max(int(getattr(agent, "_no_progress_counter", 0) or 0), 2)
-                agent._verify_settle_wait_armed = False
-                agent._verify_evidence_wait_armed = False
-                _emit_reason(agent, "evidence_only_budget_exhausted")
-                agent._action_feedback.append(
-                    "검증 단계 대기 예산을 소진했습니다. 같은 컨텍스트 반복 대신 화면 문맥을 다시 확보하세요."
-                )
-                if len(agent._action_feedback) > 10:
-                    agent._action_feedback = agent._action_feedback[-10:]
         else:
             agent._evidence_only_wait_count = 0
     if terminal_result is None:
@@ -569,10 +474,6 @@ def evaluate_post_action_progress(
                 step_count=step_count,
                 duration_seconds=terminal_result.duration_seconds,
             )
-            agent._evidence_only_proof_signature = None
-            agent._evidence_only_proof_expires_at = 0.0
-            agent._verify_settle_wait_armed = False
-            agent._verify_evidence_wait_armed = False
 
     return {
         "post_dom": post_dom,

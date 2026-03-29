@@ -84,12 +84,34 @@ def _is_fatal_timeout_abort(exc_or_message: Any) -> bool:
     if not message:
         return False
     return (
+        "action budget exceeded" in message
+        or "deadline exceeded" in message
+        or "timed out after" in message
+        or "action_timeout" in message
+    )
+
+
+def _is_visibility_timeout_abort(exc_or_message: Any) -> bool:
+    message = str(exc_or_message or "").strip().lower()
+    if not message:
+        return False
+    has_timeout = (
         "timeouterror" in message
         or "timeout" in message
         or "timed out" in message
         or "deadline exceeded" in message
         or "action_timeout" in message
+        or "waiting for locator" in message
     )
+    has_visibility = (
+        "to be visible" in message
+        or "not visible" in message
+        or "to be attached" in message
+        or "waiting for locator" in message
+        or "찾을 수 없거나 표시되지" in message
+        or "최신 snapshot" in message
+    )
+    return bool(has_timeout and has_visibility)
 
 
 async def _best_effort_close_broken_session(
@@ -679,14 +701,28 @@ async def execute_ref_action_with_snapshot_impl(
             retry_path.append(f"action_error:{friendly_msg}")
             fatal_driver_disconnect = _is_driver_disconnect_error(action_exc) or _is_driver_disconnect_error(friendly_msg)
             fatal_timeout_abort = _is_fatal_timeout_abort(action_exc) or _is_fatal_timeout_abort(friendly_msg)
-            if fatal_driver_disconnect or fatal_timeout_abort:
+            visibility_timeout_abort = _is_visibility_timeout_abort(action_exc) or _is_visibility_timeout_abort(friendly_msg)
+            if visibility_timeout_abort:
+                reason_code = "not_found"
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": reason_code,
+                        "error": friendly_msg,
+                    }
+                )
+                continue
+            if fatal_driver_disconnect:
                 transport_success = False
-                reason_code = "request_exception" if fatal_driver_disconnect else "action_timeout"
+                reason_code = "request_exception"
                 await _best_effort_force_disconnect_target_session(
                     session,
                     active_sessions=active_sessions,
                     session_id=session_id,
-                    reason="action_disconnect" if fatal_driver_disconnect else "action_timeout_abort",
+                    reason="action_disconnect",
                 )
                 attempt_logs.append(
                     {
@@ -699,6 +735,19 @@ async def execute_ref_action_with_snapshot_impl(
                     }
                 )
                 break
+            if fatal_timeout_abort:
+                reason_code = "action_timeout"
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": reason_code,
+                        "error": friendly_msg,
+                    }
+                )
+                continue
             recovery_result = await handle_action_exception_recovery(
                 action_exc=action_exc,
                 action=action,

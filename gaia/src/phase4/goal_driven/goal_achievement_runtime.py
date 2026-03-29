@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from .goal_completion_helpers import evaluate_goal_target_completion
+from .goal_completion_helpers import (
+    evaluate_destination_region_completion,
+    evaluate_explicit_reasoning_proof_completion,
+    evaluate_goal_target_completion,
+)
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
 
@@ -73,6 +77,19 @@ def validate_goal_achievement_claim(
             goal=goal,
             dom_elements=dom_elements,
         )
+        if not wait_proof:
+            wait_proof = evaluate_destination_region_completion(
+                agent,
+                goal=goal,
+                dom_elements=dom_elements,
+            )
+        if not wait_proof:
+            wait_proof = evaluate_explicit_reasoning_proof_completion(
+                agent,
+                goal=goal,
+                decision=decision,
+                dom_elements=dom_elements,
+            )
         if not wait_proof:
             return (
                 False,

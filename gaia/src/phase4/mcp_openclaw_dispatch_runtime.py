@@ -9,6 +9,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
+from gaia.src.phase4.embedded_openclaw_runtime import ensure_embedded_openclaw_base_url
 from gaia.src.phase4.mcp_ref_snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_snapshot_from_elements,
@@ -155,9 +156,10 @@ _MODAL_HINT_TOKENS = (
 
 
 def _resolve_base_url(raw_base_url: str | None) -> str:
-    base_url = str(os.getenv("GAIA_OPENCLAW_BASE_URL", "") or raw_base_url or "").strip()
+    explicit_base_url = str(os.getenv("GAIA_OPENCLAW_BASE_URL", "") or "").strip()
+    base_url = explicit_base_url or str(raw_base_url or "").strip()
     if not base_url:
-        raise RuntimeError("GAIA_OPENCLAW_BASE_URL is required when GAIA_BROWSER_BACKEND=openclaw")
+        return ensure_embedded_openclaw_base_url()
     if "://" not in base_url:
         base_url = f"http://{base_url}"
     base_url = base_url.rstrip("/")
@@ -202,6 +204,11 @@ def _resolve_base_url(raw_base_url: str | None) -> str:
         if _looks_like_browser_server(candidate):
             _BASE_URL_CACHE[base_url] = candidate
             return candidate
+
+    if not explicit_base_url:
+        embedded = ensure_embedded_openclaw_base_url()
+        _BASE_URL_CACHE[base_url] = embedded
+        return embedded
 
     _BASE_URL_CACHE[base_url] = base_url
     return base_url
@@ -691,6 +698,40 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             current = str(node.get("parent_ref") or "").strip()
         return str(preferred or fallback or "")
 
+    def _nearest_semantic_ancestor_hints(parent_ref: str) -> List[str]:
+        hints: List[str] = []
+        current = str(parent_ref or "").strip()
+        visited: set[str] = set()
+        while current and current not in visited:
+            visited.add(current)
+            node = tree_by_ref.get(current) or {}
+            role = str(node.get("role") or "").strip().lower()
+            if role not in {"generic", "group", "row", "listitem", "gridcell", "cell", "article"}:
+                current = str(node.get("parent_ref") or "").strip()
+                continue
+            values: List[str] = []
+            for value in [
+                *(nearby_text_by_raw_ref.get(current) or [])[:4],
+                *(semantic_descendant_texts_by_raw_ref.get(current) or [])[:4],
+                *(text_by_raw_ref.get(current) or [])[:2],
+            ]:
+                cleaned = str(value or "").strip()
+                normalized = _normalize_hint_text(cleaned)
+                if (
+                    not cleaned
+                    or not normalized
+                    or _looks_like_action_label(cleaned)
+                    or _looks_like_structural_context_label(cleaned)
+                ):
+                    continue
+                if cleaned not in values:
+                    values.append(cleaned)
+            if values:
+                hints.extend(values)
+                break
+            current = str(node.get("parent_ref") or "").strip()
+        return hints
+
     for raw_ref_id, meta in surfaced_meta_by_raw_ref.items():
         container_raw_by_raw_ref[raw_ref_id] = _select_container_raw_ref(raw_ref_id, meta)
 
@@ -791,8 +832,10 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             for label in group_action_labels
             if str(label or "").strip()
         }
+        row_context_hints = _nearest_semantic_ancestor_hints(parent_ref) if interactive else []
         if interactive:
             context_candidates = [
+                *[str(item).strip() for item in row_context_hints if str(item).strip()][:3],
                 *[str(item).strip() for item in container_text_hints if str(item).strip()][:3],
                 *[str(item).strip() for item in ancestor_names if str(item).strip()][:2],
                 *[str(item).strip() for item in ancestor_texts if str(item).strip()][:1],
@@ -947,6 +990,19 @@ def _looks_like_action_label(value: Any) -> bool:
 def _contains_hint(blob: str, tokens: Tuple[str, ...]) -> bool:
     normalized = _normalize_hint_text(blob)
     return bool(normalized and any(token in normalized for token in tokens))
+
+
+def _looks_like_structural_context_label(value: Any) -> bool:
+    normalized = _normalize_hint_text(value)
+    if not normalized:
+        return True
+    if normalized in {"검색 결과", "results", "search results", "전심", "필수 포함 과목"}:
+        return True
+    if normalized.startswith("(총 ") or normalized.startswith("총 "):
+        return True
+    if re.fullmatch(r"\(?\d+\s*학점\)?", normalized):
+        return True
+    return False
 
 
 def _element_blob(item: Dict[str, Any]) -> str:

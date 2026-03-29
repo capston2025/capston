@@ -99,6 +99,7 @@ class DOMElement(BaseModel):
     role_ref_name: Optional[str] = Field(default=None, description="role-based recovery hint name")
     role_ref_nth: Optional[int] = Field(default=None, description="동일 role/name 중 duplicate index")
     context_score_hint: Optional[float] = Field(default=None, description="선택 설명용 context score")
+    ref_id: Optional[str] = Field(default=None, description="브라우저 accessibility snapshot ref ID")
 
     # 상태
     is_visible: bool = Field(default=True)

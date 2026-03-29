@@ -210,7 +210,21 @@ def build_goal_policy_evidence_bundle(
             )
         )
         container_ref = str(getattr(el, "container_ref_id", "") or "").strip()
+        # group_action_labels에 destination + remove 조합이 있으면 destination 증거로 인정
+        # 예: "시간표에서 제거" → destination("시간표") + remove("제거") = 이미 목적지에 존재
+        _label_blob = agent._normalize_text(" ".join(str(x or "") for x in group_labels)) if isinstance(group_labels, list) else ""
+        _label_has_destination = bool(destination_terms) and any(
+            term and term in _label_blob for term in destination_terms
+        )
+        _label_has_remove = bool(_label_blob) and any(
+            token in _label_blob for token in ("삭제", "제거", "remove", "delete")
+        )
+        if _label_has_destination and not has_destination:
+            has_destination = True
         strong_destination_target = bool(has_destination and matched_targets and (row_like or remove_like))
+        # group_action_labels에 destination+remove 조합 + target 매칭 → 강제 target_in_destination
+        if matched_targets and _label_has_destination and _label_has_remove:
+            strong_destination_target = True
         scanned_elements.append(
             (el, blob, has_destination, matched_targets, role, tag, container_role, group_labels, is_actionable, remove_like, reveal_like, container_ref)
         )

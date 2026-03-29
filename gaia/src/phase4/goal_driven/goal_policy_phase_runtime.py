@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from .goal_policy_helpers import build_goal_policy_evidence_bundle
@@ -178,6 +179,103 @@ def _looks_like_target_destination_element(agent: Any, element: Optional[DOMElem
     return bool(target_hit and destination_hit)
 
 
+def _set_goal_precheck_state(agent: Any, result: str) -> None:
+    result_norm = str(result or "").strip().lower()
+    precheck_done = result_norm in {"present", "absent"}
+    setattr(agent, "_goal_plan_precheck_done", precheck_done)
+    setattr(agent, "_goal_plan_precheck_result", result_norm if precheck_done else "")
+    state = getattr(agent, "_goal_state_cache", None)
+    if not isinstance(state, dict):
+        return
+    proof = state.setdefault("proof", {})
+    proof["precheck_present"] = result_norm == "present"
+    proof["precheck_absent"] = result_norm == "absent"
+    state["updated_at"] = time.time()
+
+
+def _reset_goal_precheck_state(agent: Any) -> None:
+    _set_goal_precheck_state(agent, "")
+
+
+def _contains_membership_present_hint(agent: Any, value: Optional[str]) -> bool:
+    normalize = getattr(agent, "_normalize_text", None)
+    if not callable(normalize):
+        text = str(value or "").strip().lower()
+    else:
+        text = normalize(value)
+    if not text:
+        return False
+    exact_hints = (
+        "이미 시간표에 추가된",
+        "이미 추가된 과목",
+        "이미 추가되어",
+        "이미 추가 되어",
+        "이미 담긴",
+        "이미 담겨",
+        "이미 반영된",
+        "이미 등록된",
+        "이미 선택된",
+        "already added",
+        "already in your",
+        "already selected",
+        "already saved",
+    )
+    if any(hint in text for hint in exact_hints):
+        return True
+    has_already = any(token in text for token in ("이미", "already"))
+    has_addish = any(token in text for token in ("추가", "담", "반영", "등록", "selected", "added", "saved"))
+    has_destination = any(
+        token in text
+        for token in ("시간표", "목록", "리스트", "장바구니", "위시리스트", "timetable", "list", "cart", "wishlist")
+    )
+    return bool(has_already and has_addish and has_destination)
+
+
+def _has_membership_present_signal(agent: Any, dom_elements: Optional[List[DOMElement]]) -> bool:
+    candidates: List[str] = []
+    last_exec = getattr(agent, "_last_exec_result", None)
+    if last_exec is not None:
+        candidates.extend(
+            [
+                str(getattr(last_exec, "reason", "") or ""),
+                str(getattr(last_exec, "reason_code", "") or ""),
+            ]
+        )
+        last_state_change = getattr(last_exec, "state_change", None)
+        if isinstance(last_state_change, dict):
+            live_texts = last_state_change.get("live_texts_after")
+            if isinstance(live_texts, list):
+                candidates.extend(str(item or "") for item in live_texts[:12])
+            for key in ("detail", "error", "message", "status_text", "status_text_after"):
+                value = last_state_change.get(key)
+                if value:
+                    candidates.append(str(value))
+    for payload in (
+        getattr(agent, "_last_backend_post_action_snapshot", None),
+        getattr(agent, "_last_snapshot_evidence", None),
+        getattr(agent, "_last_backend_trace", None),
+    ):
+        if not isinstance(payload, dict):
+            continue
+        live_texts = payload.get("live_texts")
+        if isinstance(live_texts, list):
+            candidates.extend(str(item or "") for item in live_texts[:12])
+        for key in ("detail", "error", "message", "text_digest", "status_text"):
+            value = payload.get(key)
+            if value:
+                candidates.append(str(value))
+    if isinstance(dom_elements, list):
+        for element in dom_elements[:60]:
+            candidates.extend(
+                [
+                    str(getattr(element, "text", "") or ""),
+                    str(getattr(element, "aria_label", "") or ""),
+                    str(getattr(element, "title", "") or ""),
+                ]
+            )
+    return any(_contains_membership_present_hint(agent, candidate) for candidate in candidates if str(candidate or "").strip())
+
+
 def derive_goal_policy_event(
     *,
     decision: Any,
@@ -275,16 +373,13 @@ def advance_goal_policy_phase(
             and _looks_like_target_destination_element(agent, selected_pre_dom, semantics)
         )
         if destination_anchor_found and target_in_destination:
-            setattr(agent, "_goal_plan_precheck_done", True)
-            setattr(agent, "_goal_plan_precheck_result", "present")
+            _set_goal_precheck_state(agent, "present")
             event = "precheck_present"
         elif destination_anchor_found and clicked_target_destination:
-            setattr(agent, "_goal_plan_precheck_done", True)
-            setattr(agent, "_goal_plan_precheck_result", "present")
+            _set_goal_precheck_state(agent, "present")
             event = "precheck_present"
         elif destination_anchor_found:
-            setattr(agent, "_goal_plan_precheck_done", True)
-            setattr(agent, "_goal_plan_precheck_result", "absent")
+            _set_goal_precheck_state(agent, "absent")
             event = "precheck_absent"
     last_exec = getattr(agent, "_last_exec_result", None)
     last_state_change = getattr(last_exec, "state_change", None) if last_exec is not None else None
@@ -297,15 +392,18 @@ def advance_goal_policy_phase(
         and str(getattr(last_exec, "reason_code", "") or "").strip().lower() == "ok"
         and bool((last_state_change or {}).get("backend_effective_only"))
     ):
-        setattr(agent, "_goal_plan_precheck_done", True)
-        setattr(agent, "_goal_plan_precheck_result", "")
+        _reset_goal_precheck_state(agent)
         event = "possible_present_noop"
     if (
-        current_intent == "evidence_only"
-        and bool(getattr(agent, "_surface_reacquire_pending", False))
-        and event in {"action_ok", "action_no_state_change", "wait_progress", "wait_no_progress"}
+        str(current_phase).strip().lower() == "locate_target"
+        and event in {"action_ok", "action_no_state_change"}
+        and bool(getattr(agent, "_goal_plan_requires_precheck", False))
+        and str(getattr(agent, "_goal_phase_intent", "") or current_intent) == "mutate"
+        and str(getattr(semantics, "mutation_direction", "") or "").strip().lower() == "increase"
+        and _has_membership_present_signal(agent, effective_dom)
     ):
-        event = "evidence_reacquire"
+        _set_goal_precheck_state(agent, "present")
+        event = "possible_present_noop"
     if (
         str(current_phase).strip().lower() == "verify_remediation_removal"
         and not bool(getattr(evidence, "current", {}).get("target_in_destination"))
@@ -329,27 +427,19 @@ def advance_goal_policy_phase(
         setattr(agent, "_auth_submit_attempted", False)
         setattr(agent, "_last_auth_surface_signature", "")
         setattr(agent, "_auth_surface_progressed", False)
+        # auth 이전의 baseline은 stale → 리셋하여 auth 후 상태로 재수집
+        setattr(agent, "_goal_policy_baseline_evidence", None)
+        if bool(getattr(agent, "_goal_plan_requires_precheck", False)):
+            _reset_goal_precheck_state(agent)
         resume_phase = str(getattr(agent, "_goal_phase_resume_after_auth", "") or "").strip()
         if resume_phase:
             next_phase = resume_phase
             setattr(agent, "_goal_phase_resume_after_auth", "")
     if event == "auth_resolved" and bool(getattr(agent, "_goal_plan_requires_precheck", False)):
-        if not bool(getattr(agent, "_goal_plan_precheck_done", False)):
-            next_phase = "precheck_destination_membership"
-        elif (
-            str(getattr(agent, "_goal_plan_precheck_result", "") or "").strip().lower() == "present"
-            and not bool(getattr(agent, "_goal_plan_remediation_completed", False))
-        ):
-            next_phase = "verify_remediation_removal"
+        next_phase = "precheck_destination_membership"
     setattr(agent, "_goal_policy_phase", next_phase)
     next_intent = goal_phase_intent(next_phase)
     setattr(agent, "_goal_phase_intent", next_intent)
-    if next_intent != "evidence_only" or current_intent != next_intent:
-        setattr(agent, "_evidence_only_wait_count", 0)
-        setattr(agent, "_evidence_only_proof_signature", None)
-        setattr(agent, "_evidence_only_proof_expires_at", 0.0)
-        setattr(agent, "_verify_settle_wait_armed", False)
-        setattr(agent, "_verify_evidence_wait_armed", False)
     return {
         "event": event,
         "previous_phase": current_phase,
