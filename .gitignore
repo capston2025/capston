@@ -86,6 +86,12 @@ vendor/openclaw/dist-runtime/
 *.bmp
 *.ico
 
+# Presentation binaries
+*.ppt
+*.pptx
+*.odp
+*.key
+
 # Editor/IDE settings
 .vscode/
 .idea/
