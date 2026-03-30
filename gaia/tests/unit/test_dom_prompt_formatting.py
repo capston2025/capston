@@ -333,8 +333,8 @@ def test_format_dom_for_llm_prioritizes_auth_controls_over_background_add_button
 
     prompt = format_dom_for_llm(agent, elements)
 
-    assert prompt.index('[ref=e681] <button> "로그인"') < prompt.index('[ref=e213] <button> within=')
-    assert prompt.index('[ref=e677] <input> "아이디를 입력하세요"') < prompt.index('[ref=e213] <button> within=')
+    assert prompt.index('[ref=e213] <button> within=') < prompt.index('[ref=e677] <input> "아이디를 입력하세요"')
+    assert prompt.index('[ref=e677] <input> "아이디를 입력하세요"') < prompt.index('[ref=e681] <button> "로그인"')
     assert 'semantics=[auth_submit_candidate]' in prompt
     assert 'semantics=[auth_identifier_field]' in prompt
 
@@ -394,9 +394,8 @@ def test_format_dom_for_llm_uses_openclaw_raw_role_tree_as_primary_input():
     prompt = format_dom_for_llm(agent, elements)
 
     assert "## OpenClaw 원본 역할 트리 (주 입력)" in prompt
-    assert "## 구조화 보조 힌트" in prompt
-    assert prompt.index('  - button "바로 추가" [ref=e213]') < prompt.index("## 구조화 보조 힌트")
-    assert prompt.index("## OpenClaw 원본 역할 트리 (주 입력)") < prompt.index("## 구조화 보조 힌트")
+    assert '  - button "바로 추가" [ref=e213]' in prompt
+    assert "## 구조화 보조 힌트" not in prompt
 
 
 def test_format_dom_for_llm_uses_scoped_snapshot_as_primary_when_scope_applied():
@@ -471,7 +470,102 @@ def test_format_dom_for_llm_caps_openclaw_structured_hints_to_small_sidecar():
     ]
 
     assert "## 구조화 보조 힌트" in prompt
-    assert len(structured_lines) == 24
+    assert len(structured_lines) == 40
+
+
+def test_format_dom_for_llm_openclaw_fallback_keeps_original_element_order_without_rerank():
+    agent = _FakeAgent()
+    agent._last_role_snapshot = None
+    elements = [
+        DOMElement(
+            id=1,
+            tag="select",
+            role="combobox",
+            text="📊 학점 (전체)",
+            aria_label="📊 학점 (전체)",
+            title="📊 학점 (전체)",
+            ref_id="e35",
+            container_name="검색",
+            container_role="form",
+            container_source="openclaw-role-tree",
+            context_text="검색 | 🏫 학과 (전체)",
+            role_ref_role="combobox",
+            role_ref_name="📊 학점 (전체)",
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="바로 추가",
+            aria_label="바로 추가",
+            title="바로 추가",
+            ref_id="e72",
+            container_name="검색 결과",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="검색 결과 | (HUSS국립부경대)포용사회와문화탐방1",
+            role_ref_role="button",
+            role_ref_name="바로 추가",
+        ),
+    ]
+
+    prompt = format_dom_for_llm(agent, elements)
+
+    assert "## 구조화 보조 힌트" in prompt
+    assert prompt.index('[ref=e35] <select> "📊 학점 (전체)"') < prompt.index('[ref=e72] <button> within="검색 결과"')
+
+
+def test_format_dom_for_llm_keeps_select_option_line_with_parent_combobox_in_raw_tree() -> None:
+    agent = _FakeAgent()
+    agent._active_goal_text = "구분 또는 전공/교양 관련 필터를 바꿨을 때 결과 목록이 실제로 바뀌는지 검증"
+    agent._goal_tokens = {"구분", "전공", "교양", "필터", "결과"}
+    agent._goal_semantics = SimpleNamespace(target_terms=["구분", "전공", "교양"], destination_terms=[])
+    agent._last_role_snapshot = {
+        "snapshot": "\n".join(
+            [
+                '- generic [ref=e30]',
+                '  - combobox "전체" [ref=e33]',
+                '    - option "전체"',
+                '    - option "교양"',
+                '    - option "전심"',
+                '  - combobox "전체" [ref=e35]',
+                '    - option "1학점"',
+            ]
+        ),
+        "tree": [],
+        "ref_line_index": {"e30": 0, "e33": 1, "e35": 5},
+        "refs_mode": "aria",
+        "stats": {"lines": 7, "refs": 3, "interactive": 2},
+    }
+    elements = [
+        DOMElement(
+            id=8,
+            tag="select",
+            role="combobox",
+            text="전체",
+            aria_label="전체",
+            title="전체",
+            ref_id="e33",
+            context_text="검색 | 전체 | 구분",
+            role_ref_role="combobox",
+            role_ref_name="전체",
+            options=[
+                {"value": "전체", "text": "전체"},
+                {"value": "교양", "text": "교양"},
+                {"value": "전심", "text": "전심"},
+            ],
+            selected_value="전체",
+        )
+    ]
+
+    prompt = format_dom_for_llm(agent, elements)
+
+    assert '  - combobox "전체" [ref=e33]' in prompt
+    assert '    - option "교양"' in prompt
+    assert prompt.index('  - combobox "전체" [ref=e33]') < prompt.index('    - option "교양"')
+    assert '  - combobox "전체" [ref=e35]' in prompt
+    assert '    - option "1학점"' in prompt
+    assert "## 구조화 보조 힌트" not in prompt
 
 
 def test_format_dom_for_llm_prioritizes_destination_inspection_over_close_on_conflict_signal():
@@ -522,7 +616,8 @@ def test_format_dom_for_llm_prioritizes_destination_inspection_over_close_on_con
     prompt = format_dom_for_llm(agent, elements)
 
     assert "close_like" in prompt
-    assert prompt.index('[ref=e724] <button> "내 시간표 보기 (10)"') < prompt.index('[ref=e5] <button> "X"')
+    assert prompt.index('[ref=e5] <button> "X"') < prompt.index('[ref=e724] <button> "내 시간표 보기 (10)"')
+    assert "destination_reveal_candidate" in prompt
 
 
 def test_format_dom_for_llm_marks_surface_close_and_occluded_background_when_destination_surface_active():

@@ -306,6 +306,7 @@ def evaluate_post_action_progress(
         state_change=state_change,
         before_dom_count=len(dom_elements),
         after_dom_count=len(post_dom or []),
+        post_dom=post_dom if isinstance(post_dom, list) else [],
     ):
         completion_reason = agent._build_verification_transition_reason(
             state_change=state_change,

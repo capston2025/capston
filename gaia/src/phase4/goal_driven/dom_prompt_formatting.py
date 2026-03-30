@@ -660,75 +660,15 @@ def _render_openclaw_raw_role_tree(
     if not snapshot_text:
         return []
     raw_lines = snapshot_text.splitlines()
-    uses_override_snapshot = bool(snapshot_text_override and snapshot_text_override.strip() and snapshot_text_override.strip() != raw_snapshot_text)
-    ref_line_index = (
-        role_snapshot.get("ref_line_index")
-        if not uses_override_snapshot and isinstance(role_snapshot.get("ref_line_index"), dict)
-        else {}
-    )
-    focus_refs = _collect_openclaw_role_tree_focus_refs(agent, elements, active_surface_context)
-    normalized_phrases = [
-        agent._normalize_text(v)
-        for v in re.findall(r'["\']([^"\']+)["\']', str(getattr(agent, "_active_goal_text", "") or ""))
-        if agent._normalize_text(v)
-    ]
-    goal_tokens = [token for token in set(getattr(agent, "_goal_tokens", set()) or set()) if len(str(token or "")) >= 4]
-    recent_blob = "\n".join(
-        [
-            *(str(item or "") for item in list(getattr(agent, "_action_history", []) or [])[-8:]),
-            *(str(item or "") for item in list(getattr(agent, "_action_feedback", []) or [])[-8:]),
-        ]
-    )
-    recent_refs = {match for match in re.findall(r"\b(e\d+)\b", recent_blob)}
     try:
-        excerpt_line_limit = int(os.getenv("GAIA_OPENCLAW_RAW_TREE_LINE_LIMIT", "160"))
+        raw_tree_line_limit = int(os.getenv("GAIA_OPENCLAW_RAW_TREE_LINE_LIMIT", "0"))
     except Exception:
-        excerpt_line_limit = 160
-    excerpt_line_limit = max(40, min(excerpt_line_limit, 320))
-    line_indexes: set[int] = set(range(min(len(raw_lines), 8)))
-    if uses_override_snapshot:
-        line_indexes.update(range(min(len(raw_lines), excerpt_line_limit)))
-    else:
-        for line_index, line in enumerate(raw_lines):
-            normalized_line = agent._normalize_text(line)
-            if recent_refs and any(ref in line for ref in recent_refs):
-                for idx in range(max(0, line_index - 2), min(len(raw_lines), line_index + 3)):
-                    line_indexes.add(idx)
-                continue
-            if any(phrase and phrase in normalized_line for phrase in normalized_phrases):
-                for idx in range(max(0, line_index - 2), min(len(raw_lines), line_index + 4)):
-                    line_indexes.add(idx)
-                continue
-            if any(token and token in normalized_line for token in goal_tokens):
-                for idx in range(max(0, line_index - 1), min(len(raw_lines), line_index + 3)):
-                    line_indexes.add(idx)
-        if focus_refs:
-            for ref_id in focus_refs:
-                try:
-                    center = int(ref_line_index.get(ref_id))
-                except Exception:
-                    center = -1
-                if center < 0:
-                    continue
-                start = max(0, center - 3)
-                end = min(len(raw_lines), center + 4)
-                for idx in range(start, end):
-                    line_indexes.add(idx)
-        else:
-            line_indexes.update(range(min(len(raw_lines), excerpt_line_limit)))
-    ordered_indexes = sorted(line_indexes)
-    if len(ordered_indexes) > excerpt_line_limit:
-        ordered_indexes = ordered_indexes[:excerpt_line_limit]
-    rendered: List[str] = []
-    prev_index = -1
-    for line_index in ordered_indexes:
-        if prev_index >= 0 and line_index > prev_index + 1:
-            rendered.append(f"... ({line_index - prev_index - 1} more raw role lines omitted)")
-        rendered.append(raw_lines[line_index])
-        prev_index = line_index
-    if prev_index >= 0 and prev_index < len(raw_lines) - 1:
-        rendered.append(f"... ({len(raw_lines) - prev_index - 1} more raw role lines omitted)")
-    return rendered
+        raw_tree_line_limit = 0
+    if raw_tree_line_limit > 0 and len(raw_lines) > raw_tree_line_limit:
+        return raw_lines[:raw_tree_line_limit] + [
+            f"... ({len(raw_lines) - raw_tree_line_limit} more raw role lines omitted)"
+        ]
+    return raw_lines
 
 
 def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
@@ -786,6 +726,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
     }
 
     role_snapshot = getattr(agent, "_last_role_snapshot", None)
+    openclaw_raw_prompt_ready = False
     if isinstance(role_snapshot, dict):
         snapshot_text = str(role_snapshot.get("snapshot") or "").strip()
         scoped_snapshot_text = str(role_snapshot.get("scoped_snapshot") or "").strip()
@@ -837,6 +778,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                         snapshot_text_override=scoped_snapshot_text if scope_applied and scoped_snapshot_text else None,
                     )
                 )
+                openclaw_raw_prompt_ready = True
             elif tree_nodes:
                 def _tree_score(node: Dict[str, Any]) -> float:
                     role = str(node.get("role") or "").strip().lower()
@@ -888,7 +830,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                             score -= 14.0
                     return score
                 ranked_tree_nodes = sorted(tree_nodes, key=_tree_score, reverse=True)
-                tree_limit = 6 if backend_name == "openclaw" else 24
+                tree_limit = 24
                 tree_render_nodes = ranked_tree_nodes[:tree_limit]
                 rendered_tree = []
                 for node in tree_render_nodes:
@@ -914,6 +856,9 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 if len(snapshot_lines) > 24:
                     lines.append(f"... ({len(snapshot_lines) - 24} more role lines omitted)")
             lines.append("")
+
+    if openclaw_raw_prompt_ready:
+        return "\n".join(lines)
 
     def _score(el: DOMElement) -> float:
         text = agent._normalize_text(el.text)
@@ -963,13 +908,6 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
             score += 2.4
         if role == "generic" and getattr(el, "group_action_labels", None):
             score += 1.2
-        if backend_name == "openclaw" and phase in {"COLLECT", "APPLY"}:
-            if role == "button" and has_add_like:
-                score += 5.0
-            elif role == "link" and not has_add_like and not has_progress:
-                score -= 2.0
-            elif role == "generic" and not getattr(el, "group_action_labels", None):
-                score -= 2.5
         if auth_surface_active:
             if "auth_identifier_field" in semantic_tags or "auth_password_field" in semantic_tags:
                 score += 18.0
@@ -1059,34 +997,7 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
 
         score += local_context_score
         score += role_alignment_score
-        if backend_name == "openclaw":
-            score += max(0.0, min(4.0, host_context_score * 0.35))
-            phrase_in_self = any(phrase and phrase in self_blob for phrase in normalized_phrases)
-            if role in {"button", "tab", "link", "menuitem", "option"}:
-                phrase_in_container = any(phrase and phrase in normalized_container_name for phrase in normalized_phrases)
-                phrase_in_context = any(phrase and phrase in normalized_context_text for phrase in normalized_phrases)
-                if role == "button" and has_add_like:
-                    if phrase_in_self:
-                        score += 8.0
-                    elif phrase_in_container:
-                        score += 7.0
-                    elif phrase_in_context:
-                        score += 4.0
-                elif phrase_in_container:
-                    score += 3.0
-                elif phrase_in_context:
-                    score += 2.0
-                elif normalized_container_name and not goal_tokens.intersection(container_tokens):
-                    score -= 1.5
-                if role in {"link", "menuitem", "option"} and not phrase_in_self and (phrase_in_container or phrase_in_context):
-                    score -= 4.0
-            elif role == "generic":
-                phrase_in_container = any(phrase and phrase in normalized_container_name for phrase in normalized_phrases)
-                phrase_in_context = any(phrase and phrase in normalized_context_text for phrase in normalized_phrases)
-                if not phrase_in_self and (phrase_in_container or phrase_in_context):
-                    score -= 5.0
-        else:
-            score += max(0.0, min(0.75, host_context_score * 0.12))
+        score += max(0.0, min(0.75, host_context_score * 0.12))
         if container_source == "semantic-first":
             score += 1.0
         score += agent._selector_bias_for_fields(fields)
@@ -1115,16 +1026,18 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
 
         return agent._clamp_score(score, low=-25.0, high=35.0)
 
-    ranked = sorted(elements, key=_score, reverse=True)
-    agent._last_dom_top_ids = [el.id for el in ranked[:12]]
     try:
         dom_limit = int(os.getenv("GAIA_LLM_DOM_LIMIT", "260"))
     except Exception:
         dom_limit = 260
     dom_limit = max(80, min(dom_limit, 800))
     if backend_name == "openclaw":
-        dom_limit = min(dom_limit, 24)
-    selected: List[DOMElement] = ranked[:dom_limit]
+        selected = list(elements[:dom_limit])
+        agent._last_dom_top_ids = [el.id for el in selected[:12]]
+    else:
+        ranked = sorted(elements, key=_score, reverse=True)
+        agent._last_dom_top_ids = [el.id for el in ranked[:12]]
+        selected = ranked[:dom_limit]
 
     # --- goal 관련 interactive 요소 보장 포함 ---
     # 조건 A: 자체+컨텍스트 합산 goal 토큰 2개 이상
@@ -1275,6 +1188,8 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
             parts.append(f'placeholder="{el.placeholder}"')
         if el.aria_label:
             parts.append(f'aria-label="{el.aria_label}"')
+        if getattr(el, "selected_value", None):
+            parts.append(f'selected="{getattr(el, "selected_value", "")}"')
         if el.tag == "select" and el.options:
             opt_strs = [f'{o.get("value","")}: {o.get("text","")}' for o in el.options[:10]]
             parts.append(f'options=[{" | ".join(opt_strs)}]')

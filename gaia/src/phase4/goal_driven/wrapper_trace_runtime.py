@@ -87,6 +87,8 @@ def serialize_dom_elements(elements: Iterable[Any], *, limit: int = 80, agent: A
             "role_ref_role": getattr(element, "role_ref_role", None),
             "role_ref_name": getattr(element, "role_ref_name", None),
             "role_ref_nth": getattr(element, "role_ref_nth", None),
+            "options": list(getattr(element, "options", None) or []),
+            "selected_value": getattr(element, "selected_value", None),
             "is_visible": getattr(element, "is_visible", None),
             "is_enabled": getattr(element, "is_enabled", None),
         }

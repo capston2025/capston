@@ -42,6 +42,7 @@ from .goal_completion_helpers import (
     evaluate_reasoning_only_wait_completion as evaluate_reasoning_only_wait_completion_impl,
     evaluate_explicit_reasoning_proof_completion as evaluate_explicit_reasoning_proof_completion_impl,
     evaluate_wait_goal_completion as evaluate_wait_goal_completion_impl,
+    is_readonly_visibility_goal as is_readonly_visibility_goal_impl,
 )
 from .goal_verification_helpers import (
     build_verification_transition_reason as build_verification_transition_reason_impl,
@@ -241,13 +242,16 @@ class GoalDrivenAgent:
         self._element_selectors: Dict[int, str] = {}
         self._element_full_selectors: Dict[int, str] = {}
         self._element_ref_ids: Dict[int, str] = {}
+        self._element_ref_meta_by_id: Dict[int, Dict[str, Any]] = {}
         self._element_scopes: Dict[int, Dict[str, Any]] = {}
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
         self._active_url: str = ""
+        self._last_snapshot_elements_by_ref: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot_evidence: Dict[str, Any] = {}
         self._last_exec_result: Optional[ActionExecResult] = None
+        self._persistent_state_memory: List[Dict[str, Any]] = []
         self._active_goal_text: str = ""
         self._ineffective_ref_counts: Dict[str, int] = {}
         self._last_success_click_intent: str = ""
@@ -809,6 +813,7 @@ class GoalDrivenAgent:
         state_change: Optional[Dict[str, Any]],
         before_dom_count: int,
         after_dom_count: int,
+        post_dom: Optional[List[DOMElement]] = None,
     ) -> bool:
         return can_finish_by_verification_transition_impl(
             self,
@@ -819,6 +824,7 @@ class GoalDrivenAgent:
             state_change=state_change,
             before_dom_count=before_dom_count,
             after_dom_count=after_dom_count,
+            post_dom=post_dom,
         )
 
     def _build_verification_transition_reason(
@@ -970,6 +976,9 @@ class GoalDrivenAgent:
             decision=decision,
             dom_elements=dom_elements,
         )
+
+    def _is_readonly_visibility_goal(self, goal: TestGoal) -> bool:
+        return is_readonly_visibility_goal_impl(self, goal)
 
     @classmethod
     def _build_click_intent_key(
@@ -1517,27 +1526,6 @@ class GoalDrivenAgent:
                     reason=str(login_intervention.get("reason") or "로그인 개입 요청이 거부되어 중단했습니다."),
                 )
 
-            # 2. 스크린샷 캡처
-            screenshot = self._capture_screenshot()
-
-            captcha_observer_result = run_captcha_observer_impl(
-                self,
-                goal=goal,
-                dom_elements=dom_elements,
-                screenshot=screenshot,
-                step_count=step_count,
-                steps=steps,
-                start_time=start_time,
-            )
-            if isinstance(captcha_observer_result, dict):
-                if bool(captcha_observer_result.get("continue_loop")):
-                    continue
-                terminal_result = captcha_observer_result.get("terminal_result")
-                if terminal_result is not None:
-                    return terminal_result
-            elif captcha_observer_result is not None:
-                return captcha_observer_result
-
             static_verification_reason = self._evaluate_static_verification_on_current_page(
                 goal=goal,
                 dom_elements=dom_elements,
@@ -1562,11 +1550,33 @@ class GoalDrivenAgent:
                 )
                 return result
 
+            use_screenshot = not self._is_readonly_visibility_goal(goal)
+
+            # 2. 스크린샷 캡처
+            screenshot = self._capture_screenshot() if use_screenshot else None
+
+            captcha_observer_result = run_captcha_observer_impl(
+                self,
+                goal=goal,
+                dom_elements=dom_elements,
+                screenshot=screenshot,
+                step_count=step_count,
+                steps=steps,
+                start_time=start_time,
+            )
+            if isinstance(captcha_observer_result, dict):
+                if bool(captcha_observer_result.get("continue_loop")):
+                    continue
+                terminal_result = captcha_observer_result.get("terminal_result")
+                if terminal_result is not None:
+                    return terminal_result
+            elif captcha_observer_result is not None:
+                return captcha_observer_result
+
             directive = orchestrator.next_directive(
                 login_gate_visible=login_gate_visible,
                 requires_login_interaction=requires_login_interaction,
                 has_login_test_data=has_login_test_data,
-                close_element_id=None,
             )
             master_directive = None
             if not thin_wrapper_mode:
@@ -2182,6 +2192,7 @@ class GoalDrivenAgent:
         use_current_selection_only: bool = False,
         forced_selected_value: Optional[str] = None,
         validation_contract: Optional[Dict[str, Any]] = None,
+        preferred_control_hint: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return run_filter_semantic_validation_impl(
             self,
@@ -2191,6 +2202,7 @@ class GoalDrivenAgent:
             use_current_selection_only=use_current_selection_only,
             forced_selected_value=forced_selected_value,
             validation_contract=validation_contract,
+            preferred_control_hint=preferred_control_hint,
         )
 
     def _build_filter_validation_contract(
@@ -2198,11 +2210,13 @@ class GoalDrivenAgent:
         *,
         goal: TestGoal,
         dom_elements: List[DOMElement],
+        preferred_control_hint: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return build_filter_validation_contract_impl(
             self,
             goal=goal,
             dom_elements=dom_elements,
+            preferred_control_hint=preferred_control_hint,
         )
 
     def _decide_next_action(

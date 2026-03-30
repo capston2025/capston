@@ -773,100 +773,6 @@ async def execute_simple_action_impl(
                         }
                     except Exception:
                         raise click_error
-                    error_msg = str(click_error)
-
-                    # "element is not visible" 에러 감지 시 부모 hover 시도
-                    if (
-                        "element is not visible" in error_msg
-                        or "not visible" in error_msg
-                    ):
-                        print(
-                            f"⚠️  Element not visible, trying to hover parent menu first..."
-                        )
-                        try:
-                            # JavaScript로 부모 셀렉터 찾기
-                            parent_selector = await element.evaluate("""
-                                el => {
-                                    // 부모 요소 찾기 (li > a 구조에서 li, nav, 또는 부모 링크)
-                                    let parent = el.parentElement;
-                                    while (parent && parent !== document.body) {
-                                        const tagName = parent.tagName.toLowerCase();
-                                        const role = parent.getAttribute('role');
-                                        const className = parent.className || '';
-
-                                        // 네비게이션 메뉴 아이템 찾기
-                                        if (tagName === 'li' || role === 'menuitem') {
-                                            // li 내부의 최상위 링크/버튼 찾기
-                                            const topLink = parent.querySelector(':scope > a, :scope > button');
-                                            if (topLink && topLink !== el) {
-                                                return topLink.textContent.trim();
-                                            }
-                                        }
-
-                                        parent = parent.parentElement;
-                                    }
-                                    return null;
-                                }
-                            """)
-
-                            if parent_selector:
-                                print(f"🎯 Found parent menu: {parent_selector}")
-                                # Playwright의 실제 hover() 사용
-                                parent_locator = page.locator(
-                                    f"a:text('{parent_selector}'), button:text('{parent_selector}')"
-                                ).first
-                                await parent_locator.hover(timeout=5000)
-                                print(f"✅ Hovered parent menu, waiting for submenu...")
-                                await page.wait_for_timeout(
-                                    1000
-                                )  # 서브메뉴 나타날 시간 증가
-
-                                # 다시 클릭 시도
-                                await element.click(timeout=10000)
-                                print(f"✅ Successfully clicked after hovering parent")
-                            else:
-                                print(f"⚠️  No suitable parent found for hovering")
-                                raise click_error
-                        except Exception as hover_error:
-                            print(f"⚠️  Parent hover failed: {hover_error}")
-                            # 부모 hover 실패 시 원래 fallback 로직 계속
-                            if fallback_selectors and "Timeout" in error_msg:
-                                for fb_selector in fallback_selectors:
-                                    try:
-                                        print(
-                                            f"⚠️  Original selector failed, retrying with: {fb_selector}"
-                                        )
-                                        element = page.locator(fb_selector).first
-                                        await _reveal_locator_in_scroll_context(element)
-                                        await page.wait_for_timeout(150)
-                                        await element.click(timeout=10000)
-                                        break  # 성공하면 루프 종료
-                                    except Exception:
-                                        continue  # 다음 fallback 시도
-                                else:
-                                    # 모든 fallback 실패
-                                    raise click_error
-                            else:
-                                raise click_error
-                    # Fallback 시도: :has-text() → :text(), [type="submit"] 제거 등
-                    elif fallback_selectors and "Timeout" in error_msg:
-                        for fb_selector in fallback_selectors:
-                            try:
-                                print(
-                                    f"⚠️  Original selector failed, retrying with: {fb_selector}"
-                                )
-                                element = page.locator(fb_selector).first
-                                await _reveal_locator_in_scroll_context(element)
-                                await page.wait_for_timeout(150)
-                                await element.click(timeout=10000)
-                                break  # 성공하면 루프 종료
-                            except Exception:
-                                continue  # 다음 fallback 시도
-                        else:
-                            # 모든 fallback 실패
-                            raise click_error
-                    else:
-                        raise
             elif action == "fill":
                 if value is None:
                     raise ValueError("Value is required for 'fill' action")
@@ -949,5 +855,3 @@ async def execute_simple_action_impl(
         return {"success": False, "message": f"Action failed: {str(e)}"}
 
     # 브라우저를 닫지 말고 세션을 유지합니다!
-
-

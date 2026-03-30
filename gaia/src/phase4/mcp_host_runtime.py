@@ -254,6 +254,17 @@ def resolve_mcp_target(raw_base_url: str | None) -> Tuple[str, int, str]:
     return host, port, base_url
 
 
+def should_auto_start_mcp_host() -> bool:
+    backend = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower()
+    if backend in {"gaia", "local", "legacy"}:
+        return True
+    if backend in {"openclaw", "open-claw", "oc"}:
+        return False
+    if str(os.getenv("GAIA_OPENCLAW_BASE_URL", "") or "").strip():
+        return False
+    return False
+
+
 def _is_tcp_open(host: str, port: int, timeout: float = 0.35) -> bool:
     try:
         with socket.create_connection((host, int(port)), timeout=timeout):

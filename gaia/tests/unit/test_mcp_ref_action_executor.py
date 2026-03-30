@@ -1,4 +1,4 @@
-from gaia.src.phase4.mcp_ref_action_executor import _is_fatal_timeout_abort, _is_visibility_timeout_abort
+from gaia.src.phase4.mcp_ref.action_executor import _is_fatal_timeout_abort, _is_visibility_timeout_abort
 
 
 def test_is_visibility_timeout_abort_detects_locator_visibility_timeout() -> None:

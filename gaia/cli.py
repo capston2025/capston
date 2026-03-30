@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Sequence
 
 from gaia import auth as gaia_auth
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running as _ensure_shared_mcp_host_running
+from gaia.src.phase4.mcp_host_runtime import (
+    ensure_mcp_host_running as _ensure_shared_mcp_host_running,
+    should_auto_start_mcp_host as _should_auto_start_mcp_host,
+)
 from gaia.src.phase4.session import (
     WORKSPACE_DEFAULT,
     SessionState,
@@ -1030,7 +1033,7 @@ def _configure_session(
     token = _resolve_auth(provider, auth_strategy, auth_method)
     if not token:
         return None
-    if not _ensure_mcp_host_running():
+    if _should_auto_start_mcp_host() and not _ensure_mcp_host_running():
         return None
     model = _resolve_model(parsed, profile, provider, token)
 

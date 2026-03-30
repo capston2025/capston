@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
 from .graders.blocked_vs_fail import BlockedVsFailGrader
+from .graders.expected_signals import ExpectedSignalsGrader
 from .graders.membership import MembershipGrader
 from .graders.reason_codes import ReasonCodesGrader
 from .graders.status import StatusGrader
@@ -42,14 +43,19 @@ def _build_child_code(task: Mapping[str, Any], session_id: str) -> str:
     return f"""
 import contextlib, io, json, os
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 payload = json.loads({payload!r})
 task = payload["task"]
 session_id = payload["session_id"]
-ensure_mcp_host_running(None, startup_timeout=10.0)
+if should_auto_start_mcp_host():
+    ensure_mcp_host_running(None, startup_timeout=10.0)
 prepared_goal = _build_test_goal(url=task["url"], query=task["goal"])
 constraints = task.get("constraints") if isinstance(task.get("constraints"), dict) else {{}}
+expected_signals = task.get("expected_signals") if isinstance(task.get("expected_signals"), list) else []
 goal_test_data = dict(getattr(prepared_goal, "test_data", {{}}) or {{}})
+prepared_goal.expected_signals = [str(item) for item in expected_signals if str(item).strip()]
+if prepared_goal.expected_signals:
+    goal_test_data["harness_expected_signals"] = list(prepared_goal.expected_signals)
 if constraints.get("requires_test_credentials"):
     username = (os.getenv("GAIA_TEST_USERNAME") or os.getenv("GAIA_AUTH_USERNAME") or "").strip()
     password = (os.getenv("GAIA_TEST_PASSWORD") or os.getenv("GAIA_AUTH_PASSWORD") or "").strip()
@@ -164,6 +170,10 @@ def _grade_task_result(task: HarnessTask, row: Mapping[str, Any]) -> list[Grader
             minimum_counts=reason_cfg.get("minimum_counts", {}),
         ).grade(row)
     )
+    if isinstance(task.expected_signals, list) and task.expected_signals:
+        grades.append(
+            ExpectedSignalsGrader(required_signals=task.expected_signals).grade(row)
+        )
     membership_cfg = task.grader_configs.get("membership", {}) if isinstance(task.grader_configs.get("membership"), dict) else {}
     if membership_cfg:
         grades.append(

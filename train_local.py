@@ -112,7 +112,7 @@ def main():
     yaml_path = data_dir / "data.yaml"
     if not yaml_path.exists():
         print(f"❌ Error: {yaml_path} not found!")
-        print("   Run training_data_collector.py first")
+        print("   Prepare a YOLO dataset with images/, labels/, and data.yaml first")
         sys.exit(1)
 
     # 7. 학습 시작
@@ -184,14 +184,11 @@ def main():
         print("\n" + "=" * 60)
         print("🎯 Next Steps:")
         print("=" * 60)
-        print("1. Test the model:")
-        print("   python test_ui_detector.py")
-        print("\n2. Use in GAIA:")
+        print("1. Export the model artifact:")
         print("   Model is already saved to gaia/models/ui_detector.pt")
-        print("   Run tests normally and it will be used automatically")
-        print("\n3. Collect more data:")
-        print("   export GAIA_COLLECT_TRAINING_DATA=true")
-        print("   Run more tests to improve accuracy")
+        print("\n2. Evaluate it with your own detection/inference script")
+        print("   against a held-out validation set before wiring it back in")
+        print("\n3. Collect more labeled data if accuracy is low")
         print("=" * 60)
 
     except KeyboardInterrupt:

@@ -23,12 +23,10 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
-    QComboBox,
     QSplitter,
     QTextEdit,
     QFileDialog,
     QSizePolicy,
-    QGroupBox,
     QGridLayout,
     QDialog,
     QDialogButtonBox,
@@ -1000,7 +998,7 @@ class ExplorationDetailView(QWidget):
             self._table.setCurrentCell(0, 0)
             self._preview_step(0, 0, -1, -1)
 
-    def _open_step_detail(self, row: int, column: int):
+    def _open_step_detail(self, row: int, _column: int):
         """테이블 더블클릭으로 스텝 상세 보기"""
         if not self._steps or row >= len(self._steps):
             return
@@ -1013,7 +1011,7 @@ class ExplorationDetailView(QWidget):
         )
         dialog.exec()
 
-    def _preview_step(self, row: int, column: int, _prev_row: int, _prev_col: int):
+    def _preview_step(self, row: int, _column: int, _prev_row: int, _prev_col: int):
         if not self._steps or row < 0 or row >= len(self._steps):
             return
         if self._screenshots_dir:

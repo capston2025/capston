@@ -4,9 +4,33 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .execute_goal_progress import evaluate_post_action_progress
+from .filter_validation_runtime import build_filter_control_hint, filter_validation_contract_needs_refresh
+from .goal_execution_setup_runtime import build_success_goal_result
 from .goal_policy_phase_runtime import advance_goal_policy_phase
 from .models import ActionType, TestGoal
+from .policies.filter import filter_goal_requires_semantic_validation
 from .wrapper_trace_runtime import dump_wrapper_trace, serialize_dom_elements, thin_wrapper_enabled, wrapper_mode_name
+
+
+def _selected_element_for_decision(decision: Any, dom_elements: List[Any]) -> Any:
+    if not isinstance(dom_elements, list) or not dom_elements:
+        return None
+    ref_id = str(getattr(decision, "ref_id", "") or "").strip()
+    if ref_id:
+        selected = next(
+            (
+                el
+                for el in dom_elements
+                if str(getattr(el, "ref_id", "") or "").strip() == ref_id
+            ),
+            None,
+        )
+        if selected is not None:
+            return selected
+    element_id = getattr(decision, "element_id", None)
+    if isinstance(element_id, int):
+        return next((el for el in dom_elements if getattr(el, "id", None) == element_id), None)
+    return None
 
 
 def handle_post_action_runtime(
@@ -159,50 +183,137 @@ def handle_post_action_runtime(
         }
 
     if filter_goal_active and decision.action == ActionType.SELECT and bool(success):
-        filter_semantic_attempts += 1
-        selected_value_hint = str(decision.value or "").strip()
-        if agent._filter_validation_contract is None:
-            try:
-                agent._filter_validation_contract = agent._build_filter_validation_contract(
-                    goal=goal,
-                    dom_elements=post_dom if isinstance(post_dom, list) and post_dom else dom_elements,
-                )
-            except Exception as contract_exc:
-                agent._log(f"⚠️ 필터 검증 계약 생성 실패: {contract_exc}")
+        strict_filter_semantic = filter_goal_requires_semantic_validation(agent)
+        if strict_filter_semantic:
+            filter_semantic_attempts += 1
+            selected_value_hint = str(decision.value or "").strip()
+            preferred_control_hint = build_filter_control_hint(
+                agent,
+                _selected_element_for_decision(decision, dom_elements),
+            )
+            if filter_validation_contract_needs_refresh(
+                agent,
+                getattr(agent, "_filter_validation_contract", None),
+                preferred_control_hint,
+            ):
                 agent._filter_validation_contract = None
-        semantic_report = agent.run_filter_semantic_validation(
-            goal_text=goal.description,
-            max_pages=2,
-            max_cases=filter_semantic_max_cases,
-            use_current_selection_only=filter_semantic_current_only,
-            forced_selected_value=selected_value_hint,
-            validation_contract=(
-                agent._filter_validation_contract
-                if isinstance(agent._filter_validation_contract, dict)
-                else None
-            ),
-        )
-        if isinstance(semantic_report, dict):
-            agent._last_filter_semantic_report = semantic_report
-            rc_summary = semantic_report.get("reason_code_summary")
-            if isinstance(rc_summary, dict):
-                for code, count in rc_summary.items():
-                    try:
-                        repeats = int(count)
-                    except Exception:
-                        repeats = 0
-                    repeats = max(0, min(repeats, 50))
-                    for _ in range(repeats):
-                        agent._record_reason_code(str(code))
+            if agent._filter_validation_contract is None:
+                try:
+                    agent._filter_validation_contract = agent._build_filter_validation_contract(
+                        goal=goal,
+                        dom_elements=post_dom if isinstance(post_dom, list) and post_dom else dom_elements,
+                        preferred_control_hint=preferred_control_hint,
+                    )
+                except Exception as contract_exc:
+                    agent._log(f"⚠️ 필터 검증 계약 생성 실패: {contract_exc}")
+                    agent._filter_validation_contract = None
+            semantic_report = agent.run_filter_semantic_validation(
+                goal_text=goal.description,
+                max_pages=2,
+                max_cases=filter_semantic_max_cases,
+                use_current_selection_only=filter_semantic_current_only,
+                forced_selected_value=selected_value_hint,
+                validation_contract=(
+                    agent._filter_validation_contract
+                    if isinstance(agent._filter_validation_contract, dict)
+                    else None
+                ),
+                preferred_control_hint=preferred_control_hint,
+            )
+            if isinstance(semantic_report, dict):
+                agent._last_filter_semantic_report = semantic_report
+                rc_summary = semantic_report.get("reason_code_summary")
+                if isinstance(rc_summary, dict):
+                    for code, count in rc_summary.items():
+                        try:
+                            repeats = int(count)
+                        except Exception:
+                            repeats = 0
+                        repeats = max(0, min(repeats, 50))
+                        for _ in range(repeats):
+                            agent._record_reason_code(str(code))
 
-            summary = semantic_report.get("summary")
-            summary_dict = summary if isinstance(summary, dict) else {}
-            strict_failed = bool(summary_dict.get("strict_failed"))
-            goal_satisfied = bool(summary_dict.get("goal_satisfied", semantic_report.get("success")))
+                summary = semantic_report.get("summary")
+                summary_dict = summary if isinstance(summary, dict) else {}
+                strict_failed = bool(summary_dict.get("strict_failed"))
+                goal_satisfied = bool(summary_dict.get("goal_satisfied", semantic_report.get("success")))
 
-            if strict_failed:
-                failed_mandatory = int(summary_dict.get("failed_mandatory_checks") or 0)
-                reason = f"필터 의미 검증 실패: 필수 체크 실패 {failed_mandatory}건"
+                if strict_failed:
+                    failed_mandatory = int(summary_dict.get("failed_mandatory_checks") or 0)
+                    reason = f"필터 의미 검증 실패: 필수 체크 실패 {failed_mandatory}건"
+                    agent._log(f"❌ {reason}")
+                    return {
+                        "terminal_result": agent._build_failure_result(
+                            goal=goal,
+                            steps=steps,
+                            step_count=step_count,
+                            start_time=start_time,
+                            reason=reason,
+                        ),
+                        "filter_semantic_attempts": filter_semantic_attempts,
+                        "scroll_streak": scroll_streak,
+                        "ineffective_action_streak": ineffective_action_streak,
+                        "force_context_shift": force_context_shift,
+                        "context_shift_fail_streak": context_shift_fail_streak,
+                        "context_shift_cooldown": context_shift_cooldown,
+                        "post_dom": post_dom,
+                        "changed": changed,
+                        "state_change": state_change,
+                    }
+
+                if goal_satisfied:
+                    passed_checks = int(summary_dict.get("passed_checks") or 0)
+                    total_checks = int(summary_dict.get("total_checks") or 0)
+                    success_reason = f"필터 의미 검증 통과 ({passed_checks}/{total_checks})"
+                    agent._log(f"✅ {success_reason}")
+                    result = build_success_goal_result(
+                        agent,
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=success_reason,
+                    )
+                    return {
+                        "terminal_result": result,
+                        "filter_semantic_attempts": filter_semantic_attempts,
+                        "scroll_streak": scroll_streak,
+                        "ineffective_action_streak": ineffective_action_streak,
+                        "force_context_shift": force_context_shift,
+                        "context_shift_fail_streak": context_shift_fail_streak,
+                        "context_shift_cooldown": context_shift_cooldown,
+                        "post_dom": post_dom,
+                        "changed": changed,
+                        "state_change": state_change,
+                    }
+                else:
+                    required_count = int(summary_dict.get("required_option_count") or 0)
+                    covered_count = int(summary_dict.get("covered_option_count") or 0)
+                    agent._log(
+                        "🧪 필터 의미 검증 진행 중: "
+                        f"옵션 커버리지 {covered_count}/{required_count}"
+                    )
+                    missing_options = semantic_report.get("missing_required_options")
+                    if isinstance(missing_options, list) and missing_options:
+                        labels: List[str] = []
+                        for row in missing_options[:6]:
+                            if not isinstance(row, dict):
+                                continue
+                            label = str(row.get("text") or row.get("value") or "").strip()
+                            if label:
+                                labels.append(label)
+                        if labels:
+                            agent._action_feedback.append(
+                                "아직 검증되지 않은 필터 옵션: " + ", ".join(labels)
+                            )
+                            if len(agent._action_feedback) > 10:
+                                agent._action_feedback = agent._action_feedback[-10:]
+
+            if filter_semantic_attempts >= filter_semantic_attempt_limit:
+                reason = (
+                    "필터 의미 검증 결과를 확보하지 못해 중단합니다. "
+                    f"(select 시도 {filter_semantic_attempts}회)"
+                )
                 agent._log(f"❌ {reason}")
                 return {
                     "terminal_result": agent._build_failure_result(
@@ -222,78 +333,6 @@ def handle_post_action_runtime(
                     "changed": changed,
                     "state_change": state_change,
                 }
-
-            if goal_satisfied:
-                passed_checks = int(summary_dict.get("passed_checks") or 0)
-                total_checks = int(summary_dict.get("total_checks") or 0)
-                success_reason = f"필터 의미 검증 통과 ({passed_checks}/{total_checks})"
-                agent._log(f"✅ {success_reason}")
-                result = agent._build_success_result(
-                    goal=goal,
-                    steps=steps,
-                    step_count=step_count,
-                    start_time=start_time,
-                    reason=success_reason,
-                )
-                return {
-                    "terminal_result": result,
-                    "filter_semantic_attempts": filter_semantic_attempts,
-                    "scroll_streak": scroll_streak,
-                    "ineffective_action_streak": ineffective_action_streak,
-                    "force_context_shift": force_context_shift,
-                    "context_shift_fail_streak": context_shift_fail_streak,
-                    "context_shift_cooldown": context_shift_cooldown,
-                    "post_dom": post_dom,
-                    "changed": changed,
-                    "state_change": state_change,
-                }
-            else:
-                required_count = int(summary_dict.get("required_option_count") or 0)
-                covered_count = int(summary_dict.get("covered_option_count") or 0)
-                agent._log(
-                    "🧪 필터 의미 검증 진행 중: "
-                    f"옵션 커버리지 {covered_count}/{required_count}"
-                )
-                missing_options = semantic_report.get("missing_required_options")
-                if isinstance(missing_options, list) and missing_options:
-                    labels: List[str] = []
-                    for row in missing_options[:6]:
-                        if not isinstance(row, dict):
-                            continue
-                        label = str(row.get("text") or row.get("value") or "").strip()
-                        if label:
-                            labels.append(label)
-                    if labels:
-                        agent._action_feedback.append(
-                            "아직 검증되지 않은 필터 옵션: " + ", ".join(labels)
-                        )
-                        if len(agent._action_feedback) > 10:
-                            agent._action_feedback = agent._action_feedback[-10:]
-
-        if filter_semantic_attempts >= filter_semantic_attempt_limit:
-            reason = (
-                "필터 의미 검증 결과를 확보하지 못해 중단합니다. "
-                f"(select 시도 {filter_semantic_attempts}회)"
-            )
-            agent._log(f"❌ {reason}")
-            return {
-                "terminal_result": agent._build_failure_result(
-                    goal=goal,
-                    steps=steps,
-                    step_count=step_count,
-                    start_time=start_time,
-                    reason=reason,
-                ),
-                "filter_semantic_attempts": filter_semantic_attempts,
-                "scroll_streak": scroll_streak,
-                "ineffective_action_streak": ineffective_action_streak,
-                "force_context_shift": force_context_shift,
-                "context_shift_fail_streak": context_shift_fail_streak,
-                "context_shift_cooldown": context_shift_cooldown,
-                "post_dom": post_dom,
-                "changed": changed,
-                "state_change": state_change,
-            }
 
     weak_only = (not changed) and agent._state_change_is_weak(state_change)
     if changed:

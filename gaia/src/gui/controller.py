@@ -20,16 +20,11 @@ from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase1.prd_ingest import ingest_prd_bundle
 from gaia.src.phase1.prd_bundle_repository import PRDBundleRepository
 from gaia.src.phase1.agent_client import AgentServiceClient
-from gaia.src.phase4.agent import AgentOrchestrator, MCPClient
 from gaia.src.phase4.goal_driven import goals_from_scenarios, sort_goals_by_priority, TestGoal
-from gaia.src.phase4.intelligent_orchestrator import IntelligentOrchestrator
-from gaia.src.phase4.master_orchestrator import MasterOrchestrator
 from gaia.src.tracker.checklist import ChecklistTracker
-from gaia.src.utils.config import MCPConfig
 from gaia.src.utils.models import Assertion, TestScenario, TestStep
 from gaia.src.utils.plan_repository import PlanRepository
 
-from gaia.src.gui.worker import AutomationWorker
 from gaia.src.gui.analysis_worker import AnalysisWorker
 from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker
 from gaia.chat_hub import HubContext, _compile_steering_policy, _format_steering_status, _looks_like_steering_text
@@ -41,7 +36,6 @@ TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.js
 class ControllerConfig:
     pdf_loader: PDFLoader | None = None
     analyzer: SpecAnalyzer | None = None
-    orchestrator: AgentOrchestrator | None = None
 
 
 class AppController(QObject):
@@ -67,30 +61,6 @@ class AppController(QObject):
         )
         self._max_actions = 50
 
-        mcp_config: MCPConfig | None = None
-        if self._mcp_host_url:
-            mcp_config = MCPConfig(host_url=self._mcp_host_url)
-
-        if self._config.orchestrator is not None:
-            self._orchestrator = self._config.orchestrator
-        else:
-            mcp_client = MCPClient(config=mcp_config) if mcp_config else None
-            self._orchestrator = AgentOrchestrator(
-                analyzer=self._analyzer,
-                tracker=self._tracker,
-                mcp_client=mcp_client,
-            )
-
-        self._intelligent_orchestrator = IntelligentOrchestrator(
-            tracker=self._tracker,
-            mcp_config=mcp_config,
-            session_id=self._session_id or "default",
-        )
-        self._master_orchestrator = MasterOrchestrator(
-            tracker=self._tracker,
-            mcp_config=mcp_config,
-            session_id=self._session_id or "default",
-        )
         self._plan_repository = PlanRepository()
         self._bundle_repository = PRDBundleRepository()
 
@@ -114,7 +84,7 @@ class AppController(QObject):
         self._analysis_goals: Sequence[TestGoal] = ()
         self._startup_mode: str | None = None
         self._worker_thread: QThread | None = None
-        self._worker: AutomationWorker | None = None
+        self._worker: QObject | None = None
         self._analysis_thread: QThread | None = None
         self._analysis_worker: AnalysisWorker | None = None
         self._bridge_status_timer = QTimer(self)
@@ -983,29 +953,6 @@ class AppController(QObject):
         self._window.set_busy(True, message="AI가 자율 탐색을 수행하는 중이에요…")
         self._start_exploratory_worker(self._current_url)
 
-    def _start_intelligent_worker(self, url: str, plan: Sequence[TestScenario]) -> None:
-        """사이트 탐색을 포함한 MasterOrchestrator를 백그라운드에서 시작합니다."""
-        from gaia.src.gui.intelligent_worker import IntelligentWorker
-
-        thread = QThread(self)
-        # IntelligentOrchestrator 대신 MasterOrchestrator 사용
-        worker = IntelligentWorker(url, plan, orchestrator=self._master_orchestrator)
-        worker.moveToThread(thread)
-
-        thread.started.connect(worker.start)
-        worker.progress.connect(self._handle_worker_progress)
-        worker.screenshot.connect(self._window.update_live_preview)
-        worker.scenario_started.connect(self._window.highlight_current_scenario)
-        worker.scenario_finished.connect(lambda _: None)  # Could add completion logic here
-        worker.finished.connect(self._on_intelligent_worker_finished)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-
-        self._worker_thread = thread
-        self._worker = worker
-        thread.start()
-
     def _start_goal_worker(self, url: str, goals: Sequence[TestGoal]) -> None:
         """Goal-Driven 에이전트를 백그라운드에서 시작합니다."""
         thread = QThread(self)
@@ -1066,26 +1013,9 @@ class AppController(QObject):
         self._worker = worker
         thread.start()
 
-    def _start_worker(self, url: str, plan: Sequence[TestScenario]) -> None:
-        thread = QThread(self)
-        worker = AutomationWorker(url, plan, orchestrator=self._orchestrator)
-        worker.moveToThread(thread)
-
-        thread.started.connect(worker.start)
-        worker.progress.connect(self._handle_worker_progress)
-        worker.finished.connect(self._on_worker_finished)
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-
-        self._worker_thread = thread
-        self._worker = worker
-        thread.start()
-
-    # ------------------------------------------------------------------
     @Slot()
     def _on_intelligent_worker_finished(self) -> None:
-        """IntelligentOrchestrator 완료를 처리합니다."""
+        """백그라운드 automation 완료를 처리합니다."""
         summary = self._tracker.coverage() * 100
         self._window.append_log(f"✅ 자동화 실행 완료. Coverage: {summary:.1f}%")
         if self._last_result_summary is None:
@@ -1173,120 +1103,6 @@ class AppController(QObject):
 
                 except Exception as e:
                     self._window.append_log(f"⚠️ ICR 측정 실패: {e}")
-
-        self._window.set_busy(False)
-        self._update_overall_progress_display()
-        self._worker_thread = None
-        self._worker = None
-
-    @Slot()
-    def _on_worker_finished(self) -> None:
-        summary = self._tracker.coverage() * 100
-        self._window.append_log(f"✅ Automation completed. Coverage: {summary:.1f}%")
-
-        # ICR 측정 (특정 기능 테스트인 경우에만)
-        if self._current_feature_query and self._current_plan_file:
-            self._window.append_log(f"\n📊 정량지표 측정 중... (Feature: {self._current_feature_query})")
-
-            # 1. ICR 측정
-            try:
-                from measure_metrics import calculate_icr
-                icr_result = calculate_icr(
-                    plan_file=self._current_plan_file,
-                    ground_truth_file="ground_truth.json",
-                    feature_query=self._current_feature_query
-                )
-
-                # ICR 결과를 GUI에 표시
-                icr_pct = icr_result['icr_percentage']
-                covered = icr_result['covered_test_cases_count']
-                total = icr_result['total_ground_truth_test_cases']
-                target_passed = "✅ PASS" if icr_result['target_80_passed'] else "❌ FAIL"
-
-                self._window.append_log(f"\n{'='*60}")
-                self._window.append_log(f"📈 정량지표 1: ICR (Intent Coverage Rate)")
-                self._window.append_log(f"{'='*60}")
-                self._window.append_log(f"🎯 측정 기능: {self._current_feature_query}")
-                self._window.append_log(f"📊 Ground Truth Test Cases: {total}개")
-                self._window.append_log(f"✅ 커버된 Test Cases: {covered}개")
-                self._window.append_log(f"📈 ICR: {icr_pct:.2f}%")
-                self._window.append_log(f"🎯 목표 달성 (≥80%): {target_passed}")
-                self._window.append_log(f"{'='*60}\n")
-
-            except Exception as e:
-                self._window.append_log(f"⚠️ ICR 측정 실패: {e}")
-
-            # 1.5. ICR 측정 (이전 테스트 불러오기 + 로그인 기능인 경우)
-            if self._current_bug_json and self._plan and any("로그인" in s.get("scenario", "") for s in self._plan):
-                try:
-                    from measure_metrics import calculate_icr
-
-                    icr_result = calculate_icr(
-                        plan_file=self._current_plan_file,
-                        ground_truth_file="ground_truth.json",
-                        feature_query="로그인"
-                    )
-
-                    # ICR 결과를 GUI에 표시
-                    icr_pct = icr_result['icr_percentage']
-                    covered = icr_result['covered_test_cases_count']
-                    total = icr_result['total_ground_truth_test_cases']
-                    target_passed = "✅ PASS" if icr_result['target_80_passed'] else "❌ FAIL"
-
-                    self._window.append_log(f"\n{'='*60}")
-                    self._window.append_log(f"📈 정량지표 1: ICR (Intent Coverage Rate)")
-                    self._window.append_log(f"{'='*60}")
-                    self._window.append_log(f"🎯 측정 기능: 로그인")
-                    self._window.append_log(f"📊 Ground Truth Test Cases: {total}개")
-                    self._window.append_log(f"✅ 커버된 Test Cases: {covered}개")
-                    self._window.append_log(f"📈 ICR: {icr_pct:.2f}%")
-                    self._window.append_log(f"🎯 목표 달성 (≥80%): {target_passed}")
-                    self._window.append_log(f"{'='*60}\n")
-
-                except Exception as e:
-                    self._window.append_log(f"⚠️ ICR 측정 실패: {e}")
-
-            # 2. ER 측정 (이전 테스트 불러오기 시 bug.json을 선택한 경우)
-            if self._current_bug_json:
-                try:
-                    from measure_metrics import extract_bugs_from_logs
-                    import os
-
-                    # 로그 파일 경로 찾기
-                    log_file = "/tmp/agent-service-metrics-test.log"
-
-                    # 로그 파일이 없으면 다른 경로 시도
-                    if not os.path.exists(log_file):
-                        # GUI에서 실행한 경우 워커 로그 확인
-                        # (현재는 간단히 파일이 없으면 스킵)
-                        self._window.append_log(f"⚠️ ER 측정 스킵: 로그 파일을 찾을 수 없습니다 ({log_file})")
-                    else:
-                        er_result = extract_bugs_from_logs(
-                            log_file=log_file,
-                            audit_file=self._current_bug_json
-                        )
-
-                        # ER 결과를 GUI에 표시
-                        er_pct = er_result['er_percentage']
-                        total_seeded = er_result['total_seeded']
-                        detected = er_result['detected_bugs']
-                        missed = er_result['missed_seeded']
-                        false_pos = er_result['bad_test_fails']
-                        target_passed = "✅ PASS" if er_result['target_20_passed'] else "❌ FAIL"
-
-                        self._window.append_log(f"\n{'='*60}")
-                        self._window.append_log(f"📈 정량지표 2: ER (Error Rate)")
-                        self._window.append_log(f"{'='*60}")
-                        self._window.append_log(f"🐛 시드 버그 총 개수: {total_seeded}개")
-                        self._window.append_log(f"✅ 탐지된 버그: {detected}개")
-                        self._window.append_log(f"❌ 미탐지된 버그: {missed}개")
-                        self._window.append_log(f"⚠️  False Positive: {false_pos}개")
-                        self._window.append_log(f"📈 ER: {er_pct:.2f}%")
-                        self._window.append_log(f"🎯 목표 달성 (≤20%): {target_passed}")
-                        self._window.append_log(f"{'='*60}\n")
-
-                except Exception as e:
-                    self._window.append_log(f"⚠️ ER 측정 실패: {e}")
 
         self._window.set_busy(False)
         self._update_overall_progress_display()
@@ -1499,13 +1315,6 @@ class AppController(QObject):
         self._window.append_chat_message("GAIA", "빠른 목표 실행으로 처리합니다.")
         self._on_start_requested()
 
-    def _reset_tracker_with_plan(self, scenarios: Sequence[TestScenario]) -> None:
-        plan_list = list(scenarios)
-        self._tracker.items.clear()
-        if plan_list:
-            self._tracker.seed_from_scenarios(plan_list)
-        self._update_overall_progress_display()
-
     def _reset_tracker_with_goals(self, goals: Sequence[TestGoal]) -> None:
         goal_list = list(goals)
         self._tracker.items.clear()
@@ -1531,14 +1340,6 @@ class AppController(QObject):
         else:
             progress_items = []
         self._window.update_test_progress(progress_items)
-
-    # ------------------------------------------------------------------
-    def _plan_has_selectors(self, scenarios: Sequence[TestScenario]) -> bool:
-        for scenario in scenarios:
-            for step in scenario.steps:
-                if step.selector and step.selector.strip():
-                    return True
-        return False
 
     def _convert_testcases_to_scenarios(
         self, checklist: Sequence[object]

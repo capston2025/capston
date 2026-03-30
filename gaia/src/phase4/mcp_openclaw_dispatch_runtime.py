@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 import re
 import threading
 import time
@@ -10,7 +12,7 @@ from urllib.parse import urlparse, urlunparse
 import requests
 
 from gaia.src.phase4.embedded_openclaw_runtime import ensure_embedded_openclaw_base_url
-from gaia.src.phase4.mcp_ref_snapshot_helpers import (
+from gaia.src.phase4.mcp_ref.snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_snapshot_from_elements,
     _build_role_tree,
@@ -523,6 +525,62 @@ def _build_role_ref_context(
 def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     tree, tree_by_ref, text_by_raw_ref, nearby_text_by_raw_ref, pointer_like_refs, ref_line_index = _build_role_ref_context(snapshot, refs)
     elements: List[Dict[str, Any]] = []
+    child_refs_by_parent: Dict[str, List[str]] = {}
+    tree_index_by_ref: Dict[str, int] = {}
+    for index, node in enumerate(tree):
+        if not isinstance(node, dict):
+            continue
+        node_ref = str(node.get("ref") or "").strip()
+        if node_ref and node_ref not in tree_index_by_ref:
+            tree_index_by_ref[node_ref] = index
+        parent_ref = str(node.get("parent_ref") or "").strip()
+        if not parent_ref or not node_ref:
+            continue
+        child_refs_by_parent.setdefault(parent_ref, []).append(node_ref)
+
+    def _collect_select_state(raw_ref_id: str) -> Tuple[List[Dict[str, str]], str]:
+        node = tree_by_ref.get(raw_ref_id) or {}
+        meta = (refs.get(raw_ref_id) or {}) if isinstance(refs, dict) else {}
+        role = str(meta.get("role") or node.get("role") or "").strip().lower()
+        if role not in {"combobox", "listbox"}:
+            return [], ""
+        options: List[Dict[str, str]] = []
+        selected_value = ""
+        seen: set[tuple[str, str]] = set()
+        node_index = tree_index_by_ref.get(raw_ref_id)
+        if node_index is None:
+            return [], ""
+        try:
+            base_depth = int((tree[node_index] or {}).get("depth", 0) or 0)
+        except Exception:
+            base_depth = 0
+        for child_node in tree[node_index + 1 :]:
+            if not isinstance(child_node, dict):
+                continue
+            try:
+                child_depth = int(child_node.get("depth", 0) or 0)
+            except Exception:
+                child_depth = 0
+            if child_depth <= base_depth:
+                break
+            child_ref = str(child_node.get("ref") or "").strip()
+            child_meta = (refs.get(child_ref) or {}) if child_ref and isinstance(refs, dict) else {}
+            child_role = str(child_meta.get("role") or child_node.get("role") or "").strip().lower()
+            child_name = str(child_meta.get("name") or child_node.get("name") or "").strip()
+            if child_role != "option" or not child_name:
+                continue
+            child_line = str(child_node.get("line") or "").strip().lower()
+            option_value = child_name
+            option_text = child_name
+            key = (_normalize_hint_text(option_value), _normalize_hint_text(option_text))
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append({"value": option_value, "text": option_text})
+            if not selected_value and "[selected]" in child_line:
+                selected_value = option_value or option_text
+        return options, selected_value
+
     surfaced_raw_refs: set[str] = set()
     surfaced_meta_by_raw_ref: Dict[str, Dict[str, Any]] = {}
     candidate_raw_refs: List[str] = []
@@ -896,12 +954,30 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             context_score_hint += 10.0
         if row_like and group_action_labels:
             context_score_hint += 3.0
+        select_options, selected_value = _collect_select_state(raw_ref_id)
+        if role in {"combobox", "listbox"}:
+            if not selected_value:
+                selected_value = str(display_name or name or "").strip()
+            if select_options and selected_value:
+                normalized_selected = _normalize_hint_text(selected_value)
+                for option in select_options:
+                    option_value = str(option.get("value") or "").strip()
+                    option_text = str(option.get("text") or "").strip()
+                    if normalized_selected in {
+                        _normalize_hint_text(option_value),
+                        _normalize_hint_text(option_text),
+                    }:
+                        selected_value = option_value or option_text
+                        break
+            if selected_value:
+                display_name = selected_value
+        role_ref_name = selected_value if role in {"combobox", "listbox"} and selected_value else (name or "")
         attrs: Dict[str, Any] = {
             "role": role,
             "aria-label": display_name or "",
             "title": display_name or "",
             "role_ref_role": role,
-            "role_ref_name": name or "",
+            "role_ref_name": role_ref_name,
             "role_ref_nth": nth,
             "openclaw_raw_ref": raw_ref_id,
             "container_dom_ref": container_dom_ref,
@@ -917,6 +993,10 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             "gaia-actionable": "true" if interactive else "false",
             "gaia-disabled": "false",
         }
+        if select_options:
+            attrs["options"] = select_options
+        if selected_value:
+            attrs["selected_value"] = selected_value
         if role == "textbox":
             attrs["type"] = "text"
             attrs["placeholder"] = name or ""
@@ -1609,6 +1689,78 @@ def dispatch_openclaw_action(
             raw_snapshot=data,
             state=state,
         )
+        return 200, payload, ""
+
+    if action in {"capture_screenshot", "browser_screenshot"}:
+        fallback_url = requested_url
+        state = _ensure_target(
+            base_url=base_url,
+            session_id=session_id,
+            requested_url=requested_url,
+            timeout=timeout,
+        )
+        target_id = str(state.get("target_id") or "").strip()
+        image_type = str((params or {}).get("type") or "png").strip().lower()
+        if image_type not in {"png", "jpeg"}:
+            image_type = "png"
+        payload = {
+            "targetId": target_id,
+            "fullPage": bool((params or {}).get("fullPage") or (params or {}).get("full_page")),
+            "ref": str((params or {}).get("ref") or "").strip() or None,
+            "element": str((params or {}).get("element") or "").strip() or None,
+            "type": image_type,
+        }
+        status_code, data, text = _request(
+            "POST",
+            base_url=base_url,
+            path="/screenshot",
+            timeout=timeout,
+            payload=payload,
+        )
+        if status_code >= 400 and _target_missing(status_code, data, text):
+            fallback_url = str(state.get("current_url") or fallback_url or "")
+            _clear_session_target(session_id)
+            state = _ensure_target(
+                base_url=base_url,
+                session_id=session_id,
+                requested_url=fallback_url,
+                timeout=timeout,
+            )
+            target_id = str(state.get("target_id") or "").strip()
+            payload["targetId"] = target_id
+            status_code, data, text = _request(
+                "POST",
+                base_url=base_url,
+                path="/screenshot",
+                timeout=timeout,
+                payload=payload,
+            )
+        if status_code >= 400:
+            return _normalize_failure(status_code, data, text)
+        image_path = Path(str((data or {}).get("path") or "").strip())
+        if not image_path.exists():
+            return _normalize_failure(
+                500,
+                {"error": f"openclaw_screenshot_path_missing: {image_path}"},
+                "",
+            )
+        screenshot_base64 = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        current_url = str((data or {}).get("url") or state.get("current_url") or requested_url)
+        payload = {
+            "success": True,
+            "reason_code": "ok",
+            "session_id": session_id,
+            "targetId": str((data or {}).get("targetId") or target_id),
+            "current_url": current_url,
+            "screenshot": screenshot_base64,
+            "mime_type": f"image/{image_type}",
+            "saved_path": str(image_path),
+            "meta": {
+                "full_page": bool((params or {}).get("fullPage") or (params or {}).get("full_page")),
+                "type": image_type,
+                "backend": "openclaw",
+            },
+        }
         return 200, payload, ""
 
     state = _ensure_target(

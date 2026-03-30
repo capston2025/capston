@@ -16,7 +16,7 @@
     {
       "id": "INUU_001_HOME_LOGIN_VISIBLE",
       "url": "https://inuu-timetable.vercel.app/",
-      "goal": "현재 메인 화면에서 로그인 버튼 또는 로그인 유도 CTA가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "goal": "현재 메인 화면에서 로그인 버튼 또는 로그아웃 버튼 중 하나가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
       "constraints": {
         "allow_navigation": false,
         "require_ref_only": true,
@@ -49,6 +49,19 @@
       "id": "INUU_003_CREDIT_FILTER_SEMANTIC",
       "url": "https://inuu-timetable.vercel.app/",
       "goal": "학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.",
+      "test_data": {
+        "filter_control_hint": {
+          "include_terms": [
+            "검색 결과",
+            "학점 필터"
+          ],
+          "exclude_terms": [
+            "위시리스트",
+            "목표 학점",
+            "내 시간표"
+          ]
+        }
+      },
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -87,8 +100,8 @@
         "require_state_change": true
       },
       "expected_signals": [
-        "url_change",
-        "persistence_verified"
+        "pagination_advanced",
+        "persistence_evaluated"
       ],
       "difficulty": "medium",
       "time_budget_sec": 120

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .goal_policy_phase_runtime import goal_phase_intent
 from .models import ActionDecision, ActionType, DOMElement
@@ -10,6 +10,7 @@ from .parsing import parse_multi_values, parse_wait_payload
 from .runtime import ActionExecResult
 from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
+from gaia.src.phase4.mcp_page_evidence_runtime import resolve_stale_ref
 from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
 
 
@@ -69,6 +70,104 @@ def _normalized_binding_text(agent, value: object) -> str:
         return str(value or "").strip().lower()
 
 
+def _normalized_select_options(agent, element: Optional[DOMElement]) -> List[dict[str, str]]:
+    if element is None:
+        return []
+    normalized: List[dict[str, str]] = []
+    for raw_option in list(getattr(element, "options", None) or []):
+        if isinstance(raw_option, dict):
+            option_value = str(raw_option.get("value") or "").strip()
+            option_text = str(raw_option.get("text") or "").strip()
+        else:
+            option_value = str(raw_option or "").strip()
+            option_text = option_value
+        if not option_value and not option_text:
+            continue
+        normalized.append(
+            {
+                "value": option_value,
+                "text": option_text,
+                "value_norm": _normalized_binding_text(agent, option_value),
+                "text_norm": _normalized_binding_text(agent, option_text),
+            }
+        )
+    return normalized
+
+
+def _select_option_signature(agent, element: Optional[DOMElement]) -> tuple[str, ...]:
+    entries = _normalized_select_options(agent, element)
+    signature: List[str] = []
+    for entry in entries[:12]:
+        token = str(entry.get("text_norm") or entry.get("value_norm") or "").strip()
+        if token:
+            signature.append(token)
+    return tuple(signature)
+
+
+def _select_values_match_element(agent, element: Optional[DOMElement], values: List[str]) -> bool:
+    entries = _normalized_select_options(agent, element)
+    if not entries:
+        return False
+    option_tokens = {
+        token
+        for entry in entries
+        for token in (str(entry.get("value_norm") or "").strip(), str(entry.get("text_norm") or "").strip())
+        if token
+    }
+    desired_tokens = [_normalized_binding_text(agent, value) for value in values if str(value or "").strip()]
+    if not desired_tokens:
+        return False
+    return all(token in option_tokens for token in desired_tokens)
+
+
+def _find_select_value_candidate(
+    agent,
+    desired_values: List[str],
+    current_element: Optional[DOMElement],
+    live_dom: List[DOMElement],
+) -> Optional[DOMElement]:
+    if not desired_values or not isinstance(live_dom, list):
+        return None
+
+    prior_container = _normalized_binding_text(agent, getattr(current_element, "container_name", ""))
+    prior_context = _normalized_binding_text(agent, getattr(current_element, "context_text", ""))
+    prior_role_ref = _normalized_binding_text(agent, getattr(current_element, "role_ref_name", ""))
+    prior_signature = _select_option_signature(agent, current_element)
+
+    best_score = -1.0
+    best_element: Optional[DOMElement] = None
+    for candidate in live_dom:
+        candidate_role = _normalized_binding_text(agent, getattr(candidate, "role", ""))
+        candidate_tag = _normalized_binding_text(agent, getattr(candidate, "tag", ""))
+        if candidate_role not in {"combobox", "listbox"} and candidate_tag != "select":
+            continue
+        if not _select_values_match_element(agent, candidate, desired_values):
+            continue
+        score = 0.0
+        if prior_container and prior_container == _normalized_binding_text(agent, getattr(candidate, "container_name", "")):
+            score += 2.0
+        if prior_context and prior_context == _normalized_binding_text(agent, getattr(candidate, "context_text", "")):
+            score += 2.0
+        if prior_role_ref and prior_role_ref == _normalized_binding_text(agent, getattr(candidate, "role_ref_name", "")):
+            score += 1.0
+        candidate_signature = _select_option_signature(agent, candidate)
+        if prior_signature and candidate_signature == prior_signature:
+            score += 7.0
+        elif prior_signature and candidate_signature:
+            overlap = len(set(prior_signature).intersection(set(candidate_signature)))
+            score += min(3.0, overlap * 0.5)
+        if current_element is not None:
+            try:
+                score += max(0.0, 2.0 - (abs(int(getattr(candidate, "id", -1)) - int(getattr(current_element, "id", -1))) * 0.1))
+            except Exception:
+                pass
+        score += float(len(_normalized_select_options(agent, candidate)) * 0.05)
+        if score > best_score:
+            best_score = score
+            best_element = candidate
+    return best_element
+
+
 def _find_rebound_element(agent, prior_element: Optional[DOMElement], live_dom: List[DOMElement]) -> Optional[DOMElement]:
     if prior_element is None or not isinstance(live_dom, list) or not live_dom:
         return None
@@ -82,6 +181,8 @@ def _find_rebound_element(agent, prior_element: Optional[DOMElement], live_dom: 
     prior_context = _normalized_binding_text(agent, getattr(prior_element, "context_text", ""))
     prior_role_ref_role = _normalized_binding_text(agent, getattr(prior_element, "role_ref_role", ""))
     prior_role_ref_name = _normalized_binding_text(agent, getattr(prior_element, "role_ref_name", ""))
+    prior_selected_value = _normalized_binding_text(agent, getattr(prior_element, "selected_value", ""))
+    prior_option_signature = _select_option_signature(agent, prior_element)
     try:
         prior_role_ref_nth = int(getattr(prior_element, "role_ref_nth", 0) or 0)
     except Exception:
@@ -102,6 +203,8 @@ def _find_rebound_element(agent, prior_element: Optional[DOMElement], live_dom: 
         candidate_context = _normalized_binding_text(agent, getattr(candidate, "context_text", ""))
         candidate_role_ref_role = _normalized_binding_text(agent, getattr(candidate, "role_ref_role", ""))
         candidate_role_ref_name = _normalized_binding_text(agent, getattr(candidate, "role_ref_name", ""))
+        candidate_selected_value = _normalized_binding_text(agent, getattr(candidate, "selected_value", ""))
+        candidate_option_signature = _select_option_signature(agent, candidate)
         try:
             candidate_role_ref_nth = int(getattr(candidate, "role_ref_nth", 0) or 0)
         except Exception:
@@ -121,6 +224,12 @@ def _find_rebound_element(agent, prior_element: Optional[DOMElement], live_dom: 
             score += 4
         if prior_role_ref_name and prior_role_ref_name == candidate_role_ref_name:
             score += 5
+        if prior_selected_value and prior_selected_value == candidate_selected_value:
+            score += 4
+        if prior_option_signature and candidate_option_signature == prior_option_signature:
+            score += 9
+        elif prior_option_signature and candidate_option_signature:
+            score += min(4, len(set(prior_option_signature).intersection(set(candidate_option_signature))))
         if (
             prior_role_ref_role
             and prior_role_ref_name
@@ -141,6 +250,13 @@ def _find_rebound_element(agent, prior_element: Optional[DOMElement], live_dom: 
     if best_score < 7:
         return None
     return best_element
+
+
+def _snapshot_payload_from_agent(agent) -> dict:
+    return {
+        "elements_by_ref": dict(getattr(agent, "_last_snapshot_elements_by_ref", {}) or {}),
+        "context_snapshot": dict(getattr(agent, "_last_context_snapshot", {}) or {}),
+    }
 
 
 def execute_decision(
@@ -284,6 +400,145 @@ def execute_decision(
             except Exception:
                 pass
 
+    def _remember_persistent_control_state() -> None:
+        if selected_element is None:
+            return
+        if decision.action not in {ActionType.FILL, ActionType.SELECT}:
+            return
+        expected_value = str(getattr(decision, "value", "") or "").strip()
+        if not expected_value:
+            return
+        try:
+            tag = agent._normalize_text(str(getattr(selected_element, "tag", "") or ""))
+            role = agent._normalize_text(str(getattr(selected_element, "role", "") or ""))
+        except Exception:
+            tag = str(getattr(selected_element, "tag", "") or "").strip().lower()
+            role = str(getattr(selected_element, "role", "") or "").strip().lower()
+        if decision.action == ActionType.FILL and tag not in {"input", "textarea"} and role not in {"textbox", "searchbox", "combobox"}:
+            return
+        if decision.action == ActionType.SELECT and tag != "select" and role not in {"combobox", "listbox"}:
+            return
+
+        tokens = []
+        for raw_token in expected_value.replace("/", " ").split():
+            normalized = _normalized_binding_text(agent, raw_token)
+            if normalized and len(normalized) >= 2 and normalized not in tokens:
+                tokens.append(normalized)
+
+        entry: Dict[str, Any] = {
+            "kind": "select" if decision.action == ActionType.SELECT else "fill",
+            "expected_value": expected_value,
+            "tokens": tokens[:4],
+            "ref_id": str(getattr(selected_element, "ref_id", "") or "").strip(),
+            "previous_selected_value": str(getattr(selected_element, "selected_value", "") or "").strip(),
+            "tag": str(getattr(selected_element, "tag", "") or "").strip(),
+            "role": str(getattr(selected_element, "role", "") or "").strip(),
+            "container_name": str(getattr(selected_element, "container_name", "") or "").strip(),
+            "role_ref_name": str(getattr(selected_element, "role_ref_name", "") or "").strip(),
+            "context_text": str(getattr(selected_element, "context_text", "") or "").strip(),
+            "step_ts": time.time(),
+        }
+        try:
+            memory = getattr(agent, "_persistent_state_memory", None)
+            if not isinstance(memory, list):
+                memory = []
+            memory = [
+                item for item in memory
+                if isinstance(item, dict)
+                and (
+                    str(item.get("ref_id") or "").strip() != entry["ref_id"]
+                    or str(item.get("kind") or "").strip() != entry["kind"]
+                )
+            ]
+            memory.append(entry)
+            agent._persistent_state_memory = memory[-8:]
+        except Exception:
+            pass
+
+    def _annotate_control_state_change() -> None:
+        exec_result = getattr(agent, "_last_exec_result", None)
+        state_change = getattr(exec_result, "state_change", None)
+        if not isinstance(state_change, dict) or selected_element is None:
+            return
+
+        desired_values = parse_multi_values(getattr(decision, "value", None))
+        desired_norms = [
+            _normalized_binding_text(agent, value)
+            for value in desired_values
+            if str(value or "").strip()
+        ]
+        if not desired_norms:
+            return
+
+        previous_selected = _normalized_binding_text(agent, getattr(selected_element, "selected_value", ""))
+        previous_text = _normalized_binding_text(agent, getattr(selected_element, "text", ""))
+        previous_role_ref = _normalized_binding_text(agent, getattr(selected_element, "role_ref_name", ""))
+        desired_primary = desired_norms[0]
+
+        if decision.action == ActionType.SELECT:
+            previous_value = previous_selected or previous_text or previous_role_ref
+            if previous_value:
+                state_change["target_value_matches"] = previous_value == desired_primary
+                state_change["target_value_changed"] = previous_value != desired_primary
+            return
+
+        if decision.action == ActionType.FILL:
+            typed_value = _normalized_binding_text(agent, getattr(decision, "value", ""))
+            if not typed_value:
+                return
+            previous_value = previous_selected or previous_text
+            if previous_value:
+                state_change["target_value_matches"] = previous_value == typed_value
+                state_change["target_value_changed"] = previous_value != typed_value
+
+    def _remember_recent_signal_event() -> None:
+        exec_result = getattr(agent, "_last_exec_result", None)
+        state_change = getattr(exec_result, "state_change", None)
+        if not isinstance(state_change, dict):
+            return
+        element_blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(selected_element, "text", "") or ""),
+                    str(getattr(selected_element, "aria_label", "") or ""),
+                    str(getattr(selected_element, "title", "") or ""),
+                    str(getattr(selected_element, "placeholder", "") or ""),
+                    str(getattr(selected_element, "role_ref_name", "") or ""),
+                    str(getattr(selected_element, "container_name", "") or ""),
+                    str(getattr(selected_element, "context_text", "") or ""),
+                ]
+            )
+        )
+        pagination_candidate = bool(
+            decision.action == ActionType.CLICK
+            and (
+                agent._contains_next_pagination_hint(getattr(selected_element, "text", None))
+                or agent._contains_next_pagination_hint(getattr(selected_element, "aria_label", None))
+                or agent._contains_next_pagination_hint(getattr(selected_element, "title", None))
+                or agent._contains_next_pagination_hint(getattr(selected_element, "context_text", None))
+                or agent._is_numeric_page_label(getattr(selected_element, "text", None))
+                or "pagination" in element_blob
+                or "검색 결과" in str(getattr(selected_element, "container_name", "") or "")
+            )
+        )
+        entry: Dict[str, Any] = {
+            "action": str(decision.action.value),
+            "value": str(getattr(decision, "value", "") or "").strip(),
+            "ref_id": str(ref_id or ""),
+            "state_change": dict(state_change),
+            "pagination_candidate": pagination_candidate,
+            "role_ref_name": str(getattr(selected_element, "role_ref_name", "") or "").strip(),
+            "text": str(getattr(selected_element, "text", "") or "").strip(),
+            "container_name": str(getattr(selected_element, "container_name", "") or "").strip(),
+            "context_text": str(getattr(selected_element, "context_text", "") or "").strip(),
+            "step_ts": time.time(),
+        }
+        history = getattr(agent, "_recent_signal_history", None)
+        if not isinstance(history, list):
+            history = []
+        history.append(entry)
+        agent._recent_signal_history = history[-12:]
+
     agent._last_exec_result = None
 
     selector = None
@@ -368,6 +623,7 @@ def execute_decision(
         "snapshot_not_found",
         "stale_snapshot",
         "ref_required",
+        "ref_stale",
         "not_found",
         "ambiguous_ref_target",
     }
@@ -375,10 +631,64 @@ def execute_decision(
     def _refresh_ref_binding() -> None:
         nonlocal selector, full_selector, ref_id, bound_element_id, selected_element
         previous_ref_id = ref_id
+        previous_snapshot_payload = _snapshot_payload_from_agent(agent)
+        previous_elements_by_ref = previous_snapshot_payload.get("elements_by_ref") or {}
+        previous_meta = None
+        if bound_element_id is not None:
+            previous_meta = (getattr(agent, "_element_ref_meta_by_id", {}) or {}).get(bound_element_id)
+        if previous_meta is None and previous_ref_id:
+            candidate_meta = previous_elements_by_ref.get(previous_ref_id)
+            if isinstance(candidate_meta, dict):
+                previous_meta = candidate_meta
         refreshed_dom = agent._analyze_dom() or []
         selector_to_ref = getattr(agent, "_selector_to_ref_id", {}) or {}
         ref_id = None
-        rebound_element = _find_rebound_element(agent, selected_element, refreshed_dom)
+        rebound_element = None
+        fresh_snapshot_payload = _snapshot_payload_from_agent(agent)
+        recovered_meta = None
+        if isinstance(previous_meta, dict):
+            try:
+                recovered_meta = resolve_stale_ref(previous_meta, fresh_snapshot_payload)
+            except Exception:
+                recovered_meta = None
+        if isinstance(recovered_meta, dict):
+            recovered_ref = str(recovered_meta.get("ref") or recovered_meta.get("ref_id") or "").strip()
+            recovered_selector = str(recovered_meta.get("selector") or "").strip()
+            recovered_full_selector = str(recovered_meta.get("full_selector") or "").strip()
+            for candidate in refreshed_dom:
+                candidate_ref = str(getattr(candidate, "ref_id", "") or "").strip()
+                if recovered_ref and candidate_ref == recovered_ref:
+                    rebound_element = candidate
+                    break
+            if rebound_element is None:
+                for candidate in refreshed_dom:
+                    candidate_id = getattr(candidate, "id", None)
+                    if candidate_id is None:
+                        continue
+                    candidate_selector = (getattr(agent, "_element_selectors", {}) or {}).get(int(candidate_id))
+                    candidate_full_selector = (getattr(agent, "_element_full_selectors", {}) or {}).get(int(candidate_id))
+                    if recovered_full_selector and candidate_full_selector == recovered_full_selector:
+                        rebound_element = candidate
+                        break
+                    if recovered_selector and candidate_selector == recovered_selector:
+                        rebound_element = candidate
+                        break
+        if rebound_element is None:
+            rebound_element = _find_rebound_element(agent, selected_element, refreshed_dom)
+        if (
+            decision.action == ActionType.SELECT
+            and rebound_element is not None
+            and decision.value
+            and not _select_values_match_element(agent, rebound_element, parse_multi_values(decision.value))
+        ):
+            repaired = _find_select_value_candidate(
+                agent,
+                parse_multi_values(decision.value),
+                rebound_element,
+                refreshed_dom,
+            )
+            if repaired is not None:
+                rebound_element = repaired
         if rebound_element is not None and getattr(rebound_element, "id", None) is not None:
             bound_element_id = int(getattr(rebound_element, "id"))
             selected_element = rebound_element
@@ -386,6 +696,10 @@ def execute_decision(
             selector = agent._element_selectors.get(bound_element_id) or selector
             full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
             ref_id = agent._element_ref_ids.get(bound_element_id) or None
+            if not ref_id:
+                ref_meta = (getattr(agent, "_element_ref_meta_by_id", {}) or {}).get(bound_element_id)
+                if isinstance(ref_meta, dict):
+                    ref_id = str(ref_meta.get("ref") or ref_meta.get("ref_id") or "").strip() or None
         if not ref_id and rebound_element is not None:
             ref_id = str(getattr(rebound_element, "ref_id", "") or "").strip() or None
         if not ref_id:
@@ -493,6 +807,7 @@ def execute_decision(
                 click_value = "__close_intent__"
             ok, err = _execute_with_ref_recovery("click", action_value=click_value)
             if ok:
+                _remember_recent_signal_event()
                 _remember_auth_submit()
                 _remember_blockable_intent()
                 if getattr(agent, "_pending_resume_element_id", None) == decision.element_id:
@@ -539,12 +854,16 @@ def execute_decision(
                 return False, "fill 액션에 value가 필요함"
             ok, err = _execute_with_ref_recovery("fill", action_value=decision.value)
             if ok:
+                _annotate_control_state_change()
+                _remember_recent_signal_event()
                 _remember_auth_fill()
+                _remember_persistent_control_state()
             return ok, err
 
         if decision.action == ActionType.PRESS:
             ok, err = _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
             if ok:
+                _remember_recent_signal_event()
                 _remember_auth_submit()
             return ok, err
 
@@ -560,7 +879,47 @@ def execute_decision(
                     reason="select 액션에 value(values)가 필요함",
                 )
                 return False, "select 액션에 value(values)가 필요함"
-            return _execute_with_ref_recovery("select", action_value=decision.value)
+            parsed_values = parse_multi_values(decision.value)
+            known_select_options = bool(
+                _normalized_select_options(agent, selected_element)
+                or any(_normalized_select_options(agent, el) for el in dom_elements if isinstance(el, DOMElement))
+            )
+            if parsed_values and known_select_options and not _select_values_match_element(agent, selected_element, parsed_values):
+                repaired = _find_select_value_candidate(agent, parsed_values, selected_element, dom_elements)
+                if repaired is None:
+                    refreshed_dom = agent._analyze_dom() or []
+                    repaired = _find_select_value_candidate(agent, parsed_values, selected_element, refreshed_dom)
+                    if repaired is not None:
+                        dom_elements = refreshed_dom
+                if repaired is not None and getattr(repaired, "id", None) is not None:
+                    bound_element_id = int(getattr(repaired, "id"))
+                    selected_element = repaired
+                    selector = agent._element_selectors.get(bound_element_id) or selector
+                    full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
+                    ref_id = agent._element_ref_ids.get(bound_element_id) or str(getattr(repaired, "ref_id", "") or "").strip() or ref_id
+                    agent._log(
+                        "♻️ select 대상 재바인딩: "
+                        f'{str(getattr(decision, "ref_id", "") or ref_id or "")} -> {ref_id or "<none>"} '
+                        f'(value={",".join(parsed_values)})'
+                    )
+                elif known_select_options:
+                    agent._last_exec_result = ActionExecResult(
+                        success=False,
+                        effective=False,
+                        reason_code="invalid_select_target",
+                        reason=(
+                            "선택 값이 현재 combobox의 실제 option 목록에 없습니다. "
+                            "같은 snapshot 안에서 호환되는 select를 찾지 못했습니다."
+                        ),
+                        ref_id_used=ref_id or "",
+                    )
+                    return False, agent._last_exec_result.as_error_message()
+            ok, err = _execute_with_ref_recovery("select", action_value=decision.value)
+            if ok:
+                _annotate_control_state_change()
+                _remember_recent_signal_event()
+                _remember_persistent_control_state()
+            return ok, err
 
         if decision.action == ActionType.WAIT:
             wait_value = decision.value

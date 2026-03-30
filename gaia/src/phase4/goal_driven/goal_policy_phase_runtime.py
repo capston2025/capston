@@ -283,7 +283,6 @@ def derive_goal_policy_event(
     changed: bool,
     terminal_result: Any = None,
     login_gate_visible: bool = False,
-    auth_resume_pending: bool = False,
     auth_submit_attempted: bool = False,
     dom_elements: Optional[List[DOMElement]] = None,
 ) -> str:
@@ -340,7 +339,6 @@ def advance_goal_policy_phase(
         changed=changed,
         terminal_result=terminal_result,
         login_gate_visible=auth_prompt_visible,
-        auth_resume_pending=bool(getattr(agent, "_auth_resume_pending", False)),
         auth_submit_attempted=bool(getattr(agent, "_auth_submit_attempted", False)),
         dom_elements=effective_dom,
     )

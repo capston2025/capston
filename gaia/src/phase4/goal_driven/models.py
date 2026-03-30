@@ -58,6 +58,10 @@ class TestGoal(BaseModel):
     success_criteria: List[str] = Field(
         default_factory=list, description="성공 조건 (예: 환영 메시지 표시)"
     )
+    expected_signals: List[str] = Field(
+        default_factory=list,
+        description="Harness/runtime contract signals expected for success",
+    )
 
     failure_criteria: List[str] = Field(
         default_factory=list, description="실패 조건 (예: 오류 메시지 표시)"

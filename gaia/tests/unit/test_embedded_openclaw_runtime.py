@@ -15,14 +15,14 @@ def test_build_embedded_openclaw_config_defaults_to_local_unauthenticated_browse
     assert config["gateway"]["mode"] == "local"
     assert config["gateway"]["auth"]["mode"] == "none"
     assert config["browser"]["enabled"] is True
-    assert config["browser"]["headless"] is True
+    assert config["browser"]["headless"] is False
     assert config["browser"]["defaultProfile"] == "openclaw"
     assert config["browser"]["profiles"]["openclaw"]["cdpPort"] == 18800
     assert config["browser"]["executablePath"].endswith("Google Chrome")
 
 
-def test_build_embedded_openclaw_config_respects_visible_override(monkeypatch) -> None:
-    monkeypatch.setenv("GAIA_OPENCLAW_HEADLESS", "0")
+def test_build_embedded_openclaw_config_respects_headless_override(monkeypatch) -> None:
+    monkeypatch.setenv("GAIA_OPENCLAW_HEADLESS", "1")
 
     config = runtime.build_embedded_openclaw_config(
         gateway_port=18789,
@@ -30,7 +30,7 @@ def test_build_embedded_openclaw_config_respects_visible_override(monkeypatch) -
         browser_executable="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     )
 
-    assert config["browser"]["headless"] is False
+    assert config["browser"]["headless"] is True
 
 
 def test_detect_browser_executable_prefers_env_override(monkeypatch, tmp_path) -> None:
@@ -104,6 +104,7 @@ def test_bootstrap_env_sets_openclaw_config_dir(monkeypatch, tmp_path) -> None:
 
     assert env["OPENCLAW_CONFIG_DIR"] == str(state_dir)
     assert env["OPENCLAW_STATE_DIR"] == str(state_dir)
+    assert env["OPENCLAW_BUNDLED_PLUGINS_DIR"] == str(runtime.vendor_root() / "extensions")
 
 
 def test_ensure_browser_profile_started_raises_on_error(monkeypatch) -> None:

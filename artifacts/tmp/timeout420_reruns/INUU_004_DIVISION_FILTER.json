@@ -1,0 +1,33 @@
+{
+  "suite_id": "inuu_004_division_filter_timeout420",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "INUU_004_DIVISION_FILTER",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "구분 또는 전공/교양 관련 필터를 바꿨을 때 결과 목록이 실제로 바뀌는지 검증해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "dom_changed"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 420
+    }
+  ]
+}

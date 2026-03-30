@@ -1,350 +1,511 @@
 # GAIA Agent Harness Playbook
 
-## 1. 목적
+## 목적
 
-이 문서는 앞으로 GAIA 작업을 `planner -> developer -> verifier` 기본 루프와 주기적 `cleanup` 루프로 운영하기 위한 하네스 규약이다.
+이 문서는 앞으로 GAIA 작업을 수행할 때 기본 운영 하네스를 고정하기 위한 실행 규약이다.
 
-핵심 목표는 두 가지다.
+기본 하네스는 아래 4개 agent로 구성한다.
 
-1. OpenClaw의 판단력을 최대한 보존한다.
-2. GAIA는 실행 안정화, 검증, 추적성, 정리 작업에 집중한다.
+1. Planner
+2. Developer
+3. Verifier
+4. Cleanup
 
-이 문서는 기능 문서가 아니라 작업 운영 문서다. 즉 "코드를 어떻게 짜는가"보다 "에이전트가 어떤 순서로 어떤 책임을 지는가"를 고정한다.
+목표는 단순하다.
 
----
+- 구현 전에 문제와 성공 조건을 명확히 한다.
+- 구현은 한 agent가 책임지고 끝낸다.
+- 검증은 다른 agent가 독립적으로 수행한다.
+- 주기적으로 AI 슬롭 코드와 불필요한 레이어를 제거한다.
 
-## 2. 핵심 원칙
-
-### 2.1 OpenClaw 우선
-
-- 화면 판단과 액션 선택은 가능한 한 OpenClaw가 본 원본 구조를 기준으로 한다.
-- GAIA는 decision-time에 과도한 의미 재해석을 하지 않는다.
-- raw role tree, stable ref, 실제 post-action 관찰값을 1차 근거로 사용한다.
-
-### 2.2 Wrapper는 얇게 유지
-
-- GAIA의 책임은 아래로 제한한다.
-- 실행 디스패치
-- stale ref 복구
-- post-action probe
-- 최종 성공/실패 판정
-- trace/log 수집
-
-### 2.3 독립 검증 필수
-
-- 구현을 끝낸 에이전트가 자기 결과를 최종 판정하지 않는다.
-- 항상 별도의 verifier agent가 독립적으로 코드, 테스트, trace, 실제 실행 결과를 검토한다.
-
-### 2.4 주기적 정리 필수
-
-- 기능 추가만 계속하지 않는다.
-- AI가 만든 중복 로직, wrapper 과잉 개입, 죽은 코드, stale flag, 임시 호환 경로는 cleanup agent가 주기적으로 제거한다.
-
-### 2.5 증거 기반 보고
-
-- 모든 완료 보고는 아래 중 최소 하나를 포함해야 한다.
-- 실행 trace
-- 재현 명령
-- 테스트 결과
-- 로그/스크린샷
-- 실제 DOM 또는 API 증거
+이 문서는 “누가 무엇을 하고, 언제 handoff하며, 무엇이 완료로 간주되는가”를 정의한다.
 
 ---
 
-## 3. 기본 하네스 구성
+## 핵심 원칙
 
-### 3.1 Planner
+### 1. Planner는 방향을 정하고, Developer는 구현하고, Verifier는 승인한다
 
-역할:
+한 agent가 계획, 구현, 승인까지 모두 하면 자기 확증 편향이 생긴다.
 
-- 문제를 짧고 정확하게 다시 정의한다.
-- 변경 범위를 나눈다.
-- 위험 요소와 검증 기준을 먼저 만든다.
-- 어떤 작업을 메인 에이전트가 하고, 어떤 작업을 서브에이전트에 줄지 결정한다.
+따라서 역할을 분리한다.
 
-해야 하는 일:
+- Planner: 문제 구조화
+- Developer: 실제 변경
+- Verifier: 독립 검증
 
-- 목표를 한 문장으로 정리
-- 현재 병목 식별
-- 변경 파일 후보 식별
-- acceptance criteria 작성
-- verifier가 확인할 체크리스트 작성
+### 2. Cleanup은 선택이 아니라 정기 작업이다
 
-하지 말아야 할 일:
+AI가 빠르게 코드를 추가하면 임시 분기, 중복 함수, stale compatibility path, 과도한 prompt steering이 쌓인다.
 
-- 구현 확정 전에 세부 정책을 과도하게 주입
-- 증거 없이 원인 단정
-- 코드 수정
+따라서 Cleanup agent를 주기적으로 돌려 다음을 정리한다.
 
-출력 형식:
+- AI 슬롭 코드
+- 죽은 코드
+- 중복 로직
+- 더 이상 필요 없는 fallback
+- 원래 아키텍처 목표를 흐리는 heuristic
+
+### 3. OpenClaw 판단을 보존하고 GAIA는 얇은 wrapper로 남는다
+
+GAIA의 목표는 OpenClaw를 대체하는 것이 아니라, 그 위에서 실행 안정화와 QA 루프를 제공하는 것이다.
+
+따라서 아래를 지킨다.
+
+- decision-time의 1차 근거는 OpenClaw raw role tree / raw snapshot이다
+- GAIA는 실행, stale recovery, post-action probe, trace, final verdict 위주로 개입한다
+- wrapper가 agent보다 먼저 의미를 확정하거나 행동을 강제하는 코드는 최소화한다
+
+### 4. 새 코드를 추가하기 전, 먼저 삭제 가능한 코드를 찾는다
+
+증상이 새 heuristic 하나로 해결되어 보여도, 기존 분기와 충돌하면 오히려 전체 정확도가 떨어진다.
+
+기본 우선순위는 아래와 같다.
+
+1. 불필요한 분기 제거
+2. 기존 계약 정리
+3. 필요한 최소 변경 추가
+
+### 5. 성공은 “동작함”이 아니라 “독립 검증됨”이다
+
+Developer가 성공했다고 말하는 것만으로는 충분하지 않다.
+
+최소한 아래 둘 중 하나가 필요하다.
+
+- Verifier agent의 독립 재현
+- 자동화 테스트 + trace/log 증거
+
+### 6. 독립 검증은 fresh context를 써야 한다
+
+같은 대화 문맥과 같은 서술을 그대로 넘기면 Verifier도 Developer의 결론을 따라가기 쉽다.
+
+따라서 기본 규칙은 아래와 같다.
+
+- Verifier는 가능하면 별도 subagent 또는 fresh session에서 시작한다
+- 첫 검증 패스는 Developer 설명보다 artifact와 재현 명령을 먼저 본다
+- Developer의 해석은 첫 재현 후 비교 대상으로만 사용한다
+- Verifier는 기본적으로 read-only 검토를 우선하고, 수정이 필요하면 Findings로 되돌린다
+
+---
+
+## Agent 역할 정의
+
+## 1. Planner
+
+### 책임
+
+- 사용자 요청을 작업 가능한 문제로 정리한다
+- 성공 조건과 실패 조건을 명확히 한다
+- 수정 범위를 좁힌다
+- 어떤 증거로 검증할지 미리 정한다
+
+### 입력
+
+- 사용자 요청
+- 현재 코드 상태
+- 관련 trace / log / failing run
+- 기존 설계 문서
+
+### 출력
+
+Planner는 최소 아래 항목을 남겨야 한다.
+
+1. 문제 요약
+2. 목표 상태
+3. 비목표
+4. 수정 후보 파일
+5. 검증 방법
+6. 리스크
+
+### 금지 사항
+
+- 본격적인 구현을 시작하지 않는다
+- “대충 여기 고치면 될 듯” 수준의 추정으로 범위를 넓히지 않는다
+- 검증 계획 없이 구현 단계로 넘기지 않는다
+
+### Planner 산출물 템플릿
 
 ```md
-## Goal
-- ...
-
-## Risks
-- ...
-
-## Change Scope
-- ...
-
-## Acceptance Criteria
-- ...
-
-## Verification Plan
-- ...
-```
-
-### 3.2 Developer
-
-역할:
-
-- planner가 정한 범위 안에서 실제 구현을 수행한다.
-- 필요하면 bounded 서브에이전트에 작업을 분할한다.
-- 변경 후 직접 기본 검증까지 수행한다.
-
-해야 하는 일:
-
-- 구현
-- 테스트 추가/수정
-- 재현 명령 준비
-- trace/log 남기기
-
-하지 말아야 할 일:
-
-- 자신의 구현을 최종 승인
-- unrelated cleanup을 섞어 scope를 흐리기
-- 임시 우회만 남기고 책임 경계를 흐리기
-
-출력 형식:
-
-```md
-## What Changed
-- ...
-
-## Why
-- ...
-
-## Verification Performed
-- ...
-
-## Known Risks
-- ...
-```
-
-### 3.3 Verifier
-
-역할:
-
-- developer와 독립적으로 결과를 검토한다.
-- 코드 리뷰, 테스트 재실행, trace 확인, live reproduction 중 필요한 것을 수행한다.
-- findings-first 방식으로 결과를 낸다.
-
-해야 하는 일:
-
-- 가장 위험한 가정부터 반박 시도
-- false positive 여부 확인
-- trace와 최종 판정의 모순 확인
-- 테스트가 실제 버그를 막는지 확인
-
-하지 말아야 할 일:
-
-- developer 설명을 그대로 신뢰
-- 검증 없이 "문제 없음" 선언
-- 기능 확장 제안으로 검토를 흐리기
-
-출력 형식:
-
-```md
-## Findings
-1. ...
-
-## Reproduced Evidence
-- ...
-
-## Residual Risks
-- ...
-
-## Verdict
-- pass | pass_with_risk | fail
-```
-
-### 3.4 Cleanup Agent
-
-역할:
-
-- 기능 개발과 별도로 코드베이스를 정리한다.
-- "잘 돌아간다"는 이유로 쌓인 과잉 래퍼, AI 슬롭, 중복 헬퍼, stale compat path를 걷어낸다.
-
-주요 임무:
-
-- dead code 제거
-- duplicate helper 제거
-- thin-wrapper 철칙 위반 탐지
-- 불필요한 env flag/feature flag 정리
-- deprecated path 및 fallback 누적 제거
-- 긴 함수/과도한 조건문 분해 또는 삭제
-
-출력 형식:
-
-```md
-## Slop / Waste Found
-- ...
-
-## Safe Deletions
-- ...
-
-## Follow-up Refactors
-- ...
-
-## Risk Notes
-- ...
-```
-
----
-
-## 4. 표준 실행 순서
-
-모든 실질 변경은 아래 순서를 기본으로 한다.
-
-1. Planner가 목표, 범위, 위험, 검증 기준을 먼저 고정한다.
-2. Developer가 구현과 1차 검증을 수행한다.
-3. Verifier가 독립적으로 반박 검증을 수행한다.
-4. 필요한 수정이 있으면 Developer가 반영한다.
-5. 최종 보고는 `본 작업 / 검증 결과 / 남은 리스크` 순서로 정리한다.
-6. 일정 주기 또는 누적 조건이 맞으면 Cleanup Agent를 별도 실행한다.
-
----
-
-## 5. Cleanup Agent 실행 트리거
-
-cleanup agent는 아래 중 하나라도 만족하면 돌린다.
-
-- 같은 서브시스템에 기능 수정이 3턴 이상 연속 누적됨
-- feature flag 또는 wrapper mode 분기가 늘어남
-- 동일 의미의 helper/heuristic이 2개 이상 생김
-- live bugfix를 위해 임시 우회가 들어감
-- release/demo 직전
-- diff가 크지만 삭제보다 우회가 많음
-
-권장 리듬:
-
-- 큰 기능 1개 완료 후 1회
-- 릴리스/발표 전 1회
-- 주간 1회
-
----
-
-## 6. OpenClaw 철칙
-
-이 하네스에서 planner, developer, verifier, cleanup 모두 아래 원칙을 지켜야 한다.
-
-1. decision-time에는 OpenClaw 원본 구조를 우선한다.
-2. GAIA sidecar 힌트는 보조 정보여야 한다.
-3. wrapper는 액션을 대신 결정하지 않는다.
-4. 성공 판정은 DOM/trace/probe 같은 실제 증거 기반이어야 한다.
-5. fallback은 명시적으로 추적 가능해야 한다.
-6. stale state, cached belief, broad semantic tag가 원본 판단을 덮지 않도록 한다.
-
----
-
-## 7. 작업 단위 규칙
-
-### 7.1 작은 작업
-
-- planner와 developer를 같은 메인 에이전트가 수행해도 된다.
-- verifier는 반드시 분리한다.
-
-### 7.2 큰 작업
-
-- planner는 먼저 분할 계획을 만든다.
-- developer 작업은 write scope가 겹치지 않게 나눈다.
-- verifier는 코드 리뷰와 실행 검증을 분리할 수 있다.
-
-### 7.3 고위험 작업
-
-아래에 해당하면 live verification까지 포함한다.
-
-- 인증
-- 결제/민감 정보
-- destructive action
-- stateful browser workflow
-- final verdict logic
-- wrapper/backend selection
-
----
-
-## 8. 보고 형식
-
-사용자 보고는 아래 순서를 기본으로 한다.
-
-1. 코드베이스를 모르는 사람도 이해할 수 있는 문제 설명
-2. 왜 그 문제가 중요한지
-3. 어떤 방향으로 해결했는지
-4. 실제 변경 파일과 구현 내용
-5. verifier 결과
-6. 남은 리스크
-
-짧은 예시:
-
-```md
-문제는 AI가 원본 화면 구조보다 wrapper 힌트에 더 끌려가던 점이었다.
-그래서 원본 OpenClaw role tree를 먼저 보게 하고, wrapper는 검증과 추적 역할로만 줄였다.
-
-구현:
-- ...
-
-검증:
-- ...
-
-남은 리스크:
-- ...
-```
-
----
-
-## 9. 하네스 템플릿
-
-아래 템플릿을 매 작업 시작 시 복사해 사용한다.
-
-```md
-# Harness Run
-
-## Goal
-- ...
-
-## Planner
+## Planner Brief
 - Problem:
-- Scope:
+- Goal:
+- Non-goals:
+- Likely files:
+- Validation:
 - Risks:
-- Acceptance Criteria:
-- Verification Plan:
+```
 
-## Developer
-- Planned Changes:
-- Files:
-- Local Checks:
+---
 
-## Verifier
-- Independent Checks:
-- Evidence to Review:
-- Pass/Fail Rules:
+## 2. Developer
 
-## Cleanup
-- Needed Now?: yes | no
-- If yes, targets:
+### 책임
 
-## Final Report
-- User-level explanation:
-- Code-level explanation:
-- Verification result:
+- Planner가 정의한 범위 안에서 실제 수정한다
+- 삭제 가능한 코드를 먼저 제거한다
+- 테스트, trace, 로그를 남긴다
+
+### 입력
+
+- Planner brief
+- 현재 브랜치 상태
+- 관련 테스트와 trace
+
+### 출력
+
+Developer는 최소 아래 항목을 남겨야 한다.
+
+1. 무엇을 바꿨는지
+2. 왜 이 방식이 최소 변경인지
+3. 어떤 테스트/재현을 돌렸는지
+4. 남은 리스크가 무엇인지
+5. Verifier가 그대로 재생할 수 있는 실행 메타데이터
+
+### 필수 규칙
+
+- 새 heuristic를 넣기 전 기존 heuristic와 충돌 여부를 확인한다
+- 가능하면 add보다 delete를 우선한다
+- unrelated diff는 건드리지 않는다
+- traceability를 위해 관련 로그나 아티팩트를 남긴다
+- run 단위 재현 정보를 빠짐없이 남긴다
+
+### OpenClaw 관련 규칙
+
+- raw role tree를 decision-time 1차 근거로 유지한다
+- wrapper 의미 태그는 보조로만 사용한다
+- action을 controller가 먼저 확정하는 코드는 경계한다
+- success 판단은 DOM evidence, probe, trace로 닫는다
+
+### Developer 산출물 템플릿
+
+```md
+## Developer Report
+- Change:
+- Why this is the minimal change:
+- Files touched:
+- Validation run:
+- Replay command:
+- Run id / artifact path:
+- Backend:
+- Wrapper mode:
+- Model:
+- Commit SHA:
+- Git dirty state:
 - Residual risk:
 ```
 
 ---
 
-## 10. 유지 정책
+## 3. Verifier
 
-- 이 문서는 실제 운영 방식이 바뀔 때마다 같이 수정한다.
-- agent 역할이 늘어나더라도 `planner / developer / verifier / cleanup` 네 축은 유지한다.
-- 예외가 생기면 예외를 늘리기보다 기본 하네스를 다시 단순화하는 방향을 우선한다.
+### 책임
+
+- Developer의 주장을 믿지 않고 독립적으로 검증한다
+- 회귀 가능성과 과도한 복잡도 증가를 지적한다
+- 필요하면 reject한다
+
+### 입력
+
+- Planner brief
+- 재현 명령
+- run id / artifact path
+- trace / screenshot / log
+- commit sha / dirty state / backend / wrapper mode / model
+- 수정된 코드
+- 테스트 결과
+
+Developer report는 첫 검증 패스가 끝난 뒤 참고 자료로 본다.
+
+### 출력
+
+Verifier는 아래 형태로 남긴다.
+
+1. verdict: pass / conditional pass / fail
+2. 핵심 근거
+3. 발견한 문제
+4. 추가로 필요한 증거
+
+### 검증 기준
+
+- 성공 trace가 실제 목표와 맞는가
+- false positive 가능성이 없는가
+- 새 분기가 기존 아키텍처 목표를 해치지 않는가
+- 테스트가 실제 회귀를 막을 수 있는가
+- wrapper가 LLM 판단을 과하게 대신하지 않는가
+- replay command만으로 같은 결론을 다시 얻을 수 있는가
+- backend / wrapper mode drift가 없는가
+
+### 금지 사항
+
+- 구현을 슬쩍 고쳐서 검증 결과를 만들지 않는다
+- Developer의 설명만 보고 pass하지 않는다
+- 같은 세션 상태를 그대로 재사용한 채 독립 검증이라고 부르지 않는다
+
+### Verifier 산출물 템플릿
+
+```md
+## Verifier Report
+- Verdict:
+- Evidence:
+- Findings:
+- Needed follow-up:
+```
+
+---
+
+## 4. Cleanup
+
+### 책임
+
+- 주기적으로 코드를 정리해 시스템이 다시 heuristic 덩어리가 되는 것을 막는다
+- 기능 추가보다 구조 단순화에 집중한다
+
+### 입력
+
+- 최근 변경 파일
+- 누적 trace / logs
+- long-lived TODO / fallback / compatibility code
+
+### 출력
+
+Cleanup agent는 아래 둘 중 하나를 남긴다.
+
+1. 실제 제거한 코드 목록
+2. 아직 제거하지 못한 항목과 근거
+
+### 기본 탐지 대상
+
+- 더 이상 타지 않는 분기
+- 복구 경로와 정상 경로가 뒤섞인 코드
+- broad semantic tags
+- stale state machine remnants
+- sticky process-global fallback
+- 중복 prompt rules
+- no-op compatibility shim
+- dead env var / config path
+- trace에만 쓰고 실제 판단에 가치 없는 요약 계층
+
+### AI 슬롭 판정 기준
+
+아래 중 2개 이상이면 Cleanup 대상이다.
+
+- 같은 의미의 조건문이 여러 파일에 퍼져 있음
+- 실패 원인을 가리는 fallback이 늘어남
+- raw evidence 대신 요약 문자열에 과도하게 의존함
+- 이전 버그를 덮으려는 guard가 누적됨
+- 테스트가 구현 세부에 과도하게 묶여 있음
+
+### Cleanup 기본 주기
+
+Cleanup agent는 아래 시점마다 돌린다.
+
+1. net 변경이 300라인 이상일 때
+2. 새 heuristic / fallback / guard를 추가했을 때
+3. release / demo 전
+4. 같은 영역을 3회 이상 연속 수정했을 때
+
+### Cleanup 산출물 템플릿
+
+```md
+## Cleanup Report
+- Removals:
+- Simplifications:
+- Remaining debt:
+- Risk if deferred:
+```
+
+---
+
+## 표준 실행 순서
+
+기본 순서는 아래와 같다.
+
+1. Planner brief 작성
+2. Developer 구현
+3. Verifier 독립 검증
+4. 조건 충족 시 Cleanup 수행
+5. 최종 보고
+
+짧은 작업도 이 흐름을 유지한다. 다만 산출물 길이만 줄일 수 있다.
+
+### Fast Path
+
+아래 조건이면 축약 실행이 가능하다.
+
+- 변경이 30라인 미만
+- 새 heuristic 없음
+- 아키텍처 경계 영향 없음
+
+이 경우에도 Verifier는 생략하지 않는다.
+
+---
+
+## 하네스 입력/출력 계약
+
+각 agent는 이전 agent의 출력을 입력으로 사용한다.
+
+### Planner -> Developer
+
+반드시 전달할 것:
+
+- 문제 정의
+- 성공 조건
+- 수정 범위
+- 검증 계획
+
+### Developer -> Verifier
+
+반드시 전달할 것:
+
+- replay command
+- run id / artifact path
+- trace / screenshot / log 위치
+- backend
+- wrapper mode
+- model
+- commit sha
+- git dirty state
+- 실행한 테스트
+- 아직 확실하지 않은 부분
+
+권장:
+
+- 첫 handoff에는 해석보다 증거를 먼저 둔다
+- Verifier는 이 입력만으로 1차 재현을 시도한다
+
+### Verifier -> Final
+
+반드시 전달할 것:
+
+- pass / fail
+- pass라면 근거
+- fail이라면 차단 사유
+- 다음 수정 우선순위
+
+---
+
+## OpenClaw Thin-Wrapper 규칙
+
+이 프로젝트에서는 아래를 아키텍처 철칙으로 둔다.
+
+### GAIA가 해야 할 일
+
+- session/bootstrap
+- action dispatch
+- stale ref recovery
+- post-action probe
+- trace/log capture
+- final QA verdict
+
+### GAIA가 최소화해야 할 일
+
+- decision-time 의미 강제
+- LLM보다 먼저 행동 후보 확정
+- broad heuristic tagging
+- legacy state machine을 통한 과도한 steering
+
+### Verifier가 항상 확인할 것
+
+- raw OpenClaw evidence가 실제로 decision에 쓰였는가
+- wrapper summary가 주 입력을 덮지 않았는가
+- fallback이 조용히 backend를 바꾸지 않았는가
+- 최종 성공이 real evidence인지 false positive인지
+
+---
+
+## 권장 산출물 위치
+
+하네스 자체는 문서 프로세스지만, 가능한 경우 아래 위치를 따른다.
+
+- planner notes: `artifacts/plans/`
+- runtime trace: `artifacts/wrapper_trace/`
+- validation logs: `artifacts/reports/` 또는 관련 런 디렉터리
+- cleanup notes: `gaia/docs/` 또는 관련 PR/commit 메시지
+
+### 최소 재현 번들
+
+Verifier가 없던 버그를 상상하지 않도록, Developer는 최소 아래를 남긴다.
+
+- replay command 1개
+- run id 또는 artifact directory 1개
+- backend와 wrapper mode
+- model
+- commit sha
+- dirty state 여부
+- 핵심 trace/log 경로
+
+---
+
+## 완료 정의
+
+작업은 아래를 만족할 때 완료로 본다.
+
+1. Planner가 성공 조건을 명시했다
+2. Developer가 구현과 재현을 남겼다
+3. Verifier가 독립 검증했다
+4. Cleanup 필요 조건이 있으면 수행했다
+5. 최종 보고에 남은 리스크가 분명히 적혔다
+
+이 5개가 충족되지 않으면 “수정은 있었지만 하네스 완료는 아님”으로 간주한다.
+
+---
+
+## 앞으로의 기본 운영 방침
+
+앞으로 GAIA의 비단순 작업은 이 문서를 기본 하네스로 사용한다.
+
+- planner 없이 바로 구현하지 않는다
+- verifier 없이 완료 처리하지 않는다
+- cleanup을 미루더라도 이유를 남긴다
+- OpenClaw 보존 원칙과 충돌하는 heuristic는 우선적으로 제거 후보로 본다
+
+---
+
+## 복사용 Harness Run 템플릿
+
+아래 템플릿은 실제 작업 시작 시 그대로 복사해서 채우면 된다.
+
+```md
+# Harness Run
+
+## Planner Brief
+- Problem:
+- Goal:
+- Non-goals:
+- Likely files:
+- Validation:
+- Risks:
+
+## Developer Report
+- Change:
+- Why this is the minimal change:
+- Files touched:
+- Validation run:
+- Replay command:
+- Run id / artifact path:
+- Backend:
+- Wrapper mode:
+- Model:
+- Commit SHA:
+- Git dirty state:
+- Residual risk:
+
+## Verifier Report
+- Verdict:
+- Evidence:
+- Findings:
+- Needed follow-up:
+
+## Cleanup Report
+- Needed now?: yes | no
+- Removals:
+- Simplifications:
+- Remaining debt:
+- Risk if deferred:
+
+## Final User Report
+- Plain-language explanation:
+- Code-level explanation:
+- Verification result:
+- Residual risk:
+```

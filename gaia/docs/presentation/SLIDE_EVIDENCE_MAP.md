@@ -47,7 +47,7 @@
 - 핵심 주장: 입력 채널은 다양하지만 실행 핵심은 단일화되어 있다.
 - 증빙 경로:
   - `/Users/coldmans/Documents/GitHub/capston/gaia/chat_hub.py`
-  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/intelligent_orchestrator.py`
+  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/goal_driven/agent.py`
   - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_host.py`
 
 ### Slide 5 (Demo A: 기본 플로우)
@@ -61,10 +61,10 @@
 ### Slide 6 (Demo B: 실패 복구 플로우)
 - 핵심 주장: 실패 시 대체 전략/복구 체인이 동작한다.
 - 증빙 경로:
-  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref_action_exception_recovery.py`
-  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref_verify_fallbacks.py`
-  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref_close_fallbacks.py`
-  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref_post_click_watch.py`
+  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref/action_exception_recovery.py`
+  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref/verify_fallbacks.py`
+  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref/close_fallbacks.py`
+  - `/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_ref/post_click_watch.py`
 
 ### Slide 7
 - 핵심 주장: 운영 친화 기능(텔레그램/CLI/GUI 및 인증 흐름)을 제공한다.

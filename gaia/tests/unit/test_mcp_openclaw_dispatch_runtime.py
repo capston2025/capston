@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 import requests
 
 from gaia.src.phase4 import mcp_openclaw_dispatch_runtime as runtime
@@ -50,6 +52,46 @@ def test_request_uses_default_timeout_tuple(monkeypatch) -> None:
     assert data == {"ok": True}
     assert text == ""
     assert seen["timeout"] == (3.0, 12.0)
+
+
+def test_dispatch_openclaw_action_capture_screenshot_returns_base64(monkeypatch, tmp_path) -> None:
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(b"fake-image-bytes")
+
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_target",
+        lambda **kwargs: {"target_id": "tab-1", "current_url": "https://example.com/app"},
+    )
+    monkeypatch.setattr(runtime, "_clear_session_target", lambda session_id: None)
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/screenshot"
+        assert payload["targetId"] == "tab-1"
+        return (
+            200,
+            {"ok": True, "path": str(shot), "targetId": "tab-1", "url": "https://example.com/app"},
+            "",
+        )
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="capture_screenshot",
+        params={"session_id": "s1"},
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["reason_code"] == "ok"
+    assert payload["current_url"] == "https://example.com/app"
+    assert payload["mime_type"] == "image/png"
+    assert payload["saved_path"] == str(shot)
+    assert payload["screenshot"] == base64.b64encode(b"fake-image-bytes").decode("utf-8")
 
 
 def test_pseudo_elements_from_role_snapshot_attach_row_local_context_to_action_buttons() -> None:
@@ -183,3 +225,52 @@ def test_build_snapshot_payload_preserves_raw_role_snapshot_when_scope_applied(m
     assert role_snapshot["scoped_snapshot"] == '- button "스코프 버튼" [ref=e1]'
     assert role_snapshot["scope_applied"] is True
     assert role_snapshot["scope_container_ref_id"] == "ctx-1"
+
+
+def test_pseudo_elements_from_role_snapshot_preserve_select_options_and_selected_value() -> None:
+    snapshot = """
+- generic [ref=e30]:
+  - combobox "전체" [ref=e33]:
+    - option "전체"
+    - option "교양"
+    - option "전심"
+""".strip()
+    refs = {
+        "e30": {"role": "generic"},
+        "e33": {"role": "combobox", "name": "전체"},
+    }
+
+    elements, _ = runtime._pseudo_elements_from_role_snapshot(snapshot, refs)
+    elements_by_ref = {str(item.get("ref_id") or ""): item for item in elements}
+    attrs = dict(elements_by_ref["e33"].get("attributes") or {})
+
+    assert attrs["selected_value"] == "전체"
+    assert attrs["options"] == [
+        {"value": "전체", "text": "전체"},
+        {"value": "교양", "text": "교양"},
+        {"value": "전심", "text": "전심"},
+    ]
+
+
+def test_pseudo_elements_from_role_snapshot_uses_selected_option_marker_for_combobox_state() -> None:
+    snapshot = """
+- generic [ref=e30]:
+  - combobox [ref=e35]:
+    - option "전체"
+    - option "1학점" [selected]
+    - option "2학점"
+    - option "3학점"
+""".strip()
+    refs = {
+        "e30": {"role": "generic"},
+        "e35": {"role": "combobox", "name": "전체"},
+    }
+
+    elements, _ = runtime._pseudo_elements_from_role_snapshot(snapshot, refs)
+    elements_by_ref = {str(item.get("ref_id") or ""): item for item in elements}
+    target = elements_by_ref["e35"]
+    attrs = dict(target.get("attributes") or {})
+
+    assert target["text"] == "1학점"
+    assert attrs["selected_value"] == "1학점"
+    assert attrs["role_ref_name"] == "1학점"

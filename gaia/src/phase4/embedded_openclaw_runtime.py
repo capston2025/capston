@@ -58,7 +58,7 @@ def browser_headless_enabled() -> bool:
     visible = str(os.getenv("GAIA_OPENCLAW_VISIBLE", "") or "").strip().lower()
     if visible in {"1", "true", "yes", "on"}:
         return False
-    return True
+    return False
 
 
 def _repo_root() -> Path:
@@ -217,6 +217,7 @@ def _bootstrap_env(*, gateway_port: int, config_path: Path) -> Dict[str, str]:
     env["OPENCLAW_CONFIG_DIR"] = str(_state_dir())
     env["OPENCLAW_STATE_DIR"] = str(_state_dir())
     env["OPENCLAW_CONFIG_PATH"] = str(config_path)
+    env["OPENCLAW_BUNDLED_PLUGINS_DIR"] = str(vendor_root() / "extensions")
     env["OPENCLAW_GATEWAY_PORT"] = str(int(gateway_port))
     env.setdefault("OPENCLAW_TEST_FAST", "1")
     env.setdefault("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")

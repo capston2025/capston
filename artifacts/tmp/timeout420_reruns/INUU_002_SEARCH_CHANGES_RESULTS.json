@@ -1,0 +1,33 @@
+{
+  "suite_id": "inuu_002_search_changes_results_timeout420",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "INUU_002_SEARCH_CHANGES_RESULTS",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "과목 검색창에 키워드를 입력해 검색 결과 목록이 실제로 바뀌는지 검증해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "target_value_changed",
+        "dom_changed"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 420
+    }
+  ]
+}

@@ -32,8 +32,31 @@ def analyze_dom(
         self._active_scoped_container_ref = str(cache.get("active_scope") or self._active_scoped_container_ref or "")
         self._last_context_snapshot = dict(cache.get("context_snapshot") or {})
         self._last_role_snapshot = dict(cache.get("role_snapshot") or {})
+        self._last_snapshot_elements_by_ref = dict(cache.get("elements_by_ref") or {})
         self._last_snapshot_evidence = dict(cache.get("evidence") or {})
         self._last_container_source_summary = dict(cache.get("container_source_summary") or {})
+        self._element_selectors = {}
+        self._element_full_selectors = {}
+        self._element_ref_ids = {}
+        self._selector_to_ref_id = {}
+        self._element_ref_meta_by_id = {}
+        for element in cached_elements:
+            element_id = getattr(element, "id", None)
+            ref_id = str(getattr(element, "ref_id", "") or "").strip()
+            if element_id is None or not ref_id:
+                continue
+            ref_meta = self._last_snapshot_elements_by_ref.get(ref_id)
+            if isinstance(ref_meta, dict):
+                self._element_ref_meta_by_id[int(element_id)] = dict(ref_meta)
+                selector = str(ref_meta.get("selector") or "").strip()
+                full_selector = str(ref_meta.get("full_selector") or "").strip()
+                if selector:
+                    self._element_selectors[int(element_id)] = selector
+                    self._selector_to_ref_id.setdefault(selector, ref_id)
+                if full_selector:
+                    self._element_full_selectors[int(element_id)] = full_selector
+                    self._selector_to_ref_id.setdefault(full_selector, ref_id)
+            self._element_ref_ids[int(element_id)] = ref_id
         return list(cached_elements)
     if not str(scope_container_ref_id or "").strip():
         self._active_scoped_container_ref = ""
@@ -76,6 +99,9 @@ def analyze_dom(
                 return []
 
             raw_elements = data.get("elements", []) or data.get("dom_elements", [])
+            raw_elements_by_ref = (
+                data.get("elements_by_ref") if isinstance(data.get("elements_by_ref"), dict) else {}
+            )
             if not raw_elements and attempt < 3:
                 last_error = "empty_dom_elements"
                 self._record_reason_code("dom_snapshot_retry")
@@ -86,6 +112,7 @@ def analyze_dom(
             self._element_selectors = {}
             self._element_full_selectors = {}
             self._element_ref_ids = {}
+            self._element_ref_meta_by_id = {}
             self._selector_to_ref_id = {}
             self._element_scopes = {}
             self._active_snapshot_id = str(data.get("snapshot_id") or "")
@@ -100,7 +127,20 @@ def analyze_dom(
                 data.get("role_snapshot") if isinstance(data.get("role_snapshot"), dict) else {}
             )
             evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
+            self._last_snapshot_elements_by_ref = dict(raw_elements_by_ref or {})
             self._last_snapshot_evidence = evidence
+
+            if isinstance(raw_elements_by_ref, dict):
+                for rid, meta in raw_elements_by_ref.items():
+                    ref_key = str(rid or "").strip()
+                    if not ref_key or not isinstance(meta, dict):
+                        continue
+                    selector = str(meta.get("selector") or "").strip()
+                    full_selector = str(meta.get("full_selector") or "").strip()
+                    if selector:
+                        self._selector_to_ref_id.setdefault(selector, ref_key)
+                    if full_selector:
+                        self._selector_to_ref_id.setdefault(full_selector, ref_key)
 
             # DOMElement로 변환 (ID 부여)
             elements = []
@@ -129,6 +169,9 @@ def analyze_dom(
                         self._selector_to_ref_id[selector] = ref_id
                     if full_selector:
                         self._selector_to_ref_id[full_selector] = ref_id
+                    ref_meta = raw_elements_by_ref.get(ref_id)
+                    if isinstance(ref_meta, dict):
+                        self._element_ref_meta_by_id[idx] = dict(ref_meta)
                 if isinstance(scope, dict):
                     self._element_scopes[idx] = scope
 
@@ -180,6 +223,7 @@ def analyze_dom(
                 "active_scope": self._active_scoped_container_ref,
                 "context_snapshot": dict(self._last_context_snapshot or {}),
                 "role_snapshot": dict(self._last_role_snapshot or {}),
+                "elements_by_ref": dict(self._last_snapshot_elements_by_ref or {}),
                 "evidence": dict(self._last_snapshot_evidence or {}),
                 "container_source_summary": dict(source_summary or {}),
             }

@@ -578,8 +578,9 @@ def decide_next_action(
 6. 모달/오버레이가 실제로 열려 있지 않다면 닫기/close/dismiss를 고르지 마세요.
 7. 로그아웃, 다운로드, PDF 저장, 전체삭제 같은 전역/파괴적 컨트롤은 목표가 직접 요구하지 않는 한 선택하지 마세요.
 8. 방금 뜬 성공 토스트/스낵바/배너는 임시 피드백일 수 있습니다. 목표가 목록/시간표 반영 확인이면 destination row, counter, reveal surface 같은 지속 증거를 먼저 찾고, 그런 증거 없이는 완료나 wait로 멈추지 마세요.
-9. 목표가 이미 달성됐다고 판단되면 `is_goal_achieved=true`와 이유를 반환하세요.
-10. DOM 요소에 `[ref=...]`가 표시된 경우 반드시 해당 `ref_id`를 응답에 포함하세요. `element_id`는 없으면 null이어도 됩니다. DOM 리스트에 없는 ref_id나 element_id를 추측하지 마세요.
+9. `select`를 고를 때는 그 combobox 자신의 `options=[...]` 또는 바로 아래 raw role subtree에 실제로 보이는 옵션만 선택하세요. 다른 combobox의 옵션이나 떨어져 나온 option 줄을 섞지 마세요.
+10. 목표가 이미 달성됐다고 판단되면 `is_goal_achieved=true`와 이유를 반환하세요.
+11. DOM 요소에 `[ref=...]`가 표시된 경우 반드시 해당 `ref_id`를 응답에 포함하세요. `element_id`는 없으면 null이어도 됩니다. DOM 리스트에 없는 ref_id나 element_id를 추측하지 마세요.
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{

@@ -8,7 +8,7 @@
 ### 1) Core AI/Execution Lead (메인)
 - 오너:
   - `gaia/src/phase4/goal_driven/agent.py`
-  - `gaia/src/phase4/intelligent_orchestrator.py`
+  - `gaia/src/phase4/goal_driven/agent.py`
   - `gaia/src/phase4/mcp_host.py`
 - 책임:
   - Master/Worker 전략 품질 결정

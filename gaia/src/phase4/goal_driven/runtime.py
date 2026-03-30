@@ -134,7 +134,6 @@ class FlowMasterOrchestrator:
         login_gate_visible: bool,
         requires_login_interaction: bool,
         has_login_test_data: bool,
-        close_element_id: Optional[int],
     ) -> MasterDirective:
         if self.stop_reason:
             return MasterDirective(kind="stop", reason=self.stop_reason)

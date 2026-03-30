@@ -24,8 +24,6 @@ _LOCAL_LOOP_THREAD: Optional[threading.Thread] = None
 _LOCAL_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _LOCAL_LOOP_READY = threading.Event()
 _LOCAL_LOOP_LOCK = threading.Lock()
-_OPENCLAW_FALLBACK_LOCK = threading.Lock()
-_OPENCLAW_RUNTIME_UNAVAILABLE = False
 
 
 @dataclass
@@ -41,25 +39,8 @@ def _is_local_target(raw_base_url: str | None) -> bool:
 
 
 def _openclaw_fallback_enabled() -> bool:
-    raw = str(os.getenv("GAIA_OPENCLAW_FALLBACK_BACKEND", "gaia") or "gaia").strip().lower()
+    raw = str(os.getenv("GAIA_OPENCLAW_FALLBACK_BACKEND", "disabled") or "disabled").strip().lower()
     return raw not in {"", "0", "false", "no", "off", "disabled", "none"}
-
-
-def _mark_openclaw_runtime_unavailable() -> None:
-    global _OPENCLAW_RUNTIME_UNAVAILABLE
-    with _OPENCLAW_FALLBACK_LOCK:
-        _OPENCLAW_RUNTIME_UNAVAILABLE = True
-
-
-def _clear_openclaw_runtime_unavailable() -> None:
-    global _OPENCLAW_RUNTIME_UNAVAILABLE
-    with _OPENCLAW_FALLBACK_LOCK:
-        _OPENCLAW_RUNTIME_UNAVAILABLE = False
-
-
-def _openclaw_runtime_unavailable() -> bool:
-    with _OPENCLAW_FALLBACK_LOCK:
-        return bool(_OPENCLAW_RUNTIME_UNAVAILABLE)
 
 
 def _should_fallback_from_openclaw(payload: Dict[str, Any], text: str) -> bool:
@@ -109,16 +90,14 @@ def _should_fallback_from_openclaw_exception(exc: BaseException) -> bool:
 
 
 def current_browser_backend(raw_base_url: str | None = None) -> str:
-    backend = str(os.getenv("GAIA_BROWSER_BACKEND", "gaia") or "gaia").strip().lower()
+    backend = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower()
+    if backend in {"gaia", "local", "legacy"}:
+        return "gaia"
     if backend in {"openclaw", "open-claw", "oc"}:
-        if _openclaw_runtime_unavailable() and _openclaw_fallback_enabled():
-            return "gaia"
         return "openclaw"
     if str(os.getenv("GAIA_OPENCLAW_BASE_URL", "") or "").strip():
-        if _openclaw_runtime_unavailable() and _openclaw_fallback_enabled():
-            return "gaia"
         return "openclaw"
-    return "gaia"
+    return "openclaw"
 
 
 async def _ensure_local_host_module() -> Any:
@@ -264,7 +243,7 @@ def execute_mcp_action(
     timeout: Any = None,
 ) -> DispatchResult:
     backend = current_browser_backend(raw_base_url)
-    if backend == "openclaw" and action in {"browser_snapshot", "browser_act"}:
+    if backend == "openclaw" and action in {"browser_snapshot", "browser_act", "browser_screenshot", "capture_screenshot"}:
         try:
             status_code, payload, text = dispatch_openclaw_action(
                 raw_base_url,
@@ -277,14 +256,12 @@ def execute_mcp_action(
                 _is_local_target(raw_base_url)
                 and _should_fallback_from_openclaw_exception(exc)
             ):
-                _mark_openclaw_runtime_unavailable()
                 return _run_sync(_dispatch_local_execute_async(raw_base_url, action=action, params=params))
             raise
         if (
             _is_local_target(raw_base_url)
             and _should_fallback_from_openclaw(payload, text)
         ):
-            _mark_openclaw_runtime_unavailable()
             return _run_sync(_dispatch_local_execute_async(raw_base_url, action=action, params=params))
         return DispatchResult(status_code=int(status_code), payload=payload, text=str(text or ""))
     if _is_local_target(raw_base_url):

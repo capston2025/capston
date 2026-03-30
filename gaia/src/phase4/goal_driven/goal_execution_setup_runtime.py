@@ -11,6 +11,16 @@ from .wrapper_trace_runtime import thin_wrapper_enabled
 
 
 def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any]:
+    try:
+        from ..mcp_local_dispatch_runtime import current_browser_backend
+
+        agent._browser_backend_name = current_browser_backend(
+            str(getattr(goal, "start_url", "") or "").strip() or None
+        )
+    except Exception:
+        agent._browser_backend_name = str(
+            os.getenv("GAIA_BROWSER_BACKEND", "openclaw") or "openclaw"
+        ).strip().lower()
     agent._action_history = []
     agent._action_feedback = []
     agent._reason_code_counts = {}
@@ -103,6 +113,8 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._last_container_source_summary = {}
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
+    agent._persistent_state_memory = []
+    agent._recent_signal_history = []
     agent._goal_policy_target_seen_in_destination = False
     agent._goal_policy_destination_anchor_seen = False
     agent._goal_plan_requires_precheck = False
