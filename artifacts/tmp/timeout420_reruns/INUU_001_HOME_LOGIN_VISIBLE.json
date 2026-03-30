@@ -1,0 +1,33 @@
+{
+  "suite_id": "inuu_001_home_login_visible_timeout420",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "INUU_001_HOME_LOGIN_VISIBLE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "현재 메인 화면에서 로그인 버튼 또는 로그아웃 버튼 중 하나가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "text_visible",
+        "cta_visible"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 420
+    }
+  ]
+}

@@ -9,7 +9,7 @@ flowchart LR
     subgraph RUNTIME["GAIA Runtime"]
         TERM["Terminal / Run Context<br/>terminal.py"]
         AGENT["Agent Layer<br/>GoalDrivenAgent / ExploratoryAgent"]
-        ORCH["Orchestrators<br/>AgentOrchestrator / MasterOrchestrator / IntelligentOrchestrator"]
+        ORCH["Orchestrators<br/>GoalDrivenAgent / ExploratoryAgent / MasterOrchestrator"]
         STATE["Runtime State<br/>phase · history · feedback · memory · session"]
     end
 

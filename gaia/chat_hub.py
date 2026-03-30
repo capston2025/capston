@@ -17,7 +17,11 @@ from urllib.parse import urlparse
 
 import requests
 
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running as _ensure_shared_mcp_host_running
+from gaia.src.phase4.mcp_host_runtime import (
+    ensure_mcp_host_running as _ensure_shared_mcp_host_running,
+    should_auto_start_mcp_host as _should_auto_start_mcp_host,
+)
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 from gaia.src.phase4.memory.models import MemorySummaryRecord
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.session import WORKSPACE_DEFAULT, allocate_session_id, load_session_state
@@ -149,14 +153,22 @@ def _record_summary(
 
 
 def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
-    code, data = _mcp_execute(
-        "browser_screenshot",
-        {
+    host = (
+        os.getenv("GAIA_MCP_HOST_URL")
+        or os.getenv("MCP_HOST_URL")
+        or "http://127.0.0.1:8001"
+    ).rstrip("/")
+    response = execute_mcp_action(
+        host,
+        action="browser_screenshot",
+        params={
             "session_id": session_id,
             "full_page": False,
             "type": "png",
         },
+        timeout=90,
     )
+    code, data = int(response.status_code), dict(response.payload or {})
     if code >= 400:
         return None
     screenshot = data.get("screenshot")
@@ -167,7 +179,7 @@ def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
         "mime": "image/png",
         "data": screenshot,
     }
-    saved_path = data.get("path")
+    saved_path = data.get("saved_path") or data.get("path")
     if isinstance(saved_path, str) and saved_path.strip():
         payload["path"] = saved_path
     return payload
@@ -884,6 +896,14 @@ def _build_hub_intervention_callback(context: HubContext, sink: HubSink):
             _notify_session_update(context)
             return response
 
+        kind = str((payload or {}).get("kind") or "").strip().lower()
+        if kind == "no_progress":
+            sink.info(
+                "상태 변화가 반복 감지되어 진행 전략을 조정합니다. "
+                "기본값으로 계속 진행합니다. 중단하려면 /cancel 을 사용하세요."
+            )
+            return {"action": "continue", "proceed": True}
+
         question = str((payload or {}).get("question") or "").strip()
         if not question:
             question = "추가 입력이 필요합니다."
@@ -1053,7 +1073,7 @@ def _run_test(
     sink: HubSink,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> tuple[int, dict]:
-    if not _ensure_mcp_host_running():
+    if _should_auto_start_mcp_host() and not _ensure_mcp_host_running():
         sink.error("MCP host를 시작할 수 없습니다. /health 확인 후 다시 시도하세요.")
         return 1, {
             "goal": query,
@@ -1151,7 +1171,7 @@ def _run_ai(
     *,
     time_budget_seconds: int | None = None,
 ) -> tuple[int, dict]:
-    if not _ensure_mcp_host_running():
+    if _should_auto_start_mcp_host() and not _ensure_mcp_host_running():
         sink.error("MCP host를 시작할 수 없습니다. /health 확인 후 다시 시도하세요.")
         return 1, {
             "goal": "autonomous_exploration",

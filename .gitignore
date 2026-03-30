@@ -46,22 +46,35 @@ venv.pip_install_and_link Pathname.pwd
 
 # Environment variables
 .env
+.env.local
+.env.*.local
+.env.gemini
+.env.gemini.local
 /server/.env
+gaia/.env.local
 
 # Generated or temporary files
 /server/generated_checklist.json
 /server/test_planning_doc.py
 .gomod/
 .gocache/
+.claude/worktrees/
 /artifacts/*.log
+/artifacts/benchmarks/
 /artifacts/cache/
+/artifacts/harness/
+/artifacts/embedded_openclaw/
 /artifacts/exploration_results/
 /artifacts/gamegoo_check/
 /artifacts/plans/
 /artifacts/hardening/
 /artifacts/reports/
+/artifacts/wrapper_trace/
 /gaia/artifacts/
 /output/
+vendor/openclaw/node_modules/
+vendor/openclaw/dist/
+vendor/openclaw/dist-runtime/
 
 # Block image uploads (global)
 *.png
@@ -72,6 +85,12 @@ venv.pip_install_and_link Pathname.pwd
 *.svg
 *.bmp
 *.ico
+
+# Presentation binaries
+*.ppt
+*.pptx
+*.odp
+*.key
 
 # Editor/IDE settings
 .vscode/

@@ -194,6 +194,7 @@ def enforce_goal_constraints_on_decision(
     if (self._runtime_phase or "").upper() == "AUTH" or self._is_login_gate(dom_elements):
         return ActionDecision(
             action=decision.action,
+            ref_id=decision.ref_id,
             element_id=decision.element_id,
             value=decision.value,
             reasoning=decision.reasoning,
@@ -201,6 +202,9 @@ def enforce_goal_constraints_on_decision(
             is_goal_achieved=False,
             goal_achievement_reason=None,
         )
+
+    if bool(decision.is_goal_achieved):
+        return decision
 
     def _is_search_like_element(element: Optional[DOMElement]) -> bool:
         if element is None:
@@ -297,6 +301,7 @@ def enforce_goal_constraints_on_decision(
     if collect_min_value <= 1.0:
         return ActionDecision(
             action=decision.action,
+            ref_id=decision.ref_id,
             element_id=decision.element_id,
             value=decision.value,
             reasoning=decision.reasoning,
@@ -347,6 +352,7 @@ def enforce_goal_constraints_on_decision(
             self._log("🧱 목표 제약 가드 우회: 모달 차단 해제 액션을 우선 수행합니다.")
             return ActionDecision(
                 action=decision.action,
+                ref_id=decision.ref_id,
                 element_id=decision.element_id,
                 value=decision.value,
                 reasoning=decision.reasoning,
@@ -397,6 +403,7 @@ def enforce_goal_constraints_on_decision(
         self._log("🧱 목표 제약 가드 우회: 차단 모달 상황에서는 수집보다 차단 해제 액션을 우선합니다.")
         return ActionDecision(
             action=decision.action,
+            ref_id=decision.ref_id,
             element_id=decision.element_id,
             value=decision.value,
             reasoning=decision.reasoning,
@@ -417,6 +424,7 @@ def enforce_goal_constraints_on_decision(
         )
         return ActionDecision(
             action=decision.action,
+            ref_id=decision.ref_id,
             element_id=decision.element_id,
             value=decision.value,
             reasoning=decision.reasoning,

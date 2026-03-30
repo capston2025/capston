@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-import requests
-
 from .exploratory_models import ElementState, PageState, TestableAction
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 
 
 def evaluate_selector(self, selector: str, script: str) -> Optional[str]:
@@ -35,9 +34,10 @@ def evaluate_selector(self, selector: str, script: str) -> Optional[str]:
         request_timeout = max(10.0, min(float(self.config.action_timeout), 30.0))
         for attempt in range(2):
             try:
-                response = requests.post(
-                    f"{self.mcp_host_url}/execute",
-                    json={"action": "browser_act", "params": params},
+                response = execute_mcp_action(
+                    self.mcp_host_url,
+                    action="browser_act",
+                    params=params,
                     timeout=(5, request_timeout),
                 )
                 last_exc = None
@@ -53,7 +53,7 @@ def evaluate_selector(self, selector: str, script: str) -> Optional[str]:
                 raise
         if response is None and last_exc is not None:
             raise last_exc
-        data = response.json()
+        data = response.payload if not hasattr(response, "json") else response.json()
         if not data.get("success"):
             return None
         result = data.get("result")

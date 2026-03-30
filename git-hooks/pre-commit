@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${ALLOW_NONCODE_COMMIT:-}" == "1" ]]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+blocked_files=()
+
+while IFS= read -r path; do
+  [[ -z "$path" ]] && continue
+
+  if [[ "$path" == "README.md" || "$path" == "AGENTS.md" ]]; then
+    continue
+  fi
+  if [[ "$path" == docs/harness/* || "$path" == "gaia/docs/AGENT_HARNESS_PLAYBOOK.md" ]]; then
+    continue
+  fi
+
+  if [[ "$path" == docs/* || "$path" == gaia/docs/* ]]; then
+    blocked_files+=("$path")
+    continue
+  fi
+
+  case "$path" in
+    *.ppt|*.pptx|*.odp|*.key)
+      blocked_files+=("$path")
+      ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+if (( ${#blocked_files[@]} > 0 )); then
+  {
+    echo "pre-commit: non-code files are blocked by default."
+    echo "Blocked staged paths:"
+    for path in "${blocked_files[@]}"; do
+      echo "  - $path"
+    done
+    echo
+    echo "If this commit really must include docs/presentation files, rerun with:"
+    echo "  ALLOW_NONCODE_COMMIT=1 git commit ..."
+  } >&2
+  exit 1
+fi

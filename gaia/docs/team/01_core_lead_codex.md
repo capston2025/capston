@@ -9,7 +9,7 @@
 
 ## 오너 파일
 - `gaia/src/phase4/goal_driven/agent.py`
-- `gaia/src/phase4/intelligent_orchestrator.py`
+- `gaia/src/phase4/goal_driven/agent.py`
 - `gaia/src/phase4/mcp_host.py`
 
 ## 이번 스프린트 작업

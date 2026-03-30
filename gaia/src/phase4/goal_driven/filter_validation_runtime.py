@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .models import DOMElement, TestGoal
@@ -142,8 +140,13 @@ def run_filter_semantic_validation(
     use_current_selection_only: bool = False,
     forced_selected_value: Optional[str] = None,
     validation_contract: Optional[Dict[str, Any]] = None,
+    preferred_control_hint: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Deterministic semantic validation for filter-style goals."""
+    merged_preferred_control_hint = _merge_control_hints(
+        _contract_control_hint(validation_contract),
+        preferred_control_hint,
+    )
     try:
         from .filter_validation_engine import build_filter_validation_config, run_filter_validation
 
@@ -157,6 +160,7 @@ def run_filter_semantic_validation(
                 use_current_selection_only=bool(use_current_selection_only),
                 forced_selected_value=str(forced_selected_value or "").strip(),
                 validation_contract=dict(validation_contract or {}),
+                preferred_control_hint=dict(merged_preferred_control_hint or {}),
             ),
         )
         if isinstance(report, dict):
@@ -206,11 +210,49 @@ def build_filter_validation_contract(
     *,
     goal: TestGoal,
     dom_elements: List[DOMElement],
+    preferred_control_hint: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    option_rows: List[Dict[str, Any]] = []
-    best_select_options: List[Dict[str, str]] = []
-    best_score = -1.0
-    for el in dom_elements:
+    scenario_control_hint = _goal_filter_control_hint(goal)
+    merged_control_hint = _merge_control_hints(scenario_control_hint, preferred_control_hint)
+    try:
+        from .filter_validation_engine import _pick_filter_control
+    except Exception:
+        _pick_filter_control = None
+
+    picked_control = None
+    if callable(_pick_filter_control):
+        try:
+            picked_control = _pick_filter_control(
+                dom_elements,
+                str(getattr(goal, "description", "") or ""),
+                preferred_control_hint=merged_control_hint,
+            )
+        except Exception:
+            picked_control = None
+    contract_control_hint = build_filter_control_hint(agent, picked_control)
+
+    if picked_control is not None and isinstance(picked_control.options, list):
+        option_rows = []
+        for item in picked_control.options:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value") or "").strip()
+            text = str(item.get("text") or "").strip()
+            lowered = agent._normalize_text(f"{value} {text}")
+            if not value or any(tok in lowered for tok in ("전체", "all", "선택", "default")):
+                continue
+            option_rows.append({"value": value, "text": text})
+    else:
+        option_rows = []
+
+    if option_rows:
+        best_select_options = list(option_rows)
+        best_score = float(len(best_select_options))
+    else:
+        best_select_options: List[Dict[str, str]] = []
+        best_score = -1.0
+    preferred_hint = merged_control_hint
+    for el in ([] if option_rows else dom_elements):
         if agent._normalize_text(el.tag) != "select":
             continue
         if not isinstance(el.options, list) or len(el.options) < 2:
@@ -229,20 +271,8 @@ def build_filter_validation_contract(
             local_rows.append({"value": value, "text": text})
         if not local_rows:
             continue
-        blob = agent._normalize_text(
-            " ".join(
-                [
-                    str(el.text or ""),
-                    str(el.aria_label or ""),
-                    str(el.title or ""),
-                    str(el.class_name or ""),
-                    " ".join(str(x.get("text") or "") for x in local_rows[:8]),
-                ]
-            )
-        )
         score = float(len(local_rows))
-        if "학점" in blob or "credit" in blob:
-            score += 100.0
+        score += _preferred_control_match_score(agent, el, preferred_hint)
         if score > best_score:
             best_score = score
             best_select_options = local_rows
@@ -254,81 +284,229 @@ def build_filter_validation_contract(
             "source": "fallback_empty",
             "required_options": [],
             "require_pagination_if_available": True,
+            "control_ref_id": str(contract_control_hint.get("ref_id") or ""),
+            "control_hint": dict(contract_control_hint or {}),
         }
 
-    prompt = f"""당신은 테스트 목표를 검증 계약(JSON)으로 변환하는 엔진입니다.
-아래 목표를 보고, 검증해야 할 필터 옵션만 deterministic JSON으로 반환하세요.
-
-목표:
-{goal.description}
-
-사용 가능한 옵션 목록(JSON):
-{json.dumps(option_rows, ensure_ascii=False)}
-
-반드시 다음 스키마만 반환:
-{{
-  "required_options": [{{"value":"...", "text":"..."}}],
-  "require_pagination_if_available": true
-}}
-
-규칙:
-1) required_options는 반드시 위 옵션 목록에 있는 값만 사용
-2) 목표가 특정 옵션 집합(예: 1,2,3학점)을 요구하면 그 집합만 포함
-3) 목표가 '전체/전부/모두/자세히 검증'이면 가능한 옵션을 모두 포함
-4) 설명 문장/마크다운 없이 JSON만 반환
-"""
-
-    try:
-        raw = agent._call_llm_text_only(prompt)
-        text = str(raw or "").strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-        if not text.startswith("{"):
-            first = text.find("{")
-            last = text.rfind("}")
-            if first != -1 and last != -1 and last > first:
-                text = text[first : last + 1].strip()
-        data = json.loads(text)
-        if isinstance(data, dict):
-            raw_required = data.get("required_options")
-            sanitized: List[Dict[str, str]] = []
-            value_allow = {
-                str(row.get("value") or "").strip(): str(row.get("text") or "").strip()
-                for row in option_rows
-            }
-            if isinstance(raw_required, list):
-                for item in raw_required:
-                    if not isinstance(item, dict):
-                        continue
-                    val = str(item.get("value") or "").strip()
-                    txt = str(item.get("text") or "").strip()
-                    if val in value_allow:
-                        sanitized.append({"value": val, "text": value_allow.get(val) or txt})
-            if not sanitized:
-                sanitized = [
-                    {"value": str(row.get("value") or ""), "text": str(row.get("text") or "")}
-                    for row in option_rows
-                ]
-            return {
-                "source": "llm_contract",
-                "required_options": sanitized,
-                "require_pagination_if_available": bool(
-                    data.get("require_pagination_if_available", True)
-                ),
-            }
-    except Exception as exc:
-        agent._log(f"⚠️ LLM 계약 파싱 실패, fallback 사용: {exc}")
-
     return {
-        "source": "fallback_all_options",
+        "source": "deterministic_control_options",
         "required_options": [
             {"value": str(row.get("value") or ""), "text": str(row.get("text") or "")}
             for row in option_rows
         ],
         "require_pagination_if_available": True,
+        "control_ref_id": str(contract_control_hint.get("ref_id") or ""),
+        "control_hint": dict(contract_control_hint or {}),
     }
+
+
+def build_filter_control_hint(agent: "GoalDrivenAgent", element: Any) -> Dict[str, Any]:
+    if element is None:
+        return {}
+    normalize = getattr(agent, "_normalize_text", None)
+    if not callable(normalize):
+        normalize = lambda value: str(value or "").strip().lower()
+    tag = normalize(getattr(element, "tag", ""))
+    role = normalize(getattr(element, "role", ""))
+    if tag != "select" and role not in {"combobox", "listbox"}:
+        return {}
+
+    option_signature: List[str] = []
+    for raw in list(getattr(element, "options", None) or []):
+        if isinstance(raw, dict):
+            token = str(raw.get("text") or raw.get("value") or "").strip()
+        else:
+            token = str(raw or "").strip()
+        if token:
+            option_signature.append(normalize(token))
+
+    return {
+        "ref_id": str(getattr(element, "ref_id", "") or "").strip(),
+        "container_name": str(getattr(element, "container_name", "") or "").strip(),
+        "context_text": str(getattr(element, "context_text", "") or "").strip(),
+        "role_ref_name": str(getattr(element, "role_ref_name", "") or "").strip(),
+        "selected_value": str(getattr(element, "selected_value", "") or "").strip(),
+        "option_signature": option_signature[:16],
+    }
+
+
+def filter_validation_contract_needs_refresh(
+    agent: "GoalDrivenAgent",
+    contract: Optional[Dict[str, Any]],
+    preferred_control_hint: Optional[Dict[str, Any]],
+) -> bool:
+    if not isinstance(contract, dict) or not isinstance(preferred_control_hint, dict):
+        return False
+    contract_hint = _contract_control_hint(contract)
+    if not contract_hint:
+        return False
+    normalize = getattr(agent, "_normalize_text", None)
+    if not callable(normalize):
+        normalize = lambda value: str(value or "").strip().lower()
+
+    contract_ref = str(contract_hint.get("ref_id") or "").strip()
+    preferred_ref = str(preferred_control_hint.get("ref_id") or "").strip()
+    if contract_ref and preferred_ref and contract_ref != preferred_ref:
+        return True
+
+    contract_signature = {
+        normalize(token)
+        for token in list(contract_hint.get("option_signature") or [])
+        if str(token or "").strip()
+    }
+    preferred_signature = {
+        normalize(token)
+        for token in list(preferred_control_hint.get("option_signature") or [])
+        if str(token or "").strip()
+    }
+    if contract_signature and preferred_signature and not contract_signature.intersection(preferred_signature):
+        return True
+
+    contract_container = normalize(contract_hint.get("container_name"))
+    preferred_container = normalize(preferred_control_hint.get("container_name"))
+    contract_role_ref = normalize(contract_hint.get("role_ref_name"))
+    preferred_role_ref = normalize(preferred_control_hint.get("role_ref_name"))
+    if contract_ref or preferred_ref:
+        if (
+            contract_container
+            and preferred_container
+            and contract_container != preferred_container
+            and contract_role_ref
+            and preferred_role_ref
+            and contract_role_ref != preferred_role_ref
+        ):
+            return True
+    return False
+
+
+def _normalized_token(agent: "GoalDrivenAgent", value: Any) -> str:
+    try:
+        return agent._normalize_text(value)
+    except Exception:
+        return str(value or "").strip().lower()
+
+
+def _goal_filter_control_hint(goal: TestGoal) -> Dict[str, Any]:
+    test_data = getattr(goal, "test_data", None)
+    if not isinstance(test_data, dict):
+        return {}
+    raw = test_data.get("filter_control_hint")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _merge_control_hints(*hints: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for raw in hints:
+        if not isinstance(raw, dict):
+            continue
+        for key, value in raw.items():
+            if key in {"include_terms", "exclude_terms"} and isinstance(value, list):
+                merged[key] = [str(item) for item in value if str(item or "").strip()]
+            elif value not in (None, "", []):
+                merged[key] = value
+    return merged
+
+
+def _contract_control_hint(contract: Any) -> Dict[str, Any]:
+    if not isinstance(contract, dict):
+        return {}
+    raw = contract.get("control_hint")
+    if isinstance(raw, dict):
+        return dict(raw)
+    control_ref = str(contract.get("control_ref_id") or "").strip()
+    return {"ref_id": control_ref} if control_ref else {}
+
+
+def _option_signature(agent: "GoalDrivenAgent", element: DOMElement) -> List[str]:
+    signature: List[str] = []
+    for raw in list(getattr(element, "options", None) or []):
+        if isinstance(raw, dict):
+            text = str(raw.get("text") or "").strip()
+            value = str(raw.get("value") or "").strip()
+        else:
+            text = str(raw or "").strip()
+            value = text
+        token = _normalized_token(agent, text or value)
+        if token:
+            signature.append(token)
+    return signature[:16]
+
+
+def _preferred_control_match_score(
+    agent: "GoalDrivenAgent",
+    element: DOMElement,
+    preferred_control_hint: Dict[str, Any],
+) -> float:
+    if not preferred_control_hint:
+        return 0.0
+
+    score = 0.0
+    element_ref = str(getattr(element, "ref_id", "") or "").strip()
+    if element_ref and element_ref == str(preferred_control_hint.get("ref_id") or "").strip():
+        score += 200.0
+
+    element_container = _normalized_token(agent, getattr(element, "container_name", ""))
+    hint_container = _normalized_token(agent, preferred_control_hint.get("container_name"))
+    if hint_container and element_container and hint_container == element_container:
+        score += 16.0
+
+    element_role_ref = _normalized_token(agent, getattr(element, "role_ref_name", ""))
+    hint_role_ref = _normalized_token(agent, preferred_control_hint.get("role_ref_name"))
+    if hint_role_ref and element_role_ref and hint_role_ref == element_role_ref:
+        score += 14.0
+
+    element_context = _normalized_token(agent, getattr(element, "context_text", ""))
+    hint_context = _normalized_token(agent, preferred_control_hint.get("context_text"))
+    if hint_context and element_context and hint_context == element_context:
+        score += 12.0
+
+    element_selected = _normalized_token(agent, getattr(element, "selected_value", ""))
+    hint_selected = _normalized_token(agent, preferred_control_hint.get("selected_value"))
+    if hint_selected and element_selected and hint_selected == element_selected:
+        score += 10.0
+
+    hint_signature = [
+        _normalized_token(agent, token)
+        for token in list(preferred_control_hint.get("option_signature") or [])
+        if str(token or "").strip()
+    ][:16]
+    if hint_signature:
+        element_signature = _option_signature(agent, element)
+        if element_signature == hint_signature:
+            score += 80.0
+        elif element_signature:
+            overlap = len(set(element_signature).intersection(set(hint_signature)))
+            score += min(40.0, float(overlap) * 4.0)
+
+    element_blob = _normalized_token(
+        agent,
+        " ".join(
+            [
+                str(getattr(element, "text", "") or ""),
+                str(getattr(element, "aria_label", "") or ""),
+                str(getattr(element, "title", "") or ""),
+                str(getattr(element, "class_name", "") or ""),
+                str(getattr(element, "container_name", "") or ""),
+                str(getattr(element, "context_text", "") or ""),
+                " ".join(_option_signature(agent, element)[:8]),
+            ]
+        ),
+    )
+    include_terms = [
+        _normalized_token(agent, token)
+        for token in list(preferred_control_hint.get("include_terms") or [])
+        if str(token or "").strip()
+    ]
+    exclude_terms = [
+        _normalized_token(agent, token)
+        for token in list(preferred_control_hint.get("exclude_terms") or [])
+        if str(token or "").strip()
+    ]
+    for token in include_terms:
+        if token and token in element_blob:
+            score += 6.0
+    for token in exclude_terms:
+        if token and token in element_blob:
+            score -= 10.0
+
+    return score

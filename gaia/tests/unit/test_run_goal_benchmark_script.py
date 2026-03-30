@@ -1,0 +1,31 @@
+from scripts.run_goal_benchmark import _build_child_code
+
+
+def test_build_child_code_propagates_expected_signals_and_auto_start_guard() -> None:
+    scenario = {
+        "id": "INUU_001_HOME_LOGIN_VISIBLE",
+        "url": "https://inuu-timetable.vercel.app/",
+        "goal": "현재 메인 화면에서 로그인 버튼 또는 로그인 유도 CTA가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+        "test_data": {
+            "filter_control_hint": {
+                "include_terms": ["검색 결과"],
+                "exclude_terms": ["위시리스트"],
+            },
+        },
+        "expected_signals": ["text_visible", "cta_visible"],
+        "constraints": {
+            "allow_navigation": False,
+            "require_ref_only": True,
+            "require_state_change": False,
+        },
+    }
+
+    code = _build_child_code(scenario, "session-1")
+
+    assert "should_auto_start_mcp_host()" in code
+    assert "prepared_goal.expected_signals" in code
+    assert "harness_expected_signals" in code
+    assert "scenario_test_data" in code
+    assert "filter_control_hint" in code
+    assert "text_visible" in code
+    assert "cta_visible" in code

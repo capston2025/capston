@@ -1,0 +1,33 @@
+{
+  "suite_id": "inuu_003_credit_filter_semantic_timeout420",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "INUU_003_CREDIT_FILTER_SEMANTIC",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "selection_reflected",
+        "result_consistency"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 420
+    }
+  ]
+}

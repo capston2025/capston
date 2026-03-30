@@ -9,9 +9,9 @@ from __future__ import annotations
 import time
 import os
 import re
-import requests
 from typing import Any, Dict, List, Optional, Callable
 from types import SimpleNamespace
+from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session
 
 from .models import (
     TestGoal,
@@ -42,6 +42,7 @@ from .goal_completion_helpers import (
     evaluate_reasoning_only_wait_completion as evaluate_reasoning_only_wait_completion_impl,
     evaluate_explicit_reasoning_proof_completion as evaluate_explicit_reasoning_proof_completion_impl,
     evaluate_wait_goal_completion as evaluate_wait_goal_completion_impl,
+    is_readonly_visibility_goal as is_readonly_visibility_goal_impl,
 )
 from .goal_verification_helpers import (
     build_verification_transition_reason as build_verification_transition_reason_impl,
@@ -70,6 +71,7 @@ from .goal_achievement_runtime import (
     has_signup_completion_evidence as has_signup_completion_evidence_impl,
     validate_goal_achievement_claim as validate_goal_achievement_claim_impl,
 )
+from .goal_policy_phase_runtime import goal_phase_intent
 from .steering_runtime import (
     activate_steering_policy as activate_steering_policy_impl,
     build_goal_constraint_prompt as build_goal_constraint_prompt_impl,
@@ -182,11 +184,12 @@ from .runtime import (
     FlowMasterOrchestrator,
     StepSubAgent,
 )
-from gaia.src.phase4.captcha_solver import CaptchaSolver
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from .text_llm_runtime import call_llm_text_only as call_llm_text_only_impl
+from .captcha_observer_runtime import run_captcha_observer as run_captcha_observer_impl
+from .wrapper_trace_runtime import thin_wrapper_enabled
 
 
 class GoalDrivenAgent:
@@ -239,13 +242,16 @@ class GoalDrivenAgent:
         self._element_selectors: Dict[int, str] = {}
         self._element_full_selectors: Dict[int, str] = {}
         self._element_ref_ids: Dict[int, str] = {}
+        self._element_ref_meta_by_id: Dict[int, Dict[str, Any]] = {}
         self._element_scopes: Dict[int, Dict[str, Any]] = {}
         self._active_snapshot_id: str = ""
         self._active_dom_hash: str = ""
         self._active_snapshot_epoch: int = 0
         self._active_url: str = ""
+        self._last_snapshot_elements_by_ref: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot_evidence: Dict[str, Any] = {}
         self._last_exec_result: Optional[ActionExecResult] = None
+        self._persistent_state_memory: List[Dict[str, Any]] = []
         self._active_goal_text: str = ""
         self._ineffective_ref_counts: Dict[str, int] = {}
         self._last_success_click_intent: str = ""
@@ -422,7 +428,8 @@ class GoalDrivenAgent:
         if recovered:
             return recovered
         now = time.time()
-        auth_phase = str(getattr(self, "_goal_policy_phase", "") or "").strip() == "handle_auth_or_block"
+        current_phase = str(getattr(self, "_goal_policy_phase", "") or "").strip()
+        auth_phase = str(getattr(self, "_goal_phase_intent", "") or goal_phase_intent(current_phase)) == "auth"
         auth_recent = bool(getattr(self, "_auth_interrupt_active", False))
         last_auth_submit_at = float(getattr(self, "_last_auth_submit_at", 0.0) or 0.0)
         last_auth_interrupt_at = float(getattr(self, "_auth_interrupt_started_at", 0.0) or 0.0)
@@ -449,14 +456,9 @@ class GoalDrivenAgent:
         start_url = str(getattr(goal, "start_url", "") or "").strip()
         self._log("🛠️ DOM 강제 복구: 현재 브라우저 세션을 재생성합니다.")
         try:
-            requests.post(
-                f"{self.mcp_host_url.rstrip('/')}/close_session",
-                json={
-                    "action": "close_session",
-                    "params": {
-                        "session_id": self.session_id,
-                    },
-                },
+            close_mcp_session(
+                self.mcp_host_url,
+                session_id=self.session_id,
                 timeout=(5, 15),
             )
         except Exception as exc:
@@ -758,6 +760,7 @@ class GoalDrivenAgent:
         if not isinstance(state_change, dict):
             return False
         strong_progress_keys = (
+            "backend_progress",
             "url_changed",
             "target_visibility_changed",
             "target_value_changed",
@@ -810,6 +813,7 @@ class GoalDrivenAgent:
         state_change: Optional[Dict[str, Any]],
         before_dom_count: int,
         after_dom_count: int,
+        post_dom: Optional[List[DOMElement]] = None,
     ) -> bool:
         return can_finish_by_verification_transition_impl(
             self,
@@ -820,6 +824,7 @@ class GoalDrivenAgent:
             state_change=state_change,
             before_dom_count=before_dom_count,
             after_dom_count=after_dom_count,
+            post_dom=post_dom,
         )
 
     def _build_verification_transition_reason(
@@ -971,6 +976,9 @@ class GoalDrivenAgent:
             decision=decision,
             dom_elements=dom_elements,
         )
+
+    def _is_readonly_visibility_goal(self, goal: TestGoal) -> bool:
+        return is_readonly_visibility_goal_impl(self, goal)
 
     @classmethod
     def _build_click_intent_key(
@@ -1141,8 +1149,9 @@ class GoalDrivenAgent:
     @staticmethod
     def _decision_signature(decision: ActionDecision) -> str:
         element = decision.element_id if decision.element_id is not None else -1
+        ref_id = str(getattr(decision, "ref_id", "") or "").strip().lower()
         value = (decision.value or "").strip().lower()
-        return f"{decision.action.value}:{element}:{value}"
+        return f"{decision.action.value}:{element}:{ref_id}:{value}"
 
     @classmethod
     def _looks_like_modal_close_loop(cls, decision: ActionDecision) -> bool:
@@ -1278,7 +1287,6 @@ class GoalDrivenAgent:
         )
 
     @classmethod
-    @classmethod
     def _goal_text_blob(cls, goal: TestGoal) -> str:
         return goal_text_blob_impl(cls, goal)
 
@@ -1374,11 +1382,12 @@ class GoalDrivenAgent:
         last_metric_value: Optional[float] = None
         collect_metric_stall_count = 0
         context_shift_cooldown = 0
+        thin_wrapper_mode = thin_wrapper_enabled(self)
 
         while orchestrator.can_continue():
             step_count = orchestrator.begin_step()
             step_start = time.time()
-            if context_shift_cooldown > 0:
+            if (not thin_wrapper_mode) and context_shift_cooldown > 0:
                 context_shift_cooldown -= 1
 
             self._log(f"\n--- Step {step_count}/{orchestrator.max_steps} ---")
@@ -1446,7 +1455,7 @@ class GoalDrivenAgent:
                         start_time=start_time,
                         reason=orchestrator.stop_reason,
                     )
-            if hasattr(orchestrator, "consume_oscillation") and bool(orchestrator.consume_oscillation()):
+            if (not thin_wrapper_mode) and hasattr(orchestrator, "consume_oscillation") and bool(orchestrator.consume_oscillation()):
                 self._log("🧭 화면 진동(ABAB) 패턴 감지: 컨텍스트 전환을 잠시 중단하고 직접 상호작용 후보를 우선 시도합니다.")
                 force_context_shift = False
                 context_shift_used_elements.clear()
@@ -1483,15 +1492,23 @@ class GoalDrivenAgent:
             )
             if (heuristic_login_gate or prominent_auth_form) and not login_gate_visible:
                 self._log("ℹ️ 로그인 힌트는 감지됐지만 modal_open/compact_auth/auth_form 조건이 없어 AUTH 분기를 보류합니다.")
-            interrupt_payload = resolve_goal_policy_interrupts(
-                self,
-                goal=goal,
-                dom_elements=dom_elements,
-                login_gate_visible=login_gate_visible,
-                has_login_test_data=has_login_test_data,
-                login_intervention_asked=login_intervention_asked,
-                modal_open_hint=modal_open_hint,
-            )
+            interrupt_payload = {
+                "login_intervention": {
+                    "has_login_test_data": has_login_test_data,
+                    "login_intervention_asked": login_intervention_asked,
+                    "aborted": False,
+                }
+            }
+            if (not thin_wrapper_mode) or (login_gate_visible and not has_login_test_data):
+                interrupt_payload = resolve_goal_policy_interrupts(
+                    self,
+                    goal=goal,
+                    dom_elements=dom_elements,
+                    login_gate_visible=login_gate_visible,
+                    has_login_test_data=has_login_test_data,
+                    login_intervention_asked=login_intervention_asked,
+                    modal_open_hint=modal_open_hint,
+                )
             login_intervention = dict(interrupt_payload.get("login_intervention") or {})
             has_login_test_data = bool(login_intervention.get("has_login_test_data", has_login_test_data))
             login_intervention_asked = bool(
@@ -1507,75 +1524,6 @@ class GoalDrivenAgent:
                     step_count=step_count,
                     start_time=start_time,
                     reason=str(login_intervention.get("reason") or "로그인 개입 요청이 거부되어 중단했습니다."),
-                )
-
-            # 2. 스크린샷 캡처
-            screenshot = self._capture_screenshot()
-
-            # 2.5 CAPTCHA 감지 및 자동 해결
-            captcha_skip_until = int(getattr(self, "_captcha_solver_skip_until_step", 0) or 0)
-            recent_auth_submit_at = float(getattr(self, "_last_auth_submit_at", 0.0) or 0.0)
-            post_auth_cooldown_sec = self._env_int(
-                "GAIA_CAPTCHA_POST_AUTH_COOLDOWN_SEC",
-                20,
-                low=0,
-                high=120,
-            )
-            post_auth_cooldown_active = bool(
-                recent_auth_submit_at > 0.0 and (time.time() - recent_auth_submit_at) < float(post_auth_cooldown_sec)
-            )
-            captcha_solver_allowed = (
-                screenshot
-                and not getattr(self, "_captcha_solver_skip", False)
-                and int(step_count) >= captcha_skip_until
-                and not post_auth_cooldown_active
-            )
-            if captcha_solver_allowed:
-                if not hasattr(self, "_captcha_solver"):
-                    captcha_attempts = self._loop_policy_value("captcha_solver_attempt_limit", 2)
-                    if captcha_attempts <= 0:
-                        captcha_attempts = 2
-                    self._captcha_solver = CaptchaSolver(
-                        vision_client=self.llm,
-                        execute_fn=self._execute_action,
-                        mcp_host_url=self.mcp_host_url,
-                        session_id=self.session_id,
-                        max_attempts=captcha_attempts,
-                        log_fn=self._log,
-                    )
-                captcha_result = self._captcha_solver.detect_and_handle(
-                    screenshot=screenshot,
-                    page_url=getattr(self, "_current_url", goal.start_url or ""),
-                    capture_fn=self._capture_screenshot,
-                )
-                if captcha_result.solved:
-                    self._log(f"🔓 CAPTCHA 해결 완료 ({captcha_result.attempts}회 시도)")
-                    self._captcha_solver_skip_until_step = 0
-                    self._action_history.append(
-                        f"Step {step_count}: captcha_solve - CAPTCHA 자동 해결 ({captcha_result.status})"
-                    )
-                    time.sleep(1)
-                    continue  # DOM 재수집 후 다음 스텝
-                elif captcha_result.status == "gave_up":
-                    self._log("🏳️ CAPTCHA 해결 포기 — 일반 LLM 흐름으로 계속")
-                    cooldown_steps = self._loop_policy_value("captcha_solver_cooldown_steps", 4)
-                    if cooldown_steps <= 0:
-                        cooldown_steps = 4
-                    self._captcha_solver_skip_until_step = int(step_count) + int(cooldown_steps)
-                    self._action_feedback.append(
-                        "CAPTCHA가 감지되었으나 자동 해결에 실패했습니다. "
-                        "가능하면 CAPTCHA를 우회하는 경로를 찾거나, 사용자 개입이 필요합니다."
-                    )
-                    if len(self._action_feedback) > 10:
-                        self._action_feedback = self._action_feedback[-10:]
-            elif screenshot and int(step_count) < captcha_skip_until:
-                self._log(
-                    f"⏭️ CAPTCHA solver cooldown 적용 중(step<{captcha_skip_until}) — 일반 실행 흐름 유지"
-                )
-                # no_captcha 또는 unsupported → 일반 흐름 계속
-            elif screenshot and post_auth_cooldown_active:
-                self._log(
-                    f"⏭️ 인증 직후 CAPTCHA solver 보류({post_auth_cooldown_sec}s) — 일반 실행 흐름 유지"
                 )
 
             static_verification_reason = self._evaluate_static_verification_on_current_page(
@@ -1602,15 +1550,39 @@ class GoalDrivenAgent:
                 )
                 return result
 
+            use_screenshot = not self._is_readonly_visibility_goal(goal)
+
+            # 2. 스크린샷 캡처
+            screenshot = self._capture_screenshot() if use_screenshot else None
+
+            captcha_observer_result = run_captcha_observer_impl(
+                self,
+                goal=goal,
+                dom_elements=dom_elements,
+                screenshot=screenshot,
+                step_count=step_count,
+                steps=steps,
+                start_time=start_time,
+            )
+            if isinstance(captcha_observer_result, dict):
+                if bool(captcha_observer_result.get("continue_loop")):
+                    continue
+                terminal_result = captcha_observer_result.get("terminal_result")
+                if terminal_result is not None:
+                    return terminal_result
+            elif captcha_observer_result is not None:
+                return captcha_observer_result
+
             directive = orchestrator.next_directive(
                 login_gate_visible=login_gate_visible,
                 requires_login_interaction=requires_login_interaction,
                 has_login_test_data=has_login_test_data,
-                close_element_id=None,
             )
-            master_directive = master_orchestrator.next_directive(
-                auth_required=bool(login_gate_visible and not has_login_test_data)
-            )
+            master_directive = None
+            if not thin_wrapper_mode:
+                master_directive = master_orchestrator.next_directive(
+                    auth_required=bool(login_gate_visible and not has_login_test_data)
+                )
 
             if directive.kind == "stop":
                 return self._build_failure_result(
@@ -1621,67 +1593,70 @@ class GoalDrivenAgent:
                     reason=directive.reason or "마스터 오케스트레이터가 실행을 중단했습니다.",
                 )
 
-            handoff_result = handle_master_handoff(
-                agent=self,
-                goal=goal,
-                master_directive=master_directive,
-                context_shift_fail_streak=context_shift_fail_streak,
-                context_shift_cooldown=context_shift_cooldown,
-                force_context_shift=force_context_shift,
-            )
-            force_context_shift = bool(handoff_result.get("force_context_shift", force_context_shift))
-            if bool(handoff_result.get("aborted")):
-                return self._build_failure_result(
+            if not thin_wrapper_mode:
+                handoff_result = handle_master_handoff(
+                    agent=self,
                     goal=goal,
-                    steps=steps,
+                    master_directive=master_directive,
+                    context_shift_fail_streak=context_shift_fail_streak,
+                    context_shift_cooldown=context_shift_cooldown,
+                    force_context_shift=force_context_shift,
+                )
+                force_context_shift = bool(handoff_result.get("force_context_shift", force_context_shift))
+                if bool(handoff_result.get("aborted")):
+                    return self._build_failure_result(
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=str(handoff_result.get("abort_reason") or "사용자 요청으로 실행을 중단했습니다."),
+                    )
+
+                if collect_unmet and collect_metric_stall_count >= 2 and context_shift_cooldown <= 0:
+                    force_context_shift = True
+                    self._action_feedback.append(
+                        "수집 지표가 정체되어 페이지/탭/섹션 전환을 강제합니다."
+                    )
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+
+                context_shift_result = handle_forced_context_shift(
+                    agent=self,
+                    goal=goal,
+                    orchestrator=orchestrator,
                     step_count=step_count,
-                    start_time=start_time,
-                    reason=str(handoff_result.get("abort_reason") or "사용자 요청으로 실행을 중단했습니다."),
+                    step_start=step_start,
+                    dom_elements=dom_elements,
+                    before_signature=before_signature,
+                    collect_unmet=collect_unmet,
+                    sub_agent=sub_agent,
+                    steps=steps,
+                    context_shift_used_elements=context_shift_used_elements,
+                    context_shift_fail_streak=context_shift_fail_streak,
+                    force_context_shift=force_context_shift,
+                    context_shift_cooldown=context_shift_cooldown,
+                    ineffective_action_streak=ineffective_action_streak,
                 )
-
-            if collect_unmet and collect_metric_stall_count >= 2 and context_shift_cooldown <= 0:
-                force_context_shift = True
-                self._action_feedback.append(
-                    "수집 지표가 정체되어 페이지/탭/섹션 전환을 강제합니다."
+                force_context_shift = bool(context_shift_result.get("force_context_shift", force_context_shift))
+                context_shift_fail_streak = int(
+                    context_shift_result.get("context_shift_fail_streak", context_shift_fail_streak)
                 )
-                if len(self._action_feedback) > 10:
-                    self._action_feedback = self._action_feedback[-10:]
+                context_shift_cooldown = int(
+                    context_shift_result.get("context_shift_cooldown", context_shift_cooldown)
+                )
+                ineffective_action_streak = int(
+                    context_shift_result.get("ineffective_action_streak", ineffective_action_streak)
+                )
+                if bool(context_shift_result.get("continue_loop")):
+                    continue
 
-            context_shift_result = handle_forced_context_shift(
-                agent=self,
-                goal=goal,
-                orchestrator=orchestrator,
-                step_count=step_count,
-                step_start=step_start,
-                dom_elements=dom_elements,
-                before_signature=before_signature,
-                collect_unmet=collect_unmet,
-                sub_agent=sub_agent,
-                steps=steps,
-                context_shift_used_elements=context_shift_used_elements,
-                context_shift_fail_streak=context_shift_fail_streak,
-                force_context_shift=force_context_shift,
-                context_shift_cooldown=context_shift_cooldown,
-                ineffective_action_streak=ineffective_action_streak,
-            )
-            force_context_shift = bool(context_shift_result.get("force_context_shift", force_context_shift))
-            context_shift_fail_streak = int(
-                context_shift_result.get("context_shift_fail_streak", context_shift_fail_streak)
-            )
-            context_shift_cooldown = int(
-                context_shift_result.get("context_shift_cooldown", context_shift_cooldown)
-            )
-            ineffective_action_streak = int(
-                context_shift_result.get("ineffective_action_streak", ineffective_action_streak)
-            )
-            if bool(context_shift_result.get("continue_loop")):
-                continue
-
-            deterministic_preplan = self._build_deterministic_goal_preplan(
-                goal=goal,
-                dom_elements=dom_elements,
-                steps=steps,
-            )
+            deterministic_preplan = None
+            if not thin_wrapper_mode:
+                deterministic_preplan = self._build_deterministic_goal_preplan(
+                    goal=goal,
+                    dom_elements=dom_elements,
+                    steps=steps,
+                )
             if deterministic_preplan is not None:
                 decision = deterministic_preplan
                 self._log(f"규칙 기반 선결정: {decision.action.value} - {decision.reasoning}")
@@ -1700,12 +1675,6 @@ class GoalDrivenAgent:
                     decision=decision,
                     dom_elements=dom_elements,
                 )
-                if not reasoning_only_wait_reason:
-                    reasoning_only_wait_reason = self._evaluate_explicit_reasoning_proof_completion(
-                        goal=goal,
-                        decision=decision,
-                        dom_elements=dom_elements,
-                    )
                 if reasoning_only_wait_reason:
                     self._log(f"✅ 목표 달성! 이유: {reasoning_only_wait_reason}")
                     result = GoalResult(
@@ -1765,6 +1734,7 @@ class GoalDrivenAgent:
                 if wait_completion_reason:
                     decision = ActionDecision(
                         action=decision.action,
+                        ref_id=decision.ref_id,
                         element_id=decision.element_id,
                         value=decision.value,
                         reasoning=decision.reasoning,
@@ -1812,6 +1782,7 @@ class GoalDrivenAgent:
                     self._log(f"⚠️ 목표 달성 판정 보류: {invalid_reason}")
                     decision = ActionDecision(
                         action=decision.action,
+                        ref_id=decision.ref_id,
                         element_id=decision.element_id,
                         value=decision.value,
                         reasoning=f"{decision.reasoning} | 보류 사유: {invalid_reason}",
@@ -1879,12 +1850,13 @@ class GoalDrivenAgent:
                 ]
             modal_open_now = bool(self._last_snapshot_evidence.get("modal_open")) if isinstance(self._last_snapshot_evidence, dict) else False
             overlay_intercept_pending = bool(getattr(self, "_overlay_intercept_pending", False))
+            auth_phase_runtime = str(getattr(self, "_goal_phase_intent", "") or "").strip().lower() == "auth"
             active_goal_text_norm = self._normalize_text(self._active_goal_text or "")
             x_button_goal_required = any(
                 token in active_goal_text_norm
                 for token in ("x 버튼", "x버튼", "우상단 x", "닫기 버튼", "close button", "x icon", "x 아이콘")
             )
-            if x_button_goal_required and decision.action == ActionType.PRESS:
+            if x_button_goal_required and decision.action == ActionType.PRESS and not auth_phase_runtime:
                 modal_regions_hint = []
                 if isinstance(self._last_snapshot_evidence, dict):
                     raw_regions = self._last_snapshot_evidence.get("modal_regions")
@@ -1921,10 +1893,15 @@ class GoalDrivenAgent:
                             selected_element.text,
                             selected_element.aria_label,
                             getattr(selected_element, "title", None),
-                            self._element_full_selectors.get(selected_element.id),
-                            self._element_selectors.get(selected_element.id),
                         ]
                     self._log("🧭 X 버튼 요구 목표: press 액션을 닫기 클릭으로 변환합니다.")
+            selected_fields = []
+            if selected_element is not None:
+                selected_fields = [
+                    selected_element.text,
+                    selected_element.aria_label,
+                    getattr(selected_element, "title", None),
+                ]
             selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
             if not selected_close_signal and selected_element is not None:
                 selected_close_signal = self._normalize_text(selected_element.text) in {"x", "×", "닫기", "close"}
@@ -1946,6 +1923,7 @@ class GoalDrivenAgent:
                 overlay_intercept_pending
                 and decision.action == ActionType.CLICK
                 and not selected_close_signal
+                and not auth_phase_runtime
             ):
                 modal_regions_hint = []
                 if isinstance(self._last_snapshot_evidence, dict):
@@ -1981,8 +1959,6 @@ class GoalDrivenAgent:
                             selected_element.text,
                             selected_element.aria_label,
                             getattr(selected_element, "title", None),
-                            self._element_full_selectors.get(selected_element.id),
-                            self._element_selectors.get(selected_element.id),
                         ]
                     selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
                     if not selected_close_signal and selected_element is not None:
@@ -1993,6 +1969,7 @@ class GoalDrivenAgent:
                 and decision.action == ActionType.CLICK
                 and reasoning_close_intent
                 and not selected_close_signal
+                and not auth_phase_runtime
             ):
                 modal_regions_hint = []
                 if isinstance(self._last_snapshot_evidence, dict):
@@ -2030,8 +2007,6 @@ class GoalDrivenAgent:
                             selected_element.text,
                             selected_element.aria_label,
                             getattr(selected_element, "title", None),
-                            self._element_full_selectors.get(selected_element.id),
-                            self._element_selectors.get(selected_element.id),
                         ]
                     selected_close_signal = any(self._contains_close_hint(field) for field in selected_fields)
                     if not selected_close_signal and selected_element is not None:
@@ -2170,10 +2145,43 @@ class GoalDrivenAgent:
         url: Optional[str] = None,
         scope_container_ref_id: Optional[str] = None,
     ) -> List[DOMElement]:
-        return analyze_dom_impl(self, url=url, scope_container_ref_id=scope_container_ref_id)
+        trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
+        started = time.perf_counter()
+        if trace_enabled:
+            self._log(
+                "🧪 collect trace(start): "
+                f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
+                f"intent={str(getattr(self, '_goal_phase_intent', '') or '')} "
+                f"scope={str(scope_container_ref_id or '') or '<default>'}"
+            )
+        result = analyze_dom_impl(self, url=url, scope_container_ref_id=scope_container_ref_id)
+        if trace_enabled:
+            self._log(
+                "🧪 collect trace(end): "
+                f"ms={int((time.perf_counter() - started) * 1000)} "
+                f"dom_count={len(result or [])} "
+                f"snapshot_id={str(getattr(self, '_active_snapshot_id', '') or '')} "
+                f"url={str(getattr(self, '_current_url', '') or '')}"
+            )
+        return result
 
     def _capture_screenshot(self) -> Optional[str]:
-        return capture_screenshot_impl(self)
+        trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
+        started = time.perf_counter()
+        if trace_enabled:
+            self._log(
+                "🧪 screenshot trace(start): "
+                f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
+                f"intent={str(getattr(self, '_goal_phase_intent', '') or '')}"
+            )
+        result = capture_screenshot_impl(self)
+        if trace_enabled:
+            self._log(
+                "🧪 screenshot trace(end): "
+                f"ms={int((time.perf_counter() - started) * 1000)} "
+                f"has_image={bool(result)}"
+            )
+        return result
 
     def run_filter_semantic_validation(
         self,
@@ -2184,6 +2192,7 @@ class GoalDrivenAgent:
         use_current_selection_only: bool = False,
         forced_selected_value: Optional[str] = None,
         validation_contract: Optional[Dict[str, Any]] = None,
+        preferred_control_hint: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return run_filter_semantic_validation_impl(
             self,
@@ -2193,6 +2202,7 @@ class GoalDrivenAgent:
             use_current_selection_only=use_current_selection_only,
             forced_selected_value=forced_selected_value,
             validation_contract=validation_contract,
+            preferred_control_hint=preferred_control_hint,
         )
 
     def _build_filter_validation_contract(
@@ -2200,11 +2210,13 @@ class GoalDrivenAgent:
         *,
         goal: TestGoal,
         dom_elements: List[DOMElement],
+        preferred_control_hint: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return build_filter_validation_contract_impl(
             self,
             goal=goal,
             dom_elements=dom_elements,
+            preferred_control_hint=preferred_control_hint,
         )
 
     def _decide_next_action(
@@ -2215,13 +2227,31 @@ class GoalDrivenAgent:
         memory_context: str = "",
     ) -> ActionDecision:
         """LLM에게 다음 액션 결정 요청"""
-        return decide_next_action_impl(
+        trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
+        started = time.perf_counter()
+        if trace_enabled:
+            self._log(
+                "🧪 decide trace(start): "
+                f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
+                f"intent={str(getattr(self, '_goal_phase_intent', '') or '')} "
+                f"dom_count={len(dom_elements or [])} "
+                f"has_screenshot={bool(screenshot)}"
+            )
+        decision = decide_next_action_impl(
             self,
             dom_elements,
             goal,
             screenshot=screenshot,
             memory_context=memory_context,
         )
+        if trace_enabled:
+            self._log(
+                "🧪 decide trace(end): "
+                f"ms={int((time.perf_counter() - started) * 1000)} "
+                f"action={str(getattr(decision, 'action', '') or '')} "
+                f"element_id={str(getattr(decision, 'element_id', '') or '')}"
+            )
+        return decision
 
     def _format_dom_for_llm(self, elements: List[DOMElement]) -> str:
         return format_dom_for_llm_impl(self, elements)

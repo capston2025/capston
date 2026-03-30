@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+from .goal_policy_phase_runtime import goal_phase_intent
 from .models import ActionDecision, ActionType, DOMElement, GoalResult, StepResult, TestGoal
 
 
@@ -32,12 +33,47 @@ def _strong_state_progress(state_change: Optional[Dict[str, Any]]) -> bool:
         "dialog_count_changed",
         "modal_state_changed",
         "auth_state_changed",
+        "scroll_position_changed",
         "text_digest_changed",
         "nav_detected",
         "popup_detected",
         "dialog_detected",
     )
     return any(bool(state_change.get(key)) for key in keys)
+
+
+def _is_openclaw_backend_state_change(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    return str(state_change.get("backend") or "").strip().lower() == "openclaw"
+
+
+def _sorted_text_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    normalized = [str(item).strip() for item in value if str(item).strip()]
+    normalized.sort()
+    return normalized[:100]
+
+
+def _strong_evidence_progress(before_evidence: Optional[Dict[str, Any]], after_evidence: Optional[Dict[str, Any]]) -> bool:
+    before = before_evidence if isinstance(before_evidence, dict) else {}
+    after = after_evidence if isinstance(after_evidence, dict) else {}
+    flags = (
+        _sorted_text_list(before.get("live_texts")) != _sorted_text_list(after.get("live_texts")),
+        _sorted_text_list(before.get("counters")) != _sorted_text_list(after.get("counters")),
+        _sorted_text_list(before.get("number_tokens")) != _sorted_text_list(after.get("number_tokens")),
+        int(before.get("list_count", 0) or 0) != int(after.get("list_count", 0) or 0),
+        int(before.get("interactive_count", 0) or 0) != int(after.get("interactive_count", 0) or 0),
+        int(before.get("modal_count", 0) or 0) != int(after.get("modal_count", 0) or 0),
+        int(before.get("backdrop_count", 0) or 0) != int(after.get("backdrop_count", 0) or 0),
+        int(before.get("dialog_count", 0) or 0) != int(after.get("dialog_count", 0) or 0),
+        bool(before.get("modal_open")) != bool(after.get("modal_open")),
+        bool(before.get("login_visible")) != bool(after.get("login_visible")),
+        bool(before.get("logout_visible")) != bool(after.get("logout_visible")),
+        str(before.get("text_digest", "")) != str(after.get("text_digest", "")),
+    )
+    return any(flags)
 
 
 def _is_weak_dom_only_change(
@@ -86,12 +122,34 @@ def evaluate_post_action_progress(
             )
         )
     )
-    post_dom = agent._analyze_dom()
-    after_evidence = (
-        dict(agent._last_snapshot_evidence)
-        if isinstance(getattr(agent, "_last_snapshot_evidence", None), dict)
+    backend_snapshot = (
+        dict(getattr(agent, "_last_backend_post_action_snapshot", None) or {})
+        if isinstance(getattr(agent, "_last_backend_post_action_snapshot", None), dict)
         else {}
     )
+    backend_post_dom_raw = backend_snapshot.get("dom_elements") if isinstance(backend_snapshot.get("dom_elements"), list) else []
+    backend_post_dom: List[DOMElement] = []
+    for item in backend_post_dom_raw:
+        if isinstance(item, DOMElement):
+            backend_post_dom.append(item)
+        elif isinstance(item, dict):
+            try:
+                backend_post_dom.append(DOMElement(**item))
+            except Exception:
+                continue
+    backend_after_evidence = backend_snapshot.get("evidence") if isinstance(backend_snapshot.get("evidence"), dict) else {}
+    if backend_post_dom:
+        post_dom = backend_post_dom
+        after_evidence = dict(backend_after_evidence)
+    else:
+        post_dom = agent._analyze_dom()
+        after_evidence = (
+            dict(agent._last_snapshot_evidence)
+            if isinstance(getattr(agent, "_last_snapshot_evidence", None), dict)
+            else {}
+        )
+    before_auth_prompt_visible = bool(before_evidence.get("auth_prompt_visible"))
+    after_auth_prompt_visible = bool(after_evidence.get("auth_prompt_visible"))
     after_modal_open = bool(after_evidence.get("modal_open"))
     if before_modal_open and after_modal_open:
         agent._modal_opened_once = True
@@ -102,6 +160,9 @@ def evaluate_post_action_progress(
     if refreshed_metric is not None:
         agent._goal_metric_value = refreshed_metric
     state_change = agent._last_exec_result.state_change if agent._last_exec_result else None
+    current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+    current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase))
+    recent_exec = getattr(agent, "_last_exec_result", None)
     close_transition_signal = bool(
         isinstance(state_change, dict)
         and (
@@ -111,7 +172,22 @@ def evaluate_post_action_progress(
             or bool(state_change.get("dialog_count_changed"))
         )
     )
+    modal_visibility_changed = before_modal_open != after_modal_open
+    auth_prompt_visibility_changed = before_auth_prompt_visible != after_auth_prompt_visible
     changed_by_state = _strong_state_progress(state_change)
+    openclaw_backend_state = _is_openclaw_backend_state_change(state_change)
+    openclaw_backend_progress = bool(openclaw_backend_state and bool(state_change.get("backend_progress")))
+    openclaw_backend_provisional = bool(
+        openclaw_backend_state
+        and bool(getattr(recent_exec, "success", False))
+        and bool(getattr(recent_exec, "effective", False))
+        and str(getattr(recent_exec, "reason_code", "") or "").strip().lower() == "ok"
+        and not openclaw_backend_progress
+        and decision.action in {ActionType.FILL, ActionType.SELECT}
+    )
+    if openclaw_backend_provisional and not changed_by_state:
+        changed_by_state = True
+    changed_by_evidence = _strong_evidence_progress(before_evidence, after_evidence)
     after_signature = agent._dom_progress_signature(post_dom) if post_dom else before_signature
     changed_by_dom = False
     if bool(post_dom) and before_signature != after_signature:
@@ -122,9 +198,64 @@ def evaluate_post_action_progress(
             after_signature=after_signature,
         )
         changed_by_dom = not weak_dom_only
-    changed = bool(changed_by_state or changed_by_dom)
-    if changed_by_state:
+    changed = bool(
+        changed_by_state
+        or changed_by_evidence
+        or changed_by_dom
+        or modal_visibility_changed
+        or auth_prompt_visibility_changed
+    )
+    if (
+        bool(success)
+        and not changed
+        and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
+    ):
+        time.sleep(0.8)
+        settled_dom = agent._analyze_dom(scope_container_ref_id="")
+        if settled_dom:
+            settled_evidence = (
+                dict(agent._last_snapshot_evidence)
+                if isinstance(getattr(agent, "_last_snapshot_evidence", None), dict)
+                else {}
+            )
+            settled_modal_open = bool(settled_evidence.get("modal_open"))
+            settled_auth_prompt_visible = bool(settled_evidence.get("auth_prompt_visible"))
+            settled_signature = agent._dom_progress_signature(settled_dom)
+            settled_changed_by_evidence = _strong_evidence_progress(before_evidence, settled_evidence)
+            settled_changed_by_dom = False
+            if before_signature != settled_signature:
+                settled_changed_by_dom = not _is_weak_dom_only_change(
+                    before_count=len(dom_elements),
+                    after_count=len(settled_dom),
+                    before_signature=before_signature,
+                    after_signature=settled_signature,
+                )
+            if (
+                settled_changed_by_evidence
+                or settled_changed_by_dom
+                or settled_modal_open != before_modal_open
+                or settled_auth_prompt_visible != before_auth_prompt_visible
+            ):
+                post_dom = settled_dom
+                after_evidence = settled_evidence
+                after_modal_open = settled_modal_open
+                after_auth_prompt_visible = settled_auth_prompt_visible
+                after_signature = settled_signature
+                modal_visibility_changed = before_modal_open != after_modal_open
+                auth_prompt_visibility_changed = before_auth_prompt_visible != after_auth_prompt_visible
+                changed = True
+    if openclaw_backend_progress:
+        _emit_reason(agent, "openclaw_backend_progress")
+    elif openclaw_backend_provisional:
+        _emit_reason(agent, "openclaw_backend_effective")
+    elif changed_by_state:
         _emit_reason(agent, "progress_state_change")
+    elif changed_by_evidence:
+        _emit_reason(agent, "progress_evidence_delta")
+    elif modal_visibility_changed:
+        _emit_reason(agent, "progress_modal_visibility")
+    elif auth_prompt_visibility_changed:
+        _emit_reason(agent, "progress_auth_prompt_visibility")
     elif changed_by_dom:
         _emit_reason(agent, "progress_dom_signature")
     elif (
@@ -175,6 +306,7 @@ def evaluate_post_action_progress(
         state_change=state_change,
         before_dom_count=len(dom_elements),
         after_dom_count=len(post_dom or []),
+        post_dom=post_dom if isinstance(post_dom, list) else [],
     ):
         completion_reason = agent._build_verification_transition_reason(
             state_change=state_change,
@@ -254,19 +386,16 @@ def evaluate_post_action_progress(
                 duration_seconds=terminal_result.duration_seconds,
             )
     if terminal_result is None and decision.action == ActionType.WAIT:
-        wait_reason = agent._evaluate_explicit_reasoning_proof_completion(
-            goal=goal,
-            decision=decision,
-            dom_elements=post_dom or [],
-        )
-        wait_reason_code = "wait_reasoning_proof_completion"
-        if not wait_reason:
+        current_phase_name = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
+        if current_phase_name.startswith("precheck"):
+            wait_reason = None
+        else:
             wait_reason = agent._evaluate_wait_goal_completion(
                 goal=goal,
                 decision=decision,
                 dom_elements=post_dom or [],
             )
-            wait_reason_code = "wait_goal_completion"
+        wait_reason_code = "wait_goal_completion"
         if not wait_reason:
             wait_reason = agent._evaluate_reasoning_only_wait_completion(
                 goal=goal,
@@ -293,6 +422,8 @@ def evaluate_post_action_progress(
                 step_count=step_count,
                 duration_seconds=terminal_result.duration_seconds,
             )
+        else:
+            agent._evidence_only_wait_count = 0
     if terminal_result is None:
         goal_blob = f"{goal.name} {goal.description}".strip().lower()
         close_keywords = ("닫", "close", "x 버튼", "우상단 x", "overlay", "오버레이", "modal", "모달")

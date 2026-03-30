@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "default_area": "repo-entry",
+  "areas": {
+    "repo-entry": {
+      "summary": "Repository entrypoint and working rules.",
+      "docs": [
+        "AGENTS.md",
+        "README.md",
+        "docs/harness/CONTEXT_MAP.md",
+        "docs/harness/CHECKS.md",
+        "docs/harness/GARBAGE_COLLECTION.md",
+        "gaia/docs/AGENT_HARNESS_PLAYBOOK.md"
+      ],
+      "files": [],
+      "checks": [
+        "python scripts/lint_harness_docs.py",
+        ".venv/bin/python -m pytest gaia/tests/unit -q"
+      ]
+    },
+    "gaia-goal-driven": {
+      "summary": "Goal-driven runtime, WAIT closer, goal verification, completion logic.",
+      "docs": [
+        "gaia/docs/AGENT_HARNESS_PLAYBOOK.md",
+        "gaia/docs/KPI_BENCHMARK_PROTOCOL.md",
+        "gaia/tests/scenarios/README.md"
+      ],
+      "files": [
+        "gaia/src/phase4/goal_driven/agent.py",
+        "gaia/src/phase4/goal_driven/goal_completion_helpers.py",
+        "gaia/src/phase4/goal_driven/goal_achievement_runtime.py",
+        "gaia/src/phase4/goal_driven/goal_verification_helpers.py"
+      ],
+      "checks": [
+        ".venv/bin/python -m pytest gaia/tests/unit/test_goal_achievement_runtime.py -q",
+        ".venv/bin/python -m pytest gaia/tests/unit/test_goal_verification_helpers.py -q"
+      ]
+    },
+    "gaia-openclaw": {
+      "summary": "Embedded OpenClaw runtime, dispatch, screenshots, and host behavior.",
+      "docs": [
+        "README.md",
+        "gaia/docs/PLAYWRIGHT_SKILL_INTEGRATION_DESIGN.md"
+      ],
+      "files": [
+        "gaia/src/phase4/embedded_openclaw_runtime.py",
+        "gaia/src/phase4/mcp_openclaw_dispatch_runtime.py",
+        "gaia/src/phase4/mcp_local_dispatch_runtime.py",
+        "gaia/src/phase4/mcp_host_runtime.py"
+      ],
+      "checks": [
+        ".venv/bin/python -m pytest gaia/tests/unit/test_embedded_openclaw_runtime.py -q",
+        ".venv/bin/python -m pytest gaia/tests/unit/test_mcp_openclaw_dispatch_runtime.py -q",
+        ".venv/bin/python -m pytest gaia/tests/unit/test_mcp_local_dispatch_runtime.py -q"
+      ]
+    },
+    "benchmark-harness": {
+      "summary": "Benchmark runner, graders, scenario contracts, eval outputs.",
+      "docs": [
+        "gaia/docs/KPI_BENCHMARK_PROTOCOL.md",
+        "gaia/tests/scenarios/README.md"
+      ],
+      "files": [
+        "scripts/run_goal_benchmark.py",
+        "gaia/harness/runner.py",
+        "gaia/harness/graders/expected_signals.py",
+        "gaia/harness/graders/membership.py"
+      ],
+      "checks": [
+        ".venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py -q"
+      ]
+    },
+    "runtime-entrypoints": {
+      "summary": "CLI, terminal, chat hub, auth, and session entry behavior.",
+      "docs": [
+        "README.md",
+        "gaia/docs/TEAM_PLAYBOOK.md"
+      ],
+      "files": [
+        "gaia/cli.py",
+        "gaia/terminal.py",
+        "gaia/chat_hub.py",
+        "gaia/auth.py"
+      ],
+      "checks": [
+        ".venv/bin/python -m pytest gaia/tests/unit -q"
+      ]
+    },
+    "cleanup-gc": {
+      "summary": "Cleanup and repo weight control for AI-generated changes.",
+      "docs": [
+        "docs/harness/GARBAGE_COLLECTION.md",
+        "docs/harness/CHECKS.md"
+      ],
+      "files": [
+        ".gitignore",
+        "scripts/lint_harness_docs.py",
+        "README.md"
+      ],
+      "checks": [
+        "python scripts/lint_harness_docs.py"
+      ]
+    }
+  }
+}

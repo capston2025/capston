@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List
 
 from .execute_goal_intervention import handle_login_intervention
+from .goal_policy_phase_runtime import goal_phase_intent
 from .goal_semantics import extract_goal_semantics
 from .models import DOMElement, TestGoal
 from .policy_registry import get_goal_policy, run_interrupt_policies
@@ -25,6 +26,7 @@ def initialize_goal_policy_runtime(agent: Any, goal: TestGoal) -> None:
         if agent._goal_policy is not None and agent._goal_semantics is not None
         else ""
     )
+    agent._goal_phase_intent = goal_phase_intent(agent._goal_policy_phase)
     agent._goal_policy_baseline_evidence = None
 
 
@@ -39,17 +41,38 @@ def resolve_goal_policy_interrupts(
     modal_open_hint: bool,
 ) -> Dict[str, Any]:
     auth_prompt_now = bool(login_gate_visible)
-    if auth_prompt_now and not bool(getattr(agent, "_auth_interrupt_active", False)):
+    auth_was_active = bool(getattr(agent, "_auth_interrupt_active", False))
+    if auth_prompt_now and not auth_was_active:
         candidate_intent = getattr(agent, "_last_goal_blockable_intent", {}) or {}
         if isinstance(candidate_intent, dict) and candidate_intent:
             agent._blocked_intent = dict(candidate_intent)
             agent._blocked_intent_resumed = False
+            agent._blocked_intent_resume_attempts = 0
+        agent._pre_auth_surface_ref = str(
+            getattr(agent, "_active_scoped_container_ref", "")
+            or (getattr(agent, "_active_interaction_surface", {}) or {}).get("ref_id")
+            or ""
+        ).strip()
         agent._auth_interrupt_started_at = time.time()
+        agent._auth_resume_pending = True
+        agent._auth_resolved_at = 0.0
+        agent._auth_submit_attempted = False
+        agent._auth_submit_attempts = 0
+        agent._last_auth_surface_signature = ""
+        agent._auth_surface_progressed = False
+        agent._auth_last_planned_fill = None
         agent._auth_identifier_done = False
         agent._auth_password_done = False
-    if not auth_prompt_now:
-        agent._auth_identifier_done = False
-        agent._auth_password_done = False
+    if auth_prompt_now:
+        agent._active_interaction_surface = {
+            "kind": "auth",
+            "ref_id": str(getattr(agent, "_auth_interrupt_scope_ref", "") or ""),
+            "source": "auth-interrupt",
+            "sticky_until": time.time() + 20.0,
+        }
+    if not auth_prompt_now and auth_was_active:
+        agent._auth_resolved_at = time.time()
+        agent._auth_resume_pending = True
     agent._auth_interrupt_active = auth_prompt_now
     policy_evidence = agent._build_goal_policy_evidence_bundle(
         goal=goal,

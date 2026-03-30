@@ -48,7 +48,6 @@ def pick_login_modal_close_element(
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
 
-@classmethod
 def pick_modal_unblock_element(
     cls,
     dom_elements: List[DOMElement],

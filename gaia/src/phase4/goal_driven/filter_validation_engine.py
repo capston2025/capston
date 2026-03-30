@@ -332,6 +332,7 @@ def run_filter_validation(
     use_current_selection_only = bool(cfg.get("use_current_selection_only", False))
     forced_selected_value = str(cfg.get("forced_selected_value") or "").strip()
     validation_contract = cfg.get("validation_contract")
+    preferred_control_hint = cfg.get("preferred_control_hint") if isinstance(cfg.get("preferred_control_hint"), dict) else {}
     capture_case_screenshots = bool(cfg.get("capture_case_screenshots", DEFAULT_FILTER_VALIDATION_PROFILE["capture_case_screenshots"]))
     max_case_attachments = max(0, int(cfg.get("max_case_attachments", max_cases)))
 
@@ -383,7 +384,7 @@ def run_filter_validation(
         attachments.append(item)
 
     dom = adapter.analyze_dom()
-    control = _pick_filter_control(dom, goal_text)
+    control = _pick_filter_control(dom, goal_text, preferred_control_hint=preferred_control_hint)
     if control is None:
         _record_reason("filter_case_failed")
         _add_check(
@@ -492,6 +493,7 @@ def run_filter_validation(
             selected_value=selected_value,
             selected_text=selected_text,
             required_map=required_map,
+            preferred_control_hint=preferred_control_hint,
         ) or control
         case_info: Dict[str, Any] = {
             "case_index": case_idx,
@@ -513,6 +515,7 @@ def run_filter_validation(
                     selected_value=selected_value,
                     selected_text=selected_text,
                     required_map=required_map,
+                    preferred_control_hint=preferred_control_hint,
                 )
                 if control_after_apply is not None:
                     reflected_ok, reflected_obs = _selection_reflected(
@@ -569,7 +572,8 @@ def run_filter_validation(
                 selected_value=selected_value,
                 selected_text=selected_text,
                 required_map=required_map,
-            ) or _pick_filter_control(page1_dom, goal_text) or control_for_case
+                preferred_control_hint=preferred_control_hint,
+            ) or _pick_filter_control(page1_dom, goal_text, preferred_control_hint=preferred_control_hint) or control_for_case
             selected_ok, selected_obs = _selection_reflected(control_page1, selected_value, selected_text)
             if selected_ok:
                 break
@@ -658,7 +662,7 @@ def run_filter_validation(
                 page1_dom_after_wait = adapter.analyze_dom()
                 if page1_dom_after_wait:
                     page1_dom = page1_dom_after_wait
-                    control_after_wait = _pick_filter_control(page1_dom, goal_text)
+                    control_after_wait = _pick_filter_control(page1_dom, goal_text, preferred_control_hint=preferred_control_hint)
                     if control_after_wait is not None:
                         control_page1 = control_after_wait
                     next_el = _pick_next_pagination(page1_dom)
@@ -678,7 +682,7 @@ def run_filter_validation(
                 page1_dom_after_scroll = adapter.analyze_dom()
                 if page1_dom_after_scroll:
                     page1_dom = page1_dom_after_scroll
-                    control_after_scroll = _pick_filter_control(page1_dom, goal_text)
+                    control_after_scroll = _pick_filter_control(page1_dom, goal_text, preferred_control_hint=preferred_control_hint)
                     if control_after_scroll is not None:
                         control_page1 = control_after_scroll
                     next_el = _pick_next_pagination(page1_dom)
@@ -730,7 +734,8 @@ def run_filter_validation(
                 selected_value=selected_value,
                 selected_text=selected_text,
                 required_map=required_map,
-            ) or _pick_filter_control(reload_dom, goal_text) or control_page1
+                preferred_control_hint=preferred_control_hint,
+            ) or _pick_filter_control(reload_dom, goal_text, preferred_control_hint=preferred_control_hint) or control_page1
             reload_selected_ok, reload_selected_obs = _selection_reflected(
                 reload_control,
                 selected_value,
@@ -785,7 +790,7 @@ def run_filter_validation(
         if click_blocked_code:
             _record_reason("blocked_user_action")
             _record_reason(click_blocked_code)
-        control_page2 = _pick_filter_control(page2_dom, goal_text) if page2_dom else None
+        control_page2 = _pick_filter_control(page2_dom, goal_text, preferred_control_hint=preferred_control_hint) if page2_dom else None
         persisted_ok = bool(click_ok and control_page2 and _selection_reflected(control_page2, selected_value, selected_text)[0])
         page2_row_texts_for_persist = _collect_result_rows(page2_dom)[:page2_topk] if page2_dom else []
         page2_weak_ok = _page2_min_match_ok(
@@ -995,7 +1000,12 @@ def _build_report(
     )
 
 
-def _pick_filter_control(dom: List[DOMElement], goal_text: str) -> Optional[DOMElement]:
+def _pick_filter_control(
+    dom: List[DOMElement],
+    goal_text: str,
+    *,
+    preferred_control_hint: Optional[Dict[str, Any]] = None,
+) -> Optional[DOMElement]:
     goal_norm = _normalize(goal_text)
     best: Optional[Tuple[float, DOMElement]] = None
     for el in dom:
@@ -1013,15 +1023,21 @@ def _pick_filter_control(dom: List[DOMElement], goal_text: str) -> Optional[DOME
                 _normalize(el.title),
                 _normalize(el.class_name),
                 _normalize(el.placeholder),
+                _normalize(el.container_name),
+                _normalize(el.context_text),
             ]
         )
         score = 1.0
-        if any(token in blob for token in ("필터", "filter", "분류", "category", "정렬", "sort", "학점", "credit")):
+        score += _preferred_control_match_score(el, preferred_control_hint or {})
+        if any(token in blob for token in ("필터", "filter", "분류", "category", "정렬", "sort")):
             score += 2.0
-        if any(token in goal_norm for token in ("필터", "filter", "학점", "credit")):
+        if any(token in goal_norm for token in ("필터", "filter", "분류", "category", "정렬", "sort", "semantic", "의미", "일치", "consisten")):
             score += 1.5
-        if any("학점" in str(opt.get("text") or "") for opt in options if isinstance(opt, dict)):
-            score += 2.5
+        if any(token in goal_norm for token in ("결과", "목록", "search", "검색", "result", "course")):
+            if any(token in blob for token in ("검색", "search", "결과", "목록", "course")):
+                score += 6.0
+            if any(token in blob for token in ("위시리스트", "wishlist", "내 시간표", "시간표", "목표", "target", "recommended", "권장")):
+                score -= 10.0
         if best is None or score > best[0]:
             best = (score, el)
     return best[1] if best else None
@@ -1139,6 +1155,7 @@ def _pick_filter_control_for_option(
     selected_value: str,
     selected_text: str,
     required_map: Dict[str, str],
+    preferred_control_hint: Optional[Dict[str, Any]] = None,
 ) -> Optional[DOMElement]:
     goal_norm = _normalize(goal_text)
     selected_value_norm = _normalize(selected_value)
@@ -1174,9 +1191,10 @@ def _pick_filter_control_for_option(
             ]
         )
         score = 0.0
-        if any(token in blob for token in ("필터", "filter", "분류", "category", "정렬", "sort", "학점", "credit")):
+        score += _preferred_control_match_score(el, preferred_control_hint or {})
+        if any(token in blob for token in ("필터", "filter", "분류", "category", "정렬", "sort")):
             score += 2.0
-        if any(token in goal_norm for token in ("필터", "filter", "학점", "credit")):
+        if any(token in goal_norm for token in ("필터", "filter", "분류", "category", "정렬", "sort")):
             score += 1.2
         if selected_value_norm and selected_value_norm in value_set:
             score += 4.5
@@ -1186,11 +1204,90 @@ def _pick_filter_control_for_option(
             score += 1.2 * float(len(value_set & required_values))
         if required_texts:
             score += 1.2 * float(len(text_set & required_texts))
-        if any("학점" in str(opt.get("text") or "") for opt in options if isinstance(opt, dict)):
-            score += 1.8
         if best is None or score > best[0]:
             best = (score, el)
     return best[1] if best else None
+
+
+def _preferred_control_match_score(element: DOMElement, preferred_control_hint: Dict[str, Any]) -> float:
+    if not preferred_control_hint:
+        return 0.0
+
+    score = 0.0
+    hint_ref = str(preferred_control_hint.get("ref_id") or "").strip()
+    element_ref = str(getattr(element, "ref_id", "") or "").strip()
+    if hint_ref and element_ref and hint_ref == element_ref:
+        score += 200.0
+
+    hint_container = _normalize(preferred_control_hint.get("container_name"))
+    element_container = _normalize(getattr(element, "container_name", ""))
+    if hint_container and element_container and hint_container == element_container:
+        score += 18.0
+
+    hint_context = _normalize(preferred_control_hint.get("context_text"))
+    element_context = _normalize(getattr(element, "context_text", ""))
+    if hint_context and element_context and hint_context == element_context:
+        score += 14.0
+
+    hint_role_ref = _normalize(preferred_control_hint.get("role_ref_name"))
+    element_role_ref = _normalize(getattr(element, "role_ref_name", ""))
+    if hint_role_ref and element_role_ref and hint_role_ref == element_role_ref:
+        score += 16.0
+
+    hint_selected = _normalize(preferred_control_hint.get("selected_value"))
+    element_selected = _normalize(getattr(element, "selected_value", ""))
+    if hint_selected and element_selected and hint_selected == element_selected:
+        score += 10.0
+
+    hint_signature = [
+        _normalize(token)
+        for token in list(preferred_control_hint.get("option_signature") or [])
+        if str(token or "").strip()
+    ][:16]
+    element_signature = [
+        _normalize(str(item.get("text") or item.get("value") or ""))
+        for item in list(getattr(element, "options", None) or [])
+        if isinstance(item, dict) and str(item.get("text") or item.get("value") or "").strip()
+    ][:16]
+    if hint_signature and element_signature:
+        if hint_signature == element_signature:
+            score += 80.0
+        else:
+            overlap = len(set(hint_signature).intersection(set(element_signature)))
+            score += min(42.0, float(overlap) * 4.0)
+
+    element_blob = _normalize(
+        " ".join(
+            [
+                str(getattr(element, "text", "") or ""),
+                str(getattr(element, "aria_label", "") or ""),
+                str(getattr(element, "title", "") or ""),
+                str(getattr(element, "class_name", "") or ""),
+                str(getattr(element, "placeholder", "") or ""),
+                str(getattr(element, "container_name", "") or ""),
+                str(getattr(element, "context_text", "") or ""),
+                " ".join(element_signature[:8]),
+            ]
+        )
+    )
+    include_terms = [
+        _normalize(token)
+        for token in list(preferred_control_hint.get("include_terms") or [])
+        if str(token or "").strip()
+    ]
+    exclude_terms = [
+        _normalize(token)
+        for token in list(preferred_control_hint.get("exclude_terms") or [])
+        if str(token or "").strip()
+    ]
+    for token in include_terms:
+        if token and token in element_blob:
+            score += 6.0
+    for token in exclude_terms:
+        if token and token in element_blob:
+            score -= 10.0
+
+    return score
 
 
 def _collect_option_cases(control: DOMElement) -> List[Dict[str, str]]:
@@ -1351,6 +1448,59 @@ def _selection_reflected(control: DOMElement, selected_value: str, selected_text
     return False, f"observed={observed[:80]}"
 
 
+def _openclaw_result_row_score(el: DOMElement) -> float:
+    text = str(getattr(el, "text", "") or "").strip()
+    if len(text) < 8:
+        return -1.0
+    tag = _normalize(getattr(el, "tag", ""))
+    role = _normalize(getattr(el, "role", ""))
+    container_role = _normalize(getattr(el, "container_role", ""))
+    source = _normalize(getattr(el, "container_source", ""))
+    if source != "openclaw-role-tree":
+        return -1.0
+    if tag in {"button", "a", "input", "select", "option"}:
+        return -1.0
+    if role in {"button", "link", "textbox", "searchbox", "combobox", "listbox", "checkbox", "radio", "option"}:
+        return -1.0
+    if container_role in {"banner", "navigation", "complementary", "button"}:
+        return -1.0
+
+    score = 0.0
+    if role in {"generic", "paragraph", "article", "listitem", "row", "cell", "gridcell"}:
+        score += 1.5
+    try:
+        if float(getattr(el, "context_score_hint", 0.0) or 0.0) >= 8.0:
+            score += 3.0
+    except Exception:
+        pass
+    if container_role == "main":
+        score += 4.0
+    elif container_role in {"list", "grid", "rowgroup", "region", "group"}:
+        score += 2.0
+
+    container_blob = _normalize(
+        " ".join(
+            [
+                str(getattr(el, "container_name", "") or ""),
+                str(getattr(el, "context_text", "") or ""),
+            ]
+        )
+    )
+    if any(token in container_blob for token in ("검색 결과", "search result", "search results", "result list", "results")):
+        score += 3.0
+    if "|" in text or "•" in text or "\n" in text:
+        score += 1.5
+    if _extract_row_credits(text):
+        score += 2.5
+
+    norm_text = _normalize(text)
+    if any(token in norm_text for token in ("위시리스트", "목표 학점", "로그인", "로그아웃")):
+        score -= 4.0
+    if "총 " in norm_text and "학점" in norm_text and "강의" not in norm_text and "교과" not in norm_text:
+        score -= 3.0
+    return score
+
+
 def _pick_rule(
     goal_text: str,
     control: DOMElement,
@@ -1372,6 +1522,41 @@ def _pick_rule(
 
 
 def _collect_result_rows(dom: List[DOMElement]) -> List[str]:
+    openclaw_candidates: List[Tuple[str, float, str]] = []
+    for el in dom:
+        if not isinstance(el, DOMElement):
+            continue
+        score = _openclaw_result_row_score(el)
+        if score < 5.0:
+            continue
+        text = str(el.text or "").strip()
+        container_key = _normalize(getattr(el, "container_name", "") or "") or _normalize(getattr(el, "container_role", "") or "") or "__default__"
+        openclaw_candidates.append((container_key, score, text))
+
+    if openclaw_candidates:
+        container_stats: Dict[str, Dict[str, float]] = {}
+        for container_key, score, _text in openclaw_candidates:
+            bucket = container_stats.setdefault(container_key, {"count": 0.0, "score_sum": 0.0, "score_max": 0.0})
+            bucket["count"] += 1.0
+            bucket["score_sum"] += float(score)
+            bucket["score_max"] = max(float(bucket["score_max"]), float(score))
+        best_container = max(
+            container_stats.items(),
+            key=lambda item: (item[1]["count"], item[1]["score_sum"], item[1]["score_max"], item[0]),
+        )[0]
+        rows: List[str] = []
+        seen: set[str] = set()
+        for container_key, _score, text in openclaw_candidates:
+            if container_key != best_container:
+                continue
+            key = text[:160]
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(text)
+        if rows:
+            return rows[:60]
+
     rows: List[str] = []
     seen: set[str] = set()
     for el in dom:
@@ -1599,7 +1784,8 @@ def _is_noise_row_for_credit(text: str) -> bool:
     if any(token in norm for token in ("위시리스트", "목표 학점", "총 0학점", "권장")):
         return True
     if "총 " in norm and "학점" in norm and "강의" not in norm and "교과" not in norm:
-        return True
+        if "|" not in row and "검색 결과" not in norm and "search result" not in norm and "results" not in norm:
+            return True
     credits = _extract_row_credits(row)
     if len(set(credits)) >= 4:
         # option list-like rows (e.g., 12~24학점 selector text) should be excluded

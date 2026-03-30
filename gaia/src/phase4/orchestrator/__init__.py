@@ -1,12 +1,8 @@
-"""Master/worker orchestration helpers."""
+"""Lightweight orchestration primitives used by the active goal-driven runtime."""
 
 from .master import MasterDirective, MasterOrchestrator
-from .worker import StepWorker, WorkerResult
 
 __all__ = [
     "MasterDirective",
     "MasterOrchestrator",
-    "StepWorker",
-    "WorkerResult",
 ]
-

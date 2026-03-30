@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Sequence
 
 from gaia import auth as gaia_auth
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running as _ensure_shared_mcp_host_running
+from gaia.src.phase4.mcp_host_runtime import (
+    ensure_mcp_host_running as _ensure_shared_mcp_host_running,
+    should_auto_start_mcp_host as _should_auto_start_mcp_host,
+)
 from gaia.src.phase4.session import (
     WORKSPACE_DEFAULT,
     SessionState,
@@ -835,7 +838,7 @@ def _resolve_provider(parsed: argparse.Namespace, profile: dict[str, str]) -> st
     provider = parsed.llm_provider or profile.get("provider") or os.getenv("GAIA_LLM_PROVIDER", "openai")
     if provider not in {"openai", "gemini"}:
         provider = "openai"
-    if sys.stdin.isatty() and not parsed.llm_provider:
+    if sys.stdin.isatty() and not parsed.llm_provider and _should_prompt_interactive(parsed):
         provider = _prompt_select(
             "AI 제공자를 선택하세요",
             ("openai", "gemini"),
@@ -851,7 +854,7 @@ def _resolve_model(
     token: str | None,
 ) -> str:
     model = parsed.llm_model or profile.get("model") or os.getenv("GAIA_LLM_MODEL") or _default_model(provider)
-    if not sys.stdin.isatty() or parsed.llm_model:
+    if not sys.stdin.isatty() or parsed.llm_model or not _should_prompt_interactive(parsed):
         return model
 
     account_models = _resolve_account_model_choices(provider, token)
@@ -887,7 +890,7 @@ def _resolve_auth_strategy(parsed: argparse.Namespace, profile: dict[str, str]) 
     strategy = parsed.auth or profile.get("default_auth_strategy", "reuse")
     if strategy not in AUTH_CHOICES:
         strategy = "reuse"
-    if sys.stdin.isatty() and not parsed.auth:
+    if sys.stdin.isatty() and not parsed.auth and _should_prompt_interactive(parsed):
         strategy = _prompt_select(
             "인증 방식을 선택하세요",
             ("reuse", "fresh"),
@@ -903,7 +906,7 @@ def _resolve_openai_auth_method(parsed: argparse.Namespace, profile: dict[str, s
     method = getattr(parsed, "auth_method", None) or profile.get("default_openai_auth_method", "oauth")
     if method not in OPENAI_AUTH_METHOD_CHOICES:
         method = "oauth"
-    if sys.stdin.isatty() and not getattr(parsed, "auth_method", None):
+    if sys.stdin.isatty() and not getattr(parsed, "auth_method", None) and _should_prompt_interactive(parsed):
         method = _prompt_select(
             "OpenAI 인증 방식을 선택하세요",
             ("oauth", "manual"),
@@ -914,12 +917,26 @@ def _resolve_openai_auth_method(parsed: argparse.Namespace, profile: dict[str, s
 
 def _resolve_url(parsed: argparse.Namespace, profile: dict[str, str], required: bool) -> str | None:
     url = parsed.url or profile.get("last_url")
-    if required and sys.stdin.isatty() and not parsed.url:
+    if required and sys.stdin.isatty() and not parsed.url and _should_prompt_interactive(parsed):
         url = _prompt_non_empty("테스트할 URL", default=url)
     if required and not url:
         print("URL is required. Use --url <target-url>.", file=sys.stderr)
         return None
     return url
+
+
+def _should_prompt_interactive(parsed: argparse.Namespace) -> bool:
+    if not sys.stdin.isatty():
+        return False
+    if bool(getattr(parsed, "once", False)):
+        return False
+    if str(getattr(parsed, "feature_query", "") or "").strip():
+        return False
+    if str(getattr(parsed, "subcommand", "") or "").strip() == "terminal":
+        return False
+    if bool(getattr(parsed, "terminal", False)):
+        return False
+    return True
 
 
 def _resolve_auth(provider: str, strategy: str, method: str = "auto") -> str | None:
@@ -1016,7 +1033,7 @@ def _configure_session(
     token = _resolve_auth(provider, auth_strategy, auth_method)
     if not token:
         return None
-    if not _ensure_mcp_host_running():
+    if _should_auto_start_mcp_host() and not _ensure_mcp_host_running():
         return None
     model = _resolve_model(parsed, profile, provider, token)
 
@@ -1435,6 +1452,47 @@ def run_prd(argv: Sequence[str] | None = None) -> int:
 
     parser.print_help()
     return 2
+
+
+def _build_cli_harness_parser() -> argparse.ArgumentParser:
+    from gaia.harness.cli_runtime import build_harness_parser
+
+    return build_harness_parser(prog="gaia cli harness")
+
+
+def run_cli(argv: Sequence[str] | None = None) -> int:
+    args = list(argv or [])
+    parser = argparse.ArgumentParser(
+        prog="gaia cli",
+        description="Harness command family.",
+    )
+    subparsers = parser.add_subparsers(dest="cli_command")
+    subparsers.add_parser("harness", help="Harness command family")
+
+    if not args or args[0] in {"-h", "--help", "help"}:
+        parser.print_help()
+        return 0
+
+    if args[0] != "harness":
+        parser.print_help()
+        print(f"Unknown command: {args[0]}", file=sys.stderr)
+        return 2
+
+    harness_parser = _build_cli_harness_parser()
+    if len(args) == 1 or args[1] in {"-h", "--help", "help"}:
+        harness_parser.print_help()
+        return 0
+
+    command = args[1]
+    if command not in {"ls", "run", "report"}:
+        harness_parser.print_help()
+        print(f"Unknown harness command: {command}", file=sys.stderr)
+        return 2
+
+    from gaia.harness.cli_runtime import run_harness_cli
+
+    return run_harness_cli(args[1:])
+
 
 def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser = _build_common_parser("gaia", "GAIA quick launcher.")
@@ -2093,6 +2151,8 @@ def _build_main_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("gui", help="Legacy GUI alias")
     subparsers.add_parser("terminal", help="Legacy terminal alias")
     subparsers.add_parser("prd", help="PRD bundle ingest/inspect/run")
+    subparsers.add_parser("cli", help="Harness CLI family")
+    subparsers.add_parser("harness", help="Run GAIA evaluation harness")
     subparsers.add_parser("auth", help="Manage GAIA auth tokens")
     subparsers.add_parser("help", help="Show help")
     return parser
@@ -2122,6 +2182,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_start(["gui", *args[1:]])
         if args[0] == "terminal":
             return run_terminal(args[1:])
+        if args[0] == "cli":
+            return run_cli(args[1:])
+        if args[0] == "harness":
+            from gaia.harness.cli_runtime import run_harness_cli
+            return run_harness_cli(args[1:])
         if args[0] == "prd":
             return run_prd(args[1:])
         if args[0] == "auth":

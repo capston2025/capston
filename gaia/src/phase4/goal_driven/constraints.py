@@ -25,6 +25,21 @@ _TARGET_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
     }
 )
 
+_METRIC_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
+    {
+        "바로",
+        "버튼",
+        "클릭",
+        "눌러서",
+        "누른다음에",
+        "반영",
+        "테스트",
+        "테스트해봐",
+        "추가되어있었으면",
+        "삭제한뒤에",
+    }
+)
+
 
 def _classify_metric_unit(value: str) -> str:
     token = str(value or "").strip().lower()
@@ -81,6 +96,28 @@ def _derive_context_terms(text: str, normalize_text: NormalizeTextFn) -> List[st
     return results
 
 
+def _looks_like_instructional_target_token(token: str) -> bool:
+    value = str(token or "").strip().lower()
+    if not value:
+        return True
+    if value in _TARGET_TERM_STOPWORDS:
+        return True
+    instructional_hints = (
+        "시간표",
+        "테스트",
+        "버튼",
+        "클릭",
+        "추가",
+        "삭제",
+        "제거",
+        "반영",
+        "로그인",
+        "검증",
+        "확인",
+    )
+    return any(hint in value for hint in instructional_hints)
+
+
 def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> Dict[str, Any]:
     text = normalize_text(goal_blob)
     if not text:
@@ -130,23 +167,51 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     increase_hints = ("증가", "늘", "담", "추가", "add", "append", "increase", "grow", "more")
     decrease_hints = ("감소", "줄", "제거", "삭제", "remove", "decrease", "less")
     clear_hints = ("비우", "비웠", "전체 삭제", "전부 삭제", "clear", "empty", "remove all")
+    has_increase = any(hint in text for hint in increase_hints)
+    has_decrease = any(hint in text for hint in decrease_hints)
+    conditional_remediation_hints = (
+        "이미", "already", "이미 추가", "이미 담", "이미 반영", "이미 들어", "이미 있",
+        "되어 있었", "되어있었", "있었으면", "있다면", "있는 경우", "already added", "already in",
+    )
+    conditional_followup_hints = (
+        "삭제한 뒤", "삭제한뒤", "삭제한뒤에", "삭제 후", "삭제후",
+        "제거한 뒤", "제거한뒤", "제거한뒤에", "제거 후", "제거후",
+        "remove then", "delete then", "삭제하고", "제거하고",
+    )
+    readd_hints = (
+        "다시 추가", "재추가", "다시 담", "다시 넣", "다시 반영", "re-add", "add again",
+    )
+    remediation_direction: Optional[str] = None
+    remediation_trigger: Optional[str] = None
     mutation_direction: Optional[str] = None
-    if any(hint in text for hint in clear_hints):
+    conditional_remediation = bool(
+        (has_increase or any(hint in text for hint in readd_hints))
+        and has_decrease
+        and any(hint in text for hint in conditional_remediation_hints)
+        and any(hint in text for hint in conditional_followup_hints)
+    )
+    if conditional_remediation:
+        mutation_direction = "increase"
+        remediation_direction = "decrease_then_increase"
+        remediation_trigger = "already_present"
+    elif any(hint in text for hint in clear_hints):
         mutation_direction = "clear"
-    elif any(hint in text for hint in decrease_hints):
+    elif has_increase and has_decrease and any(hint in text for hint in readd_hints):
+        mutation_direction = "increase"
+    elif has_decrease:
         mutation_direction = "decrease"
-    elif any(hint in text for hint in increase_hints):
+    elif has_increase:
         mutation_direction = "increase"
     context_terms = _derive_context_terms(text, normalize_text)
     target_terms: List[str] = []
     for group in re.findall(r"\"([^\"]{2,})\"|'([^']{2,})'", str(goal_blob or "")):
         token = next((part for part in group if part), "")
         normalized = normalize_text(token)
-        if normalized and normalized not in _TARGET_TERM_STOPWORDS:
+        if normalized and not _looks_like_instructional_target_token(normalized):
             target_terms.append(str(token).strip())
     if not target_terms:
         for token in context_terms:
-            if len(token) < 4 or token in _TARGET_TERM_STOPWORDS or token.isdigit():
+            if len(token) < 4 or token.isdigit() or _looks_like_instructional_target_token(token):
                 continue
             target_terms.append(token)
             if len(target_terms) >= 4:
@@ -158,7 +223,7 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         value = int(str(match.group(1)).replace(",", ""))
         numeric_values.append(value)
         maybe_term = (match.group(2) or "").strip()
-        if maybe_term:
+        if maybe_term and maybe_term not in _METRIC_TERM_STOPWORDS:
             metric_terms.append(maybe_term)
 
     if not numeric_values:
@@ -172,6 +237,14 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         if mutation_direction:
             payload["mutation_direction"] = mutation_direction
             payload["context_terms"] = context_terms
+        if remediation_direction:
+            payload["remediation_direction"] = remediation_direction
+        if remediation_trigger:
+            payload["conditional_remediation"] = True
+            payload["requires_pre_action_membership_check"] = True
+            payload["remediation_trigger"] = remediation_trigger
+            payload["already_satisfied_ok"] = False
+            payload["mutate_required"] = True
         if target_terms:
             payload["target_terms"] = target_terms
         return payload
@@ -194,6 +267,14 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
             if mutation_direction:
                 payload["mutation_direction"] = mutation_direction
                 payload["context_terms"] = context_terms
+            if remediation_direction:
+                payload["remediation_direction"] = remediation_direction
+            if remediation_trigger:
+                payload["conditional_remediation"] = True
+                payload["requires_pre_action_membership_check"] = True
+                payload["remediation_trigger"] = remediation_trigger
+                payload["already_satisfied_ok"] = False
+                payload["mutate_required"] = True
             if target_terms:
                 payload["target_terms"] = target_terms
             return payload
@@ -219,6 +300,28 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         top_terms = _extract_quantity_metric_terms(text)
     metric_label = top_terms[0] if top_terms else _infer_metric_label_from_text(text)
     metric_unit = _classify_metric_unit(metric_label)
+    if len(numeric_values) == 1 and metric_unit == "generic":
+        payload = {
+            "require_no_navigation": require_no_navigation,
+        }
+        if current_view_only:
+            payload["current_view_only"] = True
+        if forbid_search_action:
+            payload["forbid_search_action"] = True
+        if mutation_direction:
+            payload["mutation_direction"] = mutation_direction
+            payload["context_terms"] = context_terms
+        if remediation_direction:
+            payload["remediation_direction"] = remediation_direction
+        if remediation_trigger:
+            payload["conditional_remediation"] = True
+            payload["requires_pre_action_membership_check"] = True
+            payload["remediation_trigger"] = remediation_trigger
+            payload["already_satisfied_ok"] = False
+            payload["mutate_required"] = True
+        if target_terms:
+            payload["target_terms"] = target_terms
+        return payload
     require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
 
     payload = {
@@ -237,6 +340,14 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         payload["forbid_search_action"] = True
     if mutation_direction:
         payload["mutation_direction"] = mutation_direction
+    if remediation_direction:
+        payload["remediation_direction"] = remediation_direction
+    if remediation_trigger:
+        payload["conditional_remediation"] = True
+        payload["requires_pre_action_membership_check"] = True
+        payload["remediation_trigger"] = remediation_trigger
+        payload["already_satisfied_ok"] = False
+        payload["mutate_required"] = True
         payload["context_terms"] = context_terms
     if target_terms:
         payload["target_terms"] = target_terms

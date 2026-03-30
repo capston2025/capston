@@ -50,13 +50,24 @@ def handle_master_handoff(
             }
         )
         if isinstance(callback_resp, dict):
+            action = str(callback_resp.get("action") or "").strip().lower()
+            reason_code = str(callback_resp.get("reason_code") or "").strip().lower()
             proceed = agent._to_bool(callback_resp.get("proceed"), default=True)
             instruction = str(callback_resp.get("instruction") or "").strip()
             if instruction:
                 agent._action_feedback.append(f"사용자 추가 지시: {instruction}")
                 if len(agent._action_feedback) > 10:
                     agent._action_feedback = agent._action_feedback[-10:]
-            if not proceed:
+            explicit_cancel = (
+                action == "cancel"
+                and reason_code not in {
+                    "",
+                    "user_intervention_missing",
+                    "intervention_timeout",
+                    "clarification_timeout",
+                }
+            )
+            if not proceed and explicit_cancel:
                 aborted = True
                 abort_reason = "사용자 요청으로 실행을 중단했습니다."
 

@@ -15,8 +15,8 @@ def handle_login_intervention(
 ) -> Dict[str, Any]:
     if login_gate_visible:
         agent._log("🔐 로그인 또는 회원가입 화면이 감지되었습니다.")
+        has_login_test_data = agent._has_login_test_data(goal)
         if not login_intervention_asked:
-            has_login_test_data = agent._has_login_test_data(goal)
             if not has_login_test_data:
                 if not agent._request_login_intervention(goal):
                     return {

@@ -6,9 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
 
-import requests
-
 from gaia.src.phase1.analyzer import SpecAnalyzer
+from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG, MCPConfig
 from gaia.src.utils.models import DomElement, TestScenario
@@ -107,16 +106,22 @@ class MCPClient:
     def analyze_dom(self, url: str) -> List[DomElement]:
         payload = {"action": "analyze_page", "params": {"url": url}}
         try:
-            response = requests.post(
-                f"{self.config.host_url}/execute",
-                json=payload,
+            response = execute_mcp_action(
+                self.config.host_url,
+                action="analyze_page",
+                params=dict(payload.get("params") or {}),
                 timeout=self.config.request_timeout,
             )
-            response.raise_for_status()
-        except requests.RequestException:
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+        except Exception:
             return self._fallback_elements(url)
 
-        data = response.json() if response.content else {}
+        if hasattr(response, "json"):
+            raw_content = getattr(response, "content", b"")
+            data = response.json() if raw_content else {}
+        else:
+            data = response.payload
         elements_raw = data.get("elements", []) if isinstance(data, dict) else []
         if not elements_raw:
             return self._fallback_elements(url)
@@ -162,13 +167,15 @@ class MCPClient:
         }
 
         try:
-            response = requests.post(
-                f"{self.config.host_url}/execute",
-                json=request_body,
+            response = execute_mcp_action(
+                self.config.host_url,
+                action="execute_scenario",
+                params=dict(request_body.get("params") or {}),
                 timeout=self._execution_timeout,
             )
-            response.raise_for_status()
-        except requests.RequestException as exc:
+            if response.status_code >= 400:
+                raise RuntimeError(str(getattr(response, "text", "") or response.payload))
+        except Exception as exc:
             return {
                 "status": "failed",
                 "error": str(exc),

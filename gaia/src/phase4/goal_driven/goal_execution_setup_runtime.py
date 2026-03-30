@@ -6,9 +6,21 @@ from typing import Any, Dict, List
 
 from .models import GoalResult, StepResult, TestGoal
 from .goal_policy_runtime import initialize_goal_policy_runtime
+from .goal_replanning_runtime import initialize_goal_replanning_state
+from .wrapper_trace_runtime import thin_wrapper_enabled
 
 
 def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any]:
+    try:
+        from ..mcp_local_dispatch_runtime import current_browser_backend
+
+        agent._browser_backend_name = current_browser_backend(
+            str(getattr(goal, "start_url", "") or "").strip() or None
+        )
+    except Exception:
+        agent._browser_backend_name = str(
+            os.getenv("GAIA_BROWSER_BACKEND", "openclaw") or "openclaw"
+        ).strip().lower()
     agent._action_history = []
     agent._action_feedback = []
     agent._reason_code_counts = {}
@@ -23,6 +35,8 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._context_shift_round = 0
     agent._last_context_shift_intent = ""
     agent._runtime_phase = "COLLECT"
+    agent._goal_phase_intent = ""
+    agent._goal_phase_resume_after_auth = ""
     agent._progress_counter = 0
     agent._no_progress_counter = 0
     agent._modal_opened_once = False
@@ -34,24 +48,95 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._recent_click_element_ids = []
     agent._last_dom_top_ids = []
     agent._active_scoped_container_ref = ""
+    agent._active_interaction_surface = {
+        "kind": "",
+        "ref_id": "",
+        "source": "",
+        "sticky_until": 0.0,
+    }
+    agent._pre_auth_surface_ref = ""
+    agent._surface_reacquire_pending = False
+    agent._active_interaction_surface_kind = ""
+    agent._active_interaction_surface_source = ""
     agent._auth_interrupt_scope_ref = ""
     agent._auth_interrupt_scope_source = ""
     agent._auth_interrupt_active = False
     agent._auth_interrupt_started_at = 0.0
+    agent._auth_resume_pending = False
+    agent._auth_resolved_at = 0.0
+    agent._auth_submit_attempted = False
+    agent._auth_submit_attempts = 0
     agent._last_auth_submit_at = 0.0
+    agent._last_auth_surface_signature = ""
+    agent._auth_surface_progressed = False
+    agent._auth_last_planned_fill = None
     agent._auth_identifier_done = False
     agent._auth_password_done = False
+    auth_test_data = goal.test_data if isinstance(goal.test_data, dict) else {}
+    agent._auth_identifier_values_norm = {
+        agent._normalize_text(str(auth_test_data.get(key) or ""))
+        for key in ("username", "email", "login_id", "user_id")
+    }
+    agent._auth_identifier_values_norm = {
+        value for value in agent._auth_identifier_values_norm if value
+    }
+    agent._auth_password_value_norm = agent._normalize_text(
+        str(auth_test_data.get("password") or "")
+    )
+    agent._auth_fill_memory = set()
+    agent._captcha_observer_executor = None
+    agent._captcha_observer_future = None
+    agent._captcha_observer_last_key = ""
+    agent._captcha_observer_last_started_at = 0.0
+    agent._captcha_observer_last_result = {}
+    agent._captcha_observer_confirmed = False
+    agent._captcha_observer_state = {}
     agent._blocked_intent = {}
     agent._blocked_intent_resumed = False
+    agent._blocked_intent_resume_attempts = 0
+    agent._pending_resume_element_id = None
     agent._last_goal_blockable_intent = {}
+    agent._verify_reclick_block_ref_id = ""
+    agent._verify_reclick_block_container_ref = ""
+    agent._verify_reclick_block_until = 0.0
+    agent._evidence_only_proof_signature = None
+    agent._evidence_only_proof_expires_at = 0.0
+    agent._verify_settle_wait_armed = False
+    agent._verify_evidence_wait_armed = False
+    agent._evidence_only_wait_count = 0
+    agent._evidence_only_wait_budget = agent._env_int(
+        "GAIA_EVIDENCE_ONLY_WAIT_BUDGET",
+        1,
+        low=0,
+        high=10,
+    )
     agent._last_container_source_summary = {}
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
+    agent._persistent_state_memory = []
+    agent._recent_signal_history = []
     agent._goal_policy_target_seen_in_destination = False
     agent._goal_policy_destination_anchor_seen = False
+    agent._goal_plan_requires_precheck = False
+    agent._goal_plan_precheck_done = False
+    agent._goal_plan_precheck_result = ""
+    agent._goal_plan_remediation_completed = False
+    agent._locate_target_search_consumed = False
     agent._goal_tokens = agent._derive_goal_tokens(goal)
     agent._goal_constraints = agent._derive_goal_constraints(goal)
     initialize_goal_policy_runtime(agent, goal)
+    initialize_goal_replanning_state(agent, goal)
+    if thin_wrapper_enabled(agent):
+        # Thin wrapper mode keeps goal semantics/replanning, but strips the legacy
+        # phase machine so OpenClaw-style judgment is driven by the live DOM.
+        agent._goal_policy_phase = ""
+        agent._goal_phase_intent = ""
+        agent._goal_phase_resume_after_auth = ""
+        agent._goal_policy_baseline_evidence = None
+        agent._goal_plan_requires_precheck = False
+        agent._goal_plan_precheck_done = False
+        agent._goal_plan_precheck_result = ""
+        agent._goal_plan_remediation_completed = False
     agent._activate_steering_policy(goal)
     agent._goal_metric_value = None
     agent._last_filter_semantic_report = None

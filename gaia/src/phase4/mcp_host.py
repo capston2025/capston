@@ -13,7 +13,6 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from playwright.async_api import (
     async_playwright,
@@ -24,21 +23,21 @@ from playwright.async_api import (
 )
 from typing import Dict, Any, Optional, List, Tuple
 
-from gaia.src.phase4.mcp_browser_session import BrowserSession, ensure_session
-from gaia.src.phase4.openclaw_protocol import (
+from gaia.src.phase4.mcp_browser.session import BrowserSession, ensure_session
+from gaia.src.phase4.mcp_server.openclaw_protocol import (
     ELEMENT_ACTIONS,
     build_error,
     is_element_action,
     legacy_selector_forbidden,
 )
-from gaia.src.phase4.mcp_legacy_dispatch import handle_legacy_action
-from gaia.src.phase4.mcp_route_helpers import (
+from gaia.src.phase4.mcp_server.routes import (
     build_root_payload,
     close_session_impl,
+    handle_legacy_action,
     websocket_screencast_loop,
 )
-from gaia.src.phase4.mcp_route_dispatch import dispatch_execute_action_route
-from gaia.src.phase4.mcp_interaction_runtime import (
+from gaia.src.phase4.mcp_server.routes import dispatch_execute_action_route
+from gaia.src.phase4.mcp_browser.interaction_runtime import (
     browser_dialog_arm as _browser_dialog_arm_impl,
     browser_download_wait as _browser_download_wait_impl,
     browser_env as _browser_env_impl,
@@ -46,19 +45,19 @@ from gaia.src.phase4.mcp_interaction_runtime import (
     browser_state as _browser_state_impl,
     get_interaction_handlers as _get_interaction_handlers_impl,
 )
-from gaia.src.phase4.scenario_runner import run_test_scenario_with_playwright
-from gaia.src.phase4.state_store import BrowserStateStore
+from gaia.src.phase4.mcp_browser.scenario_runner import run_test_scenario_with_playwright
+from gaia.src.phase4.mcp_browser.state_store import BrowserStateStore
 from gaia.src.phase4.mcp_bootstrap import resolve_bind_host_port
-from gaia.src.phase4.mcp_tab_resolution import (
+from gaia.src.phase4.mcp_browser.tab_resolution import (
     coerce_tab_id as coerce_tab_id_impl,
     resolve_page_from_tab_identifier as _resolve_page_from_tab_identifier_impl,
     resolve_session_page as _resolve_session_page_impl,
 )
-from gaia.src.phase4.mcp_simple_action_utils import (
+from gaia.src.phase4.mcp_browser.simple_action_utils import (
     normalize_timeout_ms as _normalize_timeout_ms,
     evaluate_js_with_timeout as _evaluate_js_with_timeout,
 )
-from gaia.src.phase4.mcp_browser_tabs_runtime import (
+from gaia.src.phase4.mcp_browser.tabs_runtime import (
     browser_install as _browser_install_impl,
     browser_profiles as _browser_profiles_impl,
     browser_start as _browser_start_impl,
@@ -68,7 +67,7 @@ from gaia.src.phase4.mcp_browser_tabs_runtime import (
     browser_tabs_focus as _browser_tabs_focus_impl,
     browser_tabs_open as _browser_tabs_open_impl,
 )
-from gaia.src.phase4.mcp_locator_runtime import (
+from gaia.src.phase4.mcp_browser.locator_runtime import (
     parse_scroll_payload as _parse_scroll_payload_impl,
     reveal_locator_in_scroll_context as _reveal_locator_in_scroll_context_impl,
     resolve_locator_from_ref as _resolve_locator_from_ref_impl,
@@ -76,7 +75,7 @@ from gaia.src.phase4.mcp_locator_runtime import (
     select_frame_for_ref as _select_frame_for_ref_impl,
     validate_upload_path as _validate_upload_path_impl,
 )
-from gaia.src.phase4.mcp_browser_observability_runtime import (
+from gaia.src.phase4.mcp_browser.observability_runtime import (
     browser_console_get as _browser_console_get_impl,
     browser_errors_get as _browser_errors_get_impl,
     browser_pdf as _browser_pdf_impl,
@@ -86,10 +85,10 @@ from gaia.src.phase4.mcp_browser_observability_runtime import (
     browser_trace_start as _browser_trace_start_impl,
     browser_trace_stop as _browser_trace_stop_impl,
 )
-from gaia.src.phase4.mcp_browser_snapshot_runtime import browser_snapshot as _browser_snapshot_impl
-from gaia.src.phase4.mcp_browser_action_runtime import browser_act as _browser_act_impl
-from gaia.src.phase4.mcp_browser_wait_runtime import browser_wait as _browser_wait_impl
-from gaia.src.phase4.mcp_browser_highlight_runtime import browser_highlight as _browser_highlight_impl
+from gaia.src.phase4.mcp_browser.snapshot_runtime import browser_snapshot as _browser_snapshot_impl
+from gaia.src.phase4.mcp_browser.action_runtime import browser_act as _browser_act_impl
+from gaia.src.phase4.mcp_browser.wait_runtime import browser_wait as _browser_wait_impl
+from gaia.src.phase4.mcp_browser.highlight_runtime import browser_highlight as _browser_highlight_impl
 from gaia.src.phase4.mcp_page_evidence_runtime import (
     build_ref_candidates as _build_ref_candidates_impl,
     collect_page_evidence as _collect_page_evidence_impl,
@@ -103,7 +102,7 @@ from gaia.src.phase4.mcp_page_evidence_runtime import (
     sorted_text_list as _sorted_text_list_impl,
     state_change_flags as _state_change_flags_impl,
 )
-from gaia.src.phase4.mcp_ref_snapshot_helpers import (
+from gaia.src.phase4.mcp_ref.snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_refs_from_elements,
     _build_role_snapshot_from_elements,
@@ -228,6 +227,23 @@ async def metrics_middleware(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
+    target_abort_state = []
+    for sid, session in list(active_sessions.items()):
+        try:
+            reason = str(getattr(session, "last_target_abort_reason", "") or "").strip()
+            at = float(getattr(session, "last_target_abort_at", 0.0) or 0.0)
+        except Exception:
+            reason = ""
+            at = 0.0
+        if reason:
+            target_abort_state.append(
+                {
+                    "session_id": sid,
+                    "abort_scope": "target",
+                    "reason": reason,
+                    "timestamp": at,
+                }
+            )
     return {
         "status": "ok",
         "uptime_sec": round(max(0.0, time.time() - MCP_STARTED_AT), 3),
@@ -236,6 +252,7 @@ async def health() -> Dict[str, Any]:
         "pid": os.getpid(),
         "ppid": os.getppid(),
         "boot_id": MCP_BOOT_ID,
+        "target_abort_state": target_abort_state[-8:],
     }
 
 
@@ -2119,22 +2136,9 @@ async def capture_screenshot(
 
 async def _reset_session_connection(session: BrowserSession, reason: str = "") -> None:
     try:
-        if session.cdp_session is not None:
-            try:
-                await session.cdp_session.detach()
-            except Exception:
-                pass
-    finally:
-        session.cdp_session = None
-
-    if session.browser is not None:
-        try:
-            await session.browser.close()
-        except Exception:
-            pass
-
-    session.browser = None
-    session.page = None
+        await session.close()
+    except Exception:
+        pass
     session.current_url = ""
     session.screencast_active = False
     session.dialog_listener_armed = False
@@ -2786,7 +2790,7 @@ async def _try_click_hit_target_from_point(
             click_x = point_x
             click_y = point_y
 
-        from gaia.src.phase4.mcp_ref_post_click_watch import watch_after_trusted_click
+        from gaia.src.phase4.mcp_ref.post_click_watch import watch_after_trusted_click
 
         async def _click() -> None:
             await page.mouse.click(click_x, click_y, delay=50)
@@ -2827,7 +2831,7 @@ async def execute_ref_action_with_snapshot(
     verify: bool = True,
     tab_id: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    from gaia.src.phase4.mcp_ref_action_executor import execute_ref_action_with_snapshot_impl
+    from gaia.src.phase4.mcp_ref.action_executor import execute_ref_action_with_snapshot_impl
 
     return await execute_ref_action_with_snapshot_impl(
         session_id=session_id,

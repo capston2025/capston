@@ -58,6 +58,10 @@ class TestGoal(BaseModel):
     success_criteria: List[str] = Field(
         default_factory=list, description="성공 조건 (예: 환영 메시지 표시)"
     )
+    expected_signals: List[str] = Field(
+        default_factory=list,
+        description="Harness/runtime contract signals expected for success",
+    )
 
     failure_criteria: List[str] = Field(
         default_factory=list, description="실패 조건 (예: 오류 메시지 표시)"
@@ -99,6 +103,7 @@ class DOMElement(BaseModel):
     role_ref_name: Optional[str] = Field(default=None, description="role-based recovery hint name")
     role_ref_nth: Optional[int] = Field(default=None, description="동일 role/name 중 duplicate index")
     context_score_hint: Optional[float] = Field(default=None, description="선택 설명용 context score")
+    ref_id: Optional[str] = Field(default=None, description="브라우저 accessibility snapshot ref ID")
 
     # 상태
     is_visible: bool = Field(default=True)
@@ -120,6 +125,9 @@ class ActionDecision(BaseModel):
     """
 
     action: ActionType = Field(..., description="수행할 액션")
+    ref_id: Optional[str] = Field(
+        default=None, description="대상 요소 ref ID (OpenClaw 경로에서 우선 사용)"
+    )
     element_id: Optional[int] = Field(
         default=None, description="대상 요소 ID (click, fill 등에 필요)"
     )

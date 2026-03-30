@@ -19,7 +19,7 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 
 
 def _load_suite(path: Path) -> Dict[str, Any]:
@@ -45,14 +45,22 @@ def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
 import contextlib, io, json, sys
 import os
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 payload = json.loads({payload!r})
 scenario = payload['scenario']
 session_id = payload['session_id']
-ensure_mcp_host_running(None, startup_timeout=10.0)
+if should_auto_start_mcp_host():
+    ensure_mcp_host_running(None, startup_timeout=10.0)
 prepared_goal = _build_test_goal(url=scenario['url'], query=scenario['goal'])
 constraints = scenario.get('constraints') if isinstance(scenario.get('constraints'), dict) else {{}}
+expected_signals = scenario.get('expected_signals') if isinstance(scenario.get('expected_signals'), list) else []
 goal_test_data = dict(getattr(prepared_goal, 'test_data', {{}}) or {{}})
+scenario_test_data = scenario.get('test_data') if isinstance(scenario.get('test_data'), dict) else {{}}
+if scenario_test_data:
+    goal_test_data.update(scenario_test_data)
+prepared_goal.expected_signals = [str(item) for item in expected_signals if str(item).strip()]
+if prepared_goal.expected_signals:
+    goal_test_data['harness_expected_signals'] = list(prepared_goal.expected_signals)
 if constraints.get('requires_test_credentials'):
     username = (os.getenv('GAIA_TEST_USERNAME') or os.getenv('GAIA_AUTH_USERNAME') or '').strip()
     password = (os.getenv('GAIA_TEST_PASSWORD') or os.getenv('GAIA_AUTH_PASSWORD') or '').strip()

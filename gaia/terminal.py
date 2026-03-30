@@ -21,7 +21,10 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running
+from gaia.src.phase4.goal_driven.policies.filter import filter_goal_requires_semantic_validation
+from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
+from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
+from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
 from gaia.src.tracker.checklist import ChecklistTracker
@@ -446,7 +449,7 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
     )
 
 
-def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str) -> None:
+def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str, url: str) -> None:
     if not isinstance(goal.test_data, dict):
         goal.test_data = {}
     text = str(query_text or "")
@@ -481,6 +484,11 @@ def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str) -> None:
         goal.test_data.setdefault("return_credentials", True)
         if email:
             goal.test_data.setdefault("email", email)
+        return
+    stored = load_site_credentials(url)
+    if stored:
+        for key, value in stored.items():
+            goal.test_data.setdefault(key, value)
 
 
 def _infer_goal_type(query_text: str) -> str:
@@ -499,6 +507,10 @@ def _infer_goal_type(query_text: str) -> str:
     if any(token in text for token in ("회원가입", "signup", "register")):
         return "signup_validation"
     return "goal_execution"
+
+
+def _should_run_terminal_semantic_filter_validation(goal_type: str, agent: Any) -> bool:
+    return str(goal_type or "").strip().lower() == "filter_validation" and filter_goal_requires_semantic_validation(agent)
 
 
 def _action_label(action_name: str, goal_type: str, reasoning: str) -> str:
@@ -846,6 +858,18 @@ def _run_single_chat_goal(
                 if email:
                     response["email"] = email
                 return response
+            stored = load_site_credentials(url)
+            if stored:
+                response = {
+                    "action": "continue",
+                    "proceed": True,
+                    "username": str(stored.get("username") or ""),
+                    "password": str(stored.get("password") or ""),
+                }
+                stored_email = str(stored.get("email") or "").strip()
+                if stored_email:
+                    response["email"] = stored_email
+                return response
             return {"action": "cancel", "proceed": False}
         return {"action": "cancel", "proceed": False}
 
@@ -853,7 +877,7 @@ def _run_single_chat_goal(
         intervention_callback = _default_intervention_callback
 
     goal = prepared_goal or _build_test_goal(url=url, query=query)
-    _augment_goal_with_env_credentials(goal, query)
+    _augment_goal_with_env_credentials(goal, query, url)
     if isinstance(steering_policy, dict) and steering_policy:
         if not isinstance(goal.test_data, dict):
             goal.test_data = {}
@@ -889,7 +913,7 @@ def _run_single_chat_goal(
     result = agent.execute_goal(goal)
     goal_type = _infer_goal_type(goal.description)
     semantic_report: Optional[Dict[str, Any]] = None
-    if goal_type == "filter_validation":
+    if _should_run_terminal_semantic_filter_validation(goal_type, agent):
         cached_report = getattr(agent, "_last_filter_semantic_report", None)
         if isinstance(cached_report, dict) and cached_report.get("summary"):
             semantic_report = cached_report
@@ -973,6 +997,24 @@ def _run_single_chat_goal(
     if not effective_success:
         _print_llm_failure_help(effective_reason)
 
+    expected_signals = [
+        str(item or "").strip().lower()
+        for item in list(getattr(goal, "expected_signals", []) or [])
+        if str(item or "").strip()
+    ]
+    last_state_change = (
+        dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
+        if getattr(agent, "_last_exec_result", None) is not None
+        else {}
+    )
+    final_dom = agent._analyze_dom() or []
+    achieved_signals = derive_achieved_signals(
+        agent,
+        goal=goal,
+        state_change=last_state_change,
+        dom_elements=final_dom,
+    )
+
     summary = {
         "goal": result.goal_name,
         "status": "success" if effective_success else "failed",
@@ -981,6 +1023,8 @@ def _run_single_chat_goal(
         "reason": effective_reason,
         "duration_seconds": round(float(result.duration_seconds), 2),
         "step_timeline": _build_step_timeline(result),
+        "expected_signals": expected_signals,
+        "achieved_signals": achieved_signals,
         "reason_code_summary": reason_summary,
         "container_source_summary": dict(getattr(agent, "_last_container_source_summary", {}) or {}),
         "active_scoped_container_ref": str(getattr(agent, "_active_scoped_container_ref", "") or ""),
@@ -1040,7 +1084,8 @@ def run_chat_terminal_once(
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    ensure_mcp_host_running(CONFIG.mcp.host_url, startup_timeout=10.0)
+    if should_auto_start_mcp_host():
+        ensure_mcp_host_running(CONFIG.mcp.host_url, startup_timeout=10.0)
     return _run_single_chat_goal(
         url=url,
         query=query,
