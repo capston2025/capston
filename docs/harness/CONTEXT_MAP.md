@@ -64,7 +64,6 @@
   - [embedded_openclaw_runtime.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/embedded_openclaw_runtime.py)
   - [mcp_openclaw_dispatch_runtime.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_openclaw_dispatch_runtime.py)
   - [mcp_local_dispatch_runtime.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_local_dispatch_runtime.py)
-  - [mcp_host_runtime.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/mcp_host_runtime.py)
 
 ### `benchmark-harness`
 

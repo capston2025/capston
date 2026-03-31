@@ -1,7 +1,10 @@
-from gaia.src.phase4.mcp_host import _build_ref_candidates, _resolve_stale_ref
 from gaia.src.phase4.mcp_ref.snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_snapshot_from_elements,
+)
+from gaia.src.phase4.mcp_page_evidence_runtime import (
+    build_ref_candidates,
+    resolve_stale_ref,
 )
 
 
@@ -39,7 +42,7 @@ def _element(
 
 
 def test_build_ref_candidates_includes_role_ref_after_dom_ref() -> None:
-    candidates = _build_ref_candidates(
+    candidates = build_ref_candidates(
         {
             "dom_ref": "gaia-button-1",
             "role_ref_role": "button",
@@ -66,7 +69,7 @@ def test_resolve_stale_ref_uses_role_ref_name_nth() -> None:
         "role_ref_name": "담기",
         "role_ref_nth": 2,
     }
-    resolved = _resolve_stale_ref(old_meta, fresh_snapshot)
+    resolved = resolve_stale_ref(old_meta, fresh_snapshot)
     assert resolved is not None
     assert resolved.get("ref_id") == "13"
 

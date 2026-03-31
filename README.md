@@ -434,8 +434,7 @@ gaia/
 │   │   ├── goal_driven/              # 목표 기반 에이전트 루프
 │   │   ├── mcp_ref/                  # ref 기반 action/snapshot 헬퍼
 │   │   ├── orchestrator/             # intelligent orchestrator 런타임 묶음
-│   │   ├── llm_vision_client.py      # Vision/selector LLM 래퍼
-│   │   └── mcp_host.py               # FastAPI + Playwright MCP
+│   │   └── llm_vision_client.py      # Vision/selector LLM 래퍼
 │   ├── tracker/               # Checklist 커버리지 트래커
 │   ├── gui/                   # PySide6 GUI, 워커 스레드
 │   ├── phase5/                # 리포트/요약 유틸 (WIP)
@@ -444,7 +443,7 @@ gaia/
 ├── artifacts/
 │   ├── cache/                 # selector_cache.json, embedding_cache.json
 │   └── plans/                 # Planner 출력 저장본
-├── scripts/                   # run_mcp_host.sh, run_gui.sh 등
+├── scripts/                   # run_gui.sh 등
 ├── tests/                     # Pytest (planner, scheduler, orchestration)
 ├── homebrew/                  # Homebrew formula
 └── README.md

@@ -366,6 +366,76 @@ def _ensure_target(
     return state
 
 
+def get_openclaw_session_url(session_id: str) -> str:
+    return str(_session_state(str(session_id or "default")).get("current_url") or "")
+
+
+def dispatch_openclaw_console_logs(
+    raw_base_url: str | None,
+    *,
+    session_id: str,
+    level: str = "",
+    limit: int = 100,
+    timeout: Any = None,
+) -> Tuple[int, Dict[str, Any], str]:
+    base_url = _resolve_base_url(raw_base_url)
+    normalized_session_id = str(session_id or "default")
+    state = _ensure_target(
+        base_url=base_url,
+        session_id=normalized_session_id,
+        requested_url="",
+        timeout=timeout,
+    )
+    fallback_url = str(state.get("current_url") or "")
+    target_id = str(state.get("target_id") or "").strip()
+    query: Dict[str, Any] = {"targetId": target_id}
+    if str(level or "").strip():
+        query["level"] = str(level).strip()
+    status_code, data, text = _request(
+        "GET",
+        base_url=base_url,
+        path="/console",
+        timeout=timeout,
+        params=query,
+    )
+    if status_code >= 400 and _target_missing(status_code, data, text):
+        _clear_session_target(normalized_session_id)
+        state = _ensure_target(
+            base_url=base_url,
+            session_id=normalized_session_id,
+            requested_url=fallback_url,
+            timeout=timeout,
+        )
+        target_id = str(state.get("target_id") or "").strip()
+        query["targetId"] = target_id
+        status_code, data, text = _request(
+            "GET",
+            base_url=base_url,
+            path="/console",
+            timeout=timeout,
+            params=query,
+        )
+    if status_code >= 400:
+        return _normalize_failure(status_code, data, text)
+
+    raw_messages = list((data or {}).get("messages") or [])
+    capped_limit = max(0, int(limit or 0))
+    items = raw_messages[-capped_limit:] if capped_limit else raw_messages
+    payload = {
+        "success": True,
+        "reason_code": "ok",
+        "items": items,
+        "meta": {
+            "level": str(level or "").strip(),
+            "limit": capped_limit,
+            "backend": "openclaw",
+        },
+        "targetId": str((data or {}).get("targetId") or target_id),
+        "current_url": str(state.get("current_url") or ""),
+    }
+    return 200, payload, ""
+
+
 def _role_to_tag(role: str) -> str:
     return _ROLE_TO_TAG.get(str(role or "").strip().lower(), "div")
 

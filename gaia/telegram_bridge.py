@@ -278,6 +278,21 @@ class _TelegramBridge:
                 kwargs["reply_to_message_id"] = reply_to_message_id
             await bot.send_message(**kwargs)
 
+    async def _safe_reply_text(self, message, text: str) -> bool:
+        try:
+            await message.reply_text(text)
+            return True
+        except Exception as exc:
+            print(f"[telegram/bridge] reply_text failed: {type(exc).__name__}: {exc}")
+            return False
+
+    async def handle_error(self, _update, context) -> None:
+        err = getattr(context, "error", None)
+        if err is None:
+            print("[telegram/bridge] handler error: unknown")
+            return
+        print(f"[telegram/bridge] handler error: {type(err).__name__}: {err}")
+
     async def _send_attachments(
         self,
         bot,
@@ -1258,7 +1273,7 @@ class _TelegramBridge:
                 reply_to_message_id=message.message_id,
             )
         )
-        await message.reply_text(f"queued #{position}: {raw[:120]}")
+        await self._safe_reply_text(message, f"queued #{position}: {raw[:120]}")
 
 
 def _split_text(text: str, limit: int = 3900) -> list[str]:
@@ -1294,6 +1309,7 @@ def _parse_bind(raw: str) -> tuple[str, int]:
 def run_telegram_bridge(hub_context: HubContext, config: TelegramConfig) -> int:
     try:
         from telegram import Update
+        from telegram.request import HTTPXRequest
         from telegram.ext import ApplicationBuilder, MessageHandler, filters
     except Exception:
         print(
@@ -1322,14 +1338,29 @@ def run_telegram_bridge(hub_context: HubContext, config: TelegramConfig) -> int:
         memory_store=memory_store,
     )
 
+    request = HTTPXRequest(
+        connect_timeout=20.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=20.0,
+    )
+    updates_request = HTTPXRequest(
+        connect_timeout=20.0,
+        read_timeout=60.0,
+        write_timeout=30.0,
+        pool_timeout=20.0,
+    )
     app = (
         ApplicationBuilder()
         .token(token)
+        .request(request)
+        .get_updates_request(updates_request)
         .post_init(bridge.post_init)
         .post_shutdown(bridge.post_shutdown)
         .build()
     )
     app.add_handler(MessageHandler(filters.TEXT | filters.COMMAND | filters.Document.ALL, bridge.handle_message))
+    app.add_error_handler(bridge.handle_error)
 
     if config.mode == "webhook":
         if not config.webhook_url:

@@ -18,10 +18,6 @@ from pathlib import Path
 from typing import Sequence
 
 from gaia import auth as gaia_auth
-from gaia.src.phase4.mcp_host_runtime import (
-    ensure_mcp_host_running as _ensure_shared_mcp_host_running,
-    should_auto_start_mcp_host as _should_auto_start_mcp_host,
-)
 from gaia.src.phase4.session import (
     WORKSPACE_DEFAULT,
     SessionState,
@@ -98,10 +94,6 @@ GEMINI_MODEL_PRIORITY = (
     "gemini-2.5-flash-lite",
 )
 
-_MCP_HOST_PROCESS: subprocess.Popen[str] | None = None
-_MCP_HOST_LOG_FILE = None
-_MCP_HOST_CLEANUP_REGISTERED = False
-
 
 def _load_profile() -> dict[str, str]:
     if not PROFILE_PATH.exists():
@@ -113,90 +105,6 @@ def _load_profile() -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
     return {str(k): str(v) for k, v in data.items() if isinstance(v, (str, int, float))}
-
-
-def _resolve_mcp_target() -> tuple[str, int, str]:
-    raw_url = (os.getenv("MCP_HOST_URL", "http://127.0.0.1:8001") or "").strip()
-    if "://" not in raw_url:
-        raw_url = f"http://{raw_url}"
-    parsed = urllib.parse.urlparse(raw_url)
-    host = parsed.hostname or "127.0.0.1"
-    scheme = parsed.scheme or "http"
-    if parsed.port:
-        port = parsed.port
-    else:
-        port = 443 if scheme == "https" else 80
-    base_url = f"{scheme}://{host}:{int(port)}"
-    return host, int(port), base_url
-
-
-def _is_tcp_open(host: str, port: int, timeout: float = 0.35) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _is_mcp_ready(host: str, port: int, base_url: str, timeout: float = 0.8) -> bool:
-    if not _is_tcp_open(host, port, timeout=min(timeout, 0.35)):
-        return False
-
-    probes = (
-        (
-            f"{base_url.rstrip('/')}/health",
-            lambda payload: isinstance(payload, dict) and payload.get("status") == "ok",
-        ),
-        (
-            f"{base_url.rstrip('/')}/openapi.json",
-            lambda payload: isinstance(payload, dict)
-            and isinstance(payload.get("info"), dict)
-            and payload.get("info", {}).get("title") == "MCP Host",
-        ),
-    )
-
-    for url, validator in probes:
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if int(getattr(resp, "status", 0) or 0) != 200:
-                    continue
-                raw = resp.read().decode("utf-8")
-            payload = json.loads(raw)
-            if validator(payload):
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def _stop_spawned_mcp_host() -> None:
-    global _MCP_HOST_PROCESS
-    global _MCP_HOST_LOG_FILE
-    _MCP_HOST_PROCESS = None
-    if _MCP_HOST_LOG_FILE is not None:
-        try:
-            _MCP_HOST_LOG_FILE.close()
-        except Exception:
-            pass
-        _MCP_HOST_LOG_FILE = None
-
-
-def _ensure_mcp_host_running() -> bool:
-    host, port, base_url = _resolve_mcp_target()
-    ok = _ensure_shared_mcp_host_running(base_url, startup_timeout=10.0)
-    if not ok:
-        log_path = Path.home() / ".gaia" / "logs" / f"mcp_host.runtime.{port}.log"
-        print(
-            "MCP host 자동 시작에 실패했습니다. "
-            f"로그를 확인하세요: {log_path}",
-            file=sys.stderr,
-        )
-    return ok
 
 
 def _save_profile(profile: dict[str, str]) -> None:
@@ -1032,8 +940,6 @@ def _configure_session(
         print(f"{provider} 인증 시작: strategy={auth_strategy}")
     token = _resolve_auth(provider, auth_strategy, auth_method)
     if not token:
-        return None
-    if _should_auto_start_mcp_host() and not _ensure_mcp_host_running():
         return None
     model = _resolve_model(parsed, profile, provider, token)
 

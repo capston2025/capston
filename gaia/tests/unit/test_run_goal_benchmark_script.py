@@ -1,7 +1,7 @@
 from scripts.run_goal_benchmark import _build_child_code
 
 
-def test_build_child_code_propagates_expected_signals_and_auto_start_guard() -> None:
+def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -> None:
     scenario = {
         "id": "INUU_001_HOME_LOGIN_VISIBLE",
         "url": "https://inuu-timetable.vercel.app/",
@@ -22,7 +22,7 @@ def test_build_child_code_propagates_expected_signals_and_auto_start_guard() -> 
 
     code = _build_child_code(scenario, "session-1")
 
-    assert "should_auto_start_mcp_host()" in code
+    assert "should_auto_start_mcp_host()" not in code
     assert "prepared_goal.expected_signals" in code
     assert "harness_expected_signals" in code
     assert "scenario_test_data" in code

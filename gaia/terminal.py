@@ -24,7 +24,6 @@ from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, Goa
 from gaia.src.phase4.goal_driven.policies.filter import filter_goal_requires_semantic_validation
 from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
 from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
 from gaia.src.tracker.checklist import ChecklistTracker
@@ -1084,8 +1083,6 @@ def run_chat_terminal_once(
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
     prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
-    if should_auto_start_mcp_host():
-        ensure_mcp_host_running(CONFIG.mcp.host_url, startup_timeout=10.0)
     return _run_single_chat_goal(
         url=url,
         query=query,
