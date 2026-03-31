@@ -59,7 +59,7 @@ def test_serialize_dom_elements_includes_semantic_tags():
 
 def test_wrapper_mode_name_uses_explicit_thin_override(monkeypatch):
     monkeypatch.setenv("GAIA_GOAL_WRAPPER_MODE", "thin")
-    agent = SimpleNamespace(_browser_backend_name="local")
+    agent = SimpleNamespace(_browser_backend_name="openclaw")
 
     assert wrapper_mode_name(agent) == "thin"
     assert thin_wrapper_enabled(agent) is True

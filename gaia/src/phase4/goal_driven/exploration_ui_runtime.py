@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, wait_for_mcp_ready
-
-
 def is_mcp_transport_error(error_text: str) -> bool:
     lowered = str(error_text or "").lower()
     transport_markers = (
@@ -20,14 +17,8 @@ def is_mcp_transport_error(error_text: str) -> bool:
 
 
 def recover_mcp_host(agent, *, context: str) -> bool:
-    if wait_for_mcp_ready(agent.mcp_host_url, timeout_sec=1.2):
-        return True
-    recovered = ensure_mcp_host_running(agent.mcp_host_url, startup_timeout=8.0)
-    if recovered:
-        agent._log(f"♻️ MCP host 연결 복구 성공 ({context})")
-    else:
-        agent._log(f"⚠️ MCP host 연결 복구 실패 ({context})")
-    return recovered
+    del agent, context
+    return False
 
 
 def normalize_bbox(bbox: Optional[dict]) -> Optional[Tuple[float, float, float, float]]:

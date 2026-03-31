@@ -4,7 +4,6 @@ from typing import Any, Callable, Dict, Optional
 
 from gaia.src.phase4.mcp_local_dispatch_runtime import (
     DispatchResult,
-    current_browser_backend,
     execute_mcp_action,
 )
 
@@ -20,7 +19,6 @@ def execute_mcp_action_with_recovery(
     recover_host: Optional[Callable[..., bool]] = None,
     context: str = "",
 ) -> DispatchResult:
-    backend = current_browser_backend(raw_base_url)
     last_exc: Optional[Exception] = None
     for attempt in range(max(1, int(attempts or 1))):
         try:
@@ -34,9 +32,9 @@ def execute_mcp_action_with_recovery(
             last_exc = exc
             if attempt >= (max(1, int(attempts or 1)) - 1):
                 raise
-            if backend == "gaia" and callable(is_transport_error) and callable(recover_host):
+            if callable(is_transport_error):
                 try:
-                    if is_transport_error(str(exc)) and recover_host(context=context):
+                    if is_transport_error(str(exc)):
                         continue
                 except Exception:
                     pass

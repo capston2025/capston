@@ -17,7 +17,6 @@ from urllib.parse import urljoin
 from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecord
 from gaia.src.phase4.memory.retriever import MemoryRetriever
 from gaia.src.phase4.memory.store import MemoryStore
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, wait_for_mcp_ready
 from gaia.src.phase4.orchestrator import MasterOrchestrator
 from gaia.src.phase4.tool_loop_detector import ToolLoopDetector
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields

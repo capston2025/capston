@@ -43,12 +43,9 @@ def _build_child_code(task: Mapping[str, Any], session_id: str) -> str:
     return f"""
 import contextlib, io, json, os
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 payload = json.loads({payload!r})
 task = payload["task"]
 session_id = payload["session_id"]
-if should_auto_start_mcp_host():
-    ensure_mcp_host_running(None, startup_timeout=10.0)
 prepared_goal = _build_test_goal(url=task["url"], query=task["goal"])
 constraints = task.get("constraints") if isinstance(task.get("constraints"), dict) else {{}}
 expected_signals = task.get("expected_signals") if isinstance(task.get("expected_signals"), list) else []

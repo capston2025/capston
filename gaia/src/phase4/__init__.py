@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["AgentOrchestrator", "MCPClient", "mcp_app"]
+__all__ = ["AgentOrchestrator", "MCPClient"]
 
 
 def __getattr__(name: str) -> Any:
@@ -16,8 +16,4 @@ def __getattr__(name: str) -> Any:
         from gaia.src.phase4.agent import MCPClient
 
         return MCPClient
-    if name == "mcp_app":
-        from gaia.src.phase4.mcp_host import app
-
-        return app
     raise AttributeError(name)

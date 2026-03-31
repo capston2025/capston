@@ -19,9 +19,6 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
-
-
 def _load_suite(path: Path) -> Dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -45,12 +42,9 @@ def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
 import contextlib, io, json, sys
 import os
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
-from gaia.src.phase4.mcp_host_runtime import ensure_mcp_host_running, should_auto_start_mcp_host
 payload = json.loads({payload!r})
 scenario = payload['scenario']
 session_id = payload['session_id']
-if should_auto_start_mcp_host():
-    ensure_mcp_host_running(None, startup_timeout=10.0)
 prepared_goal = _build_test_goal(url=scenario['url'], query=scenario['goal'])
 constraints = scenario.get('constraints') if isinstance(scenario.get('constraints'), dict) else {{}}
 expected_signals = scenario.get('expected_signals') if isinstance(scenario.get('expected_signals'), list) else []
@@ -339,14 +333,6 @@ def main() -> int:
         env.setdefault("GAIA_LLM_PROVIDER", provider)
     env.setdefault("GAIA_LLM_MODEL", str(args.model))
     env.setdefault("GAIA_RAIL_ENABLED", "0")
-
-    host_target = (
-        env.get("GAIA_MCP_HOST_URL")
-        or env.get("MCP_HOST_URL")
-        or env.get("GAIA_MCP_BASE_URL")
-        or "http://127.0.0.1:8001"
-    )
-    ensure_mcp_host_running(host_target, startup_timeout=15.0)
 
     rows: List[Dict[str, Any]] = []
     for repeat_idx in range(1, repeats + 1):

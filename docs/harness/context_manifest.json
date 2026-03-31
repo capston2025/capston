@@ -44,8 +44,7 @@
       "files": [
         "gaia/src/phase4/embedded_openclaw_runtime.py",
         "gaia/src/phase4/mcp_openclaw_dispatch_runtime.py",
-        "gaia/src/phase4/mcp_local_dispatch_runtime.py",
-        "gaia/src/phase4/mcp_host_runtime.py"
+        "gaia/src/phase4/mcp_local_dispatch_runtime.py"
       ],
       "checks": [
         ".venv/bin/python -m pytest gaia/tests/unit/test_embedded_openclaw_runtime.py -q",
