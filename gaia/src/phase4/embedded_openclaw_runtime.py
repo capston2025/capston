@@ -69,6 +69,10 @@ def vendor_root() -> Path:
     return _repo_root() / "vendor" / "openclaw"
 
 
+def runtime_vendor_root() -> Path:
+    return _repo_root() / "vendor" / "openclaw-runtime"
+
+
 def runtime_root() -> Path:
     return _repo_root() / "artifacts" / "embedded_openclaw"
 
@@ -89,16 +93,24 @@ def _browser_user_data_dir() -> Path:
     return _state_dir() / "browser" / "openclaw" / "user-data"
 
 
+def _bundle_path() -> Path:
+    return runtime_vendor_root() / "gaia-embedded-browser-server.bundle.mjs"
+
+
 def _node_modules_present(root: Path) -> bool:
-    return (root / "node_modules" / ".pnpm").exists() or (root / "node_modules" / "tsx").exists()
+    required = (
+        root / "node_modules" / "playwright-core",
+        root / "node_modules" / "sharp",
+        root / "node_modules" / "ajv",
+        root / "node_modules" / "ajv-formats",
+    )
+    return all(path.exists() for path in required)
 
 
-def _pnpm_command() -> list[str]:
-    if shutil.which("corepack"):
-        return ["corepack", "pnpm"]
-    if shutil.which("pnpm"):
-        return ["pnpm"]
-    raise RuntimeError("pnpm is required to bootstrap vendored OpenClaw")
+def _npm_command() -> list[str]:
+    if shutil.which("npm"):
+        return ["npm"]
+    raise RuntimeError("npm is required to bootstrap embedded OpenClaw runtime")
 
 
 def _node_command() -> str:
@@ -307,13 +319,19 @@ def _cleanup_stale_browser_profile() -> None:
             pass
 
 
-def _install_vendor_dependencies(root: Path, env: Dict[str, str]) -> None:
+def _install_runtime_dependencies(root: Path, env: Dict[str, str]) -> None:
     if _node_modules_present(root):
         return
-    log_path = _logs_dir() / "pnpm-install.log"
+    log_path = _logs_dir() / "openclaw-runtime-install.log"
     with log_path.open("ab") as handle:
+        package_lock = root / "package-lock.json"
+        command = (
+            [*_npm_command(), "ci", "--omit=dev", "--no-audit", "--no-fund"]
+            if package_lock.exists()
+            else [*_npm_command(), "install", "--omit=dev", "--no-audit", "--no-fund"]
+        )
         process = subprocess.run(
-            [*_pnpm_command(), "install", "--frozen-lockfile"],
+            command,
             cwd=root,
             env=env,
             stdout=handle,
@@ -322,7 +340,7 @@ def _install_vendor_dependencies(root: Path, env: Dict[str, str]) -> None:
             check=False,
         )
     if process.returncode != 0:
-        raise RuntimeError(f"vendored OpenClaw dependency install failed; see {log_path}")
+        raise RuntimeError(f"embedded OpenClaw runtime dependency install failed; see {log_path}")
 
 
 def _terminate_process(proc: Optional[subprocess.Popen[bytes]]) -> None:
@@ -383,17 +401,25 @@ def ensure_embedded_openclaw_base_url() -> str:
             _RUNTIME_STATE["process"] = None
         _cleanup_stale_browser_profile()
 
-        root = vendor_root()
+        source_root = vendor_root()
+        root = runtime_vendor_root()
+        bundle_path = _bundle_path()
         if not root.exists():
             raise RuntimeError(
-                f"vendored OpenClaw runtime is missing: expected {root}. "
-                "Copy upstream OpenClaw into vendor/openclaw first."
+                f"embedded OpenClaw runtime package is missing: expected {root}."
+            )
+        if not bundle_path.exists():
+            raise RuntimeError(
+                f"embedded OpenClaw bundle is missing: expected {bundle_path}. "
+                "Rebuild it before running the embedded browser runtime."
             )
 
         gateway_port, control_port, cdp_port = _select_ports()
         config_path = _write_config(gateway_port=gateway_port, cdp_port=cdp_port)
         env = _bootstrap_env(gateway_port=gateway_port, config_path=config_path)
-        _install_vendor_dependencies(root, env)
+        if (source_root / "extensions").exists():
+            env["OPENCLAW_BUNDLED_PLUGINS_DIR"] = str(source_root / "extensions")
+        _install_runtime_dependencies(root, env)
 
         base_url = f"http://127.0.0.1:{int(control_port)}"
         if _browser_server_ready(base_url):
@@ -414,9 +440,7 @@ def ensure_embedded_openclaw_base_url() -> str:
             proc = subprocess.Popen(
                 [
                     _node_command(),
-                    "--import",
-                    "tsx",
-                    "scripts/gaia-embedded-browser-server.mjs",
+                    str(bundle_path),
                 ],
                 cwd=root,
                 env=env,

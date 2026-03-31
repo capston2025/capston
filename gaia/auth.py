@@ -30,6 +30,8 @@ import requests
 
 AUTH_DIR = Path.home() / ".gaia" / "auth"
 AUTH_FILE = AUTH_DIR / "profiles.json"
+GEMINI_ENV_FILE_NAME = ".env.gemini.local"
+GEMINI_ENV_DEFAULT_MODEL = "gemini-2.5-pro"
 
 PROVIDER_ENV_MAP = {
     "openai": "OPENAI_API_KEY",
@@ -89,6 +91,95 @@ def _save_profiles(payload: dict[str, dict[str, Any]]) -> None:
     _ensure_auth_dir()
     with AUTH_FILE.open("w", encoding="utf-8") as fp:
         json.dump(payload, fp, ensure_ascii=False, indent=2)
+
+
+def _resolve_gemini_env_file() -> Path:
+    raw = str(os.getenv("GAIA_GEMINI_ENV_FILE", "") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    cwd = Path.cwd()
+    for base in (cwd, *cwd.parents):
+        candidate = base / GEMINI_ENV_FILE_NAME
+        if candidate.exists():
+            return candidate
+    return cwd / GEMINI_ENV_FILE_NAME
+
+
+def _parse_env_assignments(text: str) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        assignments[key] = value
+    return assignments
+
+
+def _read_gemini_env_token() -> tuple[str | None, Path | None]:
+    path = _resolve_gemini_env_file()
+    if not path.exists():
+        return None, None
+    try:
+        assignments = _parse_env_assignments(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, path
+    token = str(assignments.get("GEMINI_API_KEY") or "").strip()
+    if not token:
+        return None, path
+    return token, path
+
+
+def _write_gemini_env_token(token: str) -> Path:
+    path = _resolve_gemini_env_file()
+    assignments: dict[str, str] = {}
+    if path.exists():
+        try:
+            assignments = _parse_env_assignments(path.read_text(encoding="utf-8"))
+        except Exception:
+            assignments = {}
+    assignments["GEMINI_API_KEY"] = token.strip()
+    assignments.setdefault("GAIA_LLM_PROVIDER", "gemini")
+    assignments.setdefault("VISION_PROVIDER", "gemini")
+    assignments.setdefault("GAIA_LLM_MODEL", GEMINI_ENV_DEFAULT_MODEL)
+    assignments.setdefault("VISION_MODEL", assignments.get("GAIA_LLM_MODEL", GEMINI_ENV_DEFAULT_MODEL))
+    ordered_keys = [
+        "GEMINI_API_KEY",
+        "GAIA_LLM_PROVIDER",
+        "VISION_PROVIDER",
+        "GAIA_LLM_MODEL",
+        "VISION_MODEL",
+    ]
+    seen: set[str] = set()
+    lines: list[str] = []
+    for key in ordered_keys:
+        if key not in assignments:
+            continue
+        value = assignments[key]
+        lines.append(f"{key}={json.dumps(value, ensure_ascii=False)}")
+        seen.add(key)
+    for key in sorted(assignments):
+        if key in seen:
+            continue
+        value = assignments[key]
+        lines.append(f"{key}={json.dumps(value, ensure_ascii=False)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
 
 
 def _now_iso() -> str:
@@ -364,6 +455,11 @@ def get_token_source(provider: str) -> tuple[str | None, str | None]:
     if env_token:
         return env_token, f"env:{env_key}"
 
+    if provider == "gemini":
+        token, path = _read_gemini_env_token()
+        if token and path is not None:
+            return token, f"envfile:{path}"
+
     token = get_stored_token(provider)
     if token:
         profile = _openid_state_profile(provider)
@@ -617,6 +713,8 @@ def interactive_login(
 
     if token and token.strip():
         _save_provider_profile(provider, token.strip(), source="manual")
+        if provider == "gemini":
+            _write_gemini_env_token(token.strip())
         return token.strip()
 
     if use_oauth is None:
@@ -643,6 +741,8 @@ def interactive_login(
         return None
 
     _save_provider_profile(provider, value, source="manual")
+    if provider == "gemini":
+        _write_gemini_env_token(value)
     return value
 
 

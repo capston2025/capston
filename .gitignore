@@ -69,10 +69,13 @@ gaia/.env.local
 /artifacts/plans/
 /artifacts/hardening/
 /artifacts/reports/
+/artifacts/tmp/
 /artifacts/wrapper_trace/
 /gaia/artifacts/
 /output/
+/tmp/
 vendor/openclaw/node_modules/
+vendor/openclaw-runtime/node_modules/
 vendor/openclaw/dist/
 vendor/openclaw/dist-runtime/
 

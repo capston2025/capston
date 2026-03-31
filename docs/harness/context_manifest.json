@@ -39,8 +39,7 @@
     "gaia-openclaw": {
       "summary": "Embedded OpenClaw runtime, dispatch, screenshots, and host behavior.",
       "docs": [
-        "README.md",
-        "gaia/docs/PLAYWRIGHT_SKILL_INTEGRATION_DESIGN.md"
+        "README.md"
       ],
       "files": [
         "gaia/src/phase4/embedded_openclaw_runtime.py",
@@ -73,8 +72,7 @@
     "runtime-entrypoints": {
       "summary": "CLI, terminal, chat hub, auth, and session entry behavior.",
       "docs": [
-        "README.md",
-        "gaia/docs/TEAM_PLAYBOOK.md"
+        "README.md"
       ],
       "files": [
         "gaia/cli.py",
