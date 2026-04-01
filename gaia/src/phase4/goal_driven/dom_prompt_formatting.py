@@ -648,6 +648,51 @@ def _collect_openclaw_role_tree_focus_refs(
     return ordered_unique[:18]
 
 
+def _compute_delta_snapshot(
+    prev_lines: List[str],
+    cur_lines: List[str],
+    context_radius: int = 2,
+) -> Tuple[List[str], float]:
+    """이전 턴과 현재 턴의 raw snapshot을 비교해 변경된 영역만 추출한다.
+
+    Returns:
+        (delta_lines, change_ratio) — change_ratio는 0.0~1.0
+    """
+    import difflib
+
+    if not prev_lines:
+        return cur_lines, 1.0
+
+    matcher = difflib.SequenceMatcher(None, prev_lines, cur_lines, autojunk=False)
+    changed_indices: set = set()
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        for j in range(max(0, j1 - context_radius), min(len(cur_lines), j2 + context_radius)):
+            changed_indices.add(j)
+
+    if not changed_indices:
+        return [], 0.0
+
+    change_ratio = len(changed_indices) / max(1, len(cur_lines))
+
+    sorted_indices = sorted(changed_indices)
+    delta_lines: List[str] = []
+    prev_idx = -2
+    for idx in sorted_indices:
+        if idx > prev_idx + 1:
+            if delta_lines:
+                delta_lines.append(f"... (unchanged {idx - prev_idx - 1} lines)")
+        delta_lines.append(cur_lines[idx])
+        prev_idx = idx
+
+    remaining = len(cur_lines) - 1 - prev_idx
+    if remaining > 0:
+        delta_lines.append(f"... (unchanged {remaining} lines)")
+
+    return delta_lines, change_ratio
+
+
 def _render_openclaw_raw_role_tree(
     agent: Any,
     role_snapshot: Dict[str, Any],
@@ -665,9 +710,37 @@ def _render_openclaw_raw_role_tree(
     except Exception:
         raw_tree_line_limit = 0
     if raw_tree_line_limit > 0 and len(raw_lines) > raw_tree_line_limit:
-        return raw_lines[:raw_tree_line_limit] + [
+        result = raw_lines[:raw_tree_line_limit] + [
             f"... ({len(raw_lines) - raw_tree_line_limit} more raw role lines omitted)"
         ]
+        agent._prev_raw_snapshot_text = snapshot_text
+        return result
+
+    prev_text = str(getattr(agent, "_prev_raw_snapshot_text", "") or "")
+    try:
+        delta_disabled = str(os.getenv("GAIA_OPENCLAW_DELTA_DISABLED", "0")).strip() == "1"
+    except Exception:
+        delta_disabled = False
+    try:
+        fallback_ratio = float(os.getenv("GAIA_OPENCLAW_DELTA_FALLBACK_RATIO", "0.7"))
+    except Exception:
+        fallback_ratio = 0.7
+
+    if prev_text and not delta_disabled:
+        prev_lines = prev_text.splitlines()
+        delta_lines, change_ratio = _compute_delta_snapshot(prev_lines, raw_lines)
+
+        if change_ratio == 0.0:
+            agent._prev_raw_snapshot_text = snapshot_text
+            return ["(DOM 변경 없음 — 이전 턴의 역할 트리와 동일)"]
+
+        if change_ratio < fallback_ratio:
+            agent._prev_raw_snapshot_text = snapshot_text
+            return [
+                f"(변경 영역만 표시 — 전체 {len(raw_lines)}줄 중 {len(delta_lines)}줄, 변경률 {change_ratio:.0%})",
+            ] + delta_lines
+
+    agent._prev_raw_snapshot_text = snapshot_text
     return raw_lines
 
 

@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any, List, Optional
 
+from .browser_action_rules import build_browser_action_rules_for_agent
 from .dom_prompt_formatting import detect_active_surface_context, semantic_tags_for_element
 from .goal_policy_phase_runtime import goal_phase_intent
 from .goal_replanning_runtime import sync_goal_replanning_state
@@ -532,6 +533,7 @@ def decide_next_action(
 - `## 구조화 보조 힌트`와 `semantics=[...]`는 2차 힌트입니다. 원본 role tree의 ref/role/name/트리 위치와 충돌하면 원본 역할 트리를 우선하세요.
 - 같은 이름 CTA가 여러 개면 `ref`, 트리 위치, 같은 row/section 주변 raw line으로 구분하세요.
 """ if backend_name == "openclaw" else ""
+    browser_action_rules_block = build_browser_action_rules_for_agent(agent)
     prompt = f"""당신은 OpenClaw 스타일의 웹 작업 에이전트입니다.
 현재 화면과 직전 결과를 다시 읽고, 다음 한 단계만 결정하세요.
 
@@ -569,18 +571,7 @@ def decide_next_action(
 {openclaw_primary_rule}
 {semantic_hint_rule}
 
-## 작업 규칙
-1. phase 이름이나 wrapper 상태보다 최신 DOM/스크린샷을 우선 신뢰하세요.
-2. 목표 과목/대상과 직접 연결된 카드, 행(row/slot/card), 버튼을 먼저 찾으세요.
-3. source/destination 중 어느 쪽이든 현재 화면에서 직접 연결된 증거가 더 강한 쪽을 고르세요.
-4. 로그인/인증 surface가 보이면 현재 surface를 새 화면으로 간주하고, 제공된 테스트 데이터가 있으면 그 화면 안에서만 처리하세요.
-5. 최근 피드백이 no-op/duplicate/이미 추가됨이면 같은 CTA를 반복하지 말고 다른 직접 증거나 다른 경로를 찾으세요.
-6. 모달/오버레이가 실제로 열려 있지 않다면 닫기/close/dismiss를 고르지 마세요.
-7. 로그아웃, 다운로드, PDF 저장, 전체삭제 같은 전역/파괴적 컨트롤은 목표가 직접 요구하지 않는 한 선택하지 마세요.
-8. 방금 뜬 성공 토스트/스낵바/배너는 임시 피드백일 수 있습니다. 목표가 목록/시간표 반영 확인이면 destination row, counter, reveal surface 같은 지속 증거를 먼저 찾고, 그런 증거 없이는 완료나 wait로 멈추지 마세요.
-9. `select`를 고를 때는 그 combobox 자신의 `options=[...]` 또는 바로 아래 raw role subtree에 실제로 보이는 옵션만 선택하세요. 다른 combobox의 옵션이나 떨어져 나온 option 줄을 섞지 마세요.
-10. 목표가 이미 달성됐다고 판단되면 `is_goal_achieved=true`와 이유를 반환하세요.
-11. DOM 요소에 `[ref=...]`가 표시된 경우 반드시 해당 `ref_id`를 응답에 포함하세요. `element_id`는 없으면 null이어도 됩니다. DOM 리스트에 없는 ref_id나 element_id를 추측하지 마세요.
+{browser_action_rules_block}
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{

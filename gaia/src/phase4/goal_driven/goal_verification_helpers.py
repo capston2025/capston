@@ -454,6 +454,96 @@ def _has_pagination_advance_signal(agent: Any, state_changes: List[Dict[str, Any
     return any(bool(change.get("url_changed")) for change in state_changes)
 
 
+def _goal_state_dict(agent: Any) -> Dict[str, Any]:
+    state = getattr(agent, "_goal_state_cache", None)
+    return state if isinstance(state, dict) else {}
+
+
+def _goal_proof_state(agent: Any) -> Dict[str, Any]:
+    proof = _goal_state_dict(agent).get("proof")
+    return proof if isinstance(proof, dict) else {}
+
+
+def _has_auth_completion_signal(agent: Any, state_changes: List[Dict[str, Any]]) -> bool:
+    if _has_any_state_signal(state_changes, "auth_state_changed"):
+        return True
+    completed_fields = getattr(agent, "_auth_completed_fields", None)
+    if isinstance(completed_fields, set) and completed_fields:
+        return True
+    if isinstance(completed_fields, list) and completed_fields:
+        return True
+    return False
+
+
+def _has_timetable_update_signal(agent: Any, state_changes: List[Dict[str, Any]], dom_elements: List[DOMElement]) -> bool:
+    proof = _goal_proof_state(agent)
+    if any(
+        bool(proof.get(key))
+        for key in ("remove_done", "add_done", "readd_done", "final_present_verified")
+    ):
+        return True
+
+    goal_state = _goal_state_dict(agent)
+    if bool(goal_state.get("membership_belief")) and str(goal_state.get("membership_belief") or "").strip().lower() in {
+        "present",
+        "absent",
+    }:
+        if _has_any_state_signal(
+            state_changes,
+            "dom_changed",
+            "text_digest_changed",
+            "status_text_changed",
+            "list_count_changed",
+            "interactive_count_changed",
+        ):
+            return True
+
+    if any(
+        bool(getattr(el, "is_visible", True))
+        and any(
+            token in agent._normalize_text(
+                " ".join(
+                    [
+                        str(getattr(el, "text", "") or ""),
+                        str(getattr(el, "aria_label", "") or ""),
+                        str(getattr(el, "container_name", None) or ""),
+                        str(getattr(el, "context_text", None) or ""),
+                    ]
+                )
+            )
+            for token in ("시간표", "내 시간표", "timetable", "schedule")
+        )
+        for el in dom_elements
+    ):
+        return _has_any_state_signal(
+            state_changes,
+            "dom_changed",
+            "text_digest_changed",
+            "status_text_changed",
+            "list_count_changed",
+            "interactive_count_changed",
+        )
+    return False
+
+
+def _has_combination_applied_signal(agent: Any, state_changes: List[Dict[str, Any]]) -> bool:
+    proof = _goal_proof_state(agent)
+    if any(
+        bool(proof.get(key))
+        for key in ("add_done", "readd_done", "final_present_verified")
+    ):
+        return True
+    return _has_any_state_signal(
+        state_changes,
+        "url_changed",
+        "dom_changed",
+        "text_digest_changed",
+        "status_text_changed",
+        "list_count_changed",
+        "interactive_count_changed",
+    )
+
+
 def derive_achieved_signals(
     agent: Any,
     *,
@@ -493,6 +583,12 @@ def derive_achieved_signals(
             ok = _has_visibility_dom_signal(agent, goal, dom, actionable_only=True)
         elif normalized in {"url_change", "url_changed"}:
             ok = _has_any_state_signal(state_changes, "url_changed")
+        elif normalized == "auth_completed":
+            ok = _has_auth_completion_signal(agent, state_changes)
+        elif normalized == "timetable_updated":
+            ok = _has_timetable_update_signal(agent, state_changes, dom)
+        elif normalized == "combination_applied":
+            ok = _has_combination_applied_signal(agent, state_changes)
         elif normalized in {"pagination_advanced", "page_advanced"}:
             ok = bool(pagination_advanced)
         elif normalized == "persistence_verified":

@@ -1,0 +1,33 @@
+{
+  "suite_id": "capstone_add_remove_v2",
+  "site": {
+    "name": "INU Timetable",
+    "base_url": "https://inuu-timetable.vercel.app/",
+    "mode": "service_e2e"
+  },
+  "scenarios": [
+    {
+      "id": "CAPSTONE_FILTER_ADD_REMOVE",
+      "url": "https://inuu-timetable.vercel.app/",
+      "goal": "임베디드시스템공학과로 필터링한 뒤 캡스톤디자인 과목을 찾아서 내 시간표에 추가하고, 추가된 것을 확인한 뒤 다시 삭제해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [
+        "auth_completed",
+        "timetable_updated"
+      ],
+      "grader_configs": {
+        "membership": {
+          "expected_present": false,
+          "destination_terms": ["시간표", "내 시간표"]
+        }
+      },
+      "difficulty": "hard",
+      "time_budget_sec": 420
+    }
+  ]
+}

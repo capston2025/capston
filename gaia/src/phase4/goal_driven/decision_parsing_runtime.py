@@ -11,7 +11,18 @@ _ACTION_ALIASES = {
     "check": ActionType.WAIT.value,
     "validate": ActionType.WAIT.value,
     "confirm": ActionType.WAIT.value,
+    "none": ActionType.WAIT.value,
+    "done": ActionType.WAIT.value,
+    "finish": ActionType.WAIT.value,
+    "complete": ActionType.WAIT.value,
+    "stop": ActionType.WAIT.value,
+    "noop": ActionType.WAIT.value,
+    "no-op": ActionType.WAIT.value,
+    "null": ActionType.WAIT.value,
+    "": ActionType.WAIT.value,
 }
+
+_VALID_ACTION_VALUES = {member.value for member in ActionType}
 
 
 def parse_decision(agent, response_text: str) -> ActionDecision:
@@ -52,7 +63,9 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
         else:
             normalized_value = str(raw_value)
 
-        final_action = ActionType(normalized_action or "wait")
+        if normalized_action not in _VALID_ACTION_VALUES:
+            normalized_action = ActionType.WAIT.value
+        final_action = ActionType(normalized_action)
         if final_action == ActionType.WAIT and (normalized_value is None or (isinstance(normalized_value, str) and not normalized_value.strip())):
             normalized_value = json.dumps({"time_ms": 700}, ensure_ascii=False)
         final_ref_id = None if final_action == ActionType.WAIT else data.get("ref_id")
@@ -73,8 +86,18 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
 
     except (json.JSONDecodeError, ValueError) as exc:
         agent._log(f"JSON 파싱 실패: {exc}, 응답: {text[:200]}")
+        goal_achieved = False
+        goal_reason = None
+        try:
+            partial = json.loads(text) if text.startswith("{") else {}
+            goal_achieved = bool(partial.get("is_goal_achieved", False))
+            goal_reason = partial.get("goal_achievement_reason")
+        except Exception:
+            pass
         return ActionDecision(
             action=ActionType.WAIT,
             reasoning=f"파싱 오류: {exc}",
             confidence=0.0,
+            is_goal_achieved=goal_achieved,
+            goal_achievement_reason=goal_reason,
         )
