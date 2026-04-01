@@ -113,6 +113,7 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._last_container_source_summary = {}
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
+    agent._prev_raw_snapshot_text = ""
     agent._persistent_state_memory = []
     agent._recent_signal_history = []
     agent._goal_policy_target_seen_in_destination = False

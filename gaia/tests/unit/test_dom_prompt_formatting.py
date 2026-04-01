@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from gaia.src.phase4.goal_driven.auth_hints import contains_login_hint, contains_next_pagination_hint, is_numeric_page_label
 from gaia.src.phase4.goal_driven.dom_prompt_formatting import (
+    _compute_delta_snapshot,
     context_score,
     detect_active_surface_context,
     fields_for_element,
@@ -38,6 +39,7 @@ class _FakeAgent:
         self._recent_click_element_ids = []
         self._active_goal_text = "포용사회와문화탐방1 과목의 '바로 추가' 버튼을 눌러서 내 시간표에 반영"
         self._last_snapshot_evidence = {}
+        self._prev_raw_snapshot_text = ""
 
     def _normalize_text(self, value: object) -> str:
         return str(value or "").strip().lower()
@@ -680,3 +682,101 @@ def test_format_dom_for_llm_marks_surface_close_and_occluded_background_when_des
     assert prompt.index('[ref=e706] <button>') < prompt.index('[ref=e72] <button> within=')
     assert 'semantics=[surface_close_candidate]' in prompt
     assert 'semantics=[target_match | source_mutation_candidate | occluded_background_candidate]' in prompt
+
+
+# --- Delta snapshot compression tests ---
+
+
+def test_compute_delta_snapshot_identical():
+    """동일 snapshot은 빈 delta와 change_ratio 0.0을 반환한다."""
+    lines = ["line1", "line2", "line3"]
+    delta, ratio = _compute_delta_snapshot(lines, lines)
+    assert delta == []
+    assert ratio == 0.0
+
+
+def test_compute_delta_snapshot_no_prev():
+    """이전 snapshot이 없으면 전체를 반환한다."""
+    cur = ["a", "b", "c"]
+    delta, ratio = _compute_delta_snapshot([], cur)
+    assert delta == cur
+    assert ratio == 1.0
+
+
+def test_compute_delta_snapshot_partial_change():
+    """일부만 바뀌면 변경 영역 + context만 추출된다."""
+    prev = [f"line-{i}" for i in range(20)]
+    cur = list(prev)
+    cur[10] = "CHANGED-10"
+    delta, ratio = _compute_delta_snapshot(prev, cur)
+    assert ratio < 0.7
+    assert "CHANGED-10" in delta
+    assert len(delta) < len(cur)
+
+
+def test_compute_delta_snapshot_full_change_high_ratio():
+    """대부분 바뀌면 change_ratio가 높다."""
+    prev = ["old-" + str(i) for i in range(10)]
+    cur = ["new-" + str(i) for i in range(10)]
+    delta, ratio = _compute_delta_snapshot(prev, cur)
+    assert ratio >= 0.7
+
+
+def test_render_openclaw_raw_tree_first_turn_full():
+    """첫 턴은 전체 raw tree를 반환한다."""
+    agent = _FakeAgent()
+    snapshot_text = "role: main\n  role: button 'click me' [ref=e1]\n  role: link 'home' [ref=e2]"
+    agent._last_role_snapshot = {"snapshot": snapshot_text, "tree": [], "refs_mode": "aria", "stats": {}}
+    agent._prev_raw_snapshot_text = ""
+
+    prompt = format_dom_for_llm(agent, [])
+    assert "click me" in prompt
+    assert "home" in prompt
+    assert agent._prev_raw_snapshot_text == snapshot_text
+
+
+def test_render_openclaw_raw_tree_second_turn_identical_compressed():
+    """둘째 턴에서 DOM이 동일하면 압축된다."""
+    agent = _FakeAgent()
+    snapshot_text = "role: main\n  role: button 'click me' [ref=e1]\n  role: link 'home' [ref=e2]"
+    agent._last_role_snapshot = {"snapshot": snapshot_text, "tree": [], "refs_mode": "aria", "stats": {}}
+    agent._prev_raw_snapshot_text = snapshot_text
+
+    prompt = format_dom_for_llm(agent, [])
+    assert "DOM 변경 없음" in prompt
+    assert "click me" not in prompt
+
+
+def test_render_openclaw_raw_tree_second_turn_partial_change_delta():
+    """둘째 턴에서 일부만 바뀌면 delta만 포함된다."""
+    agent = _FakeAgent()
+    prev_lines = [f"  role: item-{i} [ref=e{i}]" for i in range(20)]
+    prev_text = "role: main\n" + "\n".join(prev_lines)
+
+    cur_lines = list(prev_lines)
+    cur_lines[10] = "  role: CHANGED-item [ref=e99]"
+    cur_text = "role: main\n" + "\n".join(cur_lines)
+
+    agent._last_role_snapshot = {"snapshot": cur_text, "tree": [], "refs_mode": "aria", "stats": {}}
+    agent._prev_raw_snapshot_text = prev_text
+
+    prompt = format_dom_for_llm(agent, [])
+    assert "변경 영역만 표시" in prompt
+    assert "CHANGED-item" in prompt
+    prompt_lines = prompt.splitlines()
+    raw_lines = cur_text.splitlines()
+    assert len(prompt_lines) < len(raw_lines)
+
+
+def test_render_openclaw_raw_tree_full_change_fallback():
+    """대부분 바뀌면 full raw로 fallback한다."""
+    agent = _FakeAgent()
+    prev_text = "\n".join(f"old-line-{i}" for i in range(10))
+    cur_text = "\n".join(f"new-line-{i}" for i in range(10))
+    agent._last_role_snapshot = {"snapshot": cur_text, "tree": [], "refs_mode": "aria", "stats": {}}
+    agent._prev_raw_snapshot_text = prev_text
+
+    prompt = format_dom_for_llm(agent, [])
+    assert "변경 영역만 표시" not in prompt
+    assert "DOM 변경 없음" not in prompt
+    assert "new-line-0" in prompt
