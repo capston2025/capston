@@ -18,7 +18,7 @@ def is_progress_transition_element(agent: Any, el: Optional[DOMElement]) -> bool
 
 
 def pick_collect_element(agent: Any, dom_elements: List[DOMElement]) -> Optional[tuple[int, str]]:
-    candidates: List[tuple[float, int, str]] = []
+    candidates: List[tuple[float, int, int, str]] = []
     recent_clicks = agent._recent_click_element_ids[-14:]
     for el in dom_elements:
         fields = agent._fields_for_element(el)
@@ -52,12 +52,16 @@ def pick_collect_element(agent: Any, dom_elements: List[DOMElement]) -> Optional
 
         label = str(el.text or el.aria_label or getattr(el, "title", None) or f"element:{el.id}")
         reason = f"목표 제약상 수집 단계 유지: {label[:60]}"
-        candidates.append((score, el.id, reason))
+        candidates.append((score, repeat_count, el.id, reason))
 
     if not candidates:
         return None
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    _, element_id, reason = candidates[0]
+    unseen_candidates = [item for item in candidates if item[1] == 0]
+    ranked_candidates = unseen_candidates if unseen_candidates else candidates
+    ranked_candidates.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    _, repeat_count, element_id, reason = ranked_candidates[0]
+    if repeat_count == 0 and unseen_candidates and len(unseen_candidates) != len(candidates):
+        reason += " | 이미 눌렀던 CTA보다 새 수집 후보를 우선"
     return element_id, reason
 
 

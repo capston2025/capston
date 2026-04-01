@@ -745,6 +745,16 @@ def evaluate_static_verification_on_current_page(
         return None
     if is_filter_style_goal(agent, goal):
         return None
+    goal_constraints = getattr(agent, "_goal_constraints", {}) or {}
+    mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
+    if mutation_direction in {"increase", "decrease", "clear"}:
+        return None
+    if goal_constraints.get("collect_min") is not None:
+        return None
+    if goal_constraints.get("apply_target") is not None:
+        return None
+    if bool(goal_constraints.get("require_state_change")):
+        return None
 
     goal_text = agent._normalize_text(
         " ".join(

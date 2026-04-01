@@ -382,14 +382,20 @@ def enforce_goal_constraints_on_decision(
                 self._element_full_selectors.get(selected_element.id),
             )
             if overlap >= 1.0:
-                return ActionDecision(
-                    action=decision.action,
-                    element_id=decision.element_id,
-                    value=decision.value,
-                    reasoning=decision.reasoning,
-                    confidence=decision.confidence,
-                    is_goal_achieved=False,
-                    goal_achievement_reason=None,
+                recent_clicks = list(getattr(self, "_recent_click_element_ids", []) or [])[-8:]
+                repeated_collect_click = recent_clicks.count(int(selected_element.id)) > 0
+                if not repeated_collect_click:
+                    return ActionDecision(
+                        action=decision.action,
+                        element_id=decision.element_id,
+                        value=decision.value,
+                        reasoning=decision.reasoning,
+                        confidence=decision.confidence,
+                        is_goal_achieved=False,
+                        goal_achievement_reason=None,
+                    )
+                self._log(
+                    "🧱 목표 제약 가드: 최근에 시도한 수집 CTA는 반복하지 않고 다른 후보를 찾습니다."
                 )
     elif not blocked_goal_done:
         return decision
