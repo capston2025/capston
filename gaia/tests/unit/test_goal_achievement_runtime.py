@@ -15,6 +15,7 @@ class _FakeAgent:
         self._last_filter_semantic_report = None
         self._goal_state_cache = {}
         self._auth_completed_fields = set()
+        self._judge_response = ""
 
     @staticmethod
     def _normalize_text(value: object) -> str:
@@ -45,6 +46,17 @@ class _FakeAgent:
     @staticmethod
     def _run_goal_policy_closer(*, goal: object, dom_elements: list[DOMElement]) -> None:
         return None
+
+    def _call_llm_text_only(self, prompt: str) -> str:
+        self._last_judge_prompt = prompt
+        return self._judge_response
+
+    def _format_dom_for_llm(self, elements: list[DOMElement]) -> str:
+        return "\n".join(
+            str(getattr(item, "text", "") or "").strip()
+            for item in elements
+            if str(getattr(item, "text", "") or "").strip()
+        )
 
 
 def test_validate_goal_achievement_claim_accepts_wait_when_destination_row_is_visible():
@@ -488,3 +500,225 @@ def test_validate_goal_achievement_claim_accepts_wait_for_readonly_visibility_go
 
     assert ok is True
     assert reason is None
+
+
+def test_validate_goal_achievement_claim_accepts_wait_via_generic_judge_for_late_response_goal() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._judge_response = """
+```json
+{
+  "success": true,
+  "blocked": false,
+  "reason": "입력한 문장이 전송되었고 그에 대한 응답 본문이 현재 화면에 직접 보여 목표가 완료되었습니다.",
+  "confidence": 0.96
+}
+```
+""".strip()
+    agent._goal_quoted_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name='이 사이트 들어가서 "안녕 뭐해?"라고 입력하고 결과물 알려줘봐',
+        description='입력 후 나온 결과를 확인해줘.',
+        success_criteria=['"안녕 뭐해?" 입력 후 결과 응답이 화면에 나타나는지 확인'],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning=(
+            "입력한 문장은 이미 전송되었고, 현재 화면에 assistant 응답인 "
+            "'안녕! 그냥 너랑 대화하려고 기다리고 있었지'가 직접 표시됩니다."
+        ),
+        confidence=0.93,
+        is_goal_achieved=True,
+        goal_achievement_reason="응답 본문 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="안녕 뭐해?",
+            context_text="대화 입력",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+    for idx in range(2, 47):
+        dom.append(
+            DOMElement(
+                id=idx,
+                tag="div",
+                role="generic",
+                text=f"filler-{idx}",
+                context_text="sidebar",
+                is_visible=True,
+                is_enabled=True,
+            )
+        )
+    dom.append(
+        DOMElement(
+            id=47,
+            ref_id="e319",
+            tag="div",
+            role="article",
+            text="안녕! 그냥 너랑 대화하려고 기다리고 있었지 🙂 너는 지금 뭐 하고 있어?",
+            context_text="assistant response",
+            is_visible=True,
+            is_enabled=True,
+        )
+    )
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is True
+    assert reason is None
+    if hasattr(agent, "_last_judge_prompt"):
+        assert "assistant response" in agent._last_judge_prompt
+
+
+def test_validate_goal_achievement_claim_accepts_wait_via_reasoning_result_quote_without_judge() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name='이 사이트 들어가서 "안녕 뭐해?"라고 입력하고 결과물 알려줘봐',
+        description='입력 후 나온 결과를 확인해줘.',
+        success_criteria=['"안녕 뭐해?" 입력 후 결과 응답이 화면에 나타나는지 확인'],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning=(
+            "이전 단계에서 메시지를 보냈고, 현재 화면에 응답인 "
+            "'안녕! 😊 지금 너랑 대화하고 있지 😊 뭐 도와줄까?'가 표시되어 목표가 달성되었습니다."
+        ),
+        confidence=0.94,
+        is_goal_achieved=True,
+        goal_achievement_reason="응답 본문 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="안녕 뭐해?",
+            context_text="내 메시지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="article",
+            text="안녕! 😊 지금 너랑 대화하고 있지 😊 뭐 도와줄까?",
+            context_text="assistant response",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is True
+    assert reason is None
+
+
+def test_validate_goal_achievement_claim_rejects_loading_quote_as_result() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name='이 사이트 들어가서 "안녕 뭐해?"라고 입력하고 결과물 알려줘봐',
+        description='입력 후 나온 결과를 확인해줘.',
+        success_criteria=['"안녕 뭐해?" 입력 후 결과 응답이 화면에 나타나는지 확인'],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning='현재 화면에는 "생각 중" 상태가 표시되어 결과를 생성하고 있습니다.',
+        confidence=0.8,
+        is_goal_achieved=True,
+        goal_achievement_reason="로딩 중",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="안녕 뭐해?",
+            context_text="내 메시지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="status",
+            role="status",
+            text="생각 중",
+            context_text="loading",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is False
+    assert reason == "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다."
+
+
+def test_validate_goal_achievement_claim_does_not_bypass_missing_expected_signals_with_judge() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "현재 화면 증거상 목표가 완료되었습니다.",
+  "confidence": 0.93
+}
+""".strip()
+    agent._goal_quoted_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name='이 사이트 들어가서 "안녕 뭐해?"라고 입력하고 결과물 알려줘봐',
+        description='입력 후 나온 결과를 확인해줘.',
+        success_criteria=['"안녕 뭐해?" 입력 후 결과 응답이 화면에 나타나는지 확인'],
+        expected_signals=["response_visible"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="사용자 입력과 응답이 모두 화면에 보여 목표가 달성되었습니다.",
+        confidence=0.9,
+        is_goal_achieved=True,
+        goal_achievement_reason="응답 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="안녕 뭐해?",
+            context_text="내 메시지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="article",
+            text="안녕! 반가워요.",
+            context_text="assistant response",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is False
+    assert reason == "goal contract signal 미충족: response_visible"

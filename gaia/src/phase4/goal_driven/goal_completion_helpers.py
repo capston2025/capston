@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 from typing import List, Optional
 
@@ -493,6 +495,60 @@ def evaluate_explicit_reasoning_proof_completion(
     targets = agent._goal_quoted_terms(goal) or agent._goal_target_terms(goal)
     normalized_targets = [agent._normalize_text(str(term)) for term in targets if str(term).strip()]
     matched_targets = [term for term, norm in zip(targets, normalized_targets) if norm and norm in reasoning_blob]
+    if dom_elements:
+        visible_blob = agent._normalize_text(
+            " ".join(
+                " ".join(
+                    [
+                        str(getattr(el, "text", "") or ""),
+                        str(getattr(el, "aria_label", "") or ""),
+                        str(getattr(el, "title", None) or ""),
+                        str(getattr(el, "container_name", None) or ""),
+                        str(getattr(el, "context_text", None) or ""),
+                    ]
+                )
+                for el in dom_elements
+                if bool(getattr(el, "is_visible", True))
+            )
+        )
+    else:
+        visible_blob = ""
+
+    result_goal_tokens = ("응답", "결과", "결과물", "response", "result", "answer", "reply", "output", "출력")
+    loading_reason_tokens = (
+        "생각 중",
+        "로딩",
+        "loading",
+        "spinner",
+        "generating",
+        "작성 중",
+        "응답을 생성",
+        "기다려",
+        "대기",
+    )
+    quoted_reasoning_matches = [
+        (phrase, agent._normalize_text(phrase))
+        for phrase in re.findall(r"[\"']([^\"']{4,})[\"']", reasoning_raw)
+        if str(phrase or "").strip()
+    ]
+    distinct_result_quotes = [
+        phrase
+        for phrase, normalized in quoted_reasoning_matches
+        if normalized
+        and normalized not in normalized_targets
+        and normalized in visible_blob
+        and not any(token in normalized for token in loading_reason_tokens)
+    ]
+    if (
+        distinct_result_quotes
+        and visible_blob
+        and any(token in agent._normalize_text(agent._goal_text_blob(goal)) or token in reasoning_blob for token in result_goal_tokens)
+        and not any(token in reasoning_blob for token in loading_reason_tokens)
+        and any(norm and norm in visible_blob for norm in normalized_targets)
+    ):
+        quoted_result = _truncate_completion_text(distinct_result_quotes[0], 80)
+        return f"입력 내용과 구분되는 결과 본문(\"{quoted_result}\")이 현재 화면에 직접 보여 목표를 완료로 판정했습니다."
+
     if not matched_targets:
         goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
         change_goal_tokens = (
@@ -533,21 +589,6 @@ def evaluate_explicit_reasoning_proof_completion(
             return None
         if not dom_elements:
             return None
-        visible_blob = agent._normalize_text(
-            " ".join(
-                " ".join(
-                    [
-                        str(getattr(el, "text", "") or ""),
-                        str(getattr(el, "aria_label", "") or ""),
-                        str(getattr(el, "title", None) or ""),
-                        str(getattr(el, "container_name", None) or ""),
-                        str(getattr(el, "context_text", None) or ""),
-                    ]
-                )
-                for el in dom_elements
-                if bool(getattr(el, "is_visible", True))
-            )
-        )
         reasoning_query_stop_tokens = {
             "검색",
             "결과",
@@ -696,6 +737,270 @@ def evaluate_explicit_reasoning_proof_completion(
     return None
 
 
+def _truncate_completion_text(value: object, limit: int = 180) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "..."
+
+
+def _parse_wait_judge_response(raw: object) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    if text.startswith("```json"):
+        text = text[len("```json") :].strip()
+    elif text.startswith("```"):
+        text = text[len("```") :].strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
+
+    candidates = [text]
+    if "{" in text and "}" in text:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(text[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _goal_completion_judge_enabled() -> bool:
+    raw = str(os.getenv("GAIA_ENABLE_GENERIC_WAIT_JUDGE", "1") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def evaluate_goal_completion_judge(
+    agent,
+    *,
+    goal: TestGoal,
+    decision: ActionDecision,
+    dom_elements: Optional[List[DOMElement]] = None,
+) -> Optional[str]:
+    if not _goal_completion_judge_enabled():
+        return None
+    if not hasattr(agent, "_call_llm_text_only"):
+        return None
+    if not bool(getattr(decision, "is_goal_achieved", False)) and not str(
+        getattr(decision, "goal_achievement_reason", "") or ""
+    ).strip():
+        return None
+    visible_elements = [el for el in (dom_elements or []) if bool(getattr(el, "is_visible", True))]
+    if not visible_elements:
+        return None
+
+    dom_lines: List[str] = []
+    for el in visible_elements:
+        parts: List[str] = []
+        role = str(getattr(el, "role", "") or "").strip()
+        tag = str(getattr(el, "tag", "") or "").strip()
+        text = _truncate_completion_text(getattr(el, "text", ""), 180)
+        aria = _truncate_completion_text(getattr(el, "aria_label", ""), 140)
+        context = _truncate_completion_text(getattr(el, "context_text", ""), 160)
+        if role:
+            parts.append(f"role={role}")
+        if tag:
+            parts.append(f"tag={tag}")
+        if text:
+            parts.append(f'text="{text}"')
+        if aria and aria != text:
+            parts.append(f'aria="{aria}"')
+        if context:
+            parts.append(f'context="{context}"')
+        if parts:
+            dom_lines.append("- " + " | ".join(parts))
+    formatted_dom = ""
+    formatter = getattr(agent, "_format_dom_for_llm", None)
+    if callable(formatter):
+        try:
+            formatted_dom = str(formatter(list(dom_elements or [])) or "").strip()
+        except Exception:
+            formatted_dom = ""
+    if len(formatted_dom) > 12000:
+        formatted_dom = formatted_dom[:12000].rstrip() + "\n... (truncated)"
+
+    if not dom_lines and not formatted_dom:
+        return None
+
+    recent_action_history = [
+        str(item or "").strip()
+        for item in list(getattr(agent, "_action_history", []) or [])[-6:]
+        if str(item or "").strip()
+    ]
+    recent_action_feedback = [
+        str(item or "").strip()
+        for item in list(getattr(agent, "_action_feedback", []) or [])[-6:]
+        if str(item or "").strip()
+    ]
+    expected_signals = [
+        str(item or "").strip()
+        for item in list(getattr(goal, "expected_signals", []) or [])
+        if str(item or "").strip()
+    ]
+    quoted_terms = [
+        str(item or "").strip()
+        for item in (agent._goal_quoted_terms(goal) or [])
+        if str(item or "").strip()
+    ]
+    target_terms = [
+        str(item or "").strip()
+        for item in (agent._goal_target_terms(goal) or [])
+        if str(item or "").strip()
+    ]
+
+    recent_state_change = (
+        dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
+        if getattr(agent, "_last_exec_result", None) is not None
+        else {}
+    )
+    state_change_summary = {
+        key: value
+        for key, value in recent_state_change.items()
+        if key
+        in {
+            "dom_changed",
+            "text_digest_changed",
+            "status_text_changed",
+            "interactive_count_changed",
+            "list_count_changed",
+            "url_changed",
+            "target_value_changed",
+            "target_value_matches",
+        }
+        and bool(value)
+    }
+    fill_memory = []
+    for item in list(getattr(agent, "_persistent_state_memory", []) or [])[-4:]:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("kind") or "").strip().lower() != "fill":
+            continue
+        value = str(item.get("expected_value") or "").strip()
+        if not value:
+            continue
+        fill_memory.append(
+            {
+                "value": value,
+                "context_text": str(item.get("context_text") or "").strip(),
+                "container_name": str(item.get("container_name") or "").strip(),
+            }
+        )
+
+    prompt = f"""너는 웹 자동화의 최종 성공 판정 judge다.
+actor의 완료 주장을 그대로 믿지 말고, 현재 DOM과 최근 행동 증거를 보고 독립적으로 판정하라.
+
+목표:
+{str(getattr(goal, "name", "") or "").strip()}
+
+설명:
+{str(getattr(goal, "description", "") or "").strip()}
+
+성공 조건:
+{json.dumps(list(getattr(goal, "success_criteria", []) or []), ensure_ascii=False)}
+
+quoted_terms:
+{json.dumps(quoted_terms, ensure_ascii=False)}
+
+target_terms:
+{json.dumps(target_terms, ensure_ascii=False)}
+
+expected_signals:
+{json.dumps(expected_signals, ensure_ascii=False)}
+
+모델의 기존 완료 주장:
+{str(getattr(decision, "goal_achievement_reason", "") or getattr(decision, "reasoning", "") or "").strip()}
+
+현재 actor가 고른 action:
+{str(getattr(decision, "action", "") or "").strip()}
+
+최근 액션 기록:
+{json.dumps(recent_action_history, ensure_ascii=False)}
+
+최근 액션 피드백:
+{json.dumps(recent_action_feedback, ensure_ascii=False)}
+
+최근 상태 변화:
+{json.dumps(state_change_summary, ensure_ascii=False)}
+
+최근 fill 메모리:
+{json.dumps(fill_memory, ensure_ascii=False)}
+
+현재 DOM:
+{formatted_dom or "(없음)"}
+
+현재 visible DOM 요약:
+{chr(10).join(dom_lines)}
+
+판정 규칙:
+- 현재 화면에 직접 보이는 증거만 믿어라.
+- `expected_signals`는 참고 정보일 뿐이고, 부재만으로 자동 실패 처리하지 마라.
+- 추측하지 마라. 애매하면 success=false.
+- 응답형/결과형 UI에서는 사용자가 입력한 내용이 전송되었고, 그 뒤의 결과 본문/응답이 별도 surface에 보이면 success=true다.
+- 로딩/생각중/스피너만 보이면 success=false다.
+- 회원가입/로그인 goal은 단순 폼 노출이나 화면 진입만으로 success가 아니다.
+
+JSON만 출력:
+{{
+  "success": true | false,
+  "blocked": true | false,
+  "reason": "한 문장 근거",
+  "confidence": 0.0
+}}"""
+
+    try:
+        raw = agent._call_llm_text_only(prompt)
+    except Exception:
+        setattr(
+            agent,
+            "_last_goal_completion_judge",
+            {"prompt": prompt, "raw_response": "", "parsed": {}, "error": "llm_call_failed"},
+        )
+        return None
+
+    parsed = _parse_wait_judge_response(raw)
+    setattr(
+        agent,
+        "_last_goal_completion_judge",
+        {"prompt": prompt, "raw_response": str(raw or ""), "parsed": parsed if isinstance(parsed, dict) else {}},
+    )
+    if not isinstance(parsed, dict):
+        return None
+    success_raw = parsed.get("success")
+    blocked_raw = parsed.get("blocked")
+    success = success_raw is True or str(success_raw).strip().lower() == "true"
+    blocked = blocked_raw is True or str(blocked_raw).strip().lower() == "true"
+    if not success or blocked:
+        return None
+    reason = str(parsed.get("reason") or "").strip()
+    if reason:
+        return reason
+    return "현재 화면의 직접적인 결과 증거를 바탕으로 목표가 완료된 것으로 판정했습니다."
+
+
+def evaluate_generic_wait_judge_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    decision: ActionDecision,
+    dom_elements: Optional[List[DOMElement]] = None,
+) -> Optional[str]:
+    if decision.action != ActionType.WAIT:
+        return None
+    return evaluate_goal_completion_judge(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom_elements,
+    )
+
+
 def evaluate_wait_goal_completion(
     agent,
     *,
@@ -708,6 +1013,13 @@ def evaluate_wait_goal_completion(
     target_reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom_elements)
     if target_reason:
         return target_reason
+    destination_reason = evaluate_destination_region_completion(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+    )
+    if destination_reason:
+        return destination_reason
     readonly_reason = evaluate_readonly_visibility_completion(
         agent,
         goal=goal,

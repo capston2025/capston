@@ -3,10 +3,8 @@ from __future__ import annotations
 from typing import List, Optional
 
 from .goal_completion_helpers import (
-    evaluate_destination_region_completion,
-    evaluate_explicit_reasoning_proof_completion,
-    evaluate_goal_target_completion,
-    evaluate_readonly_visibility_completion,
+    evaluate_goal_completion_judge,
+    evaluate_wait_goal_completion,
     is_readonly_visibility_goal,
 )
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
@@ -126,15 +124,15 @@ def validate_goal_achievement_claim(
         for item in list(getattr(goal, "expected_signals", []) or [])
         if str(item or "").strip()
     ]
+    last_state_change = (
+        dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
+        if getattr(agent, "_last_exec_result", None) is not None
+        else {}
+    )
     achieved: list[str] = []
     if expected_signals:
         from .goal_verification_helpers import derive_achieved_signals
 
-        last_state_change = (
-            dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
-            if getattr(agent, "_last_exec_result", None) is not None
-            else {}
-        )
         achieved = derive_achieved_signals(
             agent,
             goal=goal,
@@ -145,59 +143,24 @@ def validate_goal_achievement_claim(
     else:
         missing = []
 
+    wait_fallback_reason: Optional[str] = None
     wait_contract_override = False
     if decision.action == ActionType.WAIT:
-        wait_proof = evaluate_goal_target_completion(
+        wait_fallback_reason = evaluate_wait_goal_completion(
             agent,
             goal=goal,
+            decision=decision,
             dom_elements=dom_elements,
         )
-        if not wait_proof:
-            wait_proof = evaluate_destination_region_completion(
-                agent,
-                goal=goal,
-                dom_elements=dom_elements,
-            )
-        if not wait_proof:
-            wait_proof = evaluate_readonly_visibility_completion(
+        if not wait_fallback_reason:
+            wait_fallback_reason = has_recent_transition_completion_proof(
                 agent,
                 goal=goal,
                 decision=decision,
-                dom_elements=dom_elements,
-            )
-        if not wait_proof:
-            wait_proof = evaluate_explicit_reasoning_proof_completion(
-                agent,
-                goal=goal,
-                decision=decision,
-                dom_elements=dom_elements,
-            )
-        if not wait_proof:
-            wait_proof = has_recent_transition_completion_proof(
-                agent,
-                goal=goal,
-                decision=decision,
-                state_change=last_state_change if expected_signals else (
-                    dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
-                    if getattr(agent, "_last_exec_result", None) is not None
-                    else {}
-                ),
+                state_change=last_state_change,
                 achieved_signals=achieved,
             )
-            wait_contract_override = bool(wait_proof)
-        if not wait_proof:
-            if expected_signals:
-                if missing:
-                    return (
-                        False,
-                        "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
-                    )
-                wait_proof = "expected_signals"
-            else:
-                return (
-                    False,
-                    "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
-                )
+        wait_contract_override = bool(wait_fallback_reason) or is_readonly_visibility_goal(agent, goal)
 
     if goal_mentions_signup(agent.__class__, goal):
         if not has_signup_completion_evidence(agent.__class__, dom_elements):
@@ -207,13 +170,7 @@ def validate_goal_achievement_claim(
                 "회원가입 제출 및 완료 신호가 필요합니다.",
             )
 
-    if missing and not (
-        decision.action == ActionType.WAIT
-        and (
-            is_readonly_visibility_goal(agent, goal)
-            or wait_contract_override
-        )
-    ):
+    if missing and not wait_contract_override:
         return (
             False,
             "goal contract signal 미충족: " + ", ".join(missing),
@@ -222,5 +179,29 @@ def validate_goal_achievement_claim(
     constraint_reason = agent._constraint_failure_reason()
     if constraint_reason:
         return False, constraint_reason
+
+    judge_reason = evaluate_goal_completion_judge(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom_elements,
+    )
+    if judge_reason:
+        decision.goal_achievement_reason = judge_reason
+        return True, None
+
+    if expected_signals and not missing:
+        if not str(decision.goal_achievement_reason or "").strip():
+            decision.goal_achievement_reason = "goal contract signal 충족"
+        return True, None
+
+    if decision.action == ActionType.WAIT:
+        if wait_fallback_reason:
+            decision.goal_achievement_reason = wait_fallback_reason
+            return True, None
+        return (
+            False,
+            "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
+        )
 
     return True, None

@@ -61,6 +61,23 @@ def test_detect_browser_executable_prefers_playwright_chromium(monkeypatch, tmp_
     assert runtime.detect_browser_executable() == str(new_browser / "Chromium")
 
 
+def test_detect_browser_executable_includes_common_windows_install_paths(monkeypatch, tmp_path) -> None:
+    local_app_data = tmp_path / "AppData" / "Local"
+    chrome = local_app_data / "Google" / "Chrome" / "Application" / "chrome.exe"
+    chrome.parent.mkdir(parents=True)
+    chrome.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("GAIA_OPENCLAW_BROWSER_EXECUTABLE", raising=False)
+    monkeypatch.setattr(runtime, "_detect_playwright_chromium_executable", lambda: None)
+    monkeypatch.setattr(runtime, "_is_windows", lambda: True)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.delenv("PROGRAMFILES", raising=False)
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
+    monkeypatch.delenv("ProgramW6432", raising=False)
+
+    assert runtime.detect_browser_executable() == str(chrome)
+
+
 def test_probe_existing_browser_server_returns_ready_control_port(monkeypatch) -> None:
     monkeypatch.setattr(runtime, "_PORT_CANDIDATES", ((18789, 18791, 18800), (19001, 19003, 19012)))
     monkeypatch.setattr(
@@ -96,6 +113,34 @@ def test_cleanup_stale_browser_profile_removes_singleton_lock(monkeypatch, tmp_p
     assert not singleton_lock.exists()
 
 
+def test_cleanup_stale_browser_profile_uses_windows_taskkill(monkeypatch, tmp_path) -> None:
+    state_dir = tmp_path / "state"
+    user_data_dir = state_dir / "browser" / "openclaw" / "user-data"
+    user_data_dir.mkdir(parents=True)
+    singleton_lock = user_data_dir / "SingletonLock"
+    singleton_lock.write_text("", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(runtime, "_state_dir", lambda: state_dir)
+    monkeypatch.setattr(runtime, "_is_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_stale_profile_process_ids", lambda _user_data_dir: [222])
+    monkeypatch.setattr(runtime, "_pid_is_alive", lambda pid: True)
+
+    def _fake_run(command, **kwargs):
+        commands.append(list(command))
+        class _Result:
+            returncode = 0
+        return _Result()
+
+    monkeypatch.setattr(runtime.subprocess, "run", _fake_run)
+
+    runtime._cleanup_stale_browser_profile()
+
+    assert ["taskkill", "/PID", "222", "/T"] in commands
+    assert ["taskkill", "/F", "/PID", "222", "/T"] in commands
+    assert not singleton_lock.exists()
+
+
 def test_bootstrap_env_sets_openclaw_config_dir(monkeypatch, tmp_path) -> None:
     state_dir = tmp_path / "state"
     monkeypatch.setattr(runtime, "_state_dir", lambda: state_dir)
@@ -105,6 +150,23 @@ def test_bootstrap_env_sets_openclaw_config_dir(monkeypatch, tmp_path) -> None:
     assert env["OPENCLAW_CONFIG_DIR"] == str(state_dir)
     assert env["OPENCLAW_STATE_DIR"] == str(state_dir)
     assert env["OPENCLAW_BUNDLED_PLUGINS_DIR"] == str(runtime.vendor_root() / "extensions")
+
+
+def test_embedded_server_popen_kwargs_use_start_new_session_on_posix(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_is_windows", lambda: False)
+
+    assert runtime._embedded_server_popen_kwargs() == {"start_new_session": True}
+
+
+def test_embedded_server_popen_kwargs_use_creationflags_on_windows(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_is_windows", lambda: True)
+    monkeypatch.setattr(runtime.subprocess, "CREATE_NEW_PROCESS_GROUP", 512, raising=False)
+    monkeypatch.setattr(runtime.subprocess, "CREATE_NO_WINDOW", 134217728, raising=False)
+
+    payload = runtime._embedded_server_popen_kwargs()
+
+    assert "creationflags" in payload
+    assert int(payload["creationflags"]) == 512 + 134217728
 
 
 def test_ensure_browser_profile_started_raises_on_error(monkeypatch) -> None:

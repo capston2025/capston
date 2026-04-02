@@ -1705,9 +1705,12 @@ def dispatch_openclaw_action(
     params: Dict[str, Any],
     timeout: Any = None,
 ) -> Tuple[int, Dict[str, Any], str]:
+    effective_params = dict(params or {})
+    if action == "browser_wait" and not str(effective_params.get("action") or "").strip():
+        effective_params["action"] = "wait"
     base_url = _resolve_base_url(raw_base_url)
-    session_id = str((params or {}).get("session_id") or "default")
-    requested_url = str((params or {}).get("url") or "").strip()
+    session_id = str((effective_params or {}).get("session_id") or "default")
+    requested_url = str((effective_params or {}).get("url") or "").strip()
     if action == "browser_snapshot":
         fallback_url = requested_url
         state = _ensure_target(
@@ -1755,7 +1758,7 @@ def dispatch_openclaw_action(
             session_id=session_id,
             target_id=target_id,
             current_url=str(data.get("url") or state.get("current_url") or requested_url),
-            requested_scope_ref_id=str((params or {}).get("scope_container_ref_id") or "").strip(),
+            requested_scope_ref_id=str((effective_params or {}).get("scope_container_ref_id") or "").strip(),
             raw_snapshot=data,
             state=state,
         )
@@ -1775,9 +1778,9 @@ def dispatch_openclaw_action(
             image_type = "png"
         payload = {
             "targetId": target_id,
-            "fullPage": bool((params or {}).get("fullPage") or (params or {}).get("full_page")),
-            "ref": str((params or {}).get("ref") or "").strip() or None,
-            "element": str((params or {}).get("element") or "").strip() or None,
+            "fullPage": bool((effective_params or {}).get("fullPage") or (effective_params or {}).get("full_page")),
+            "ref": str((effective_params or {}).get("ref") or "").strip() or None,
+            "element": str((effective_params or {}).get("element") or "").strip() or None,
             "type": image_type,
         }
         status_code, data, text = _request(
@@ -1826,7 +1829,7 @@ def dispatch_openclaw_action(
             "mime_type": f"image/{image_type}",
             "saved_path": str(image_path),
             "meta": {
-                "full_page": bool((params or {}).get("fullPage") or (params or {}).get("full_page")),
+                "full_page": bool((effective_params or {}).get("fullPage") or (effective_params or {}).get("full_page")),
                 "type": image_type,
                 "backend": "openclaw",
             },
@@ -1844,7 +1847,7 @@ def dispatch_openclaw_action(
     try:
         payload = _build_openclaw_action_payload(
             target_id=target_id,
-            params=params,
+            params=effective_params,
         )
     except ValueError as exc:
         return _normalize_failure(400, {"error": str(exc)}, "")
