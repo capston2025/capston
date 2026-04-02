@@ -380,6 +380,38 @@ def test_validate_goal_achievement_claim_accepts_wait_when_expected_signals_are_
     assert reason is None
 
 
+def test_validate_goal_achievement_claim_rejects_signup_goal_without_completion_signal() -> None:
+    agent = _FakeAgent()
+    goal = SimpleNamespace(
+        name="회원가입 완료 확인",
+        description="회원가입이 정상적으로 끝났는지 확인",
+        success_criteria=["회원가입 완료 여부 확인"],
+    )
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        reasoning="회원가입 화면이 보이므로 목표를 달성했다고 판단합니다.",
+        confidence=0.8,
+        is_goal_achieved=True,
+        goal_achievement_reason="회원가입 화면 진입",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h2",
+            role="heading",
+            text="회원가입",
+            aria_label="회원가입",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is False
+    assert reason == "회원가입 목표는 화면 진입만으로 성공으로 보지 않습니다. 회원가입 제출 및 완료 신호가 필요합니다."
+
+
 def test_validate_goal_achievement_claim_accepts_wait_on_recent_transition_even_when_expected_signals_are_missing() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {"mutation_direction": "clear"}

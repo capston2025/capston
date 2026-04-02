@@ -18,6 +18,52 @@ def goal_text_blob(agent_cls, goal: TestGoal) -> str:
     return " ".join(agent_cls._normalize_text(x) for x in fields if x)
 
 
+def goal_mentions_signup(agent_cls, goal: TestGoal) -> bool:
+    blob = goal_text_blob(agent_cls, goal)
+    signup_keywords = (
+        "회원가입",
+        "가입",
+        "sign up",
+        "signup",
+        "register",
+        "registration",
+        "계정 생성",
+    )
+    return any(keyword in blob for keyword in signup_keywords)
+
+
+def dom_contains_any_hint(agent_cls, dom_elements: List[DOMElement], keywords: tuple[str, ...]) -> bool:
+    for el in dom_elements:
+        fields = [
+            el.text,
+            el.placeholder,
+            el.aria_label,
+            getattr(el, "title", None),
+        ]
+        for field in fields:
+            normalized = agent_cls._normalize_text(field)
+            if not normalized:
+                continue
+            if any(keyword in normalized for keyword in keywords):
+                return True
+    return False
+
+
+def has_signup_completion_evidence(agent_cls, dom_elements: List[DOMElement]) -> bool:
+    completion_hints = (
+        "회원가입 완료",
+        "가입 완료",
+        "가입되었습니다",
+        "가입이 완료",
+        "환영합니다",
+        "welcome",
+        "로그아웃",
+        "마이페이지",
+        "프로필",
+    )
+    return dom_contains_any_hint(agent_cls, dom_elements, completion_hints)
+
+
 def has_recent_transition_completion_proof(
     agent,
     *,
@@ -152,6 +198,14 @@ def validate_goal_achievement_claim(
                     False,
                     "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
                 )
+
+    if goal_mentions_signup(agent.__class__, goal):
+        if not has_signup_completion_evidence(agent.__class__, dom_elements):
+            return (
+                False,
+                "회원가입 목표는 화면 진입만으로 성공으로 보지 않습니다. "
+                "회원가입 제출 및 완료 신호가 필요합니다.",
+            )
 
     if missing and not (
         decision.action == ActionType.WAIT

@@ -343,6 +343,25 @@ def test_result_consistency_signal_uses_filter_semantic_report() -> None:
     assert achieved == ["selection_reflected", "result_consistency"]
 
 
+def test_auth_completed_signal_is_derived_from_auth_state_transition() -> None:
+    agent = _VerificationAgent()
+    goal = GoalModel(
+        id="G7",
+        name="로그인 완료 확인",
+        description="로그인 후 인증이 완료되었는지 확인해줘.",
+        expected_signals=["auth_completed"],
+    )
+
+    achieved = derive_achieved_signals(
+        agent,
+        goal=goal,
+        state_change={"auth_state_changed": True},
+        dom_elements=[],
+    )
+
+    assert achieved == ["auth_completed"]
+
+
 def test_static_verification_rejects_collect_goal_even_with_list_structure() -> None:
     agent = _VerificationAgent()
     agent._goal_constraints = {"collect_min": 3}

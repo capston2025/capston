@@ -64,6 +64,17 @@ def is_verification_style_goal(agent, goal: TestGoal) -> bool:
         "select",
         "press",
     )
+    entity_hints = (
+        "회원가입",
+        "로그인",
+        "signup",
+        "register",
+        "login",
+        "결제",
+        "구매",
+        "checkout",
+        "purchase",
+    )
     visibility_hints = (
         "보이는지",
         "표시",
@@ -82,10 +93,13 @@ def is_verification_style_goal(agent, goal: TestGoal) -> bool:
     )
     has_verify_hint = any(hint in text for hint in verify_hints)
     has_operation_hint = any(hint in text for hint in operation_hints)
+    has_entity_hint = any(hint in text for hint in entity_hints)
     has_visibility_hint = any(hint in text for hint in visibility_hints)
     if not has_verify_hint:
         return False
     if has_operation_hint:
+        return False
+    if has_entity_hint and not has_visibility_hint:
         return False
     return True
 
@@ -440,6 +454,17 @@ def _has_pagination_advance_signal(agent: Any, state_changes: List[Dict[str, Any
     return any(bool(change.get("url_changed")) for change in state_changes)
 
 
+def _has_auth_completion_signal(agent: Any, state_changes: List[Dict[str, Any]]) -> bool:
+    if _has_any_state_signal(state_changes, "auth_state_changed"):
+        return True
+    completed_fields = getattr(agent, "_auth_completed_fields", None)
+    if isinstance(completed_fields, set) and completed_fields:
+        return True
+    if isinstance(completed_fields, list) and completed_fields:
+        return True
+    return False
+
+
 def derive_achieved_signals(
     agent: Any,
     *,
@@ -479,6 +504,8 @@ def derive_achieved_signals(
             ok = _has_visibility_dom_signal(agent, goal, dom, actionable_only=True)
         elif normalized in {"url_change", "url_changed"}:
             ok = _has_any_state_signal(state_changes, "url_changed")
+        elif normalized == "auth_completed":
+            ok = _has_auth_completion_signal(agent, state_changes)
         elif normalized in {"pagination_advanced", "page_advanced"}:
             ok = bool(pagination_advanced)
         elif normalized == "persistence_verified":
@@ -689,6 +716,9 @@ def evaluate_static_verification_on_current_page(
         )
     page_blob = agent._normalize_text(" ".join(fragment for fragment in page_fragments if fragment))
 
+    def _matches_any(*needles: str) -> bool:
+        return any(str(needle or "").strip().lower() in page_blob for needle in needles if str(needle or "").strip())
+
     evidence_labels: List[str] = []
     visible_elements = [el for el in dom_elements if bool(el.is_visible)]
     link_like_count = sum(
@@ -706,6 +736,11 @@ def evaluate_static_verification_on_current_page(
     )
     title_like_count = sum(1 for el in visible_elements if len(str(el.text or "").strip()) >= 12)
     has_collection_evidence = bool(link_like_count >= 6 or collection_like_count >= 6 or title_like_count >= 8)
+
+    if any(token in goal_text for token in ("로그인", "login", "sign in", "signin")):
+        if not _matches_any("로그인", "login", "sign in", "/login", "signin"):
+            return None
+        evidence_labels.append("로그인 신호")
 
     generic_stop_tokens = {
         "현재", "이미", "추가", "조작", "없이", "보이는지", "표시", "존재하는지",
