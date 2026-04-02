@@ -34,6 +34,13 @@ _CHROME_EXECUTABLE_CANDIDATES = (
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 )
 
+_WINDOWS_BROWSER_RELATIVE_CANDIDATES = (
+    "Google/Chrome/Application/chrome.exe",
+    "Chromium/Application/chrome.exe",
+    "BraveSoftware/Brave-Browser/Application/brave.exe",
+    "Microsoft/Edge/Application/msedge.exe",
+)
+
 _PLAYWRIGHT_CACHE_DIR_CANDIDATES = (
     Path.home() / "Library" / "Caches" / "ms-playwright",
     Path.home() / ".cache" / "ms-playwright",
@@ -47,6 +54,10 @@ _PORT_CANDIDATES = (
     (19201, 19203, 19212),
     (19301, 19303, 19312),
 )
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def browser_headless_enabled() -> bool:
@@ -140,10 +151,41 @@ def detect_browser_executable() -> str | None:
     playwright_browser = _detect_playwright_chromium_executable()
     if playwright_browser:
         return playwright_browser
-    for candidate in _CHROME_EXECUTABLE_CANDIDATES:
+    for candidate in _browser_executable_candidates():
         if Path(candidate).exists():
             return candidate
     return None
+
+
+def _browser_executable_candidates() -> tuple[str, ...]:
+    if not _is_windows():
+        return tuple(_CHROME_EXECUTABLE_CANDIDATES)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for root in _windows_browser_root_candidates():
+        for relative in _WINDOWS_BROWSER_RELATIVE_CANDIDATES:
+            candidate = root / relative
+            candidate_str = str(candidate)
+            if candidate_str in seen:
+                continue
+            seen.add(candidate_str)
+            candidates.append(candidate_str)
+    return tuple(candidates)
+
+
+def _windows_browser_root_candidates() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for env_name in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "ProgramW6432"):
+        raw = str(os.getenv(env_name, "") or "").strip()
+        if not raw:
+            continue
+        key = raw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(Path(raw))
+    return tuple(roots)
 
 
 def _detect_playwright_chromium_executable() -> str | None:
@@ -279,14 +321,42 @@ def _probe_existing_browser_server() -> tuple[str, int, int, int] | None:
     return None
 
 
-def _cleanup_stale_browser_profile() -> None:
-    user_data_dir = _browser_user_data_dir()
+def _powershell_command() -> str | None:
+    for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+    return None
+
+
+def _stale_profile_process_ids(user_data_dir: Path) -> list[int]:
     pattern = str(user_data_dir)
-    try:
-        output = subprocess.check_output(["pgrep", "-f", pattern], text=True)
-    except Exception:
-        output = ""
-    pids = []
+    if _is_windows():
+        powershell = _powershell_command()
+        if not powershell:
+            return []
+        escaped = pattern.replace("'", "''")
+        script = (
+            f"$pattern = '{escaped}'; "
+            "Get-CimInstance Win32_Process | "
+            "Where-Object { $_.CommandLine -and $_.CommandLine -like ('*' + $pattern + '*') } | "
+            "Select-Object -ExpandProperty ProcessId"
+        )
+        try:
+            output = subprocess.check_output(
+                [powershell, "-NoProfile", "-Command", script],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            output = ""
+    else:
+        try:
+            output = subprocess.check_output(["pgrep", "-f", pattern], text=True)
+        except Exception:
+            output = ""
+
+    pids: list[int] = []
     for line in output.splitlines():
         try:
             pid = int(line.strip())
@@ -294,22 +364,69 @@ def _cleanup_stale_browser_profile() -> None:
             continue
         if pid > 0 and pid != os.getpid():
             pids.append(pid)
-    for pid in pids:
+    return pids
+
+
+def _terminate_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    if _is_windows():
         try:
-            os.kill(pid, signal.SIGTERM)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
         except Exception:
-            continue
+            pass
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def _force_kill_pid(pid: int) -> None:
+    if pid <= 0:
+        return
+    if _is_windows():
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid), "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            pass
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _cleanup_stale_browser_profile() -> None:
+    user_data_dir = _browser_user_data_dir()
+    pids = _stale_profile_process_ids(user_data_dir)
+    for pid in pids:
+        _terminate_pid(pid)
     if pids:
         time.sleep(1.0)
     for pid in pids:
-        try:
-            os.kill(pid, 0)
-        except Exception:
-            continue
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except Exception:
-            pass
+        if _pid_is_alive(pid):
+            _force_kill_pid(pid)
     for lock_name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
         lock_path = user_data_dir / lock_name
         try:
@@ -341,6 +458,18 @@ def _install_runtime_dependencies(root: Path, env: Dict[str, str]) -> None:
         )
     if process.returncode != 0:
         raise RuntimeError(f"embedded OpenClaw runtime dependency install failed; see {log_path}")
+
+
+def _embedded_server_popen_kwargs() -> Dict[str, Any]:
+    if not _is_windows():
+        return {"start_new_session": True}
+    creationflags = 0
+    creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) or 0)
+    creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+    payload: Dict[str, Any] = {}
+    if creationflags:
+        payload["creationflags"] = creationflags
+    return payload
 
 
 def _terminate_process(proc: Optional[subprocess.Popen[bytes]]) -> None:
@@ -446,7 +575,7 @@ def ensure_embedded_openclaw_base_url() -> str:
                 env=env,
                 stdout=handle,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                **_embedded_server_popen_kwargs(),
             )
 
         deadline = time.time() + _SERVER_READY_TIMEOUT_S

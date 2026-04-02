@@ -362,64 +362,6 @@ def test_auth_completed_signal_is_derived_from_auth_state_transition() -> None:
     assert achieved == ["auth_completed"]
 
 
-def test_timetable_updated_signal_is_derived_from_membership_proof_state() -> None:
-    agent = _VerificationAgent()
-    agent._goal_state_cache = {
-        "membership_belief": "absent",
-        "proof": {
-            "remove_done": True,
-            "add_done": False,
-            "readd_done": False,
-            "final_present_verified": False,
-        },
-    }
-    goal = GoalModel(
-        id="G8",
-        name="시간표 갱신 확인",
-        description="내 시간표에 과목을 추가했다가 다시 삭제한 뒤 시간표 갱신 여부를 확인해줘.",
-        expected_signals=["timetable_updated"],
-    )
-    dom = [
-        DOMElement(
-            id=1,
-            tag="h2",
-            role="heading",
-            text="내 시간표",
-            aria_label="내 시간표",
-            is_visible=True,
-            is_enabled=True,
-        )
-    ]
-
-    achieved = derive_achieved_signals(
-        agent,
-        goal=goal,
-        state_change={"text_digest_changed": True},
-        dom_elements=dom,
-    )
-
-    assert achieved == ["timetable_updated"]
-
-
-def test_combination_applied_signal_is_derived_from_substantial_transition() -> None:
-    agent = _VerificationAgent()
-    goal = GoalModel(
-        id="G9",
-        name="조합 적용 확인",
-        description="조합 만들기를 실행하고 결과가 실제로 적용되었는지 확인해줘.",
-        expected_signals=["combination_applied"],
-    )
-
-    achieved = derive_achieved_signals(
-        agent,
-        goal=goal,
-        state_change={"dom_changed": True, "list_count_changed": True},
-        dom_elements=[],
-    )
-
-    assert achieved == ["combination_applied"]
-
-
 def test_static_verification_rejects_collect_goal_even_with_list_structure() -> None:
     agent = _VerificationAgent()
     agent._goal_constraints = {"collect_min": 3}

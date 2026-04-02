@@ -64,6 +64,8 @@ def parse_wait_payload(raw: Optional[Any]) -> Dict[str, Any]:
 
     if isinstance(parsed, dict):
         payload: Dict[str, Any] = {}
+        if bool(parsed.get("for_network_idle")) or bool(parsed.get("forNetworkIdle")):
+            payload["load_state"] = "networkidle"
         key_aliases = {
             "ms": "time_ms",
             "duration_ms": "time_ms",

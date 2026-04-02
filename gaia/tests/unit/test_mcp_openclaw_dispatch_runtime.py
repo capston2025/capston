@@ -94,6 +94,36 @@ def test_dispatch_openclaw_action_capture_screenshot_returns_base64(monkeypatch,
     assert payload["screenshot"] == base64.b64encode(b"fake-image-bytes").decode("utf-8")
 
 
+def test_dispatch_openclaw_action_browser_wait_maps_to_wait_payload(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(
+        runtime,
+        "_ensure_target",
+        lambda **kwargs: {"target_id": "tab-1", "current_url": "https://example.com/app"},
+    )
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/act"
+        assert payload["targetId"] == "tab-1"
+        assert payload["kind"] == "wait"
+        assert payload["text"] == "assistant response ready"
+        return 200, {"ok": True, "url": "https://example.com/app", "targetId": "tab-1"}, ""
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_wait",
+        params={"session_id": "s1", "text": "assistant response ready"},
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["reason_code"] == "ok"
+
+
 def test_pseudo_elements_from_role_snapshot_attach_row_local_context_to_action_buttons() -> None:
     snapshot = """
 - main [ref=e40]:

@@ -65,10 +65,7 @@ from .dom_prompt_formatting import (
     truncate_for_prompt as truncate_for_prompt_impl,
 )
 from .goal_achievement_runtime import (
-    dom_contains_any_hint as dom_contains_any_hint_impl,
-    goal_mentions_signup as goal_mentions_signup_impl,
     goal_text_blob as goal_text_blob_impl,
-    has_signup_completion_evidence as has_signup_completion_evidence_impl,
     validate_goal_achievement_claim as validate_goal_achievement_claim_impl,
 )
 from .goal_policy_phase_runtime import goal_phase_intent
@@ -1289,18 +1286,6 @@ class GoalDrivenAgent:
     @classmethod
     def _goal_text_blob(cls, goal: TestGoal) -> str:
         return goal_text_blob_impl(cls, goal)
-
-    @classmethod
-    def _goal_mentions_signup(cls, goal: TestGoal) -> bool:
-        return goal_mentions_signup_impl(cls, goal)
-
-    @classmethod
-    def _dom_contains_any_hint(cls, dom_elements: List[DOMElement], keywords: tuple[str, ...]) -> bool:
-        return dom_contains_any_hint_impl(cls, dom_elements, keywords)
-
-    @classmethod
-    def _has_signup_completion_evidence(cls, dom_elements: List[DOMElement]) -> bool:
-        return has_signup_completion_evidence_impl(cls, dom_elements)
 
     def _validate_goal_achievement_claim(
         self,
