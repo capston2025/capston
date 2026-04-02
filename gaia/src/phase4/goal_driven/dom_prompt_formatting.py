@@ -438,24 +438,17 @@ def detect_active_surface_context(
         if "source_mutation_candidate" in tags and _is_source_like_element(agent, element):
             background_indices.append(index)
 
-    surface_active = bool(
-        destination_heading is not None
-        and (
-            modal_open_hint
-            or len(destination_action_indices) >= 2
-        )
-    )
-    if not surface_active:
-        return {"active": False}
-
     close_candidate: Optional[DOMElement] = None
     explicit_close: Optional[DOMElement] = None
     if destination_heading_index is not None:
         for index in range(destination_heading_index, min(len(elements), destination_heading_index + 8)):
             element = elements[index]
+            tags = set(tag_cache.get(int(getattr(element, "id", -1)), []) or [])
             role = str(getattr(element, "role", "") or "").strip().lower()
             tag = str(getattr(element, "tag", "") or "").strip().lower()
             if role not in {"button", "link"} and tag not in {"button", "a"}:
+                continue
+            if tags.intersection({"feedback_conflict_signal", "feedback_success_signal"}):
                 continue
             label = " ".join(
                 str(getattr(element, key, "") or "")
@@ -467,12 +460,26 @@ def detect_active_surface_context(
             break
         for index, element in enumerate(elements):
             tags = set(tag_cache.get(int(getattr(element, "id", -1)), []) or [])
-            if "close_like" in tags and not _is_source_like_element(agent, element):
+            if (
+                "close_like" in tags
+                and not tags.intersection({"feedback_conflict_signal", "feedback_success_signal"})
+                and not _is_source_like_element(agent, element)
+            ):
                 if abs(index - destination_heading_index) <= 8:
                     explicit_close = element
                     break
     if explicit_close is not None and close_candidate is None:
         close_candidate = explicit_close
+
+    surface_active = bool(
+        destination_heading is not None
+        and (
+            modal_open_hint
+            or close_candidate is not None
+        )
+    )
+    if not surface_active:
+        return {"active": False}
 
     action_elements = [elements[index] for index in destination_action_indices[:6]]
     background_elements = [elements[index] for index in background_indices[:4]]
@@ -693,6 +700,24 @@ def _compute_delta_snapshot(
     return delta_lines, change_ratio
 
 
+def _goal_requires_full_raw_snapshot(agent: Any) -> bool:
+    """수집/변경형 goal은 delta보다 현재 full raw snapshot이 안전하다."""
+    goal_constraints = getattr(agent, "_goal_constraints", {}) or {}
+    if not isinstance(goal_constraints, dict):
+        return False
+
+    mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
+    if mutation_direction in {"increase", "decrease", "clear"}:
+        return True
+    if goal_constraints.get("collect_min") is not None:
+        return True
+    if goal_constraints.get("apply_target") is not None:
+        return True
+    if bool(goal_constraints.get("require_state_change")):
+        return True
+    return False
+
+
 def _render_openclaw_raw_role_tree(
     agent: Any,
     role_snapshot: Dict[str, Any],
@@ -721,6 +746,8 @@ def _render_openclaw_raw_role_tree(
         delta_disabled = str(os.getenv("GAIA_OPENCLAW_DELTA_DISABLED", "0")).strip() == "1"
     except Exception:
         delta_disabled = False
+    if _goal_requires_full_raw_snapshot(agent):
+        delta_disabled = True
     try:
         fallback_ratio = float(os.getenv("GAIA_OPENCLAW_DELTA_FALLBACK_RATIO", "0.7"))
     except Exception:

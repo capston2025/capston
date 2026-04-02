@@ -1,6 +1,7 @@
 from gaia.src.phase4.goal_driven.goal_verification_helpers import (
     can_finish_by_verification_transition,
     derive_achieved_signals,
+    evaluate_static_verification_on_current_page,
 )
 from gaia.src.phase4.goal_driven.models import (
     ActionDecision,
@@ -14,8 +15,12 @@ class _VerificationAgent:
     def __init__(self) -> None:
         self._goal_constraints = {}
         self._active_goal_text = ""
+        self._active_url = ""
         self._goal_state_cache = {}
         self._auth_completed_fields = set()
+        self._element_full_selectors = {}
+        self._element_selectors = {}
+        self._reason_codes = []
 
     @staticmethod
     def _normalize_text(value: object) -> str:
@@ -32,6 +37,13 @@ class _VerificationAgent:
     @staticmethod
     def _goal_target_terms(goal: object) -> list[str]:
         return []
+
+    @staticmethod
+    def _tokenize_text(value: object) -> list[str]:
+        return [token for token in str(value or "").lower().split() if token]
+
+    def _record_reason_code(self, code: str) -> None:
+        self._reason_codes.append(code)
 
 
 def test_nonsemantic_filter_goal_can_finish_on_strong_result_transition() -> None:
@@ -406,3 +418,145 @@ def test_combination_applied_signal_is_derived_from_substantial_transition() -> 
     )
 
     assert achieved == ["combination_applied"]
+
+
+def test_static_verification_rejects_collect_goal_even_with_list_structure() -> None:
+    agent = _VerificationAgent()
+    agent._goal_constraints = {"collect_min": 3}
+    goal = GoalModel(
+        id="G10",
+        name="위시리스트에 과목 3개를 담고 위시리스트를 확인해봐 잘추가되어있는지",
+        description="위시리스트에 과목 3개를 담고 위시리스트를 확인해봐 잘추가되어있는지",
+        expected_signals=["wishlist_updated"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="article",
+            role="article",
+            text="(HUSS국립부경대)포용사회와문화탐방1",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="article",
+            role="article",
+            text="(HUSS대구대)오디세이프로젝트3전쟁과평화",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="article",
+            role="article",
+            text="(HUSS서강대)포용사회주제세미나",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=4,
+            tag="button",
+            role="button",
+            text="담기",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=5,
+            tag="button",
+            role="button",
+            text="바로 추가",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=6,
+            tag="button",
+            role="button",
+            text="위시리스트 확장 보기",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=7,
+            tag="article",
+            role="article",
+            text="(HUSS국립부경대)사회복지역사",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=8,
+            tag="article",
+            role="article",
+            text="(HUSS국립부경대)과거사청산과포용의문화",
+            is_visible=True,
+        ),
+    ]
+
+    reason = evaluate_static_verification_on_current_page(
+        agent,
+        goal=goal,
+        dom_elements=dom,
+    )
+
+    assert reason is None
+    assert "static_verification_pass" not in agent._reason_codes
+
+
+def test_static_verification_keeps_readonly_list_goal() -> None:
+    agent = _VerificationAgent()
+    goal = GoalModel(
+        id="G11",
+        name="현재 게시판 목록 화면 확인",
+        description="현재 게시판 목록이 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+        expected_signals=["text_visible"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="article",
+            role="article",
+            text="캡스톤 발표 자료 초안 공유",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="article",
+            role="article",
+            text="중간 점검 회의 정리",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="article",
+            role="article",
+            text="최종 데모 준비 체크리스트",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=4,
+            tag="article",
+            role="article",
+            text="OpenClaw raw-first 적용 결과",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=5,
+            tag="article",
+            role="article",
+            text="브라우저 규칙층 분리 후 smoke 결과",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=6,
+            tag="article",
+            role="article",
+            text="Readonly fetch fast path 검토",
+            is_visible=True,
+        ),
+    ]
+
+    reason = evaluate_static_verification_on_current_page(
+        agent,
+        goal=goal,
+        dom_elements=dom,
+    )
+
+    assert reason is not None
+    assert "현재 페이지에서 목표 검증 신호를 바로 확인했습니다." in reason
+    assert "목록형 구조" in reason

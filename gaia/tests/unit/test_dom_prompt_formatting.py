@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from gaia.src.phase4.goal_driven.auth_hints import contains_login_hint, contains_next_pagination_hint, is_numeric_page_label
 from gaia.src.phase4.goal_driven.dom_prompt_formatting import (
     _compute_delta_snapshot,
+    _goal_requires_full_raw_snapshot,
     context_score,
     detect_active_surface_context,
     fields_for_element,
@@ -21,6 +22,7 @@ class _FakeAgent:
         self._goal_tokens = {"포용사회와문화탐방1", "바로", "추가", "시간표"}
         self._runtime_phase = "COLLECT"
         self._browser_backend_name = "openclaw"
+        self._goal_constraints = {}
         self._last_role_snapshot = {
             "snapshot": "",
             "tree": [
@@ -684,6 +686,57 @@ def test_format_dom_for_llm_marks_surface_close_and_occluded_background_when_des
     assert 'semantics=[target_match | source_mutation_candidate | occluded_background_candidate]' in prompt
 
 
+def test_detect_active_surface_context_ignores_persistent_wishlist_sidebar_without_modal_or_close() -> None:
+    agent = _FakeAgent()
+    agent._goal_semantics = SimpleNamespace(target_terms=["포용사회와문화탐방1"], destination_terms=["위시리스트", "wishlist"])
+    elements = [
+        DOMElement(
+            id=1,
+            tag="h3",
+            role="heading",
+            text="위시리스트",
+            aria_label="위시리스트",
+            title="위시리스트",
+            ref_id="e640",
+            container_role="complementary",
+            container_source="openclaw-role-tree",
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="위시리스트 확장 보기",
+            aria_label="위시리스트 확장 보기",
+            title="위시리스트 확장 보기",
+            ref_id="e642",
+            container_name="위시리스트",
+            container_role="complementary",
+            container_source="openclaw-role-tree",
+            role_ref_role="button",
+            role_ref_name="위시리스트 확장 보기",
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="담기",
+            aria_label="담기",
+            title="담기",
+            ref_id="e67",
+            container_name="검색 결과(총 2,894개 중 20개 표시)",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="(HUSS국립부경대)포용사회와문화탐방1 | 검색 결과",
+            role_ref_role="button",
+            role_ref_name="담기",
+        ),
+    ]
+
+    surface = detect_active_surface_context(agent, elements)
+
+    assert surface["active"] is False
+
+
 # --- Delta snapshot compression tests ---
 
 
@@ -780,3 +833,30 @@ def test_render_openclaw_raw_tree_full_change_fallback():
     assert "변경 영역만 표시" not in prompt
     assert "DOM 변경 없음" not in prompt
     assert "new-line-0" in prompt
+
+
+def test_goal_requires_full_raw_snapshot_for_collect_goal():
+    agent = _FakeAgent()
+    agent._goal_constraints = {"collect_min": 3}
+
+    assert _goal_requires_full_raw_snapshot(agent) is True
+
+
+def test_render_openclaw_raw_tree_collect_goal_disables_delta():
+    """수집/변경형 goal은 둘째 턴 이후에도 full raw를 유지한다."""
+    agent = _FakeAgent()
+    agent._goal_constraints = {"collect_min": 3, "mutation_direction": "increase"}
+    prev_lines = [f"  role: item-{i} [ref=e{i}]" for i in range(20)]
+    prev_text = "role: main\n" + "\n".join(prev_lines)
+    cur_lines = list(prev_lines)
+    cur_lines[10] = "  role: CHANGED-item [ref=e99]"
+    cur_text = "role: main\n" + "\n".join(cur_lines)
+
+    agent._last_role_snapshot = {"snapshot": cur_text, "tree": [], "refs_mode": "aria", "stats": {}}
+    agent._prev_raw_snapshot_text = prev_text
+
+    prompt = format_dom_for_llm(agent, [])
+    assert "변경 영역만 표시" not in prompt
+    assert "DOM 변경 없음" not in prompt
+    assert "CHANGED-item" in prompt
+    assert "role: item-0 [ref=e0]" in prompt
