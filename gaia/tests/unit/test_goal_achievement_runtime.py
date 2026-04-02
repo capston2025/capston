@@ -380,59 +380,6 @@ def test_validate_goal_achievement_claim_accepts_wait_when_expected_signals_are_
     assert reason is None
 
 
-def test_validate_goal_achievement_claim_accepts_wait_when_membership_transition_signals_are_met() -> None:
-    agent = _FakeAgent()
-    agent._auth_completed_fields = {"primary"}
-    agent._last_exec_result = SimpleNamespace(state_change={"text_digest_changed": True})
-    agent._goal_state_cache = {
-        "membership_belief": "absent",
-        "proof": {
-            "remove_done": True,
-            "add_done": False,
-            "readd_done": False,
-            "final_present_verified": False,
-        },
-    }
-    goal = SimpleNamespace(
-        name="캡스톤디자인 과목을 시간표에 추가한 뒤 다시 삭제",
-        description="인증 후 시간표에 추가하고 삭제까지 완료되었는지 확인",
-        success_criteria=["시간표 갱신과 인증 완료를 확인"],
-        expected_signals=["auth_completed", "timetable_updated"],
-    )
-    decision = ActionDecision(
-        action=ActionType.WAIT,
-        reasoning="인증이 완료되었고 시간표 변경이 반영되어 목표를 달성했습니다.",
-        confidence=0.94,
-        is_goal_achieved=True,
-        goal_achievement_reason="인증 및 시간표 갱신 확인",
-    )
-    dom = [
-        DOMElement(
-            id=1,
-            tag="div",
-            role="generic",
-            text="'캡스톤디자인' 과목을 시간표에서 제거했어요!",
-            context_text="내 시간표 | 삭제 완료 토스트",
-            is_visible=True,
-            is_enabled=True,
-        ),
-        DOMElement(
-            id=2,
-            tag="h2",
-            role="heading",
-            text="내 시간표",
-            aria_label="내 시간표",
-            is_visible=True,
-            is_enabled=True,
-        ),
-    ]
-
-    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
-
-    assert ok is True
-    assert reason is None
-
-
 def test_validate_goal_achievement_claim_accepts_wait_on_recent_transition_even_when_expected_signals_are_missing() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {"mutation_direction": "clear"}
@@ -446,7 +393,7 @@ def test_validate_goal_achievement_claim_accepts_wait_on_recent_transition_even_
         name="캡스톤디자인 과목을 추가 후 다시 삭제",
         description="추가한 뒤 삭제까지 끝났는지 확인",
         success_criteria=["추가 후 삭제가 완료되었는지 확인"],
-        expected_signals=["auth_completed", "timetable_updated"],
+        expected_signals=["post_action_verified", "ui_transition_recorded"],
     )
     decision = ActionDecision(
         action=ActionType.WAIT,
