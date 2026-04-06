@@ -25,16 +25,17 @@ def _search_credit_filter() -> DOMElement:
         id=35,
         tag="select",
         role="combobox",
-        text="전체",
+        text="학점",
         aria_label="학점 필터",
         container_name="검색 결과",
         context_text="검색 결과 | 학점 필터 | 결과 목록",
-        role_ref_name="전체",
+        role_ref_name="학점",
         ref_id="e35",
         is_visible=True,
         is_enabled=True,
         options=[
             {"value": "전체", "text": "전체"},
+            {"value": "학점", "text": "학점"},
             {"value": "1학점", "text": "1학점"},
             {"value": "2학점", "text": "2학점"},
             {"value": "3학점", "text": "3학점"},
@@ -150,6 +151,24 @@ def test_build_filter_validation_contract_uses_deterministic_credit_options_with
     assert contract["source"] == "deterministic_control_options"
     assert [str(item.get("value") or "") for item in contract["required_options"]] == ["1학점", "2학점", "3학점"]
     assert _NoLlmAgent.llm_calls == 0
+
+
+def test_build_filter_validation_contract_skips_credit_placeholder_option() -> None:
+    agent = _DummyAgent()
+    goal = GoalModel(
+        id="G2B",
+        name="학점 필터 의미 검증",
+        description="학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.",
+        test_data={},
+    )
+
+    contract = build_filter_validation_contract(
+        agent,
+        goal=goal,
+        dom_elements=[_search_credit_filter()],
+    )
+
+    assert [str(item.get("value") or "") for item in contract["required_options"]] == ["1학점", "2학점", "3학점"]
 
 
 def test_filter_validation_contract_refreshes_when_recent_control_ref_changes() -> None:

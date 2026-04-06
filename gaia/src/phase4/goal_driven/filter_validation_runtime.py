@@ -215,8 +215,9 @@ def build_filter_validation_contract(
     scenario_control_hint = _goal_filter_control_hint(goal)
     merged_control_hint = _merge_control_hints(scenario_control_hint, preferred_control_hint)
     try:
-        from .filter_validation_engine import _pick_filter_control
+        from .filter_validation_engine import _collect_option_cases, _pick_filter_control
     except Exception:
+        _collect_option_cases = None
         _pick_filter_control = None
 
     picked_control = None
@@ -231,17 +232,8 @@ def build_filter_validation_contract(
             picked_control = None
     contract_control_hint = build_filter_control_hint(agent, picked_control)
 
-    if picked_control is not None and isinstance(picked_control.options, list):
-        option_rows = []
-        for item in picked_control.options:
-            if not isinstance(item, dict):
-                continue
-            value = str(item.get("value") or "").strip()
-            text = str(item.get("text") or "").strip()
-            lowered = agent._normalize_text(f"{value} {text}")
-            if not value or any(tok in lowered for tok in ("전체", "all", "선택", "default")):
-                continue
-            option_rows.append({"value": value, "text": text})
+    if picked_control is not None and callable(_collect_option_cases):
+        option_rows = list(_collect_option_cases(picked_control))
     else:
         option_rows = []
 
@@ -257,18 +249,7 @@ def build_filter_validation_contract(
             continue
         if not isinstance(el.options, list) or len(el.options) < 2:
             continue
-        local_rows: List[Dict[str, str]] = []
-        for item in el.options:
-            if not isinstance(item, dict):
-                continue
-            value = str(item.get("value") or "").strip()
-            text = str(item.get("text") or "").strip()
-            if not value:
-                continue
-            lowered = agent._normalize_text(f"{value} {text}")
-            if any(tok in lowered for tok in ("전체", "all", "선택", "default")):
-                continue
-            local_rows.append({"value": value, "text": text})
+        local_rows = list(_collect_option_cases(el)) if callable(_collect_option_cases) else []
         if not local_rows:
             continue
         score = float(len(local_rows))

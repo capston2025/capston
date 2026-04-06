@@ -121,8 +121,6 @@ def is_filter_style_goal(agent, goal: TestGoal) -> bool:
     explicit_filter_hints = (
         "필터",
         "filter",
-        "학점",
-        "credit",
         "정렬",
         "sort",
     )

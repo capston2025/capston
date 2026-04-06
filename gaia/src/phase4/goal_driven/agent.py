@@ -67,6 +67,7 @@ from .dom_prompt_formatting import (
 from .goal_achievement_runtime import (
     goal_text_blob as goal_text_blob_impl,
     validate_goal_achievement_claim as validate_goal_achievement_claim_impl,
+    wait_completion_ready as wait_completion_ready_impl,
 )
 from .goal_policy_phase_runtime import goal_phase_intent
 from .steering_runtime import (
@@ -268,6 +269,7 @@ class GoalDrivenAgent:
         self._goal_semantics: Optional[GoalSemantics] = None
         self._goal_policy: Any = None
         self._goal_policy_phase: str = ""
+        self._consecutive_wait_count: int = 0
         self._goal_policy_baseline_evidence: Optional[EvidenceBundle] = None
         self._goal_metric_value: Optional[float] = None
         self._goal_tokens: set[str] = set()
@@ -974,6 +976,9 @@ class GoalDrivenAgent:
             dom_elements=dom_elements,
         )
 
+    def _wait_completion_ready(self, dom_elements: Optional[List[DOMElement]] = None) -> bool:
+        return wait_completion_ready_impl(self, dom_elements)
+
     def _is_readonly_visibility_goal(self, goal: TestGoal) -> bool:
         return is_readonly_visibility_goal_impl(self, goal)
 
@@ -1655,6 +1660,13 @@ class GoalDrivenAgent:
                     memory_context=memory_context,
                 )
                 self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
+
+            if decision.action == ActionType.WAIT:
+                self._consecutive_wait_count = int(getattr(self, "_consecutive_wait_count", 0) or 0) + 1
+            else:
+                self._consecutive_wait_count = 0
+
+            if decision.action == ActionType.WAIT and self._wait_completion_ready(dom_elements):
                 reasoning_only_wait_reason = self._evaluate_reasoning_only_wait_completion(
                     goal=goal,
                     decision=decision,
@@ -1710,7 +1722,7 @@ class GoalDrivenAgent:
                 decision=decision,
                 dom_elements=dom_elements,
             )
-            if not decision.is_goal_achieved and decision.action == ActionType.WAIT:
+            if not decision.is_goal_achieved and decision.action == ActionType.WAIT and self._wait_completion_ready(dom_elements):
                 wait_completion_reason = self._evaluate_wait_goal_completion(
                     goal=goal,
                     decision=decision,

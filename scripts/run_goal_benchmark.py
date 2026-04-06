@@ -19,6 +19,8 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
+from gaia.harness.benchmark_policy import apply_benchmark_success_policy
+
 def _load_suite(path: Path) -> Dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -132,6 +134,11 @@ def _run_scenario_once(
     exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else proc.returncode)
     status = _normalize_status(summary, exit_code)
     reason = str(summary.get("reason") or stderr or "")
+    status, reason, benchmark_policy = apply_benchmark_success_policy(
+        status=status,
+        reason=reason,
+        summary=summary,
+    )
     return {
         "scenario_id": scenario.get("id"),
         "goal": scenario.get("goal"),
@@ -141,6 +148,7 @@ def _run_scenario_once(
         "duration_seconds": duration,
         "summary": summary,
         "captured_log": payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stderr,
+        "benchmark_policy": benchmark_policy,
     }
 
 

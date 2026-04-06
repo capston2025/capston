@@ -435,6 +435,11 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
     ts = int(time.time())
     words = [w for w in query_text.replace("/", " ").split() if w.strip()]
     keywords = words[:5]
+    try:
+        max_steps = int(str(os.getenv("GAIA_GOAL_MAX_STEPS_OVERRIDE", "20")).strip())
+    except Exception:
+        max_steps = 20
+    max_steps = max(1, max_steps)
     return TestGoal(
         id=f"CHAT_{ts}",
         name=(query_text[:40] or "chat test").strip(),
@@ -442,7 +447,7 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
         priority="MUST",
         keywords=keywords,
         success_criteria=[query_text],
-        max_steps=20,
+        max_steps=max_steps,
         start_url=url,
         test_data=inline_data,
     )
@@ -463,12 +468,6 @@ def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str, url: str
             "회원가입",
             "signup",
             "register",
-            "위시리스트",
-            "wishlist",
-            "조합",
-            "combination",
-            "시간표",
-            "timetable",
         )
     )
     if not needs_auth_context:
@@ -492,7 +491,7 @@ def _augment_goal_with_env_credentials(goal: TestGoal, query_text: str, url: str
 
 def _infer_goal_type(query_text: str) -> str:
     text = str(query_text or "").lower()
-    explicit_filter_tokens = ("필터", "filter", "학점", "credit", "정렬", "sort")
+    explicit_filter_tokens = ("필터", "filter", "정렬", "sort")
     category_like_tokens = ("category", "분류")
     readonly_tokens = ("현재", "이미", "보이는지", "확인", "추가 조작 없이", "visible", "already")
     if any(token in text for token in explicit_filter_tokens):
@@ -550,7 +549,7 @@ def _build_validation_report(
 
     goal_type = _infer_goal_type(query_text)
     filter_mode = goal_type == "filter_validation"
-    filter_tokens = ("필터", "filter", "학점", "credit", "category", "분류", "정렬", "sort")
+    filter_tokens = ("필터", "filter", "category", "분류", "정렬", "sort")
     steps = list(getattr(result, "steps_taken", []) or [])
     checks: list[Dict[str, Any]] = []
 
@@ -661,6 +660,40 @@ def _is_goal_satisfaction_failed(report: Dict[str, Any]) -> bool:
     if "goal_satisfied" not in summary:
         return False
     return not bool(summary.get("goal_satisfied"))
+
+
+def _should_preserve_runtime_success_from_validation(agent: Any, result: Any) -> bool:
+    if not bool(getattr(result, "success", False)):
+        return False
+    source = str(getattr(agent, "_last_goal_completion_source", "") or "").strip().lower()
+    return source == "judge"
+
+
+def _apply_terminal_validation_outcome(
+    *,
+    result_success: bool,
+    result_reason: str,
+    validation_report: Dict[str, Any],
+    preserve_runtime_success: bool = False,
+) -> tuple[bool, str]:
+    effective_reason = str(result_reason or "")
+    if bool(result_success) and preserve_runtime_success:
+        return True, effective_reason
+
+    validation_failed = _is_strict_validation_failed(validation_report)
+    goal_unsatisfied = _is_goal_satisfaction_failed(validation_report)
+    effective_success = bool(result_success) and not validation_failed and not goal_unsatisfied
+    if validation_failed:
+        effective_reason = (
+            "필터 의미 검증에서 필수 항목 실패가 발생했습니다. "
+            + (effective_reason or "검증 리포트를 확인하세요.")
+        ).strip()
+    elif goal_unsatisfied:
+        effective_reason = (
+            "필터 의미 검증에서 목표 커버리지가 충족되지 않았습니다. "
+            + (effective_reason or "검증 리포트를 확인하세요.")
+        ).strip()
+    return effective_success, effective_reason
 
 
 def _detect_blocked_user_action(
@@ -927,20 +960,13 @@ def _run_single_chat_goal(
         result,
         semantic_report=semantic_report,
     )
-    validation_failed = _is_strict_validation_failed(validation_report)
-    goal_unsatisfied = _is_goal_satisfaction_failed(validation_report)
-    effective_success = bool(result.success) and not validation_failed and not goal_unsatisfied
-    effective_reason = str(result.final_reason or "")
-    if validation_failed:
-        effective_reason = (
-            "필터 의미 검증에서 필수 항목 실패가 발생했습니다. "
-            + (effective_reason or "검증 리포트를 확인하세요.")
-        ).strip()
-    elif goal_unsatisfied:
-        effective_reason = (
-            "필터 의미 검증에서 목표 커버리지가 충족되지 않았습니다. "
-            + (effective_reason or "검증 리포트를 확인하세요.")
-        ).strip()
+    preserve_runtime_success = _should_preserve_runtime_success_from_validation(agent, result)
+    effective_success, effective_reason = _apply_terminal_validation_outcome(
+        result_success=bool(result.success),
+        result_reason=str(result.final_reason or ""),
+        validation_report=validation_report,
+        preserve_runtime_success=preserve_runtime_success,
+    )
     rail_result = run_validation_rail(
         target_url=url,
         run_id=session_id or WORKSPACE_DEFAULT,
@@ -1021,6 +1047,7 @@ def _run_single_chat_goal(
         "steps": result.total_steps,
         "reason": effective_reason,
         "duration_seconds": round(float(result.duration_seconds), 2),
+        "goal_completion_source": str(getattr(agent, "_last_goal_completion_source", "") or ""),
         "step_timeline": _build_step_timeline(result),
         "expected_signals": expected_signals,
         "achieved_signals": achieved_signals,

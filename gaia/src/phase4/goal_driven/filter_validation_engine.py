@@ -21,6 +21,7 @@ DEFAULT_FILTER_VALIDATION_PROFILE: Dict[str, Any] = {
     "page1_sample_n": 8,
     "page1_match_ratio": 0.60,
     "selection_probe_schedule_ms": [200, 500, 1000, 1500, 1800],
+    "result_probe_schedule_ms": [250, 600, 1000, 1500],
     "pagination_persistence_page2_topk": 5,
     "pagination_persistence_page2_min_match": 1,
     "capture_case_screenshots": True,
@@ -174,57 +175,47 @@ class FilterRule(Protocol):
         ...
 
 
-class CreditFilterRule:
-    name = "credit_rule"
+class OptionTextConsistencyRule:
+    name = "option_text_consistency_rule"
     mandatory_row_consistency = True
-    _credit_token = re.compile(r"(\d{1,2})\s*학점")
-    _number_token = re.compile(r"(?<!\d)(\d{1,2})(?!\d)")
 
-    def __init__(self, match_ratio: float = 0.60) -> None:
+    def __init__(
+        self,
+        match_ratio: float = 0.60,
+        *,
+        option_profiles: Optional[List[Tuple[List[str], List[str]]]] = None,
+    ) -> None:
         try:
             ratio = float(match_ratio)
         except Exception:
             ratio = 0.60
         self._match_ratio = max(0.10, min(1.0, ratio))
+        self._option_profiles = list(option_profiles or [])
 
     def supports(self, *, goal_text: str, control: DOMElement, option_text: str, option_value: str) -> bool:
-        blob = " ".join(
-            [
-                _normalize(goal_text),
-                _normalize(control.text),
-                _normalize(control.aria_label),
-                _normalize(control.title),
-                _normalize(option_text),
-                _normalize(option_value),
-            ]
-        )
-        if any(token in blob for token in ("학점", "credit")):
-            return True
-        if self._credit_token.search(option_text or ""):
-            return True
-        if self._credit_token.search(option_value or ""):
-            return True
-        return False
+        _ = goal_text
+        _ = control
+        labels, tokens = _option_match_profile(option_text, option_value)
+        return bool(labels or tokens)
 
     def evaluate_rows(self, *, selected_text: str, selected_value: str, row_texts: List[str]) -> Tuple[bool, str, Dict[str, Any]]:
-        target = _extract_credit(selected_text) or _extract_credit(selected_value)
-        if target is None:
-            return False, "선택된 학점 값을 파싱하지 못했습니다.", {"target": None, "rows_with_credit": 0}
+        labels, tokens = _option_match_profile(selected_text, selected_value)
+        if not labels and not tokens:
+            return False, "선택된 옵션 값을 파싱하지 못했습니다.", {"labels": [], "tokens": []}
 
-        extracted: List[int] = []
         sampled_rows = 0
         matched_rows = 0
         mismatch_rows = 0
         mismatch_examples: List[str] = []
         for row in row_texts:
-            if _is_noise_row_for_credit(row):
+            if _is_noise_row_for_result_validation(row):
                 continue
-            row_credits = _extract_row_credits(row)
-            if not row_credits:
+            if not _row_looks_result_like(row):
+                continue
+            if self._option_profiles and not _row_matches_any_option(row, self._option_profiles):
                 continue
             sampled_rows += 1
-            extracted.extend(row_credits)
-            if all(v == target for v in row_credits):
+            if _row_matches_selected_option(row, labels=labels, tokens=tokens):
                 matched_rows += 1
             else:
                 mismatch_rows += 1
@@ -232,10 +223,22 @@ class CreditFilterRule:
                     mismatch_examples.append(row[:120])
 
         if sampled_rows == 0:
+            if row_texts:
+                return (
+                    True,
+                    "옵션 속성이 결과 행에 직접 노출되지 않아 표본 정합성 검사를 생략했습니다.",
+                    {
+                        "labels": labels[:4],
+                        "tokens": tokens[:4],
+                        "sampled_rows": 0,
+                        "row_total": len(row_texts),
+                        "non_observable_option": True,
+                    },
+                )
             return (
                 False,
-                "페이지 결과에서 학점 표본을 찾지 못했습니다.",
-                {"target": target, "rows_with_credit": 0, "row_total": len(row_texts)},
+                "페이지 결과에서 옵션 일치 표본을 찾지 못했습니다.",
+                {"labels": labels[:4], "tokens": tokens[:4], "sampled_rows": 0, "row_total": len(row_texts)},
             )
 
         required_matches = max(1, int((sampled_rows * self._match_ratio) + 0.999))
@@ -246,34 +249,34 @@ class CreditFilterRule:
             return (
                 False,
                 (
-                    "학점 정합성 기준 미달: "
+                    "옵션 정합성 기준 미달: "
                     f"{matched_rows}/{sampled_rows} 매칭(요구 {required_matches}, 비율 {pass_ratio:.2f})"
                 ),
                 {
-                    "target": target,
-                    "rows_with_credit": sampled_rows,
+                    "labels": labels[:4],
+                    "tokens": tokens[:4],
+                    "sampled_rows": sampled_rows,
                     "matched_rows": matched_rows,
                     "required_matches": required_matches,
                     "pass_ratio": round(pass_ratio, 3),
                     "mismatch_rows": mismatch_rows,
                     "mismatch_examples": mismatch_examples,
-                    "observed_credits": sorted(set(extracted)),
                 },
             )
 
         return (
             True,
             (
-                "학점 표본 기준 통과: "
+                "옵션 표본 기준 통과: "
                 f"{matched_rows}/{sampled_rows} 매칭(요구 {required_matches})"
             ),
             {
-                "target": target,
-                "rows_with_credit": sampled_rows,
+                "labels": labels[:4],
+                "tokens": tokens[:4],
+                "sampled_rows": sampled_rows,
                 "matched_rows": matched_rows,
                 "required_matches": required_matches,
                 "pass_ratio": round(pass_ratio, 3),
-                "observed_credits": sorted(set(extracted)),
             },
         )
 
@@ -327,6 +330,17 @@ def run_filter_validation(
         for v in selection_probe_schedule
         if str(v).strip()
     ][:8] or [200, 500, 1000, 1500, 1800]
+    result_probe_schedule = cfg.get("result_probe_schedule_ms")
+    if not isinstance(result_probe_schedule, list) or not result_probe_schedule:
+        result_probe_schedule = list(
+            cfg.get("selection_probe_schedule_ms")
+            or DEFAULT_FILTER_VALIDATION_PROFILE["result_probe_schedule_ms"]
+        )
+    result_probe_schedule = [
+        max(100, int(v))
+        for v in result_probe_schedule
+        if str(v).strip()
+    ][:8] or [250, 600, 1000, 1500]
     page2_topk = max(1, int(cfg.get("pagination_persistence_page2_topk", DEFAULT_FILTER_VALIDATION_PROFILE["pagination_persistence_page2_topk"])))
     page2_min_match = max(1, int(cfg.get("pagination_persistence_page2_min_match", DEFAULT_FILTER_VALIDATION_PROFILE["pagination_persistence_page2_min_match"])))
     use_current_selection_only = bool(cfg.get("use_current_selection_only", False))
@@ -416,27 +430,25 @@ def run_filter_validation(
     required_map: Dict[str, str] = _build_required_map_from_contract(validation_contract, options)
     if not required_map:
         required_map = _derive_required_options(goal_text, options)
-    required_credit_set: set[int] = set()
-    for rv, rt in required_map.items():
-        credit = _extract_credit(rt) or _extract_credit(rv)
-        if credit is not None:
-            required_credit_set.add(int(credit))
     covered_required: set[str] = set()
 
     def _mark_coverage(selected_value: str, selected_text: str, passed: bool) -> None:
         if not passed:
             return
-        selected_credit = _extract_credit(selected_text) or _extract_credit(selected_value)
         if selected_value in required_map:
             covered_required.add(selected_value)
             return
-        if selected_credit is not None and int(selected_credit) in required_credit_set:
-            # value 표현(예: "3" vs "3학점")이 달라도 학점 의미가 같으면 커버로 인정
-            for rv, rt in required_map.items():
-                rv_credit = _extract_credit(rt) or _extract_credit(rv)
-                if rv_credit is not None and int(rv_credit) == int(selected_credit):
-                    covered_required.add(rv)
-                    return
+        selected_text_norm = _normalize(selected_text)
+        selected_value_norm = _normalize(selected_value)
+        for rv, rt in required_map.items():
+            rv_norm = _normalize(rv)
+            rt_norm = _normalize(rt)
+            if selected_value_norm and selected_value_norm == rv_norm:
+                covered_required.add(rv)
+                return
+            if selected_text_norm and (selected_text_norm == rt_norm or selected_text_norm == rv_norm):
+                covered_required.add(rv)
+                return
     if use_current_selection_only:
         current_val = forced_selected_value or str(control.selected_value or "").strip()
         current_text = ""
@@ -611,18 +623,48 @@ def run_filter_validation(
             page1_match_ratio=page1_match_ratio,
         )
         rules_used.append(active_rule.name)
-        row_texts_page1 = _collect_result_rows(page1_dom)[:page1_sample_n]
-        row_ok1, row_msg1, row_ev1 = active_rule.evaluate_rows(
-            selected_text=selected_text,
+        (
+            page1_dom,
+            control_page1,
+            row_texts_page1,
+            page1_stability,
+        ) = _stabilize_result_rows(
+            adapter=adapter,
+            goal_text=goal_text,
+            dom=page1_dom,
+            control=control_page1,
             selected_value=selected_value,
-            row_texts=row_texts_page1,
+            selected_text=selected_text,
+            required_map=required_map,
+            preferred_control_hint=preferred_control_hint,
+            probe_schedule_ms=result_probe_schedule,
+            page_sample_n=page1_sample_n,
         )
+        row_status1 = "pass"
+        row_ok1 = False
+        if bool(page1_stability.get("stable")):
+            row_ok1, row_msg1, row_ev1 = active_rule.evaluate_rows(
+                selected_text=selected_text,
+                selected_value=selected_value,
+                row_texts=row_texts_page1,
+            )
+            row_status1 = "pass" if row_ok1 else "fail"
+            row_ev1 = dict(row_ev1 or {})
+            row_ev1["stability"] = dict(page1_stability)
+        else:
+            row_msg1 = "결과 목록이 아직 안정화되지 않아 정합성 검사를 보류했습니다."
+            row_ev1 = {
+                "stability": dict(page1_stability),
+                "sampled_rows": len(row_texts_page1),
+                "loading_rows_detected": bool(page1_stability.get("loading_detected")),
+            }
+            row_status1 = "skipped_timeout" if bool(page1_stability.get("loading_detected")) else "skipped_not_applicable"
         _add_check(
             FilterCheckRow(
                 check_id=f"case_{case_idx}_result_consistency_page1",
                 name=f"결과 정합성(page1, case {case_idx})",
-                status="pass" if row_ok1 else "fail",
-                mandatory=True,
+                status=row_status1,
+                mandatory=bool(row_status1 == "fail"),
                 scope="page1",
                 check_type="result_consistency_page1",
                 expected=f"선택 옵션={selected_text or selected_value}",
@@ -630,14 +672,16 @@ def run_filter_validation(
                 evidence=row_ev1,
                 action="verify",
                 input_value=selected_text or selected_value,
-                error="" if row_ok1 else row_msg1,
+                error="" if row_status1 == "pass" else row_msg1,
             )
         )
         _capture_case_attachment(case_idx, selected_text or selected_value)
-        if row_ok1:
+        if row_status1 == "pass":
             _record_reason("filter_case_passed")
-        else:
+        elif row_status1 == "fail":
             _record_reason("filter_result_mismatch")
+        else:
+            _record_reason("filter_result_unstable")
 
         if max_pages <= 1:
             case_info["status"] = "pass" if (selected_ok and row_ok1) else "fail"
@@ -871,7 +915,11 @@ def run_filter_validation(
             for row in checks
             if row.check_id.startswith(f"case_{case_idx}_")
         )
-        case_info["status"] = "fail" if (mandatory_failed or mandatory_skipped) else "pass"
+        case_info["status"] = (
+            "pass"
+            if (selected_ok and row_ok1 and persistence_ok and not mandatory_failed and not mandatory_skipped)
+            else "fail"
+        )
         _mark_coverage(selected_value, selected_text, case_info["status"] == "pass")
         if case_info["status"] == "pass":
             _record_reason("filter_case_passed")
@@ -1033,11 +1081,13 @@ def _pick_filter_control(
             score += 2.0
         if any(token in goal_norm for token in ("필터", "filter", "분류", "category", "정렬", "sort", "semantic", "의미", "일치", "consisten")):
             score += 1.5
-        if any(token in goal_norm for token in ("결과", "목록", "search", "검색", "result", "course")):
-            if any(token in blob for token in ("검색", "search", "결과", "목록", "course")):
+        if any(token in goal_norm for token in ("결과", "목록", "search", "검색", "result", "results", "list")):
+            if any(token in blob for token in ("검색", "search", "결과", "목록", "result", "results", "list")):
                 score += 6.0
-            if any(token in blob for token in ("위시리스트", "wishlist", "내 시간표", "시간표", "목표", "target", "recommended", "권장")):
-                score -= 10.0
+        if _normalize(getattr(el, "container_role", "")) in {"complementary", "navigation", "banner"}:
+            score -= 8.0
+        if any(token in blob for token in ("목표", "target", "recommended", "권장", "selected", "saved")):
+            score -= 4.0
         if best is None or score > best[0]:
             best = (score, el)
     return best[1] if best else None
@@ -1072,32 +1122,9 @@ def _page2_min_match_ok(
     if not top_rows:
         return False
     min_match = max(1, int(min_match))
-    if isinstance(rule, CreditFilterRule):
-        target = _extract_credit(selected_text) or _extract_credit(selected_value)
-        if target is None:
-            return False
-        matched = 0
-        for row in top_rows:
-            credits = _extract_row_credits(row)
-            if not credits:
-                continue
-            if all(v == target for v in credits):
-                matched += 1
-            if matched >= min_match:
-                return True
-        return False
-
-    tokens = _tokenize(selected_text or selected_value)
-    if not tokens:
-        return False
-    matched = 0
-    for row in top_rows:
-        row_norm = _normalize(row)
-        if all(tok in row_norm for tok in tokens[:2]):
-            matched += 1
-        if matched >= min_match:
-            return True
-    return False
+    labels, tokens = _option_match_profile(selected_text, selected_value)
+    matched = _count_matching_option_rows(top_rows, labels=labels, tokens=tokens)
+    return matched >= min_match
 
 
 def _blocked_reason_code_from_result(result: Dict[str, Any]) -> str:
@@ -1306,8 +1333,60 @@ def _collect_option_cases(control: DOMElement) -> List[Dict[str, str]]:
         lowered = _normalize(f"{value} {text}")
         if any(token in lowered for token in ("전체", "all", "선택", "default")):
             continue
+        if _is_placeholder_like_option(control, value, text):
+            continue
         out.append({"value": value, "text": text})
     return out
+
+
+def _is_placeholder_like_option(control: DOMElement, value: str, text: str) -> bool:
+    option_norms = {
+        _normalize(value),
+        _normalize(text),
+    }
+    option_norms = {token for token in option_norms if token}
+    if not option_norms:
+        return False
+
+    control_hints = {
+        _normalize(getattr(control, "placeholder", "") or ""),
+        _normalize(getattr(control, "aria_label", "") or ""),
+        _normalize(getattr(control, "title", "") or ""),
+    }
+    control_text = str(getattr(control, "text", "") or "").strip()
+    control_text_norm = _normalize(control_text)
+    if control_text_norm and control_text_norm not in option_norms:
+        control_hints.add(control_text_norm)
+    control_hints = {
+        hint for hint in control_hints if hint
+    }
+    for hint in list(control_hints):
+        if hint.endswith(" 필터"):
+            control_hints.add(hint.removesuffix(" 필터").strip())
+        if hint.endswith(" filter"):
+            control_hints.add(hint.removesuffix(" filter").strip())
+
+    if any(token in control_hints for token in option_norms):
+        return True
+
+    sibling_norms: List[str] = []
+    for raw in list(getattr(control, "options", None) or []):
+        if not isinstance(raw, dict):
+            continue
+        sibling_value = _normalize(str(raw.get("value") or ""))
+        sibling_text = _normalize(str(raw.get("text") or ""))
+        sibling = sibling_text or sibling_value
+        if not sibling or sibling in option_norms:
+            continue
+        sibling_norms.append(sibling)
+
+    containment_hits = 0
+    for token in option_norms:
+        if len(token) < 2:
+            continue
+        token_hits = sum(1 for sibling in sibling_norms if token in sibling and token != sibling)
+        containment_hits = max(containment_hits, token_hits)
+    return containment_hits >= 2
 
 
 def _derive_required_options(goal_text: str, options: List[Dict[str, str]]) -> Dict[str, str]:
@@ -1316,20 +1395,6 @@ def _derive_required_options(goal_text: str, options: List[Dict[str, str]]) -> D
     if not options:
         return required
 
-    # explicit target values in goal text (e.g., "1,2,3 학점")
-    # 케이스 1) "1학점 2학점 3학점"
-    explicit_credits = {int(m.group(1)) for m in re.finditer(r"(\d{1,2})\s*학점", goal_text or "")}
-    # 케이스 2) "1,2,3 학점", "1/2/3 학점"
-    for seq in re.finditer(r"((?:\d{1,2}\s*[,/]\s*)+\d{1,2})\s*학점", goal_text or ""):
-        chunk = str(seq.group(1) or "")
-        for n in re.findall(r"\d{1,2}", chunk):
-            try:
-                explicit_credits.add(int(n))
-            except Exception:
-                continue
-    if not explicit_credits:
-        explicit_credits = {int(m.group(1)) for m in re.finditer(r"(?<!\d)([1-9]|1\d|2\d)(?!\d)", goal_text or "")}
-
     for item in options:
         if not isinstance(item, dict):
             continue
@@ -1337,25 +1402,13 @@ def _derive_required_options(goal_text: str, options: List[Dict[str, str]]) -> D
         text = str(item.get("text") or "").strip()
         if not value:
             continue
-        if explicit_credits:
-            credit = _extract_credit(text) or _extract_credit(value)
-            if credit is not None and credit in explicit_credits:
-                required[value] = text
+        value_norm = _normalize(value)
+        text_norm = _normalize(text)
+        if (text_norm and text_norm in goal_norm) or (value_norm and value_norm in goal_norm):
+            required[value] = text
 
     if required:
         return required
-
-    # credit filter goal이면 발견된 학점 옵션 전체를 요구
-    if "학점" in goal_norm or "credit" in goal_norm:
-        for item in options:
-            if not isinstance(item, dict):
-                continue
-            value = str(item.get("value") or "").strip()
-            text = str(item.get("text") or "").strip()
-            if value and (_extract_credit(text) is not None or _extract_credit(value) is not None):
-                required[value] = text
-        if required:
-            return required
 
     # generic fallback: 기본적으로 현재 옵션 풀 전체 검증
     for item in options:
@@ -1394,7 +1447,6 @@ def _build_required_map_from_contract(
             continue
         req_val = str(item.get("value") or "").strip()
         req_text = str(item.get("text") or "").strip()
-        req_credit = _extract_credit(str(item.get("credit") or "")) or _extract_credit(req_text) or _extract_credit(req_val)
 
         # 1) value exact match
         if req_val:
@@ -1415,14 +1467,6 @@ def _build_required_map_from_contract(
                     break
             if any(_normalize(v) == req_norm for v in out.values()):
                 continue
-
-        # 3) semantic credit match
-        if req_credit is not None:
-            for val, txt in option_rows:
-                credit = _extract_credit(txt) or _extract_credit(val)
-                if credit is not None and int(credit) == int(req_credit):
-                    out[val] = txt
-                    break
 
     return out
 
@@ -1490,15 +1534,57 @@ def _openclaw_result_row_score(el: DOMElement) -> float:
         score += 3.0
     if "|" in text or "•" in text or "\n" in text:
         score += 1.5
-    if _extract_row_credits(text):
-        score += 2.5
 
     norm_text = _normalize(text)
-    if any(token in norm_text for token in ("위시리스트", "목표 학점", "로그인", "로그아웃")):
+    if any(token in norm_text for token in ("로그인", "로그아웃", "login", "logout", "sign in", "sign out")):
         score -= 4.0
-    if "총 " in norm_text and "학점" in norm_text and "강의" not in norm_text and "교과" not in norm_text:
+    if _looks_meta_summary_text(text):
         score -= 3.0
     return score
+
+
+def _build_option_profiles(control: DOMElement) -> List[Tuple[List[str], List[str]]]:
+    profiles: List[Tuple[List[str], List[str]]] = []
+    for item in _collect_option_cases(control):
+        if not isinstance(item, dict):
+            continue
+        labels, tokens = _option_match_profile(
+            str(item.get("text") or ""),
+            str(item.get("value") or ""),
+        )
+        if labels or tokens:
+            profiles.append((labels, tokens))
+    return profiles
+
+
+def _compose_result_row_text(el: DOMElement) -> str:
+    pieces: List[str] = []
+    for raw in (
+        getattr(el, "text", ""),
+        getattr(el, "context_text", ""),
+        getattr(el, "role_ref_name", ""),
+    ):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        norm = _normalize(text)
+        token_set = set(_tokenize(text))
+        duplicate_like = False
+        for existing in pieces:
+            existing_norm = _normalize(existing)
+            if norm == existing_norm or norm in existing_norm:
+                duplicate_like = True
+                break
+            if token_set:
+                existing_tokens = set(_tokenize(existing))
+                overlap = len(token_set & existing_tokens)
+                if overlap and overlap >= min(len(token_set), len(existing_tokens)):
+                    duplicate_like = True
+                    break
+        if duplicate_like:
+            continue
+        pieces.append(text)
+    return " | ".join(pieces[:3]).strip()
 
 
 def _pick_rule(
@@ -1509,7 +1595,13 @@ def _pick_rule(
     *,
     page1_match_ratio: float = 0.60,
 ) -> FilterRule:
-    rules: List[FilterRule] = [CreditFilterRule(match_ratio=page1_match_ratio), GenericOptionTokenRule()]
+    rules: List[FilterRule] = [
+        OptionTextConsistencyRule(
+            match_ratio=page1_match_ratio,
+            option_profiles=_build_option_profiles(control),
+        ),
+        GenericOptionTokenRule(),
+    ]
     for rule in rules:
         if rule.supports(
             goal_text=goal_text,
@@ -1529,7 +1621,9 @@ def _collect_result_rows(dom: List[DOMElement]) -> List[str]:
         score = _openclaw_result_row_score(el)
         if score < 5.0:
             continue
-        text = str(el.text or "").strip()
+        text = _compose_result_row_text(el)
+        if len(text) < 4:
+            continue
         container_key = _normalize(getattr(el, "container_name", "") or "") or _normalize(getattr(el, "container_role", "") or "") or "__default__"
         openclaw_candidates.append((container_key, score, text))
 
@@ -1560,7 +1654,7 @@ def _collect_result_rows(dom: List[DOMElement]) -> List[str]:
     rows: List[str] = []
     seen: set[str] = set()
     for el in dom:
-        text = str(el.text or "").strip()
+        text = _compose_result_row_text(el)
         if len(text) < 4:
             continue
         tag = _normalize(el.tag)
@@ -1580,13 +1674,149 @@ def _collect_result_rows(dom: List[DOMElement]) -> List[str]:
         rows.append(text)
     if not rows:
         for el in dom:
-            text = str(el.text or "").strip()
-            if len(text) >= 8 and any(tok in text for tok in ("학점", "교과", "강의", "subject", "course")):
+            text = _compose_result_row_text(el)
+            if len(text) >= 8 and any(tok in text for tok in ("|", "•", "\n", "·")):
                 key = text[:160]
                 if key not in seen:
                     seen.add(key)
                     rows.append(text)
     return rows[:60]
+
+
+def _row_has_loading_signal(text: str) -> bool:
+    row = _normalize(text)
+    if not row:
+        return False
+    loading_tokens = (
+        "로딩 중",
+        "loading",
+        "불러오는 중",
+        "생성 중",
+        "준비하고 있어요",
+        "잠시만",
+        "processing",
+        "fetching",
+    )
+    return any(token in row for token in loading_tokens)
+
+
+def _result_rows_have_loading_signal(row_texts: List[str]) -> bool:
+    return any(_row_has_loading_signal(row) for row in list(row_texts or []))
+
+
+def _result_rows_signature(row_texts: List[str]) -> str:
+    normalized_rows: List[str] = []
+    for row in list(row_texts or [])[:8]:
+        token = _normalize(re.sub(r"\s+", " ", str(row or "")))
+        if not token:
+            continue
+        normalized_rows.append(token[:160])
+    return " || ".join(normalized_rows)
+
+
+def _stabilize_result_rows(
+    *,
+    adapter: FilterValidationAdapter,
+    goal_text: str,
+    dom: List[DOMElement],
+    control: DOMElement,
+    selected_value: str,
+    selected_text: str,
+    required_map: Dict[str, str],
+    preferred_control_hint: Optional[Dict[str, Any]],
+    probe_schedule_ms: List[int],
+    page_sample_n: int,
+) -> Tuple[List[DOMElement], DOMElement, List[str], Dict[str, Any]]:
+    current_dom = list(dom or [])
+    current_control = control
+    row_texts = _collect_result_rows(current_dom)[:page_sample_n]
+    loading_detected = _result_rows_have_loading_signal(row_texts)
+    last_non_loading_signature = ""
+    stable_non_loading_hits = 0
+    probes = 0
+    waited_ms_total = 0
+
+    if row_texts and not loading_detected:
+        signature = _result_rows_signature(row_texts)
+        return (
+            current_dom,
+            current_control,
+            row_texts,
+            {
+                "stable": True,
+                "loading_detected": False,
+                "stable_non_loading_hits": 1 if signature else 0,
+                "waited_ms_total": 0,
+                "probes": 0,
+                "row_signature": signature,
+            },
+        )
+
+    for wait_ms in list(probe_schedule_ms or []):
+        try:
+            adapter.wait_for_pagination_probe(int(wait_ms))
+        except Exception:
+            pass
+        waited_ms_total += int(max(0, wait_ms))
+        probes += 1
+        next_dom = adapter.analyze_dom()
+        if isinstance(next_dom, list) and next_dom:
+            current_dom = next_dom
+        next_control = _pick_filter_control_for_option(
+            dom=current_dom,
+            goal_text=goal_text,
+            selected_value=selected_value,
+            selected_text=selected_text,
+            required_map=required_map,
+            preferred_control_hint=preferred_control_hint,
+        ) or _pick_filter_control(
+            current_dom,
+            goal_text,
+            preferred_control_hint=preferred_control_hint,
+        )
+        if next_control is not None:
+            current_control = next_control
+        row_texts = _collect_result_rows(current_dom)[:page_sample_n]
+        has_loading = _result_rows_have_loading_signal(row_texts)
+        loading_detected = bool(loading_detected or has_loading)
+        signature = _result_rows_signature(row_texts)
+        if has_loading or not signature:
+            stable_non_loading_hits = 0
+            last_non_loading_signature = ""
+            continue
+        if signature == last_non_loading_signature:
+            stable_non_loading_hits += 1
+        else:
+            last_non_loading_signature = signature
+            stable_non_loading_hits = 1
+        if stable_non_loading_hits >= 2:
+            return (
+                current_dom,
+                current_control,
+                row_texts,
+                {
+                    "stable": True,
+                    "loading_detected": loading_detected,
+                    "stable_non_loading_hits": stable_non_loading_hits,
+                    "waited_ms_total": waited_ms_total,
+                    "probes": probes,
+                    "row_signature": signature,
+                },
+            )
+
+    return (
+        current_dom,
+        current_control,
+        row_texts,
+        {
+            "stable": False,
+            "loading_detected": loading_detected,
+            "stable_non_loading_hits": stable_non_loading_hits,
+            "waited_ms_total": waited_ms_total,
+            "probes": probes,
+            "row_signature": _result_rows_signature(row_texts),
+        },
+    )
 
 
 def _pick_next_pagination(dom: List[DOMElement]) -> Optional[DOMElement]:
@@ -1752,42 +1982,100 @@ def _tokenize(value: str) -> List[str]:
     return [tok for tok in raw if len(tok) >= 2 and tok not in stop]
 
 
-def _extract_credit(value: str) -> Optional[int]:
-    text = str(value or "")
-    m = re.search(r"(\d{1,2})\s*학점", text)
-    if m:
-        return int(m.group(1))
-    m2 = re.fullmatch(r"\s*(\d{1,2})\s*", text)
-    if m2:
-        return int(m2.group(1))
-    return None
-
-
-def _extract_row_credits(text: str) -> List[int]:
-    if not text:
-        return []
-    out: List[int] = []
-    for m in re.finditer(r"(\d{1,2})\s*학점", text):
-        try:
-            out.append(int(m.group(1)))
-        except Exception:
+def _option_match_profile(selected_text: str, selected_value: str) -> Tuple[List[str], List[str]]:
+    labels: List[str] = []
+    for raw in (selected_text, selected_value):
+        label = _normalize(raw)
+        if not label or label in {"전체", "all", "select", "선택", "default", "option", "옵션"}:
             continue
-    return out
+        if label not in labels:
+            labels.append(label)
+        stripped = label.strip("()[]{}")
+        if stripped and stripped != label and stripped not in labels:
+            labels.append(stripped)
+    tokens: List[str] = []
+    for label in labels:
+        for token in _tokenize(label):
+            if token not in tokens:
+                tokens.append(token)
+    return labels, tokens
 
 
-def _is_noise_row_for_credit(text: str) -> bool:
+def _row_matches_selected_option(text: str, *, labels: List[str], tokens: List[str]) -> bool:
+    row_norm = _normalize(text)
+    if not row_norm:
+        return False
+    for label in labels:
+        if len(label) >= 2 and label in row_norm:
+            return True
+    if tokens and all(token in row_norm for token in tokens[:2]):
+        return True
+    return False
+
+
+def _row_matches_any_option(
+    text: str,
+    option_profiles: List[Tuple[List[str], List[str]]],
+) -> bool:
+    if not option_profiles:
+        return True
+    return any(
+        _row_matches_selected_option(text, labels=labels, tokens=tokens)
+        for labels, tokens in option_profiles
+    )
+
+
+def _count_matching_option_rows(row_texts: List[str], *, labels: List[str], tokens: List[str]) -> int:
+    matched = 0
+    for row in list(row_texts or []):
+        if _is_noise_row_for_result_validation(row):
+            continue
+        if not _row_looks_result_like(row):
+            continue
+        if _row_matches_selected_option(row, labels=labels, tokens=tokens):
+            matched += 1
+    return matched
+
+
+def _looks_meta_summary_text(text: str) -> bool:
     row = str(text or "").strip()
     if not row:
         return True
     norm = _normalize(row)
-    # wishlist/summary/target-credit controls are not subject result rows
-    if any(token in norm for token in ("위시리스트", "목표 학점", "총 0학점", "권장")):
-        return True
-    if "총 " in norm and "학점" in norm and "강의" not in norm and "교과" not in norm:
-        if "|" not in row and "검색 결과" not in norm and "search result" not in norm and "results" not in norm:
+    if any(token in norm for token in ("total", "count", "selected", "summary", "검색 결과", "search result", "results")):
+        if "|" not in row and "•" not in row and "\n" not in row:
             return True
-    credits = _extract_row_credits(row)
-    if len(set(credits)) >= 4:
-        # option list-like rows (e.g., 12~24학점 selector text) should be excluded
+        parts = [part.strip() for part in re.split(r"[|•·\n]+", row) if part.strip()]
+        if parts and all(
+            any(token in _normalize(part) for token in ("검색 결과", "search result", "results", "총", "표시", "total", "count", "selected", "summary"))
+            for part in parts
+        ):
+            return True
+    if len(set(re.findall(r"\d+", row))) >= 4 and "|" not in row and "•" not in row and "\n" not in row:
         return True
     return False
+
+
+def _is_noise_row_for_result_validation(text: str) -> bool:
+    row = str(text or "").strip()
+    if not row:
+        return True
+    norm = _normalize(row)
+    if any(token in norm for token in ("로그인", "로그아웃", "login", "logout", "sign in", "sign out")):
+        return True
+    if _looks_meta_summary_text(row):
+        return True
+    return False
+
+
+def _row_looks_result_like(text: str) -> bool:
+    row = str(text or "").strip()
+    if not row:
+        return False
+    if _looks_meta_summary_text(row):
+        return False
+    if any(ch in row for ch in ("|", "•", "\n", "·")):
+        segments = [part.strip() for part in re.split(r"[|•·\n]+", row) if part.strip()]
+        informative = [segment for segment in segments if len(_tokenize(segment)) >= 1]
+        return len(informative) >= 2
+    return len(_tokenize(row)) >= 3

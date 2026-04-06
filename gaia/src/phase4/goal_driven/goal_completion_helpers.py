@@ -62,6 +62,39 @@ def _element_visibility_blob(agent, el: DOMElement) -> str:
     )
 
 
+def _has_empty_state_signal(agent, text: str) -> bool:
+    norm = agent._normalize_text(text)
+    if not norm:
+        return False
+    if any(token in norm for token in ("비어", "empty", "없음", "없어요", "none", "nothing", "no items", "no results")):
+        return True
+    return bool(re.search(r"(?:^|\s)0\s*(?:개|건|items?|results?|selected)?(?:\s|$)", norm))
+
+
+def _has_aggregate_state_signal(agent, text: str) -> bool:
+    norm = agent._normalize_text(text)
+    if not norm:
+        return False
+    if any(token in norm for token in ("총", "total", "count", "item", "items", "selected", "selection", "합계", "summary")):
+        return True
+    return bool(re.search(r"(?:총|total)\s*\d", norm))
+
+
+def _has_direction_surface_signal(agent, text: str, *, direction: str) -> bool:
+    norm = agent._normalize_text(text)
+    if not norm:
+        return False
+    if direction == "increase":
+        return any(token in norm for token in ("추가", "담", "넣", "added", "saved", "selected", "created"))
+    if direction == "decrease":
+        return any(token in norm for token in ("삭제", "제거", "remove", "removed", "minus", "감소", "decreased"))
+    if direction == "clear":
+        return _has_empty_state_signal(agent, norm) or any(
+            token in norm for token in ("clear", "cleared", "삭제", "제거", "비우")
+        )
+    return False
+
+
 def _readonly_visibility_query_tokens(agent, goal: TestGoal) -> List[str]:
     tokens: List[str] = []
     tokens.extend(str(item or "").strip() for item in (agent._goal_quoted_terms(goal) or []) if str(item or "").strip())
@@ -364,45 +397,28 @@ def evaluate_goal_target_completion(
                 matches.append(term)
                 if context_terms and any(ctx and ctx in blob for ctx in context_terms):
                     contextual_match = True
-                if direction == "increase" and any(
-                    token in blob
-                    for token in (
-                        "추가", "담", "added", "saved", "selected",
-                        "위시", "wishlist", "장바구니", "cart",
-                        "총", "count", "item", "items", "학점", "credit", "credits",
-                    )
+                if direction == "increase" and (
+                    _has_direction_surface_signal(agent, blob, direction="increase")
+                    or _has_aggregate_state_signal(agent, blob)
                 ):
                     positive_surface_match = True
-                if direction == "decrease" and any(
-                    token in blob
-                    for token in ("삭제", "제거", "remove", "removed", "minus", "감소")
-                ):
+                if direction == "decrease" and _has_direction_surface_signal(agent, blob, direction="decrease"):
                     positive_surface_match = True
-                if direction == "clear" and any(
-                    token in blob for token in ("비어", "empty", "없음", "없어요", "0개", "0학점")
-                ):
+                if direction == "clear" and _has_empty_state_signal(agent, blob):
                     positive_surface_match = True
                 break
         if norm_term and norm_term in evidence_blob:
             matches.append(term)
             if context_terms and any(ctx and ctx in evidence_blob for ctx in context_terms):
                 contextual_match = True
-            if direction == "increase" and any(
-                token in evidence_blob
-                for token in (
-                    "추가", "담", "added", "saved", "selected",
-                    "위시", "wishlist", "장바구니", "cart",
-                    "총", "count", "item", "items", "학점", "credit", "credits",
-                )
+            if direction == "increase" and (
+                _has_direction_surface_signal(agent, evidence_blob, direction="increase")
+                or _has_aggregate_state_signal(agent, evidence_blob)
             ):
                 positive_surface_match = True
-            if direction == "decrease" and any(
-                token in evidence_blob for token in ("삭제", "제거", "remove", "removed", "minus", "감소")
-            ):
+            if direction == "decrease" and _has_direction_surface_signal(agent, evidence_blob, direction="decrease"):
                 positive_surface_match = True
-            if direction == "clear" and any(
-                token in evidence_blob for token in ("비어", "empty", "없음", "없어요", "0개", "0학점")
-            ):
+            if direction == "clear" and _has_empty_state_signal(agent, evidence_blob):
                 positive_surface_match = True
     if not matches:
         return None
@@ -426,13 +442,7 @@ def evaluate_goal_target_completion(
     if context_terms and not contextual_match:
         if any(ctx and ctx in page_blob for ctx in context_terms):
             contextual_match = True
-    if any(
-        token in page_blob
-        for token in (
-            "총", "count", "item", "items", "selected", "selection", "학점", "credit", "credits",
-            "위시", "wishlist", "장바구니", "cart",
-        )
-    ):
+    if _has_aggregate_state_signal(agent, page_blob):
         aggregate_page_match = True
     if context_terms and not contextual_match and not positive_surface_match and not aggregate_page_match:
         return None
@@ -564,7 +574,7 @@ def evaluate_explicit_reasoning_proof_completion(
             "정렬",
             "sort",
         )
-        semantic_filter_tokens = ("학점", "credit", "맞게", "의미", "semantic", "일치", "consisten")
+        semantic_filter_tokens = ("맞게", "의미", "semantic", "일치", "consisten")
         reasoning_change_tokens = (
             "변경",
             "변화",
@@ -700,11 +710,16 @@ def evaluate_explicit_reasoning_proof_completion(
         else:
             direction = "increase"
     direction_tokens = {
-        "increase": ("추가", "담", "added", "saved", "총", "학점", "count", "item"),
-        "decrease": ("삭제", "제거", "remove", "removed", "감소"),
-        "clear": ("비어", "empty", "없음", "없어요", "0개", "0학점"),
+        "increase": ("추가", "담", "넣", "added", "saved", "selected", "created"),
+        "decrease": ("삭제", "제거", "remove", "removed", "감소", "decreased"),
+        "clear": ("clear", "cleared", "비어", "empty", "없음", "없어요"),
     }.get(direction, ())
     has_direction = any(token in reasoning_blob for token in direction_tokens)
+    if not has_direction:
+        if direction == "clear":
+            has_direction = _has_empty_state_signal(agent, reasoning_blob)
+        elif direction == "increase":
+            has_direction = _has_aggregate_state_signal(agent, reasoning_blob)
     if not has_destination and not has_direction:
         return None
     if dom_elements:

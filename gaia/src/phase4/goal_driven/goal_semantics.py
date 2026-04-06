@@ -6,14 +6,6 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 from .goal_kinds import GoalKind
 
-
-_CANONICAL_DESTINATION_ALIASES: Dict[str, Sequence[str]] = {
-    "wishlist": ("위시리스트", "찜", "관심 목록", "관심목록", "저장 목록", "내 목록", "wishlist", "saved", "favorites"),
-    "cart": ("장바구니", "카트", "cart", "basket"),
-    "timetable": ("시간표", "내 시간표", "timetable", "schedule"),
-    "selection": ("선택 목록", "선택한 목록", "선택 결과", "selected list", "selected items"),
-}
-
 _AUTH_TOKENS = ("로그인", "회원가입", "인증", "sign in", "log in", "login", "auth", "otp", "2fa")
 _OPEN_DETAIL_TOKENS = ("열어", "열기", "상세", "detail", "open")
 _APPLY_TOKENS = ("적용", "선택", "추가해", "넣어", "apply", "select")
@@ -34,12 +26,9 @@ _TARGET_TERM_ACTION_TOKENS = {
     "담기",
     "삭제",
     "제거",
-    "시간표에서제거",
-    "위시리스트에담기",
     "강의평",
     "강의평보기",
     "상세정보보기",
-    "내시간표보기",
     "보기",
     "열기",
     "로그인",
@@ -61,6 +50,61 @@ _TARGET_TERM_NOISE_SUFFIXES = (
     "이었다면",
     "라면",
 )
+
+_DESTINATION_CAPTURE_PATTERNS: Sequence[re.Pattern[str]] = (
+    re.compile(
+        r"([가-힣A-Za-z0-9][가-힣A-Za-z0-9\s/_()\-]{1,40}?)\s*(?:를|을)\s*(?:모두\s*)?(?:비우|비워|삭제|제거|clear|empty)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"([가-힣A-Za-z0-9][가-힣A-Za-z0-9\s/_()\-]{1,40}?)\s*(?:에|으로|로)\s*(?:담|넣|추가|저장|반영|적용)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"([가-힣A-Za-z0-9][가-힣A-Za-z0-9\s/_()\-]{1,40}?)\s*(?:에서)\s*(?:삭제|제거|빼|remove|delete|clear)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:add|save|apply|move|send)\b.*?\b(?:to|into|in)\s+([A-Za-z][A-Za-z0-9\s/_()\-]{1,40}?)(?=\s+(?:and|then|after|before|with|where|that|which|verify|check)\b|[,.]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:remove|delete|clear|empty)\b.*?\bfrom\s+([A-Za-z][A-Za-z0-9\s/_()\-]{1,40}?)(?=\s+(?:and|then|after|before|with|where|that|which|verify|check)\b|[,.]|$)",
+        re.IGNORECASE,
+    ),
+)
+_DESTINATION_STRIP_PREFIXES = (
+    "버튼을",
+    "버튼",
+    "클릭해서",
+    "클릭해",
+    "눌러서",
+    "눌러",
+    "누른 뒤",
+    "누른 후",
+    "after",
+    "then",
+    "to",
+    "into",
+    "from",
+    "in",
+)
+_DESTINATION_NOISE_TOKENS = {
+    "페이지",
+    "화면",
+    "버튼",
+    "링크",
+    "cta",
+    "goal",
+    "target",
+    "result",
+    "results",
+    "목표",
+    "결과",
+    "동작",
+    "기능",
+    "화면으로",
+}
 
 
 def _is_actionish_target_term(normalized_term: str) -> bool:
@@ -123,14 +167,51 @@ def _extract_quotes(texts: Iterable[str]) -> List[str]:
     return output
 
 
+def _clean_destination_candidate(raw: str, normalize_fn: Callable[[str], str]) -> str:
+    candidate = re.sub(r"\s+", " ", str(raw or "")).strip(" '\"“”‘’()[]{}")
+    if not candidate:
+        return ""
+    words = [token for token in candidate.split() if token]
+    if len(words) > 3:
+        candidate = " ".join(words[-3:])
+    normalized = normalize_fn(candidate)
+    if not normalized:
+        return ""
+
+    prefix_changed = True
+    while prefix_changed:
+        prefix_changed = False
+        for prefix in _DESTINATION_STRIP_PREFIXES:
+            prefix_norm = normalize_fn(prefix)
+            if prefix_norm and normalized.startswith(prefix_norm + " "):
+                candidate = candidate[len(prefix) :].strip()
+                normalized = normalize_fn(candidate)
+                prefix_changed = True
+                break
+
+    if not normalized:
+        return ""
+    if normalized in _DESTINATION_NOISE_TOKENS:
+        return ""
+    if any(token in normalized for token in _AUTH_TOKENS):
+        return ""
+    if _is_actionish_target_term(normalized):
+        return ""
+    return candidate
+
+
 def _extract_destination_aliases(texts: Iterable[str], normalize_fn: Callable[[str], str]) -> Dict[str, List[str]]:
-    combined = " ".join(str(t or "") for t in texts)
-    norm = normalize_fn(combined)
     matched: Dict[str, List[str]] = {}
-    for canonical, aliases in _CANONICAL_DESTINATION_ALIASES.items():
-        for alias in aliases:
-            if normalize_fn(alias) and normalize_fn(alias) in norm:
-                matched.setdefault(canonical, []).append(alias)
+    seen: set[str] = set()
+    for text in texts:
+        for pattern in _DESTINATION_CAPTURE_PATTERNS:
+            for raw in pattern.findall(str(text or "")):
+                candidate = _clean_destination_candidate(str(raw or ""), normalize_fn)
+                normalized = normalize_fn(candidate)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                matched[normalized] = [candidate]
     return matched
 
 

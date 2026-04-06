@@ -12,8 +12,6 @@ def filter_goal_requires_semantic_validation(ctx: Any) -> bool:
         normalize = lambda value: str(value or "").strip().lower()
     goal_blob = normalize(str(getattr(ctx, "_active_goal_text", "") or ""))
     semantic_tokens = (
-        "학점",
-        "credit",
         "semantic",
         "의미",
         "맞게",

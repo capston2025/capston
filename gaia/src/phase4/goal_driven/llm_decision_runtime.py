@@ -4,7 +4,10 @@ import json
 import time
 from typing import Any, List, Optional
 
-from .browser_action_rules import build_browser_action_rules_for_agent
+from .browser_action_rules import (
+    build_browser_action_rules_for_agent,
+    slice_recent_prompt_items,
+)
 from .dom_prompt_formatting import detect_active_surface_context, semantic_tags_for_element
 from .goal_policy_phase_runtime import goal_phase_intent
 from .goal_replanning_runtime import sync_goal_replanning_state
@@ -504,6 +507,14 @@ def decide_next_action(
     elements_text = agent._format_dom_for_llm(elements_for_prompt)
     backend_name = str(getattr(agent, "_browser_backend_name", "") or "").strip().lower()
     recent_block_text = ", ".join(str(x) for x in (getattr(agent, "_recent_click_element_ids", []) or [])[-8:]) or "없음"
+    recent_action_history = slice_recent_prompt_items(
+        list(getattr(agent, "_action_history", []) or []),
+        default=5,
+    )
+    recent_action_feedback = slice_recent_prompt_items(
+        list(getattr(agent, "_action_feedback", []) or []),
+        default=5,
+    )
     state_cache_title = "현재 wrapper 관찰값(약한 힌트)" if thin_wrapper_mode else "현재 상태 요약(약한 힌트)"
     pre_dom_wrapper_observation_block = ""
     post_dom_wrapper_observation_block = wrapper_observation_block
@@ -549,10 +560,10 @@ def decide_next_action(
 {pre_dom_wrapper_observation_block}
 
 ## 최근 액션 기록
-{chr(10).join(agent._action_history[-5:]) if agent._action_history else '없음'}
+{chr(10).join(recent_action_history) if recent_action_history else '없음'}
 
 ## 최근 실행 피드백
-{chr(10).join(agent._action_feedback[-5:]) if agent._action_feedback else '없음'}
+{chr(10).join(recent_action_feedback) if recent_action_feedback else '없음'}
 
 ## 최근 반복 클릭 element_id
 {recent_block_text}
@@ -607,8 +618,8 @@ JSON 응답:"""
                 "prompt_mode": "agentic",
                 "elements": serialize_dom_elements(elements_for_prompt, agent=agent),
                 "prompt_elements": serialize_dom_elements(elements_for_prompt, agent=agent),
-                "recent_action_history": list(getattr(agent, "_action_history", []) or [])[-5:],
-                "recent_action_feedback": list(getattr(agent, "_action_feedback", []) or [])[-5:],
+                "recent_action_history": recent_action_history,
+                "recent_action_feedback": recent_action_feedback,
                 "llm_path": "vision" if screenshot else "text_only",
                 "uses_openclaw_backend": str(getattr(agent, "_browser_backend_name", "") or "").strip().lower() == "openclaw",
                 "agentic_wrapper_mode": True,

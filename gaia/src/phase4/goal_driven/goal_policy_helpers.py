@@ -54,28 +54,58 @@ def goal_destination_terms(agent: Any, goal: TestGoal) -> List[str]:
     semantics = getattr(agent, "_goal_semantics", None)
     if semantics and getattr(semantics, "destination_terms", None):
         return list(semantics.destination_terms[:8])
-    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
-    groups = [
-        ("위시리스트", ("위시리스트", "wishlist", "wish list")),
-        ("장바구니", ("장바구니", "cart", "basket")),
-        ("시간표", ("시간표", "timetable", "schedule")),
-        ("선택목록", ("선택 목록", "선택목록", "selected list", "selected items")),
-        ("내 목록", ("내 목록", "my list", "saved list")),
-    ]
-    matched: List[str] = []
-    for canonical, hints in groups:
-        if any(agent._normalize_text(hint) in goal_blob for hint in hints):
-            matched.extend(hints)
-            matched.append(canonical)
+    raw_terms = list((agent._goal_constraints.get("destination_terms") or []))
     deduped: List[str] = []
     seen: set[str] = set()
-    for token in matched:
+    for token in raw_terms:
         norm = agent._normalize_text(token)
         if not norm or norm in seen:
             continue
         seen.add(norm)
         deduped.append(token)
     return deduped[:8]
+
+
+def _has_empty_state_signal(agent: Any, text: str) -> bool:
+    norm = agent._normalize_text(text)
+    if not norm:
+        return False
+    if any(token in norm for token in ("비어", "empty", "없음", "없어요", "none", "nothing", "no items", "no results")):
+        return True
+    return bool(re.search(r"(?:^|\s)0\s*(?:개|건|items?|results?|selected)?(?:\s|$)", norm))
+
+
+def _has_aggregate_state_signal(agent: Any, text: str) -> bool:
+    norm = agent._normalize_text(text)
+    if not norm:
+        return False
+    if any(token in norm for token in ("총", "total", "count", "items", "selected", "selection", "합계", "summary")):
+        return True
+    return bool(re.search(r"(?:총|total)\s*\d", norm))
+
+
+def _has_reveal_signal(agent: Any, text: str) -> bool:
+    norm = agent._normalize_text(text)
+    if not norm:
+        return False
+    return any(
+        token in norm
+        for token in (
+            "보기",
+            "열기",
+            "더보기",
+            "show",
+            "view",
+            "open",
+            "expand",
+            "details",
+            "list",
+            "saved",
+            "selected",
+            "favorites",
+            "panel",
+        )
+    )
 
 
 def build_goal_policy_evidence_bundle(
@@ -187,31 +217,10 @@ def build_goal_policy_evidence_bundle(
             or tag in {"button", "a"}
         )
         remove_like = any(token in blob for token in ("삭제", "제거", "remove", "delete", "clear", "비우"))
-        reveal_like = any(
-            token in blob
-            for token in (
-                "위시리스트",
-                "wishlist",
-                "장바구니",
-                "cart",
-                "시간표",
-                "timetable",
-                "내 목록",
-                "saved",
-                "favorites",
-                "선택 목록",
-                "selected",
-                "더보기",
-                "show more",
-                "view all",
-                "expand",
-                "펼치",
-                "열기",
-            )
-        )
+        reveal_like = _has_reveal_signal(agent, blob)
         container_ref = str(getattr(el, "container_ref_id", "") or "").strip()
         # group_action_labels에 destination + remove 조합이 있으면 destination 증거로 인정
-        # 예: "시간표에서 제거" → destination("시간표") + remove("제거") = 이미 목적지에 존재
+        # 예: "saved queue에서 제거" → destination + remove = 이미 목적지에 존재
         _label_blob = agent._normalize_text(" ".join(str(x or "") for x in group_labels)) if isinstance(group_labels, list) else ""
         _label_has_destination = bool(destination_terms) and any(
             term and term in _label_blob for term in destination_terms
@@ -234,7 +243,8 @@ def build_goal_policy_evidence_bundle(
             destination_anchor_found = True
         destination_surface_like = has_destination and (
             bool(matched_targets)
-            or any(token in blob for token in ("비어", "empty", "없음", "0개", "0학점", "총", "개", "학점"))
+            or _has_empty_state_signal(agent, blob)
+            or _has_aggregate_state_signal(agent, blob)
             or container_role in {"listitem", "row", "article", "region", "group"}
             or role in {"tabpanel", "region", "list", "listitem", "row", "grid", "table"}
             or tag in {"li", "tr", "section", "article", "table"}
@@ -251,7 +261,7 @@ def build_goal_policy_evidence_bundle(
             target_action_cta_visible = True
         if is_actionable and reveal_like and (has_destination or any(term and term in blob for term in destination_terms)):
             destination_reveal_action_available = True
-        if has_destination and any(token in blob for token in ("비어", "empty", "없음", "0개", "0학점")):
+        if has_destination and _has_empty_state_signal(agent, blob):
             empty_state_visible = True
 
     for (
@@ -304,7 +314,7 @@ def build_goal_policy_evidence_bundle(
     live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
     page_fragments.extend(str(item or "").strip() for item in live_texts[:12] if str(item or "").strip())
     page_blob = agent._normalize_text(" ".join(page_fragments))
-    if destination_surface_actionable and any(token in page_blob for token in ("비어", "empty", "없음", "0개", "0학점")):
+    if destination_surface_actionable and _has_empty_state_signal(agent, page_blob):
         empty_state_visible = True
     if destination_anchor_found:
         agent._goal_policy_destination_anchor_seen = True
