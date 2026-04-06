@@ -51,9 +51,9 @@ def test_filter_policy_accepts_openclaw_state_change_for_non_semantic_goal() -> 
     assert result.reason_code == "filter_state_change_confirmed"
 
 
-def test_filter_policy_keeps_semantic_validator_mandatory_for_credit_goal() -> None:
+def test_filter_policy_keeps_semantic_validator_mandatory_for_generic_semantic_goal() -> None:
     policy = FilterPolicy()
-    ctx = _FilterCtx("학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.")
+    ctx = _FilterCtx("필터가 실제 결과 목록과 맞게 동작하는지 의미 검증해줘.")
 
     mandatory = policy.mandatory_validators("apply_filter", ctx, SimpleNamespace(), EvidenceBundle())
     optional = policy.optional_validators("apply_filter", ctx, SimpleNamespace(), EvidenceBundle())

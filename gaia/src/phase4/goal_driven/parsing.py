@@ -108,6 +108,7 @@ def parse_wait_payload(raw: Optional[Any]) -> Dict[str, Any]:
             payload[normalized_key] = value
         if payload:
             return payload
+        return {"time_ms": 1000}
 
     if text.isdigit():
         return {"time_ms": max(0, int(text))}

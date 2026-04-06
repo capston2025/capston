@@ -12,6 +12,7 @@ class _FakeAgent:
         self._persistent_state_memory = []
         self._recent_signal_history = []
         self._last_exec_result = None
+        self._consecutive_wait_count = 2
         self._last_filter_semantic_report = None
         self._goal_state_cache = {}
         self._auth_completed_fields = set()
@@ -57,6 +58,11 @@ class _FakeAgent:
             for item in elements
             if str(getattr(item, "text", "") or "").strip()
         )
+
+    def _wait_completion_ready(self, dom_elements: list[DOMElement] | None = None) -> bool:
+        from gaia.src.phase4.goal_driven.goal_achievement_runtime import wait_completion_ready
+
+        return wait_completion_ready(self, dom_elements)
 
 
 def test_validate_goal_achievement_claim_accepts_wait_when_destination_row_is_visible():
@@ -573,6 +579,7 @@ def test_validate_goal_achievement_claim_accepts_wait_via_generic_judge_for_late
 
     assert ok is True
     assert reason is None
+    assert agent._last_goal_completion_source == "judge"
     if hasattr(agent, "_last_judge_prompt"):
         assert "assistant response" in agent._last_judge_prompt
 
@@ -623,6 +630,110 @@ def test_validate_goal_achievement_claim_accepts_wait_via_reasoning_result_quote
 
     assert ok is True
     assert reason is None
+
+
+def test_validate_goal_achievement_claim_defers_first_wait_for_transient_loading_surface() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._consecutive_wait_count = 1
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "현재 화면 증거상 목표가 완료되었습니다.",
+  "confidence": 0.95
+}
+""".strip()
+    goal = SimpleNamespace(
+        name='이 사이트 들어가서 "안녕 뭐해?"라고 입력하고 결과물 알려줘봐',
+        description='입력 후 나온 결과를 확인해줘.',
+        success_criteria=['"안녕 뭐해?" 입력 후 결과 응답이 화면에 나타나는지 확인'],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="응답이 보이기 시작했으니 목표가 끝난 것 같습니다.",
+        confidence=0.9,
+        is_goal_achieved=True,
+        goal_achievement_reason="응답 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="status",
+            role="status",
+            text="생각 중",
+            context_text="loading surface",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="generic",
+            text="진행률 16%",
+            context_text="progress overlay",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is False
+    assert reason == "첫 WAIT는 완료 판정을 내리지 않고 한 번 더 상태 변화를 관찰합니다."
+    assert agent._last_goal_completion_source == ""
+
+
+def test_validate_goal_achievement_claim_allows_first_wait_for_stable_zero_state_surface() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {"mutation_direction": "clear"}
+    agent._consecutive_wait_count = 1
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "삭제 이후 stable zero-state가 직접 확인되어 목표가 완료되었습니다.",
+  "confidence": 0.95
+}
+""".strip()
+    goal = SimpleNamespace(
+        name="위시리스트 비우기",
+        description="로그인 후 위시리스트를 모두 비우고 총 0학점 상태인지 확인해줘.",
+        success_criteria=["총 0학점과 empty-state 문구 확인"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="현재 화면에 총 0학점과 빈 위시리스트 상태가 직접 보여 목표가 완료되었습니다.",
+        confidence=0.92,
+        is_goal_achieved=True,
+        goal_achievement_reason="zero-state 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="총 0학점",
+            context_text="위시리스트 요약",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="status",
+            text="담은 과목이 없어요.",
+            context_text="empty state",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is True
+    assert reason is None
+    assert agent._last_goal_completion_source == "judge"
 
 
 def test_validate_goal_achievement_claim_rejects_loading_quote_as_result() -> None:

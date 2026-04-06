@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Sequence
 
+from .benchmark_policy import apply_benchmark_success_policy
 from .graders.blocked_vs_fail import BlockedVsFailGrader
 from .graders.expected_signals import ExpectedSignalsGrader
 from .graders.membership import MembershipGrader
@@ -139,6 +140,11 @@ def run_task(
     exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else proc.returncode)
     status = _normalize_status(summary, exit_code)
     reason = str(summary.get("reason") or stderr or "")
+    status, reason, benchmark_policy = apply_benchmark_success_policy(
+        status=status,
+        reason=reason,
+        summary=summary,
+    )
     return {
         "task_id": task.id,
         "suite_id": task.suite_id,
@@ -146,12 +152,13 @@ def run_task(
         "url": task.url,
         "constraints": dict(task.constraints),
         "status": status,
-        "final_status": str(summary.get("final_status") or status),
+        "final_status": status,
         "reason": reason,
         "exit_code": exit_code,
         "duration_seconds": duration,
         "summary": summary,
         "captured_log": payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stderr,
+        "benchmark_policy": benchmark_policy,
     }
 
 

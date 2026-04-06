@@ -251,7 +251,7 @@
     {
       "id": "INUU_010_LOGIN_APPLY_FRIDAY_FREE_COMBINATION",
       "url": "https://inuu-timetable.vercel.app/",
-      "goal": "로그인 후 위시리스트 30학점 기준으로 조합 만들기를 실행하고 15학점 금공강 조합을 시간표에 적용해 확인해줘.",
+      "goal": "로그인 후 위시리스트를 30학점 이상 채우고, 그 상태에서 15학점 금공강 조합을 생성한 뒤 실제로 시간표에 적용되었는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

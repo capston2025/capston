@@ -737,6 +737,71 @@ def test_detect_active_surface_context_ignores_persistent_wishlist_sidebar_witho
     assert surface["active"] is False
 
 
+def test_detect_active_surface_context_uses_goal_destination_terms_without_domain_keywords() -> None:
+    agent = _FakeAgent()
+    agent._goal_semantics = SimpleNamespace(
+        target_terms=["Quarterly Report"],
+        destination_terms=["Review Queue", "Pending Review"],
+    )
+    agent._last_snapshot_evidence = {"modal_open": True}
+    elements = [
+        DOMElement(
+            id=1,
+            tag="h2",
+            role="heading",
+            text="Review Queue",
+            aria_label="Review Queue",
+            title="Review Queue",
+            ref_id="e901",
+            container_role="generic",
+            container_source="openclaw-role-tree",
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            ref_id="e902",
+            container_role="generic",
+            container_source="openclaw-role-tree",
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="Open item",
+            aria_label="Open item",
+            title="Open item",
+            ref_id="e903",
+            container_name="Review Queue",
+            container_role="generic",
+            container_source="openclaw-role-tree",
+            role_ref_role="button",
+            role_ref_name="Open item",
+        ),
+        DOMElement(
+            id=4,
+            tag="button",
+            role="button",
+            text="Add to queue",
+            aria_label="Add to queue",
+            title="Add to queue",
+            ref_id="e904",
+            container_name="Search results",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="Quarterly Report | Search results",
+            role_ref_role="button",
+            role_ref_name="Add to queue",
+        ),
+    ]
+
+    surface = detect_active_surface_context(agent, elements)
+
+    assert surface["active"] is True
+    assert str(getattr(surface["heading"], "ref_id", "")) == "e901"
+    assert {str(getattr(el, "ref_id", "")) for el in surface["background_elements"]} == {"e904"}
+
+
 # --- Delta snapshot compression tests ---
 
 

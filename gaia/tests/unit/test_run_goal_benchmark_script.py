@@ -29,3 +29,4 @@ def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -
     assert "filter_control_hint" in code
     assert "text_visible" in code
     assert "cta_visible" in code
+

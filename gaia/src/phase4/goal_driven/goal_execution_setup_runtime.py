@@ -39,6 +39,7 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._goal_phase_resume_after_auth = ""
     agent._progress_counter = 0
     agent._no_progress_counter = 0
+    agent._consecutive_wait_count = 0
     agent._modal_opened_once = False
     agent._modal_closed_after_open = False
     agent._close_intent_success_once = False

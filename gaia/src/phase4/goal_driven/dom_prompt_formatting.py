@@ -168,17 +168,6 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
     reveal_hit = any(
         token in blob
         for token in (
-            "위시리스트",
-            "wishlist",
-            "장바구니",
-            "cart",
-            "시간표",
-            "timetable",
-            "내 목록",
-            "saved",
-            "favorites",
-            "선택 목록",
-            "selected",
             "더보기",
             "show more",
             "view all",
@@ -190,6 +179,8 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
             "view",
         )
     )
+    if not reveal_hit and clickable and destination_hit and role in {"tab", "link"}:
+        reveal_hit = True
     secondary_reveal_hit = any(
         token in blob
         for token in ("더보기", "show more", "view all", "expand", "펼치", "열기", "menu", "옵션", "more", "편집", "edit", "상세", "details")
@@ -201,11 +192,9 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
     feedback_conflict_hit = any(
         token in blob
         for token in (
-            "이미 시간표에 추가된",
             "이미 추가",
             "이미 담은",
             "시간이 겹쳐",
-            "시간표와 시간이 겹쳐",
             "충돌",
             "중복",
             "duplicate",
@@ -226,19 +215,7 @@ def semantic_tags_for_element(agent: Any, el: DOMElement) -> List[str]:
             "added to",
             "successfully added",
         )
-    ) and any(
-        token in blob
-        for token in (
-            "시간표",
-            "내 시간표",
-            "wishlist",
-            "위시리스트",
-            "장바구니",
-            "cart",
-            "목록",
-            "list",
-        )
-    )
+    ) and (destination_hit or target_hit)
     input_like = tag in {"input", "textarea"} or role == "textbox"
     auth_self_blob = normalize(
         " ".join(
@@ -379,7 +356,7 @@ def _is_source_like_element(agent: Any, el: DOMElement) -> bool:
     )
     return any(
         token in blob
-        for token in ("검색 결과", "search result", "result list", "과목 검색")
+        for token in ("검색 결과", "search result", "result list", "search", "results", "검색", "result")
     )
 
 
@@ -401,6 +378,15 @@ def detect_active_surface_context(
         else {}
     )
     modal_open_hint = bool((snapshot_evidence or {}).get("modal_open"))
+    semantics = getattr(agent, "_goal_semantics", None)
+    normalize = getattr(agent, "_normalize_text", None)
+    destination_terms = []
+    if semantics is not None and callable(normalize):
+        destination_terms = [
+            normalize(term)
+            for term in list(getattr(semantics, "destination_terms", []) or [])
+            if str(term or "").strip()
+        ]
 
     destination_heading_index: Optional[int] = None
     destination_heading: Optional[DOMElement] = None
@@ -422,14 +408,11 @@ def detect_active_surface_context(
         )
         role = str(getattr(element, "role", "") or "").strip().lower()
         tag = str(getattr(element, "tag", "") or "").strip().lower()
-        if destination_heading is None and role in {"heading", "dialog", "alertdialog"} | {"banner"}:
-            if any(token in blob for token in ("내 시간표", "시간표", "위시리스트", "wishlist", "selected")):
-                destination_heading = element
-                destination_heading_index = index
-        elif destination_heading is None and tag in {"h1", "h2", "h3"}:
-            if any(token in blob for token in ("내 시간표", "시간표", "위시리스트", "wishlist", "selected")):
-                destination_heading = element
-                destination_heading_index = index
+        is_heading_like = role in {"heading", "dialog", "alertdialog", "banner"} or tag in {"h1", "h2", "h3"}
+        heading_destination_hit = any(term and term in blob for term in destination_terms)
+        if destination_heading is None and is_heading_like and (heading_destination_hit or role in {"dialog", "alertdialog"}):
+            destination_heading = element
+            destination_heading_index = index
         if (
             ("destination_remove_candidate" in tags or "destination_reveal_candidate" in tags)
             and not _is_source_like_element(agent, element)
@@ -853,19 +836,6 @@ def format_dom_for_llm(agent: Any, elements: List[DOMElement]) -> str:
                 meta_parts.append(f"refs_mode={refs_mode}")
             if backend_name == "openclaw" and scope_applied and scoped_snapshot_text:
                 meta_parts.append(f'scope={str(role_snapshot.get("scope_container_ref_id") or "").strip() or "applied"}')
-            if stats:
-                meta_parts.append(
-                    "stats="
-                    + ",".join(
-                        f"{key}:{value}"
-                        for key, value in (
-                            ("lines", stats.get("lines")),
-                            ("refs", stats.get("refs")),
-                            ("interactive", stats.get("interactive")),
-                        )
-                        if value is not None
-                    )
-                )
             if meta_parts:
                 lines.append(f'- {" ".join(meta_parts)}')
             if backend_name == "openclaw" and snapshot_text:

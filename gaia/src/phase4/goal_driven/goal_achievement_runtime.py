@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import List, Optional
 
 from .goal_completion_helpers import (
@@ -110,14 +111,82 @@ def has_recent_transition_completion_proof(
     return "최근 상태 전환이 확인되어 현재 DOM의 최종 형태와 무관하게 목표 완료로 판정했습니다."
 
 
+_TRANSIENT_WAIT_KEYWORDS = (
+    "생각 중",
+    "로딩",
+    "loading",
+    "불러오는 중",
+    "처리 중",
+    "processing",
+    "generating",
+    "생성 중",
+    "saving",
+    "저장 중",
+    "applying",
+    "적용 중",
+    "updating",
+    "업데이트 중",
+    "progress",
+    "진행률",
+    "please wait",
+    "잠시만",
+)
+_TRANSIENT_WAIT_PERCENT = re.compile(r"\b\d{1,3}\s*%")
+
+
+def dom_has_transient_wait_signals(agent_cls, dom_elements: List[DOMElement]) -> bool:
+    for el in list(dom_elements or [])[:180]:
+        blob = agent_cls._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "placeholder", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                    str(getattr(el, "class_name", "") or ""),
+                ]
+            )
+        )
+        if not blob:
+            continue
+        role = agent_cls._normalize_text(getattr(el, "role", ""))
+        tag = agent_cls._normalize_text(getattr(el, "tag", ""))
+        if any(token in blob for token in _TRANSIENT_WAIT_KEYWORDS):
+            return True
+        if _TRANSIENT_WAIT_PERCENT.search(blob) and any(
+            token in blob for token in ("진행", "progress", "로딩", "생성", "처리", "업데이트", "apply", "save")
+        ):
+            return True
+        if role in {"progressbar", "status", "alert", "timer"} or tag in {"progress"}:
+            if any(token in blob for token in ("생각", "loading", "로딩", "progress", "진행", "generating", "processing")):
+                return True
+    return False
+
+
+def wait_completion_ready(agent, dom_elements: Optional[List[DOMElement]] = None) -> bool:
+    wait_count = int(getattr(agent, "_consecutive_wait_count", 0) or 0)
+    if wait_count >= 2:
+        return True
+    if wait_count <= 0:
+        return False
+    return not dom_has_transient_wait_signals(agent.__class__, list(dom_elements or []))
+
+
 def validate_goal_achievement_claim(
     agent,
     goal: TestGoal,
     decision: ActionDecision,
     dom_elements: List[DOMElement],
 ) -> tuple[bool, Optional[str]]:
+    setattr(agent, "_last_goal_completion_source", "")
     if not decision.is_goal_achieved:
         return True, None
+    if decision.action == ActionType.WAIT:
+        ready = wait_completion_ready(agent, dom_elements)
+        if not ready:
+            return False, "첫 WAIT는 완료 판정을 내리지 않고 한 번 더 상태 변화를 관찰합니다."
 
     expected_signals = [
         str(item or "").strip().lower()
@@ -187,16 +256,19 @@ def validate_goal_achievement_claim(
         dom_elements=dom_elements,
     )
     if judge_reason:
+        setattr(agent, "_last_goal_completion_source", "judge")
         decision.goal_achievement_reason = judge_reason
         return True, None
 
     if expected_signals and not missing:
+        setattr(agent, "_last_goal_completion_source", "expected_signals")
         if not str(decision.goal_achievement_reason or "").strip():
             decision.goal_achievement_reason = "goal contract signal 충족"
         return True, None
 
     if decision.action == ActionType.WAIT:
         if wait_fallback_reason:
+            setattr(agent, "_last_goal_completion_source", "wait_fallback")
             decision.goal_achievement_reason = wait_fallback_reason
             return True, None
         return (
@@ -204,4 +276,5 @@ def validate_goal_achievement_claim(
             "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
         )
 
+    setattr(agent, "_last_goal_completion_source", "direct")
     return True, None

@@ -386,8 +386,14 @@ def evaluate_post_action_progress(
                 duration_seconds=terminal_result.duration_seconds,
             )
     if terminal_result is None and decision.action == ActionType.WAIT:
+        wait_completion_ready = getattr(agent, "_wait_completion_ready", None)
+        wait_ready = bool(wait_completion_ready(post_dom or [])) if callable(wait_completion_ready) else bool(
+            int(getattr(agent, "_consecutive_wait_count", 0) or 0) >= 2
+        )
         current_phase_name = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
-        if current_phase_name.startswith("precheck"):
+        if not wait_ready:
+            wait_reason = None
+        elif current_phase_name.startswith("precheck"):
             wait_reason = None
         else:
             wait_reason = agent._evaluate_wait_goal_completion(
@@ -396,7 +402,7 @@ def evaluate_post_action_progress(
                 dom_elements=post_dom or [],
             )
         wait_reason_code = "wait_goal_completion"
-        if not wait_reason:
+        if wait_ready and not wait_reason:
             wait_reason = agent._evaluate_reasoning_only_wait_completion(
                 goal=goal,
                 decision=decision,

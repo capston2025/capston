@@ -12,6 +12,7 @@ from gaia.src.phase4.goal_driven.browser_action_rules import (
     _detect_repeated_wait,
     build_browser_action_rules_block,
     build_browser_action_rules_for_agent,
+    slice_recent_prompt_items,
 )
 
 
@@ -130,6 +131,21 @@ def test_build_for_agent_failure_warning():
     result = build_browser_action_rules_for_agent(agent)
     assert "긴급 행동 경고" in result
     assert "반복 실패" in result.split("긴급 행동 경고")[1]
+
+
+def test_slice_recent_prompt_items_can_disable_limit(monkeypatch):
+    monkeypatch.setenv("GAIA_LLM_RECENT_HISTORY_LIMIT", "0")
+    items = ["a", "b", "c", "d", "e", "f"]
+    assert slice_recent_prompt_items(items) == items
+
+
+def test_build_for_agent_respects_recent_history_limit(monkeypatch):
+    monkeypatch.setenv("GAIA_LLM_RECENT_HISTORY_LIMIT", "1")
+    agent = _FakeAgent()
+    agent._action_history = ["click(e1)", "wait", "wait"]
+    agent._action_feedback = ["success", "success", "success"]
+    result = build_browser_action_rules_for_agent(agent)
+    assert "긴급 행동 경고" not in result
 
 
 def test_rules_block_is_concise():
