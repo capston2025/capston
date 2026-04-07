@@ -38,6 +38,26 @@ def _normalize_status(summary: Dict[str, Any], exit_code: int) -> str:
     return "SUCCESS" if int(exit_code) == 0 else "FAIL"
 
 
+def _timeout_cap_was_explicit(argv: List[str] | None = None) -> bool:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    return any(arg == "--timeout-cap" or str(arg).startswith("--timeout-cap=") for arg in raw)
+
+
+def _resolve_scenario_timeout_budget(
+    *,
+    scenario_budget: int | None,
+    timeout_cap: int,
+    timeout_floor: int = 600,
+    timeout_cap_explicit: bool = False,
+) -> int:
+    cap = max(15, int(timeout_cap))
+    floor = max(15, int(timeout_floor))
+    budget = int(scenario_budget or floor)
+    if timeout_cap_explicit:
+        return max(15, min(budget, cap))
+    return max(floor, min(budget, cap))
+
+
 def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
     payload = json.dumps({"scenario": scenario, "session_id": session_id}, ensure_ascii=False)
     return f"""
@@ -322,7 +342,8 @@ def main() -> int:
     if args.limit and int(args.limit) > 0:
         scenarios = scenarios[: int(args.limit)]
     repeats = max(1, int(args.repeats))
-    timeout_cap = max(600, int(args.timeout_cap))
+    timeout_cap = max(15, int(args.timeout_cap))
+    timeout_cap_explicit = _timeout_cap_was_explicit()
 
     started_at = datetime.now().astimezone()
     run_id = f"{Path(args.suite).stem}_{started_at.strftime('%Y%m%d_%H%M%S')}"
@@ -347,7 +368,12 @@ def main() -> int:
         for idx, scenario in enumerate(scenarios, start=1):
             sid = f"{args.session_prefix}_{Path(args.suite).stem}_{repeat_idx}_{idx}"
             scenario_budget = int(scenario.get("time_budget_sec") or 600)
-            budget = max(600, min(scenario_budget, timeout_cap))
+            budget = _resolve_scenario_timeout_budget(
+                scenario_budget=scenario_budget,
+                timeout_cap=timeout_cap,
+                timeout_floor=600,
+                timeout_cap_explicit=timeout_cap_explicit,
+            )
             print(f"[{repeat_idx}/{repeats}] {idx}/{len(scenarios)} {scenario.get('id')} ...", flush=True)
             row = _run_scenario_once(
                 scenario,
