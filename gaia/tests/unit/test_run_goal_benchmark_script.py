@@ -1,4 +1,8 @@
-from scripts.run_goal_benchmark import _build_child_code
+from scripts.run_goal_benchmark import (
+    _build_child_code,
+    _resolve_scenario_timeout_budget,
+    _timeout_cap_was_explicit,
+)
 
 
 def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -> None:
@@ -30,3 +34,28 @@ def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -
     assert "text_visible" in code
     assert "cta_visible" in code
 
+
+def test_timeout_floor_applies_by_default() -> None:
+    budget = _resolve_scenario_timeout_budget(
+        scenario_budget=180,
+        timeout_cap=600,
+        timeout_floor=600,
+        timeout_cap_explicit=False,
+    )
+    assert budget == 600
+
+
+def test_explicit_timeout_cap_allows_lower_override() -> None:
+    budget = _resolve_scenario_timeout_budget(
+        scenario_budget=180,
+        timeout_cap=180,
+        timeout_floor=600,
+        timeout_cap_explicit=True,
+    )
+    assert budget == 180
+
+
+def test_timeout_cap_explicit_flag_detects_both_cli_forms() -> None:
+    assert _timeout_cap_was_explicit(["--timeout-cap", "180"]) is True
+    assert _timeout_cap_was_explicit(["--timeout-cap=180"]) is True
+    assert _timeout_cap_was_explicit(["--suite", "foo.json"]) is False
