@@ -45,9 +45,6 @@ from .goal_completion_helpers import (
     is_readonly_visibility_goal as is_readonly_visibility_goal_impl,
 )
 from .goal_verification_helpers import (
-    build_verification_transition_reason as build_verification_transition_reason_impl,
-    can_finish_by_verification_transition as can_finish_by_verification_transition_impl,
-    evaluate_static_verification_on_current_page as evaluate_static_verification_on_current_page_impl,
     extract_goal_query_tokens as extract_goal_query_tokens_impl,
     is_filter_style_goal as is_filter_style_goal_impl,
     is_verification_style_goal as is_verification_style_goal_impl,
@@ -802,56 +799,6 @@ class GoalDrivenAgent:
     def _is_filter_style_goal(self, goal: TestGoal) -> bool:
         return is_filter_style_goal_impl(self, goal)
 
-    def _can_finish_by_verification_transition(
-        self,
-        *,
-        goal: TestGoal,
-        decision: ActionDecision,
-        success: bool,
-        changed: bool,
-        state_change: Optional[Dict[str, Any]],
-        before_dom_count: int,
-        after_dom_count: int,
-        post_dom: Optional[List[DOMElement]] = None,
-    ) -> bool:
-        return can_finish_by_verification_transition_impl(
-            self,
-            goal=goal,
-            decision=decision,
-            success=success,
-            changed=changed,
-            state_change=state_change,
-            before_dom_count=before_dom_count,
-            after_dom_count=after_dom_count,
-            post_dom=post_dom,
-        )
-
-    def _build_verification_transition_reason(
-        self,
-        *,
-        state_change: Optional[Dict[str, Any]],
-        before_dom_count: int,
-        after_dom_count: int,
-    ) -> str:
-        return build_verification_transition_reason_impl(
-            self,
-            state_change=state_change,
-            before_dom_count=before_dom_count,
-            after_dom_count=after_dom_count,
-        )
-
-    def _evaluate_static_verification_on_current_page(
-        self,
-        *,
-        goal: TestGoal,
-        dom_elements: List[DOMElement],
-    ) -> Optional[str]:
-        return evaluate_static_verification_on_current_page_impl(
-            self,
-            goal=goal,
-            dom_elements=dom_elements,
-        )
-
     def _extract_goal_query_tokens(self, goal: TestGoal) -> List[str]:
         return extract_goal_query_tokens_impl(self, goal)
 
@@ -1515,30 +1462,6 @@ class GoalDrivenAgent:
                     start_time=start_time,
                     reason=str(login_intervention.get("reason") or "로그인 개입 요청이 거부되어 중단했습니다."),
                 )
-
-            static_verification_reason = self._evaluate_static_verification_on_current_page(
-                goal=goal,
-                dom_elements=dom_elements,
-            )
-            if static_verification_reason:
-                self._log(f"✅ 목표 달성! 이유: {static_verification_reason}")
-                result = GoalResult(
-                    goal_id=goal.id,
-                    goal_name=goal.name,
-                    success=True,
-                    steps_taken=steps,
-                    total_steps=max(0, len(steps)),
-                    final_reason=static_verification_reason,
-                    duration_seconds=time.time() - start_time,
-                )
-                self._record_goal_summary(
-                    goal=goal,
-                    status="success",
-                    reason=result.final_reason,
-                    step_count=result.total_steps,
-                    duration_seconds=result.duration_seconds,
-                )
-                return result
 
             use_screenshot = not self._is_readonly_visibility_goal(goal)
 

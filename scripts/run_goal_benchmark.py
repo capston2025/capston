@@ -311,7 +311,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--provider", default="")
     parser.add_argument("--model", default="gpt-5.4")
-    parser.add_argument("--timeout-cap", type=int, default=90)
+    parser.add_argument("--timeout-cap", type=int, default=600)
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
@@ -322,7 +322,7 @@ def main() -> int:
     if args.limit and int(args.limit) > 0:
         scenarios = scenarios[: int(args.limit)]
     repeats = max(1, int(args.repeats))
-    timeout_cap = max(15, int(args.timeout_cap))
+    timeout_cap = max(600, int(args.timeout_cap))
 
     started_at = datetime.now().astimezone()
     run_id = f"{Path(args.suite).stem}_{started_at.strftime('%Y%m%d_%H%M%S')}"
@@ -346,7 +346,8 @@ def main() -> int:
     for repeat_idx in range(1, repeats + 1):
         for idx, scenario in enumerate(scenarios, start=1):
             sid = f"{args.session_prefix}_{Path(args.suite).stem}_{repeat_idx}_{idx}"
-            budget = max(15, min(int(scenario.get("time_budget_sec") or 60), timeout_cap))
+            scenario_budget = int(scenario.get("time_budget_sec") or 600)
+            budget = max(600, min(scenario_budget, timeout_cap))
             print(f"[{repeat_idx}/{repeats}] {idx}/{len(scenarios)} {scenario.get('id')} ...", flush=True)
             row = _run_scenario_once(
                 scenario,

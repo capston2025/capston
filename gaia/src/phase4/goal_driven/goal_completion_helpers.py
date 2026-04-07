@@ -331,6 +331,8 @@ def evaluate_goal_target_completion(
     policy_reason = agent._run_goal_policy_closer(goal=goal, dom_elements=dom_elements)
     if policy_reason:
         return policy_reason
+    if is_readonly_visibility_goal(agent, goal):
+        return None
     direction = str(agent._goal_constraints.get("mutation_direction") or "").strip().lower()
     if direction not in {"increase", "decrease", "clear"}:
         return None

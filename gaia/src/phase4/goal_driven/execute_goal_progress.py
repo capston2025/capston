@@ -298,38 +298,6 @@ def evaluate_post_action_progress(
                     post_dom = recovered_dom
 
     terminal_result: Optional[GoalResult] = None
-    if agent._can_finish_by_verification_transition(
-        goal=goal,
-        decision=decision,
-        success=success,
-        changed=changed,
-        state_change=state_change,
-        before_dom_count=len(dom_elements),
-        after_dom_count=len(post_dom or []),
-        post_dom=post_dom if isinstance(post_dom, list) else [],
-    ):
-        completion_reason = agent._build_verification_transition_reason(
-            state_change=state_change,
-            before_dom_count=len(dom_elements),
-            after_dom_count=len(post_dom or []),
-        )
-        agent._log(f"✅ 목표 달성! 이유: {completion_reason}")
-        terminal_result = GoalResult(
-            goal_id=goal.id,
-            goal_name=goal.name,
-            success=True,
-            steps_taken=steps,
-            total_steps=step_count,
-            final_reason=completion_reason,
-            duration_seconds=time.time() - start_time,
-        )
-        agent._record_goal_summary(
-            goal=goal,
-            status="success",
-            reason=terminal_result.final_reason,
-            step_count=step_count,
-            duration_seconds=terminal_result.duration_seconds,
-        )
     if terminal_result is None:
         mutation_reason = agent._evaluate_goal_mutation_contract(
             before_dom=dom_elements,
