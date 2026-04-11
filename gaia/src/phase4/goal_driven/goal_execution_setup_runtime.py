@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from .models import GoalResult, StepResult, TestGoal
 from .goal_policy_runtime import initialize_goal_policy_runtime
 from .goal_replanning_runtime import initialize_goal_replanning_state
+from .run_history_runtime import initialize_run_history as initialize_run_history_impl
 from .wrapper_trace_runtime import thin_wrapper_enabled
 
 
@@ -115,6 +116,69 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._last_context_snapshot = {}
     agent._last_role_snapshot = {}
     agent._prev_raw_snapshot_text = ""
+    agent._run_history_enabled = None
+    agent._run_history_run_id = ""
+    agent._run_history_dir = ""
+    agent._run_history_events_path = ""
+    agent._run_history_state_path = ""
+    agent._run_history_summary_path = ""
+    agent._run_history_updater_path = ""
+    agent._run_history_updater_queue_path = ""
+    agent._run_history_updater_lock_path = ""
+    agent._run_history_replay_path = ""
+    agent._run_history_retrieval_path = ""
+    agent._run_history_retrieval_index_path = ""
+    agent._run_history_context_snapshot_path = ""
+    agent._run_history_prompt_path = ""
+    agent._run_history_memory_path = ""
+    agent._run_history_transcript_path = ""
+    agent._run_history_session_key = ""
+    agent._run_history_session_dir = ""
+    agent._run_history_session_events_path = ""
+    agent._run_history_session_state_path = ""
+    agent._run_history_session_summary_path = ""
+    agent._run_history_session_updater_path = ""
+    agent._run_history_session_updater_queue_path = ""
+    agent._run_history_session_updater_lock_path = ""
+    agent._run_history_session_replay_path = ""
+    agent._run_history_session_retrieval_path = ""
+    agent._run_history_session_retrieval_index_path = ""
+    agent._run_history_session_context_snapshot_path = ""
+    agent._run_history_session_prompt_path = ""
+    agent._run_history_session_memory_path = ""
+    agent._run_history_session_transcript_path = ""
+    agent._run_history_last_refresh_trigger = ""
+    agent._run_history_last_refresh_at = 0.0
+    agent._run_history_last_refresh_include_retrieval = False
+    agent._run_history_last_retrieval_refresh_trigger = ""
+    agent._run_history_last_retrieval_refresh_at = 0.0
+    agent._run_history_last_replay_refresh_trigger = ""
+    agent._run_history_last_replay_refresh_at = 0.0
+    agent._run_history_last_replay_refresh_include_retrieval = False
+    agent._run_history_session_summary = ""
+    agent._run_history_replay_packet_summary = ""
+    agent._run_history_prompt_summary = ""
+    agent._run_history_memory_summary = ""
+    agent._run_history_retrieval_summary = ""
+    agent._run_history_context_snapshot_cache = {}
+    agent._run_history_background_queue_triggers = []
+    agent._run_history_background_queue_since = 0.0
+    agent._run_history_background_last_queued_at = 0.0
+    agent._run_history_background_last_drained_at = 0.0
+    agent._run_history_background_drain_count = 0
+    agent._run_history_background_last_drain_reason = ""
+    agent._run_history_background_last_launch_status = ""
+    agent._run_history_background_last_launch_trigger = ""
+    agent._run_history_background_last_launch_at = 0.0
+    agent._run_history_background_last_launch_pid = 0
+    agent._run_history_background_launch_count = 0
+    agent._run_history_startup_recovery_drained = 0
+    agent._run_history_startup_recovery_failed = 0
+    agent._run_history_startup_recovery_at = 0.0
+    agent._run_history_background_pending_include_retrieval = False
+    agent._run_history_background_pending_artifacts = []
+    agent._run_history_background_last_updated_artifacts = []
+    agent._run_history_background_active = False
     agent._persistent_state_memory = []
     agent._recent_signal_history = []
     agent._goal_policy_target_seen_in_destination = False
@@ -143,6 +207,7 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     agent._goal_metric_value = None
     agent._last_filter_semantic_report = None
     agent._filter_validation_contract = None
+    initialize_run_history_impl(agent, goal)
 
     collect_min = agent._goal_constraints.get("collect_min")
     apply_target = agent._goal_constraints.get("apply_target")

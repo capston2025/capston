@@ -781,7 +781,7 @@ def test_validate_goal_achievement_claim_rejects_loading_quote_as_result() -> No
     assert reason == "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다."
 
 
-def test_validate_goal_achievement_claim_does_not_bypass_missing_expected_signals_with_judge() -> None:
+def test_validate_goal_achievement_claim_allows_judge_to_bypass_missing_expected_signals() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._judge_response = """
@@ -831,5 +831,6 @@ def test_validate_goal_achievement_claim_does_not_bypass_missing_expected_signal
 
     ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
 
-    assert ok is False
-    assert reason == "goal contract signal 미충족: response_visible"
+    assert ok is True
+    assert reason is None
+    assert agent._last_goal_completion_source == "judge"

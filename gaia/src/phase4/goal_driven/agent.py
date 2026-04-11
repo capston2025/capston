@@ -79,6 +79,7 @@ from .failure_runtime import (
 )
 from .llm_decision_runtime import decide_next_action as decide_next_action_impl
 from .post_action_runtime import handle_post_action_runtime
+from .run_history_runtime import record_run_history_decision as record_run_history_decision_impl
 from .action_execution_runtime import (
     execute_action as execute_action_impl,
     execute_decision as execute_decision_impl,
@@ -232,6 +233,69 @@ class GoalDrivenAgent:
         # 실행 기록
         self._action_history: List[str] = []
         self._action_feedback: List[str] = []
+        self._run_history_enabled: Optional[bool] = None
+        self._run_history_run_id: str = ""
+        self._run_history_dir: str = ""
+        self._run_history_events_path: str = ""
+        self._run_history_state_path: str = ""
+        self._run_history_summary_path: str = ""
+        self._run_history_updater_path: str = ""
+        self._run_history_updater_queue_path: str = ""
+        self._run_history_updater_lock_path: str = ""
+        self._run_history_replay_path: str = ""
+        self._run_history_retrieval_path: str = ""
+        self._run_history_retrieval_index_path: str = ""
+        self._run_history_context_snapshot_path: str = ""
+        self._run_history_prompt_path: str = ""
+        self._run_history_memory_path: str = ""
+        self._run_history_transcript_path: str = ""
+        self._run_history_session_key: str = ""
+        self._run_history_session_dir: str = ""
+        self._run_history_session_events_path: str = ""
+        self._run_history_session_state_path: str = ""
+        self._run_history_session_summary_path: str = ""
+        self._run_history_session_updater_path: str = ""
+        self._run_history_session_updater_queue_path: str = ""
+        self._run_history_session_updater_lock_path: str = ""
+        self._run_history_session_replay_path: str = ""
+        self._run_history_session_retrieval_path: str = ""
+        self._run_history_session_retrieval_index_path: str = ""
+        self._run_history_session_context_snapshot_path: str = ""
+        self._run_history_session_prompt_path: str = ""
+        self._run_history_session_memory_path: str = ""
+        self._run_history_session_transcript_path: str = ""
+        self._run_history_last_refresh_trigger: str = ""
+        self._run_history_last_refresh_at: float = 0.0
+        self._run_history_last_refresh_include_retrieval: bool = False
+        self._run_history_last_retrieval_refresh_trigger: str = ""
+        self._run_history_last_retrieval_refresh_at: float = 0.0
+        self._run_history_last_replay_refresh_trigger: str = ""
+        self._run_history_last_replay_refresh_at: float = 0.0
+        self._run_history_last_replay_refresh_include_retrieval: bool = False
+        self._run_history_session_summary: str = ""
+        self._run_history_replay_packet_summary: str = ""
+        self._run_history_prompt_summary: str = ""
+        self._run_history_memory_summary: str = ""
+        self._run_history_retrieval_summary: str = ""
+        self._run_history_context_snapshot_cache: Dict[str, Any] = {}
+        self._run_history_background_queue_triggers: List[str] = []
+        self._run_history_background_queue_since: float = 0.0
+        self._run_history_background_last_queued_at: float = 0.0
+        self._run_history_background_last_drained_at: float = 0.0
+        self._run_history_background_drain_count: int = 0
+        self._run_history_background_last_drain_reason: str = ""
+        self._run_history_background_last_launch_status: str = ""
+        self._run_history_background_last_launch_trigger: str = ""
+        self._run_history_background_last_launch_at: float = 0.0
+        self._run_history_background_last_launch_pid: int = 0
+        self._run_history_background_launch_count: int = 0
+        self._run_history_startup_recovery_drained: int = 0
+        self._run_history_startup_recovery_failed: int = 0
+        self._run_history_startup_recovery_at: float = 0.0
+        self._run_history_background_pending_include_retrieval: bool = False
+        self._run_history_background_pending_artifacts: List[str] = []
+        self._run_history_background_last_updated_artifacts: List[str] = []
+        self._run_history_background_active: bool = False
 
         # DOM 요소의 셀렉터 저장 (element_id -> selector)
         self._element_selectors: Dict[int, str] = {}
@@ -1152,6 +1216,11 @@ class GoalDrivenAgent:
                 "LLM 호출이 중단되었습니다: Codex CLI 입력 인코딩(UTF-8) 오류입니다. "
                 "최신 코드로 업데이트 후 다시 실행하세요."
             )
+        if "codex_exec_timeout:" in text:
+            return (
+                "LLM 호출이 중단되었습니다: Codex CLI 응답이 제한 시간 안에 끝나지 않았습니다. "
+                "`GAIA_CODEX_EXEC_TIMEOUT_SEC` 또는 benchmark timeout budget을 확인하세요."
+            )
         if "codex exec failed" in text or "unexpected argument" in text:
             return (
                 "LLM 호출이 중단되었습니다: Codex CLI 실행 인자/버전 오류입니다. "
@@ -1962,6 +2031,12 @@ class GoalDrivenAgent:
             if not intent_fields and decision.reasoning:
                 intent_fields.append(str(decision.reasoning))
             action_intent_key = self._candidate_intent_key(decision.action.value, intent_fields)
+            record_run_history_decision_impl(
+                self,
+                step_number=step_count,
+                decision=decision,
+                selected_element=selected_element,
+            )
 
             step_result, success, error = sub_agent.run_step(
                 step_number=step_count,

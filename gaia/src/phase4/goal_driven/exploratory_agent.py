@@ -410,6 +410,11 @@ class ExploratoryAgent:
                 "LLM 호출 중단: Codex CLI 입력 인코딩(UTF-8) 오류입니다. "
                 "최신 코드로 업데이트 후 다시 실행하세요."
             )
+        if "codex_exec_timeout:" in text:
+            return (
+                "LLM 호출 중단: Codex CLI 응답이 제한 시간 안에 끝나지 않았습니다. "
+                "`GAIA_CODEX_EXEC_TIMEOUT_SEC` 또는 benchmark timeout budget을 확인하세요."
+            )
         if "codex exec failed" in text or "unexpected argument" in text:
             return (
                 "LLM 호출 중단: Codex CLI 실행 인자/버전 오류입니다. "

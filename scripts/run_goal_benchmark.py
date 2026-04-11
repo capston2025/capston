@@ -21,6 +21,12 @@ if str(WORKSPACE_ROOT) not in sys.path:
 
 from gaia.harness.benchmark_policy import apply_benchmark_success_policy
 
+_MIN_BENCHMARK_TIMEOUT_SEC = 600
+_MIN_CODEX_EXEC_TIMEOUT_SEC = 180
+_MAX_CODEX_EXEC_TIMEOUT_SEC = 300
+_BENCHMARK_CODEX_REASONING_EFFORT = "low"
+
+
 def _load_suite(path: Path) -> Dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -37,25 +43,31 @@ def _normalize_status(summary: Dict[str, Any], exit_code: int) -> str:
         return final_status
     return "SUCCESS" if int(exit_code) == 0 else "FAIL"
 
-
-def _timeout_cap_was_explicit(argv: List[str] | None = None) -> bool:
-    raw = list(sys.argv[1:] if argv is None else argv)
-    return any(arg == "--timeout-cap" or str(arg).startswith("--timeout-cap=") for arg in raw)
-
-
 def _resolve_scenario_timeout_budget(
     *,
     scenario_budget: int | None,
     timeout_cap: int,
-    timeout_floor: int = 600,
-    timeout_cap_explicit: bool = False,
+    timeout_floor: int = _MIN_BENCHMARK_TIMEOUT_SEC,
 ) -> int:
-    cap = max(15, int(timeout_cap))
+    cap = max(int(timeout_floor), int(timeout_cap))
     floor = max(15, int(timeout_floor))
     budget = int(scenario_budget or floor)
-    if timeout_cap_explicit:
-        return max(15, min(budget, cap))
     return max(floor, min(budget, cap))
+
+
+def _resolve_codex_exec_timeout(timeout_sec: int) -> int:
+    budget = max(_MIN_BENCHMARK_TIMEOUT_SEC, int(timeout_sec))
+    return max(
+        _MIN_CODEX_EXEC_TIMEOUT_SEC,
+        min(_MAX_CODEX_EXEC_TIMEOUT_SEC, budget // 2),
+    )
+
+
+def _prepare_scenario_env(env: Dict[str, str], timeout_sec: int) -> Dict[str, str]:
+    scenario_env = dict(env)
+    scenario_env["GAIA_CODEX_EXEC_TIMEOUT_SEC"] = str(_resolve_codex_exec_timeout(timeout_sec))
+    scenario_env["GAIA_CODEX_REASONING_EFFORT"] = _BENCHMARK_CODEX_REASONING_EFFORT
+    return scenario_env
 
 
 def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
@@ -114,6 +126,7 @@ def _run_scenario_once(
     timeout_sec: int,
     env: Dict[str, str],
 ) -> Dict[str, Any]:
+    scenario_env = _prepare_scenario_env(env, timeout_sec)
     code = _build_child_code(scenario, session_id)
     started = time.monotonic()
     try:
@@ -122,7 +135,7 @@ def _run_scenario_once(
             capture_output=True,
             text=True,
             timeout=timeout_sec,
-            env=env,
+            env=scenario_env,
             cwd=str(WORKSPACE_ROOT),
             check=False,
         )
@@ -342,8 +355,7 @@ def main() -> int:
     if args.limit and int(args.limit) > 0:
         scenarios = scenarios[: int(args.limit)]
     repeats = max(1, int(args.repeats))
-    timeout_cap = max(15, int(args.timeout_cap))
-    timeout_cap_explicit = _timeout_cap_was_explicit()
+    timeout_cap = max(_MIN_BENCHMARK_TIMEOUT_SEC, int(args.timeout_cap))
 
     started_at = datetime.now().astimezone()
     run_id = f"{Path(args.suite).stem}_{started_at.strftime('%Y%m%d_%H%M%S')}"
@@ -371,8 +383,7 @@ def main() -> int:
             budget = _resolve_scenario_timeout_budget(
                 scenario_budget=scenario_budget,
                 timeout_cap=timeout_cap,
-                timeout_floor=600,
-                timeout_cap_explicit=timeout_cap_explicit,
+                timeout_floor=_MIN_BENCHMARK_TIMEOUT_SEC,
             )
             print(f"[{repeat_idx}/{repeats}] {idx}/{len(scenarios)} {scenario.get('id')} ...", flush=True)
             row = _run_scenario_once(

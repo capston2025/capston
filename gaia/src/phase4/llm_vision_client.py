@@ -141,12 +141,17 @@ class LLMVisionClient:
             cmd = [
                 codex_bin,
                 "exec",
+                "--disable",
+                "codex_hooks",
                 "--skip-git-repo-check",
                 "--sandbox",
                 "read-only",
                 "--output-last-message",
                 str(output_file),
             ]
+            reasoning_effort = str(os.getenv("GAIA_CODEX_REASONING_EFFORT", "") or "").strip().lower()
+            if reasoning_effort:
+                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
 
             # Model 지정이 실패하면 기본 모델로 재시도할 수 있도록 2회 시도.
             candidates = [self.model, ""]
@@ -206,7 +211,7 @@ class LLMVisionClient:
                     break
                 except subprocess.TimeoutExpired:
                     last_error = f"codex_exec_timeout:{codex_timeout_sec}s"
-                    continue
+                    break
 
         raise RuntimeError(f"codex exec failed: {last_error or 'unknown error'}")
 

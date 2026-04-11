@@ -473,55 +473,13 @@ def enforce_goal_constraints_on_decision(
                 goal_achievement_reason=None,
             )
 
-    picked = self._pick_collect_element(dom_elements)
-    if picked is not None:
-        picked_id, picked_reason = picked
-        self._log(
-            "🧱 목표 제약 가드: "
-            f"현재 {current_text}{metric_label} < 최소 {collect_min}{metric_label}, "
-            "수집 액션으로 교체합니다."
-        )
-        return ActionDecision(
-            action=ActionType.CLICK,
-            element_id=picked_id,
-            reasoning=picked_reason,
-            confidence=0.82,
-            is_goal_achieved=False,
-            goal_achievement_reason=None,
-        )
-
-    self._log(
-        "🧱 목표 제약 가드: 수집 후보를 찾지 못해 대기/컨텍스트 전환을 유도합니다."
-    )
-    scroll_target_id: Optional[int] = None
-    shift_pick = self._pick_collect_context_shift_element(dom_elements, set())
-    if shift_pick is not None:
-        scroll_target_id = shift_pick[0]
-    elif dom_elements:
-        for el in dom_elements:
-            ref_id = self._element_ref_ids.get(el.id)
-            if ref_id and not self._is_ref_temporarily_blocked(ref_id):
-                scroll_target_id = el.id
-                break
-    if scroll_target_id is None:
-        return ActionDecision(
-            action=ActionType.WAIT,
-            reasoning=(
-                f"최소 수집 기준({collect_min}{metric_label}) 미달이며 유효한 ref 대상을 찾지 못했습니다. "
-                "DOM 재수집 후 다시 시도합니다."
-            ),
-            confidence=0.45,
-            is_goal_achieved=False,
-            goal_achievement_reason=None,
-        )
     return ActionDecision(
-        action=ActionType.SCROLL,
-        element_id=scroll_target_id,
-        reasoning=(
-            f"최소 수집 기준({collect_min}{metric_label}) 미달 상태입니다. "
-            "수집 가능한 요소가 보일 때까지 컨텍스트를 전환합니다."
-        ),
-        confidence=0.5,
+        action=decision.action,
+        ref_id=decision.ref_id,
+        element_id=decision.element_id,
+        value=decision.value,
+        reasoning=decision.reasoning,
+        confidence=decision.confidence,
         is_goal_achieved=False,
         goal_achievement_reason=None,
     )

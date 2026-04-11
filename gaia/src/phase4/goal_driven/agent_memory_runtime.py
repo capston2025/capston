@@ -4,6 +4,11 @@ from urllib.parse import urlparse
 
 from .models import ActionDecision, DOMElement, TestGoal
 from .runtime import ActionExecResult
+from .run_history_runtime import (
+    record_run_history_feedback as record_run_history_feedback_impl,
+    record_run_history_goal_outcome as record_run_history_goal_outcome_impl,
+    refresh_run_history_state as refresh_run_history_state_impl,
+)
 from gaia.src.phase4.memory.models import MemoryActionRecord, MemorySummaryRecord
 
 
@@ -59,6 +64,16 @@ def record_action_feedback(
     agent._action_feedback.append(feedback)
     if len(agent._action_feedback) > 10:
         agent._action_feedback = agent._action_feedback[-10:]
+    record_run_history_feedback_impl(
+        agent,
+        step_number=step_number,
+        decision=decision,
+        success=success,
+        changed=changed,
+        error=error,
+        reason_code=code,
+        state_change=state_change,
+    )
 
 
 def extract_domain(url: Optional[str]) -> str:
@@ -125,6 +140,7 @@ def record_recovery_hints(agent: Any, goal: TestGoal, reason_code: str) -> None:
     agent._action_feedback.append(f"Recovery hints ({reason_code}): {text}")
     if len(agent._action_feedback) > 10:
         agent._action_feedback = agent._action_feedback[-10:]
+    refresh_run_history_state_impl(agent, goal=goal)
 
 
 def record_action_memory(
@@ -199,6 +215,14 @@ def record_goal_summary(
     step_count: int,
     duration_seconds: float,
 ) -> None:
+    record_run_history_goal_outcome_impl(
+        agent,
+        goal=goal,
+        status=status,
+        reason=reason,
+        step_count=step_count,
+        duration_seconds=duration_seconds,
+    )
     if not agent._memory_store.enabled:
         return
     try:
