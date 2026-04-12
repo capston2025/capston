@@ -337,6 +337,15 @@ def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, 
     }
 
 
+def _infer_provider_from_model(model_name: str) -> str:
+    normalized = str(model_name or "").strip().lower()
+    if normalized.startswith("gpt-") or "codex" in normalized:
+        return "openai"
+    if normalized.startswith("gemini"):
+        return "gemini"
+    return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run GAIA benchmark suite from scenario JSON.")
     parser.add_argument("--suite", required=True, help="Path to suite JSON")
@@ -365,11 +374,7 @@ def main() -> int:
     env = os.environ.copy()
     provider = str(args.provider or "").strip().lower()
     if not provider:
-        model_name = str(args.model or "").strip().lower()
-        if model_name.startswith("gpt-") or "codex" in model_name:
-            provider = "openai"
-        elif model_name.startswith("gemini"):
-            provider = "gemini"
+        provider = _infer_provider_from_model(str(args.model or ""))
     if provider:
         env.setdefault("GAIA_LLM_PROVIDER", provider)
     env.setdefault("GAIA_LLM_MODEL", str(args.model))
@@ -394,6 +399,8 @@ def main() -> int:
                 env=env,
             )
             row["repeat"] = repeat_idx
+            row["provider"] = provider
+            row["model"] = str(args.model)
             row["constraints"] = scenario.get("constraints") if isinstance(scenario.get("constraints"), dict) else {}
             row["expected_signals"] = scenario.get("expected_signals") if isinstance(scenario.get("expected_signals"), list) else []
             rows.append(row)
@@ -408,6 +415,7 @@ def main() -> int:
         "started_at": started_at.isoformat(),
         "repeats": repeats,
         "scenario_count": len(scenarios),
+        "provider": provider,
         "model": args.model,
         "metrics": metrics,
         "kpi_metrics": kpi_metrics,
@@ -431,6 +439,7 @@ def main() -> int:
     md.write(f"- suite: {summary['suite_id']}\n")
     md.write(f"- scenarios: {summary['scenario_count']}\n")
     md.write(f"- repeats: {repeats}\n")
+    md.write(f"- provider: {provider or '-'}\n")
     md.write(f"- model: {args.model}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")
     md.write(f"- avg_time_seconds: {metrics['avg_time_seconds']}\n")

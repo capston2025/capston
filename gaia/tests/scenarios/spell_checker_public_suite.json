@@ -1,0 +1,16 @@
+{
+  "suite_id": "spell_checker_public_v1",
+  "site": {
+    "name": "Korean Spell Checker",
+    "base_url": "https://nara-speller.co.kr/speller/",
+    "mode": "public_form"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": []
+}

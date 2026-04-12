@@ -41,6 +41,7 @@ OPENAI_AUTH_METHOD_CHOICES = ("oauth", "manual")
 CONTROL_CHOICES = ("local", "telegram")
 TELEGRAM_MODE_CHOICES = ("polling", "webhook")
 TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
+TERMINAL_PURPOSE_CHOICES = ("실제 사용 모드 실행", "벤치마크 용도 실행")
 DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
 TELEGRAM_BRIDGE_PID_FILE = Path.home() / ".gaia" / "telegram_bridge.pid"
 TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
@@ -649,6 +650,29 @@ def _resolve_control_channel(parsed: argparse.Namespace, profile: dict[str, str]
     return control
 
 
+def _resolve_terminal_launch_purpose(
+    parsed: argparse.Namespace,
+    profile: dict[str, str],
+    *,
+    runtime: str,
+) -> str:
+    if runtime != "terminal":
+        return "actual"
+    if not sys.stdin.isatty():
+        return "actual"
+    default = TERMINAL_PURPOSE_CHOICES[0]
+    if str(profile.get("last_terminal_purpose") or "").strip().lower() == "benchmark":
+        default = TERMINAL_PURPOSE_CHOICES[1]
+    selected = _prompt_select(
+        "테스트 용도 인가요?",
+        TERMINAL_PURPOSE_CHOICES,
+        default=default,
+    )
+    profile["last_terminal_purpose"] = "benchmark" if selected == TERMINAL_PURPOSE_CHOICES[1] else "actual"
+    _save_profile(profile)
+    return "benchmark" if selected == TERMINAL_PURPOSE_CHOICES[1] else "actual"
+
+
 def _resolve_telegram_setup_strategy(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
     strategy = getattr(parsed, "tg_setup", None) or profile.get("telegram_setup_strategy", "reuse")
     if strategy not in TELEGRAM_SETUP_CHOICES:
@@ -1103,6 +1127,18 @@ def _dispatch_plan(
     return run_gui(forwarded)
 
 
+def _run_terminal_benchmark_mode(*, workspace_root: Path) -> int:
+    from gaia.src.terminal_benchmark_mode import run_terminal_benchmark_mode
+
+    return run_terminal_benchmark_mode(
+        workspace_root=workspace_root,
+        prompt_select=_prompt_select,
+        prompt=_prompt,
+        prompt_non_empty=_prompt_non_empty,
+        emit=print,
+    )
+
+
 def run_chat(argv: Sequence[str] | None = None) -> int:
     parser = _build_common_parser("gaia chat", "Run chat mode.")
     parser.add_argument("--feature-query")
@@ -1420,7 +1456,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tg-webhook-bind")
     args = parser.parse_args(list(argv or []))
 
-    configured = _configure_session(args, require_url=True)
+    configured = _configure_session(args, require_url=False)
     if not configured:
         return 1
     (
@@ -1433,11 +1469,22 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         mcp_session_id,
         session_new,
     ) = configured
-    assert url is not None
     saved_state = load_session_state(session_key)
     last_snapshot_id = str(saved_state.last_snapshot_id or "") if saved_state else ""
     pending_user_input = dict(saved_state.pending_user_input) if saved_state else {}
     profile = _load_profile()
+    terminal_purpose = _resolve_terminal_launch_purpose(args, profile, runtime=runtime)
+    if terminal_purpose == "benchmark":
+        return _run_terminal_benchmark_mode(workspace_root=Path(__file__).resolve().parent.parent)
+
+    url = _resolve_url(args, profile, required=True)
+    if not url:
+        return 1
+    _persist_session_state(
+        session_key=session_key,
+        mcp_session_id=mcp_session_id,
+        url=url,
+    )
     control = _resolve_control_channel(args, profile)
 
     if runtime == "gui" and control != "telegram":
