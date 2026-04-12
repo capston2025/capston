@@ -8,13 +8,18 @@ from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
     append_scenario_to_suite,
     build_single_scenario_suite_payload,
+    build_terminal_benchmark_catalog,
     build_url_history,
+    create_custom_site_definition,
     delete_scenario_from_suite,
+    delete_custom_benchmark_site,
+    manage_benchmark_sites,
     open_benchmark_report,
     prompt_scenario_fields,
     replace_scenario_in_suite,
     run_terminal_benchmark_mode,
     save_suite_payload,
+    upsert_custom_benchmark_site,
     write_benchmark_report_html,
 )
 
@@ -107,6 +112,9 @@ def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path)
     assert "INU TIMETABLE" in first_prompt[1]
     assert "맞춤법 검사기" in first_prompt[1]
     assert "디시인사이드" in first_prompt[1]
+    assert "사이트 추가" in first_prompt[1]
+    assert "사이트 수정" in first_prompt[1]
+    assert "사이트 삭제" in first_prompt[1]
 
 
 def test_build_url_history_prioritizes_latest_default() -> None:
@@ -354,3 +362,112 @@ def test_build_single_scenario_suite_payload_keeps_selected_case_only() -> None:
     single = build_single_scenario_suite_payload(payload, "B")
 
     assert [row["id"] for row in single["scenarios"]] == ["B"]
+
+
+def test_manage_benchmark_sites_can_add_custom_site(tmp_path: Path) -> None:
+    script = _PromptScript(
+        texts=["storybook_docs"],
+        non_empty=["Storybook Docs", "https://storybook.js.org/"],
+    )
+
+    updated = manage_benchmark_sites(
+        workspace_root=tmp_path,
+        registry={"sites": {}},
+        action="사이트 추가",
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+    )
+
+    catalog, preset_map = build_terminal_benchmark_catalog(updated)
+    assert "storybook_docs" in preset_map
+    assert any(item["label"] == "Storybook Docs" and item["is_custom"] for item in catalog)
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_storybook_docs_suite.json"
+    assert suite_path.exists()
+    suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert suite_payload["site"]["name"] == "Storybook Docs"
+    assert suite_payload["site"]["base_url"] == "https://storybook.js.org/"
+
+
+def test_manage_benchmark_sites_can_edit_custom_site(tmp_path: Path) -> None:
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="storybook_docs",
+        site_definition=create_custom_site_definition(
+            site_key="storybook_docs",
+            label="Storybook Docs",
+            default_url="https://storybook.js.org/",
+        ),
+    )
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_storybook_docs_suite.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "storybook_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "grader_configs": {},
+            "scenarios": [],
+        },
+    )
+    script = _PromptScript(
+        selections=["Storybook Docs"],
+        texts=["Storybook Docs Korea"],
+        non_empty=["https://storybook.js.org/tutorials/"],
+    )
+
+    updated = manage_benchmark_sites(
+        workspace_root=tmp_path,
+        registry=registry,
+        action="사이트 수정",
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+    )
+
+    catalog, preset_map = build_terminal_benchmark_catalog(updated)
+    assert preset_map["storybook_docs"].label == "Storybook Docs Korea"
+    assert any(item["label"] == "Storybook Docs Korea" for item in catalog)
+    suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert suite_payload["site"]["name"] == "Storybook Docs Korea"
+    assert suite_payload["site"]["base_url"] == "https://storybook.js.org/tutorials/"
+
+
+def test_manage_benchmark_sites_can_delete_custom_site(tmp_path: Path) -> None:
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="storybook_docs",
+        site_definition=create_custom_site_definition(
+            site_key="storybook_docs",
+            label="Storybook Docs",
+            default_url="https://storybook.js.org/",
+        ),
+    )
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_storybook_docs_suite.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "storybook_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "grader_configs": {},
+            "scenarios": [],
+        },
+    )
+    script = _PromptScript(
+        selections=["Storybook Docs"],
+        non_empty=["storybook_docs"],
+    )
+
+    updated = manage_benchmark_sites(
+        workspace_root=tmp_path,
+        registry=registry,
+        action="사이트 삭제",
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+    )
+
+    assert updated == delete_custom_benchmark_site(registry, "storybook_docs")
+    assert not suite_path.exists()

@@ -15,12 +15,13 @@ from typing import Any, Callable, Mapping, Sequence
 from gaia.src.gui.benchmark_mode import (
     BenchmarkPreset,
     build_benchmark_catalog,
+    extract_url_host,
     find_preset,
     load_benchmark_registry,
     override_suite_urls,
     render_benchmark_reports_html,
-    save_benchmark_registry,
     scan_benchmark_reports,
+    save_benchmark_registry,
     upsert_benchmark_site_url,
 )
 
@@ -29,6 +30,137 @@ PromptTextFn = Callable[[str, str | None], str]
 OutputFn = Callable[[str], None]
 ProcessFactory = Callable[..., subprocess.Popen[str]]
 ReportOpener = Callable[[str], bool]
+
+SITE_ADD_OPTION = "사이트 추가"
+SITE_EDIT_OPTION = "사이트 수정"
+SITE_DELETE_OPTION = "사이트 삭제"
+SITE_EXIT_OPTION = "종료"
+
+
+def build_terminal_benchmark_catalog(
+    payload: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
+    catalog = [{**item, "is_custom": False} for item in build_benchmark_catalog(payload)]
+    preset_map: dict[str, BenchmarkPreset] = {}
+    for item in catalog:
+        preset = find_preset(str(item.get("key") or "").strip())
+        if preset is not None:
+            preset_map[preset.key] = preset
+
+    custom_sites = payload.get("custom_sites") if isinstance(payload.get("custom_sites"), Mapping) else {}
+    for raw_key in sorted(custom_sites):
+        raw_entry = custom_sites.get(raw_key)
+        if not isinstance(raw_entry, Mapping):
+            continue
+        site_key = str(raw_key or "").strip()
+        label = str(raw_entry.get("label") or "").strip()
+        default_url = str(raw_entry.get("default_url") or "").strip()
+        suite_path = str(raw_entry.get("suite_path") or "").strip()
+        host_aliases_raw = list(raw_entry.get("host_aliases") or [])
+        host_aliases = tuple(
+            str(item).strip().lower()
+            for item in host_aliases_raw
+            if str(item).strip()
+        )
+        if not site_key or not label or not default_url or not suite_path:
+            continue
+        site_state = (
+            (payload.get("sites") or {}).get(site_key, {})
+            if isinstance(payload.get("sites"), Mapping)
+            else {}
+        )
+        site_state = site_state if isinstance(site_state, Mapping) else {}
+        urls = build_url_history(
+            {
+                "default_url": str(site_state.get("default_url") or default_url).strip() or default_url,
+                "urls": list(site_state.get("urls") or []),
+            }
+        )
+        preset = BenchmarkPreset(
+            key=site_key,
+            label=label,
+            default_url=default_url,
+            suite_path=suite_path,
+            host_aliases=host_aliases or tuple(filter(None, (extract_url_host(default_url),))),
+        )
+        preset_map[site_key] = preset
+        catalog.append(
+            {
+                "key": site_key,
+                "label": label,
+                "default_url": urls[0] if urls else default_url,
+                "urls": urls[:8],
+                "suite_path": suite_path,
+                "suite_available": bool(suite_path),
+                "status_text": "커스텀",
+                "is_custom": True,
+            }
+        )
+    return catalog, preset_map
+
+
+def create_custom_suite_payload(*, site_key: str, label: str, default_url: str) -> dict[str, Any]:
+    return {
+        "suite_id": f"{site_key}_public_v1",
+        "site": {
+            "name": label,
+            "base_url": default_url,
+            "mode": "public_browse",
+        },
+        "grader_configs": {},
+        "scenarios": [],
+    }
+
+
+def create_custom_site_definition(
+    *,
+    site_key: str,
+    label: str,
+    default_url: str,
+) -> dict[str, Any]:
+    host = extract_url_host(default_url)
+    host_aliases = tuple(
+        dict.fromkeys(
+            alias
+            for alias in (
+                host,
+                host.removeprefix("www.") if host.startswith("www.") else "",
+                f"www.{host}" if host and not host.startswith("www.") else "",
+            )
+            if alias
+        )
+    )
+    return {
+        "label": label,
+        "default_url": default_url,
+        "suite_path": f"gaia/tests/scenarios/custom_{site_key}_suite.json",
+        "host_aliases": list(host_aliases),
+    }
+
+
+def upsert_custom_benchmark_site(
+    payload: Mapping[str, Any],
+    *,
+    site_key: str,
+    site_definition: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized = dict(payload)
+    custom_sites = dict(normalized.get("custom_sites") or {})
+    custom_sites[site_key] = dict(site_definition)
+    normalized["custom_sites"] = custom_sites
+    normalized = upsert_benchmark_site_url(normalized, site_key, str(site_definition.get("default_url") or ""))
+    return normalized
+
+
+def delete_custom_benchmark_site(payload: Mapping[str, Any], site_key: str) -> dict[str, Any]:
+    normalized = dict(payload)
+    custom_sites = dict(normalized.get("custom_sites") or {})
+    custom_sites.pop(site_key, None)
+    normalized["custom_sites"] = custom_sites
+    sites = dict(normalized.get("sites") or {})
+    sites.pop(site_key, None)
+    normalized["sites"] = sites
+    return normalized
 
 
 def load_suite_payload(workspace_root: Path, suite_path: str) -> dict[str, Any]:
@@ -256,9 +388,9 @@ def write_benchmark_report_html(
     preset: BenchmarkPreset,
     selected_url: str,
 ) -> Path:
-    reports = scan_benchmark_reports(
+    reports = _scan_benchmark_reports_for_preset(
         workspace_root=workspace_root,
-        site_key=preset.key,
+        preset=preset,
         selected_url=selected_url,
     )
     html_doc = render_benchmark_reports_html(
@@ -271,6 +403,68 @@ def write_benchmark_report_html(
     report_path = out_dir / f"{preset.key}_benchmark_report.html"
     report_path.write_text(html_doc, encoding="utf-8")
     return report_path
+
+
+def _summary_matches_preset(summary: Mapping[str, Any], preset: BenchmarkPreset, selected_url: str) -> bool:
+    site = summary.get("site") if isinstance(summary.get("site"), Mapping) else {}
+    base_url = str(site.get("base_url") or "").strip()
+    host = extract_url_host(base_url)
+    selected_host = extract_url_host(selected_url)
+    if selected_host and host == selected_host:
+        return True
+    if host and any(alias in host for alias in preset.host_aliases):
+        return True
+    return False
+
+
+def _scan_benchmark_reports_for_preset(
+    *,
+    workspace_root: Path,
+    preset: BenchmarkPreset,
+    selected_url: str,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    if find_preset(preset.key) is not None:
+        return scan_benchmark_reports(
+            workspace_root=workspace_root,
+            site_key=preset.key,
+            selected_url=selected_url,
+            limit=limit,
+        )
+    root = workspace_root / "artifacts" / "benchmarks"
+    if not root.exists():
+        return []
+    reports: list[dict[str, Any]] = []
+    for summary_path in sorted(root.glob("*/summary.json"), reverse=True):
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(summary, Mapping):
+            continue
+        if not _summary_matches_preset(summary, preset, selected_url):
+            continue
+        result_path = summary_path.with_name("results.json")
+        results: list[dict[str, Any]] = []
+        if result_path.exists():
+            try:
+                parsed = json.loads(result_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, list):
+                    results = [row for row in parsed if isinstance(row, dict)]
+            except Exception:
+                results = []
+        reports.append(
+            {
+                "artifact_dir": str(summary_path.parent),
+                "summary_path": str(summary_path),
+                "results_path": str(result_path),
+                "summary": dict(summary),
+                "results": results,
+            }
+        )
+        if len(reports) >= max(1, int(limit)):
+            break
+    return reports
 
 
 def open_benchmark_report(report_path: Path, opener: ReportOpener = webbrowser.open_new_tab) -> bool:
@@ -365,6 +559,115 @@ def run_benchmark_suite(
     }
 
 
+def manage_benchmark_sites(
+    *,
+    workspace_root: Path,
+    registry: Mapping[str, Any],
+    action: str,
+    prompt_select: PromptSelectFn,
+    prompt: PromptTextFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+) -> dict[str, Any]:
+    normalized = dict(registry)
+    catalog, preset_map = build_terminal_benchmark_catalog(normalized)
+    custom_entries = [item for item in catalog if bool(item.get("is_custom"))]
+
+    if action == SITE_ADD_OPTION:
+        existing_keys = {str(item.get("key") or "").strip() for item in catalog}
+        existing_labels = {str(item.get("label") or "").strip() for item in catalog}
+        label = str(prompt_non_empty("추가할 사이트 이름", default=None)).strip()
+        if label in existing_labels:
+            emit(f"이미 존재하는 사이트 이름입니다: {label}")
+            return normalized
+        generated_key = _slugify(label).replace("-", "_")
+        site_key = str(prompt("site_key (옵션)", default=generated_key or "custom_site")).strip() or generated_key or "custom_site"
+        site_key = _slugify(site_key).replace("-", "_")
+        while not site_key or site_key in existing_keys:
+            if site_key in existing_keys:
+                emit(f"이미 존재하는 site_key입니다: {site_key}")
+            site_key = _slugify(str(prompt_non_empty("중복되지 않는 site_key", default=None)).strip()).replace("-", "_")
+        default_url = str(prompt_non_empty("기본 링크", default=None)).strip()
+        site_definition = create_custom_site_definition(site_key=site_key, label=label, default_url=default_url)
+        suite_path = (workspace_root / str(site_definition["suite_path"])).resolve()
+        save_suite_payload(
+            suite_path,
+            create_custom_suite_payload(site_key=site_key, label=label, default_url=default_url),
+        )
+        normalized = upsert_custom_benchmark_site(normalized, site_key=site_key, site_definition=site_definition)
+        emit(f"🆕 사이트 추가 완료: {label} ({site_key})")
+        return normalized
+
+    if not custom_entries:
+        emit("편집/삭제 가능한 커스텀 사이트가 아직 없습니다.")
+        return normalized
+
+    custom_labels = tuple(item["label"] for item in custom_entries) + ("이전으로",)
+    selected_label = prompt_select(
+        "커스텀 벤치 사이트를 선택하세요",
+        custom_labels,
+        default=custom_entries[0]["label"],
+    )
+    if selected_label == "이전으로":
+        return normalized
+    site_entry = next((item for item in custom_entries if item["label"] == selected_label), None)
+    if site_entry is None:
+        emit("선택한 커스텀 사이트를 찾지 못했습니다.")
+        return normalized
+    preset = preset_map.get(str(site_entry.get("key") or "").strip())
+    if preset is None:
+        emit("선택한 사이트 preset을 찾지 못했습니다.")
+        return normalized
+
+    if action == SITE_EDIT_OPTION:
+        updated_label = str(prompt("사이트 이름", default=preset.label)).strip() or preset.label
+        occupied_labels = {
+            str(item.get("label") or "").strip()
+            for item in catalog
+            if str(item.get("key") or "").strip() != preset.key
+        }
+        if updated_label in occupied_labels:
+            emit(f"이미 존재하는 사이트 이름입니다: {updated_label}")
+            return normalized
+        updated_url = str(prompt_non_empty("기본 링크", default=preset.default_url)).strip()
+        updated_definition = create_custom_site_definition(
+            site_key=preset.key,
+            label=updated_label,
+            default_url=updated_url,
+        )
+        suite_path = (workspace_root / str(updated_definition["suite_path"])).resolve()
+        suite_payload = load_suite_payload(workspace_root, str(updated_definition["suite_path"]))
+        suite_payload["site"] = {
+            **dict(suite_payload.get("site") or {}),
+            "name": updated_label,
+            "base_url": updated_url,
+        }
+        save_suite_payload(suite_path, suite_payload)
+        normalized = upsert_custom_benchmark_site(
+            normalized,
+            site_key=preset.key,
+            site_definition=updated_definition,
+        )
+        emit(f"✏️ 사이트 수정 완료: {updated_label} ({preset.key})")
+        return normalized
+
+    confirmation = str(
+        prompt_non_empty(
+            f"{preset.key} 삭제 확인 (삭제하려면 {preset.key} 입력)",
+            default=None,
+        )
+    ).strip()
+    if confirmation != preset.key:
+        emit("사이트 삭제를 취소했습니다.")
+        return normalized
+    suite_path = (workspace_root / str(preset.suite_path or "")).resolve()
+    if suite_path.exists():
+        suite_path.unlink()
+    normalized = delete_custom_benchmark_site(normalized, preset.key)
+    emit(f"🗑️ 사이트 삭제 완료: {preset.label} ({preset.key})")
+    return normalized
+
+
 def run_terminal_benchmark_mode(
     *,
     workspace_root: Path,
@@ -380,22 +683,39 @@ def run_terminal_benchmark_mode(
     registry = load_benchmark_registry(registry_path)
 
     while True:
-        catalog = build_benchmark_catalog(registry)
-        site_options = tuple(item["label"] for item in catalog) + ("종료",)
+        catalog, preset_map = build_terminal_benchmark_catalog(registry)
+        site_options = tuple(item["label"] for item in catalog) + (
+            SITE_ADD_OPTION,
+            SITE_EDIT_OPTION,
+            SITE_DELETE_OPTION,
+            SITE_EXIT_OPTION,
+        )
         selected_site = prompt_select(
             "벤치 사이트를 선택하세요",
             site_options,
-            default=catalog[0]["label"] if catalog else "종료",
+            default=catalog[0]["label"] if catalog else SITE_EXIT_OPTION,
         )
-        if selected_site == "종료":
+        if selected_site == SITE_EXIT_OPTION:
             emit("벤치마킹 모드를 종료합니다.")
             return 0
+        if selected_site in {SITE_ADD_OPTION, SITE_EDIT_OPTION, SITE_DELETE_OPTION}:
+            registry = manage_benchmark_sites(
+                workspace_root=workspace_root,
+                registry=registry,
+                action=selected_site,
+                prompt_select=prompt_select,
+                prompt=prompt,
+                prompt_non_empty=prompt_non_empty,
+                emit=emit,
+            )
+            save_benchmark_registry(registry, registry_path)
+            continue
 
         site_entry = next((item for item in catalog if item["label"] == selected_site), None)
         if site_entry is None:
             emit("선택한 사이트를 찾지 못했습니다.")
             continue
-        preset = find_preset(str(site_entry.get("key") or "").strip())
+        preset = preset_map.get(str(site_entry.get("key") or "").strip())
         if preset is None:
             emit("선택한 사이트 preset을 찾지 못했습니다.")
             continue
