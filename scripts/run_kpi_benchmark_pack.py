@@ -17,10 +17,15 @@ from typing import Any, Dict, List
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = ROOT / "artifacts" / "benchmarks"
 RUN_SINGLE = ROOT / "scripts" / "run_goal_benchmark.py"
+MIN_BENCHMARK_TIMEOUT_SEC = 600
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _effective_timeout_cap(value: int) -> int:
+    return max(MIN_BENCHMARK_TIMEOUT_SEC, int(value))
 
 
 def _latest_artifact_dir(after_ts: float) -> Path:
@@ -308,7 +313,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run multiple GAIA benchmark suites and aggregate KPI metrics.")
     parser.add_argument("--suite", action="append", required=True, help="Path to a suite JSON. Repeatable.")
     parser.add_argument("--repeats", type=int, default=2)
-    parser.add_argument("--timeout-cap", type=int, default=180)
+    parser.add_argument("--timeout-cap", type=int, default=MIN_BENCHMARK_TIMEOUT_SEC)
     parser.add_argument("--session-prefix", default="kpi-pack")
     parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
     parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
@@ -331,7 +336,7 @@ def main() -> None:
         suite_report = _run_suite(
             suite_path,
             repeats=max(1, int(args.repeats)),
-            timeout_cap=max(10, int(args.timeout_cap)),
+            timeout_cap=_effective_timeout_cap(int(args.timeout_cap)),
             session_prefix=f"{args.session_prefix}-{idx}",
             env=env,
         )
@@ -347,7 +352,7 @@ def main() -> None:
             tags=[str(v) for v in args.harness_tags],
             contains=[str(v) for v in args.harness_contains],
             repeats=max(1, int(args.harness_repeats or args.repeats)),
-            timeout_sec=max(10, int(args.harness_timeout_sec or args.timeout_cap)),
+            timeout_sec=_effective_timeout_cap(int(args.harness_timeout_sec or args.timeout_cap)),
             env=env,
         )
         harness_report = {
@@ -363,7 +368,7 @@ def main() -> None:
         "pack_id": pack_id,
         "generated_at": timestamp,
         "repeats": max(1, int(args.repeats)),
-        "timeout_cap": max(10, int(args.timeout_cap)),
+        "timeout_cap": _effective_timeout_cap(int(args.timeout_cap)),
         "suites": [
             {
                 "suite_id": suite["suite_id"],

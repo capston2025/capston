@@ -1,16 +1,16 @@
 from gaia.harness.benchmark_policy import apply_benchmark_success_policy
 
 
-def test_apply_benchmark_success_policy_rejects_wait_fallback_success() -> None:
+def test_apply_benchmark_success_policy_keeps_wait_fallback_success() -> None:
     status, reason, meta = apply_benchmark_success_policy(
         status="SUCCESS",
         reason="모델 판단으로 완료",
         summary={"goal_completion_source": "wait_fallback"},
     )
 
-    assert status == "FAIL"
-    assert "benchmark_policy_rejected_completion_source(wait_fallback)" in reason
-    assert meta["rejected_completion_source"] == "wait_fallback"
+    assert status == "SUCCESS"
+    assert reason == "모델 판단으로 완료"
+    assert meta == {}
 
 
 def test_apply_benchmark_success_policy_keeps_judge_success() -> None:

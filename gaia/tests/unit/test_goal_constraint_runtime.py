@@ -70,7 +70,7 @@ def test_enforce_goal_constraints_keeps_achieved_wait_decision_before_collect_ga
     assert result.action == ActionType.WAIT
 
 
-def test_enforce_goal_constraints_replaces_repeated_collect_click_with_new_candidate() -> None:
+def test_enforce_goal_constraints_keeps_original_collect_click_without_substitution() -> None:
     fake = _FakeSelf()
     fake._goal_constraints = {"collect_min": 3, "metric_label": "과목"}
     fake._goal_metric_value = 1
@@ -115,5 +115,6 @@ def test_enforce_goal_constraints_replaces_repeated_collect_click_with_new_candi
     result = enforce_goal_constraints_on_decision(fake, decision, dom)
 
     assert result.action == ActionType.CLICK
-    assert result.element_id == 2
-    assert "새 수집 후보" in str(result.reasoning)
+    assert result.element_id == 1
+    assert result.ref_id == "e67"
+    assert result.reasoning == "두 번째 과목을 추가하기 위해 담기 버튼을 누른다."

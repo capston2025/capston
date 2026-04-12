@@ -24,6 +24,7 @@ from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, Goa
 from gaia.src.phase4.goal_driven.policies.filter import filter_goal_requires_semantic_validation
 from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
 from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
+from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session
 from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
 from gaia.src.tracker.checklist import ChecklistTracker
@@ -935,170 +936,181 @@ def _run_single_chat_goal(
             except Exception:
                 pass
 
+    normalized_session_id = session_id or WORKSPACE_DEFAULT
     agent = GoalDrivenAgent(
         mcp_host_url=CONFIG.mcp.host_url,
-        session_id=session_id or WORKSPACE_DEFAULT,
+        session_id=normalized_session_id,
         screenshot_callback=_on_screenshot,
         intervention_callback=intervention_callback,
     )
-    print(f"목표 실행: {goal.description}")
-    result = agent.execute_goal(goal)
-    goal_type = _infer_goal_type(goal.description)
-    semantic_report: Optional[Dict[str, Any]] = None
-    if _should_run_terminal_semantic_filter_validation(goal_type, agent):
-        cached_report = getattr(agent, "_last_filter_semantic_report", None)
-        if isinstance(cached_report, dict) and cached_report.get("summary"):
-            semantic_report = cached_report
-        else:
-            semantic_report = agent.run_filter_semantic_validation(
-                goal_text=goal.description,
-                max_pages=2,
-                max_cases=3,
-            )
-    validation_report = _build_validation_report(
-        goal.description,
-        result,
-        semantic_report=semantic_report,
-    )
-    preserve_runtime_success = _should_preserve_runtime_success_from_validation(agent, result)
-    effective_success, effective_reason = _apply_terminal_validation_outcome(
-        result_success=bool(result.success),
-        result_reason=str(result.final_reason or ""),
-        validation_report=validation_report,
-        preserve_runtime_success=preserve_runtime_success,
-    )
-    rail_result = run_validation_rail(
-        target_url=url,
-        run_id=session_id or WORKSPACE_DEFAULT,
-    )
-    rail_summary = rail_result.get("summary") if isinstance(rail_result, dict) else {}
-    rail_cases = rail_result.get("cases") if isinstance(rail_result, dict) else []
-    rail_artifacts = rail_result.get("artifacts") if isinstance(rail_result, dict) else {}
-    if not isinstance(rail_summary, dict):
-        rail_summary = {}
-    if not isinstance(rail_cases, list):
-        rail_cases = []
-    if not isinstance(rail_artifacts, dict):
-        rail_artifacts = {}
-    rail_mode = str(rail_summary.get("mode") or "soft").strip().lower()
-    rail_status = str(rail_summary.get("status") or "").strip().lower()
-    if rail_mode == "hard" and rail_status in {"failed", "timeout", "error"}:
-        effective_success = False
-        effective_reason = (
-            "검증 레일 실패가 감지되었습니다. "
-            + (effective_reason or str(rail_summary.get("reason") or "validation rail failed"))
-        ).strip()
+    try:
+        print(f"목표 실행: {goal.description}")
+        result = agent.execute_goal(goal)
+        goal_type = _infer_goal_type(goal.description)
+        semantic_report: Optional[Dict[str, Any]] = None
+        if _should_run_terminal_semantic_filter_validation(goal_type, agent):
+            cached_report = getattr(agent, "_last_filter_semantic_report", None)
+            if isinstance(cached_report, dict) and cached_report.get("summary"):
+                semantic_report = cached_report
+            else:
+                semantic_report = agent.run_filter_semantic_validation(
+                    goal_text=goal.description,
+                    max_pages=2,
+                    max_cases=3,
+                )
+        validation_report = _build_validation_report(
+            goal.description,
+            result,
+            semantic_report=semantic_report,
+        )
+        preserve_runtime_success = _should_preserve_runtime_success_from_validation(agent, result)
+        effective_success, effective_reason = _apply_terminal_validation_outcome(
+            result_success=bool(result.success),
+            result_reason=str(result.final_reason or ""),
+            validation_report=validation_report,
+            preserve_runtime_success=preserve_runtime_success,
+        )
+        rail_result = run_validation_rail(
+            target_url=url,
+            run_id=normalized_session_id,
+        )
+        rail_summary = rail_result.get("summary") if isinstance(rail_result, dict) else {}
+        rail_cases = rail_result.get("cases") if isinstance(rail_result, dict) else []
+        rail_artifacts = rail_result.get("artifacts") if isinstance(rail_result, dict) else {}
+        if not isinstance(rail_summary, dict):
+            rail_summary = {}
+        if not isinstance(rail_cases, list):
+            rail_cases = []
+        if not isinstance(rail_artifacts, dict):
+            rail_artifacts = {}
+        rail_mode = str(rail_summary.get("mode") or "soft").strip().lower()
+        rail_status = str(rail_summary.get("status") or "").strip().lower()
+        if rail_mode == "hard" and rail_status in {"failed", "timeout", "error"}:
+            effective_success = False
+            effective_reason = (
+                "검증 레일 실패가 감지되었습니다. "
+                + (effective_reason or str(rail_summary.get("reason") or "validation rail failed"))
+            ).strip()
 
-    report_reason_summary = (
-        validation_report.get("reason_code_summary")
-        if isinstance(validation_report.get("reason_code_summary"), dict)
-        else {}
-    )
-    reason_summary = _merge_reason_code_summary(
-        dict(getattr(agent, "_reason_code_counts", {}) or {}),
-        report_reason_summary,
-    )
-    rail_reason_code = str(rail_summary.get("reason_code") or "").strip()
-    if rail_reason_code:
-        try:
-            reason_summary[rail_reason_code] = int(reason_summary.get(rail_reason_code) or 0) + 1
-        except Exception:
-            reason_summary[rail_reason_code] = 1
-    final_status = _derive_final_status(
-        result_success=bool(effective_success),
-        reason=effective_reason,
-        validation_report=validation_report,
-        reason_summary=reason_summary,
-    )
-    effective_success = final_status == "SUCCESS"
+        report_reason_summary = (
+            validation_report.get("reason_code_summary")
+            if isinstance(validation_report.get("reason_code_summary"), dict)
+            else {}
+        )
+        reason_summary = _merge_reason_code_summary(
+            dict(getattr(agent, "_reason_code_counts", {}) or {}),
+            report_reason_summary,
+        )
+        rail_reason_code = str(rail_summary.get("reason_code") or "").strip()
+        if rail_reason_code:
+            try:
+                reason_summary[rail_reason_code] = int(reason_summary.get(rail_reason_code) or 0) + 1
+            except Exception:
+                reason_summary[rail_reason_code] = 1
+        final_status = _derive_final_status(
+            result_success=bool(effective_success),
+            reason=effective_reason,
+            validation_report=validation_report,
+            reason_summary=reason_summary,
+        )
+        effective_success = final_status == "SUCCESS"
 
-    print("\n실행 결과")
-    print(f"goal: {result.goal_name}")
-    print(f"status: {'success' if effective_success else 'failed'}")
-    print(f"final_status: {final_status}")
-    print(f"steps: {result.total_steps}")
-    print(f"reason: {effective_reason}")
-    print(f"duration: {result.duration_seconds:.2f}s")
-    if not effective_success:
-        _print_llm_failure_help(effective_reason)
+        print("\n실행 결과")
+        print(f"goal: {result.goal_name}")
+        print(f"status: {'success' if effective_success else 'failed'}")
+        print(f"final_status: {final_status}")
+        print(f"steps: {result.total_steps}")
+        print(f"reason: {effective_reason}")
+        print(f"duration: {result.duration_seconds:.2f}s")
+        if not effective_success:
+            _print_llm_failure_help(effective_reason)
 
-    expected_signals = [
-        str(item or "").strip().lower()
-        for item in list(getattr(goal, "expected_signals", []) or [])
-        if str(item or "").strip()
-    ]
-    last_state_change = (
-        dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
-        if getattr(agent, "_last_exec_result", None) is not None
-        else {}
-    )
-    final_dom = agent._analyze_dom() or []
-    achieved_signals = derive_achieved_signals(
-        agent,
-        goal=goal,
-        state_change=last_state_change,
-        dom_elements=final_dom,
-    )
-
-    summary = {
-        "goal": result.goal_name,
-        "status": "success" if effective_success else "failed",
-        "final_status": final_status,
-        "steps": result.total_steps,
-        "reason": effective_reason,
-        "duration_seconds": round(float(result.duration_seconds), 2),
-        "goal_completion_source": str(getattr(agent, "_last_goal_completion_source", "") or ""),
-        "step_timeline": _build_step_timeline(result),
-        "expected_signals": expected_signals,
-        "achieved_signals": achieved_signals,
-        "reason_code_summary": reason_summary,
-        "container_source_summary": dict(getattr(agent, "_last_container_source_summary", {}) or {}),
-        "active_scoped_container_ref": str(getattr(agent, "_active_scoped_container_ref", "") or ""),
-        "validation_summary": validation_report.get("summary", {}),
-        "validation_checks": validation_report.get("checks", []),
-        "verification_report": validation_report,
-        "validation_rail_summary": rail_summary,
-        "validation_rail_cases": rail_cases,
-        "validation_rail_artifacts": rail_artifacts,
-        "attachments": (
-            validation_report.get("attachments")
-            if isinstance(validation_report.get("attachments"), list)
-            else []
-        ),
-    }
-    if not summary["attachments"] and captured_shots:
-        sample = captured_shots[-3:]
-        summary["attachments"] = [
-            {
-                "kind": "image_base64",
-                "mime": "image/png",
-                "data": shot,
-                "label": f"실행 스냅샷 {idx + 1}/{len(sample)}",
-            }
-            for idx, shot in enumerate(sample)
-            if isinstance(shot, str) and shot.strip()
+        expected_signals = [
+            str(item or "").strip().lower()
+            for item in list(getattr(goal, "expected_signals", []) or [])
+            if str(item or "").strip()
         ]
-    summary["attachments"] = _limit_attachments_for_status(
-        summary.get("attachments"),
-        final_status=final_status,
-    )
-    if isinstance(goal.test_data, dict):
-        auth_payload = {}
-        for key in (
-            "auth_mode",
-            "username",
-            "email",
-            "password",
-            "department",
-            "grade_year",
-            "return_credentials",
-        ):
-            value = goal.test_data.get(key)
-            if value not in (None, "", False):
-                auth_payload[key] = value
-        if auth_payload:
-            summary["auth"] = auth_payload
-    return (0 if effective_success else 1), summary
+        last_state_change = (
+            dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
+            if getattr(agent, "_last_exec_result", None) is not None
+            else {}
+        )
+        final_dom = agent._analyze_dom() or []
+        achieved_signals = derive_achieved_signals(
+            agent,
+            goal=goal,
+            state_change=last_state_change,
+            dom_elements=final_dom,
+        )
+
+        summary = {
+            "goal": result.goal_name,
+            "status": "success" if effective_success else "failed",
+            "final_status": final_status,
+            "steps": result.total_steps,
+            "reason": effective_reason,
+            "duration_seconds": round(float(result.duration_seconds), 2),
+            "goal_completion_source": str(getattr(agent, "_last_goal_completion_source", "") or ""),
+            "step_timeline": _build_step_timeline(result),
+            "expected_signals": expected_signals,
+            "achieved_signals": achieved_signals,
+            "reason_code_summary": reason_summary,
+            "container_source_summary": dict(getattr(agent, "_last_container_source_summary", {}) or {}),
+            "active_scoped_container_ref": str(getattr(agent, "_active_scoped_container_ref", "") or ""),
+            "validation_summary": validation_report.get("summary", {}),
+            "validation_checks": validation_report.get("checks", []),
+            "verification_report": validation_report,
+            "validation_rail_summary": rail_summary,
+            "validation_rail_cases": rail_cases,
+            "validation_rail_artifacts": rail_artifacts,
+            "attachments": (
+                validation_report.get("attachments")
+                if isinstance(validation_report.get("attachments"), list)
+                else []
+            ),
+        }
+        if not summary["attachments"] and captured_shots:
+            sample = captured_shots[-3:]
+            summary["attachments"] = [
+                {
+                    "kind": "image_base64",
+                    "mime": "image/png",
+                    "data": shot,
+                    "label": f"실행 스냅샷 {idx + 1}/{len(sample)}",
+                }
+                for idx, shot in enumerate(sample)
+                if isinstance(shot, str) and shot.strip()
+            ]
+        summary["attachments"] = _limit_attachments_for_status(
+            summary.get("attachments"),
+            final_status=final_status,
+        )
+        if isinstance(goal.test_data, dict):
+            auth_payload = {}
+            for key in (
+                "auth_mode",
+                "username",
+                "email",
+                "password",
+                "department",
+                "grade_year",
+                "return_credentials",
+            ):
+                value = goal.test_data.get(key)
+                if value not in (None, "", False):
+                    auth_payload[key] = value
+            if auth_payload:
+                summary["auth"] = auth_payload
+        return (0 if effective_success else 1), summary
+    finally:
+        try:
+            close_mcp_session(
+                CONFIG.mcp.host_url,
+                session_id=normalized_session_id,
+                timeout=(3, 10),
+            )
+        except Exception:
+            pass
 
 
 def run_chat_terminal_once(

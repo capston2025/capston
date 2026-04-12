@@ -12,6 +12,10 @@ from .dom_prompt_formatting import detect_active_surface_context, semantic_tags_
 from .goal_policy_phase_runtime import goal_phase_intent
 from .goal_replanning_runtime import sync_goal_replanning_state
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
+from .run_history_runtime import (
+    build_run_history_replay_packet_context as build_run_history_replay_packet_context_impl,
+    record_run_history_transcript as record_run_history_transcript_impl,
+)
 from .wrapper_trace_runtime import dump_wrapper_trace, serialize_dom_elements, thin_wrapper_enabled, wrapper_mode_name
 
 
@@ -515,6 +519,8 @@ def decide_next_action(
         list(getattr(agent, "_action_feedback", []) or []),
         default=5,
     )
+    run_history_replay_packet = build_run_history_replay_packet_context_impl(agent, goal=goal)
+    run_history_replay_block = run_history_replay_packet or "## 세션 continuity replay packet\n없음"
     state_cache_title = "현재 wrapper 관찰값(약한 힌트)" if thin_wrapper_mode else "현재 상태 요약(약한 힌트)"
     pre_dom_wrapper_observation_block = ""
     post_dom_wrapper_observation_block = wrapper_observation_block
@@ -567,6 +573,18 @@ def decide_next_action(
 
 ## 최근 반복 클릭 element_id
 {recent_block_text}
+
+## 세션 연속성 우선순위
+- 1순위: replay packet 첫머리의 replay boundary, resume checklist, recent attempt digest를 먼저 읽는다.
+- 2순위: session summary의 Startup Continuity Audit와 Session Start Rules를 먼저 읽는다.
+- 3순위: MEMORY에서 이전 run의 recent attempts, outcome, resume hint를 읽는다.
+- 4순위: retrieval hit는 현재 goal/reason_code와 직접 맞는 항목만 반영한다.
+- 5순위: compact state는 보조 기록으로만 쓴다.
+
+## 진행 위생 규칙
+- mutation/수집/적용 goal에서는 새 CTA를 반복하기 전에 현재 열린 modal/overlay/panel이 진행을 막는지 먼저 확인하고, 막고 있으면 원래 작업 surface로 복귀하는 한 단계를 우선하세요.
+
+{run_history_replay_block}
 
 ## 도메인 실행 기억(KB)
 {memory_context or '없음'}
@@ -627,6 +645,18 @@ JSON 응답:"""
                 "goal_state_trace": goal_state_trace,
             },
         )
+        record_run_history_transcript_impl(
+            agent,
+            stage="actor_decision_prompt",
+            role="user",
+            content=prompt,
+            metadata={
+                "goal_id": getattr(goal, "id", ""),
+                "goal_name": getattr(goal, "name", ""),
+                "phase": current_phase,
+                "path": "vision" if screenshot else "text_only",
+            },
+        )
         llm_started = time.perf_counter()
         if screenshot:
             response_text = agent.llm.analyze_with_vision(prompt, screenshot)
@@ -639,6 +669,18 @@ JSON 응답:"""
             "owner": "llm",
         }
         agent._log(f"🧪 llm trace: {agent._last_llm_trace}")
+        record_run_history_transcript_impl(
+            agent,
+            stage="actor_decision_response",
+            role="assistant",
+            content=response_text,
+            metadata={
+                "goal_id": getattr(goal, "id", ""),
+                "goal_name": getattr(goal, "name", ""),
+                "phase": current_phase,
+                "path": "vision" if screenshot else "text_only",
+            },
+        )
         decision = agent._parse_decision(response_text)
         dump_wrapper_trace(
             agent,

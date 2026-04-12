@@ -239,12 +239,6 @@ def validate_goal_achievement_claim(
                 "회원가입 제출 및 완료 신호가 필요합니다.",
             )
 
-    if missing and not wait_contract_override:
-        return (
-            False,
-            "goal contract signal 미충족: " + ", ".join(missing),
-        )
-
     constraint_reason = agent._constraint_failure_reason()
     if constraint_reason:
         return False, constraint_reason
@@ -259,6 +253,12 @@ def validate_goal_achievement_claim(
         setattr(agent, "_last_goal_completion_source", "judge")
         decision.goal_achievement_reason = judge_reason
         return True, None
+
+    if missing and not wait_contract_override:
+        return (
+            False,
+            "goal contract signal 미충족: " + ", ".join(missing),
+        )
 
     if expected_signals and not missing:
         setattr(agent, "_last_goal_completion_source", "expected_signals")

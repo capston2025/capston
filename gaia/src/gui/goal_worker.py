@@ -1,7 +1,12 @@
 """Qt workers for goal-driven and exploratory automation."""
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from PySide6.QtCore import QObject, Signal
@@ -15,6 +20,7 @@ from gaia.src.phase4.goal_driven import (
 )
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
+from gaia.src.gui.benchmark_mode import override_suite_urls
 
 
 def _goal_step_timeline(result: Any, goal_name: str) -> list[dict[str, Any]]:
@@ -383,4 +389,168 @@ class ExploratoryWorker(QObject):
         self._cancel_requested = True
 
 
-__all__ = ["GoalDrivenWorker", "ExploratoryWorker"]
+class BenchmarkWorker(QObject):
+    """Run benchmark suites in a background thread for GUI benchmark mode."""
+
+    progress = Signal(str)
+    result_ready = Signal(object)
+    finished = Signal()
+
+    def __init__(
+        self,
+        *,
+        site_key: str,
+        site_label: str,
+        suite_path: str,
+        target_url: str,
+        workspace_root: Path,
+        timeout_cap: int = 600,
+    ) -> None:
+        super().__init__()
+        self._site_key = site_key
+        self._site_label = site_label
+        self._suite_path = str(suite_path)
+        self._target_url = str(target_url or "").strip()
+        self._workspace_root = Path(workspace_root)
+        self._timeout_cap = max(600, int(timeout_cap))
+        self._cancel_requested = False
+        self._process: subprocess.Popen[str] | None = None
+
+    def start(self) -> None:
+        started = time.time()
+        output_dir: Path | None = None
+        try:
+            suite_path = (self._workspace_root / self._suite_path).resolve()
+            if not suite_path.exists():
+                raise FileNotFoundError(f"benchmark suite not found: {suite_path}")
+
+            suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
+            if not isinstance(suite_payload, dict):
+                raise ValueError("benchmark suite must be a JSON object")
+            overridden = override_suite_urls(suite_payload, self._target_url)
+
+            tmp_root = self._workspace_root / "artifacts" / "tmp"
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            tmp_suite_path = tmp_root / f"{self._site_key}_gui_suite.json"
+            tmp_suite_path.write_text(json.dumps(overridden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            run_id = f"gui_{self._site_key}_{int(started)}"
+            output_dir = (self._workspace_root / "artifacts" / "benchmarks" / run_id).resolve()
+            cmd = [
+                sys.executable,
+                "scripts/run_goal_benchmark.py",
+                "--suite",
+                str(tmp_suite_path),
+                "--repeats",
+                "1",
+                "--timeout-cap",
+                str(self._timeout_cap),
+                "--session-prefix",
+                f"gui-{self._site_key}",
+                "--output-dir",
+                str(output_dir),
+            ]
+            env = os.environ.copy()
+            env.setdefault("GAIA_RAIL_ENABLED", "0")
+            env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.4"))
+
+            self.progress.emit(f"🚀 벤치 실행 시작: {self._site_label}")
+            self.progress.emit(f"   - suite: {suite_path.name}")
+            if self._target_url:
+                self.progress.emit(f"   - target: {self._target_url}")
+
+            self._process = subprocess.Popen(
+                cmd,
+                cwd=str(self._workspace_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+
+            captured: list[str] = []
+            assert self._process.stdout is not None
+            for raw_line in self._process.stdout:
+                line = str(raw_line or "").rstrip()
+                if not line:
+                    continue
+                captured.append(line)
+                self.progress.emit(line)
+                if self._cancel_requested and self._process.poll() is None:
+                    self._process.terminate()
+                    break
+
+            return_code = self._process.wait()
+            summary_path = output_dir / "summary.json"
+            results_path = output_dir / "results.json"
+            summary_payload = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+            results_payload = json.loads(results_path.read_text(encoding="utf-8")) if results_path.exists() else []
+
+            status_counts = summary_payload.get("status_counts") if isinstance(summary_payload, dict) else {}
+            status_counts = status_counts if isinstance(status_counts, dict) else {}
+            success_count = int(status_counts.get("SUCCESS") or 0)
+            fail_count = int(status_counts.get("FAIL") or 0)
+            total_count = int(summary_payload.get("scenario_count") or len(results_payload or []))
+            final_status = "success" if return_code == 0 and fail_count == 0 else "failed"
+            reason = "벤치 실행이 완료되었습니다." if final_status == "success" else "일부 시나리오가 실패했습니다."
+
+            self.result_ready.emit(
+                {
+                    "mode": "benchmark",
+                    "status": final_status,
+                    "reason": reason,
+                    "current_goal": f"{self._site_label} 벤치",
+                    "current_step": f"{success_count}/{total_count} 성공",
+                    "blocked_reason": "",
+                    "site_key": self._site_key,
+                    "site_label": self._site_label,
+                    "target_url": self._target_url,
+                    "output_dir": str(output_dir),
+                    "summary_path": str(summary_path),
+                    "results_path": str(results_path),
+                    "summary": summary_payload if isinstance(summary_payload, dict) else {},
+                    "results": results_payload if isinstance(results_payload, list) else [],
+                    "total_runs": total_count,
+                    "successful_runs": success_count,
+                    "failed_runs": fail_count,
+                    "proof_lines": [
+                        f"artifact: {output_dir}",
+                        f"success {success_count} / fail {fail_count}",
+                    ],
+                }
+            )
+        except Exception as exc:
+            self.progress.emit(f"❌ benchmark 실행 중 오류: {exc}")
+            self.result_ready.emit(
+                {
+                    "mode": "benchmark",
+                    "status": "failed",
+                    "reason": str(exc),
+                    "current_goal": f"{self._site_label} 벤치",
+                    "current_step": "-",
+                    "blocked_reason": "",
+                    "site_key": self._site_key,
+                    "site_label": self._site_label,
+                    "target_url": self._target_url,
+                    "output_dir": str(output_dir) if output_dir else "",
+                    "summary_path": str(output_dir / 'summary.json') if output_dir else "",
+                    "results_path": str(output_dir / 'results.json') if output_dir else "",
+                    "summary": {},
+                    "results": [],
+                    "total_runs": 0,
+                    "successful_runs": 0,
+                    "failed_runs": 0,
+                    "proof_lines": [],
+                }
+            )
+        finally:
+            self.finished.emit()
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+
+
+__all__ = ["GoalDrivenWorker", "ExploratoryWorker", "BenchmarkWorker"]

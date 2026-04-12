@@ -7,6 +7,10 @@ from typing import List, Optional
 
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 from .goal_verification_helpers import extract_goal_query_tokens, is_filter_style_goal
+from .run_history_runtime import (
+    build_run_history_replay_packet_context as build_run_history_replay_packet_context_impl,
+    record_run_history_transcript as record_run_history_transcript_impl,
+)
 
 
 _READONLY_VISIBILITY_STOP_TOKENS = {
@@ -856,6 +860,7 @@ def evaluate_goal_completion_judge(
         for item in list(getattr(agent, "_action_feedback", []) or [])[-6:]
         if str(item or "").strip()
     ]
+    run_history_replay_packet = build_run_history_replay_packet_context_impl(agent, goal=goal)
     expected_signals = [
         str(item or "").strip()
         for item in list(getattr(goal, "expected_signals", []) or [])
@@ -943,6 +948,9 @@ expected_signals:
 최근 액션 피드백:
 {json.dumps(recent_action_feedback, ensure_ascii=False)}
 
+세션 continuity replay packet:
+{run_history_replay_packet or "(없음)"}
+
 최근 상태 변화:
 {json.dumps(state_change_summary, ensure_ascii=False)}
 
@@ -956,6 +964,9 @@ expected_signals:
 {chr(10).join(dom_lines)}
 
 판정 규칙:
+- continuity 우선순위는 replay packet(boundary/checklist/attempt digest) -> summary.md -> MEMORY -> retrieval -> compact state 순서다.
+- replay packet의 resume checklist와 recent attempt digest를 먼저 읽고, summary.md 안의 Startup Continuity Audit와 Session Start Rules를 그 다음에 읽어라.
+- 이전 run 결론은 현재 DOM이 맞을 때만 재사용하라.
 - 현재 화면에 직접 보이는 증거만 믿어라.
 - `expected_signals`는 참고 정보일 뿐이고, 부재만으로 자동 실패 처리하지 마라.
 - 추측하지 마라. 애매하면 success=false.
@@ -971,6 +982,17 @@ JSON만 출력:
   "confidence": 0.0
 }}"""
 
+    record_run_history_transcript_impl(
+        agent,
+        stage="judge_prompt",
+        role="user",
+        content=prompt,
+        metadata={
+            "goal_id": getattr(goal, "id", ""),
+            "goal_name": getattr(goal, "name", ""),
+            "decision_action": str(getattr(decision, "action", "") or "").strip(),
+        },
+    )
     try:
         raw = agent._call_llm_text_only(prompt)
     except Exception:
@@ -980,6 +1002,17 @@ JSON만 출력:
             {"prompt": prompt, "raw_response": "", "parsed": {}, "error": "llm_call_failed"},
         )
         return None
+    record_run_history_transcript_impl(
+        agent,
+        stage="judge_response",
+        role="assistant",
+        content=raw,
+        metadata={
+            "goal_id": getattr(goal, "id", ""),
+            "goal_name": getattr(goal, "name", ""),
+            "decision_action": str(getattr(decision, "action", "") or "").strip(),
+        },
+    )
 
     parsed = _parse_wait_judge_response(raw)
     setattr(

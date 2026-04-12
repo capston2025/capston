@@ -1,0 +1,67 @@
+{
+  "suite_id": "fow_public_v1",
+  "site": {
+    "name": "FOW.LOL",
+    "base_url": "https://www.fow.lol/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "FOW_001_HOME_SEARCH_READY",
+      "url": "https://www.fow.lol/",
+      "goal": "FOW 메인 화면에서 소환사 검색창과 핵심 내비게이션이 이미 보이는지 확인하고 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "searchbox_visible",
+        "nav_visible"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 60
+    },
+    {
+      "id": "FOW_002_OPEN_RANKING_LIST",
+      "url": "https://www.fow.lol/",
+      "goal": "메인 화면에서 랭킹 페이지로 이동해 순위 리스트가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "ranking_list_visible",
+        "list_rows_loaded"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 120
+    },
+    {
+      "id": "FOW_003_OPEN_CHAMPION_ANALYSIS",
+      "url": "https://www.fow.lol/",
+      "goal": "메인 화면에서 챔피언 분석 페이지로 이동해 챔피언 통계 영역이나 표가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "champion_stats_visible",
+        "table_visible"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 120
+    }
+  ]
+}

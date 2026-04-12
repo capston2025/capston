@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, Q
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -446,6 +447,9 @@ class MainWindow(QMainWindow):
     planFileSelected = Signal(str)
     bugJsonSelected = Signal(str)
     inputSourceCleared = Signal()
+    benchmarkSaveRequested = Signal(str, str)
+    benchmarkRunRequested = Signal(str, str)
+    benchmarkViewRequested = Signal(str, str)
 
     def __init__(
         self, *, controller_factory: Callable[["MainWindow"], object] | None = None
@@ -821,6 +825,7 @@ class MainWindow(QMainWindow):
         self._log_output = None
         self._view_logs_button = None
         self._is_busy = False
+        self._benchmark_catalog: list[dict[str, Any]] = []
         self._build_layout()
         self._setup_screencast()
 
@@ -1022,12 +1027,24 @@ class MainWindow(QMainWindow):
         self._bundle_mode_button.clicked.connect(lambda: self.set_selected_run_mode("bundle"))
         self._run_mode_group.addButton(self._bundle_mode_button)
         mode_row.addWidget(self._bundle_mode_button)
+
+        self._benchmark_mode_button = QPushButton("벤치마킹 모드", page)
+        self._benchmark_mode_button.setCheckable(True)
+        self._benchmark_mode_button.setProperty("modeButton", True)
+        self._benchmark_mode_button.clicked.connect(lambda: self.set_selected_run_mode("benchmark"))
+        self._run_mode_group.addButton(self._benchmark_mode_button)
+        mode_row.addWidget(self._benchmark_mode_button)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
         action_label = QLabel("3. 실행 준비", page)
         action_label.setObjectName("SectionLabel")
         layout.addWidget(action_label)
+
+        self._standard_action_container = QFrame(page)
+        action_container_layout = QVBoxLayout(self._standard_action_container)
+        action_container_layout.setContentsMargins(0, 0, 0, 0)
+        action_container_layout.setSpacing(0)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(12)
@@ -1037,7 +1054,65 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self._start_button)
 
         action_row.addStretch()
-        layout.addLayout(action_row)
+        action_container_layout.addLayout(action_row)
+        layout.addWidget(self._standard_action_container)
+
+        self._benchmark_container = QFrame(page)
+        self._benchmark_container.setObjectName("FeatureInputContainer")
+        benchmark_layout = QVBoxLayout(self._benchmark_container)
+        benchmark_layout.setContentsMargins(12, 12, 12, 12)
+        benchmark_layout.setSpacing(10)
+
+        benchmark_label = QLabel("벤치마킹 대상", self._benchmark_container)
+        benchmark_label.setObjectName("FeatureLabel")
+        benchmark_layout.addWidget(benchmark_label)
+
+        self._benchmark_site_combo = QComboBox(self._benchmark_container)
+        self._benchmark_site_combo.currentIndexChanged.connect(self._on_benchmark_site_changed)
+        benchmark_layout.addWidget(self._benchmark_site_combo)
+
+        benchmark_url_label = QLabel("대상 링크", self._benchmark_container)
+        benchmark_url_label.setObjectName("FeatureLabel")
+        benchmark_layout.addWidget(benchmark_url_label)
+
+        self._benchmark_url_combo = QComboBox(self._benchmark_container)
+        self._benchmark_url_combo.setEditable(True)
+        self._benchmark_url_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        benchmark_layout.addWidget(self._benchmark_url_combo)
+
+        self._benchmark_status_label = QLabel(
+            "사이트를 선택하면 기존 입력 링크와 suite 상태를 보여줍니다.",
+            self._benchmark_container,
+        )
+        self._benchmark_status_label.setWordWrap(True)
+        benchmark_layout.addWidget(self._benchmark_status_label)
+
+        benchmark_button_row = QHBoxLayout()
+        benchmark_button_row.setSpacing(12)
+
+        self._benchmark_add_button = QPushButton("추가하기", self._benchmark_container)
+        self._benchmark_add_button.setObjectName("GhostButton")
+        self._benchmark_add_button.clicked.connect(self._emit_benchmark_save)
+        benchmark_button_row.addWidget(self._benchmark_add_button)
+
+        self._benchmark_run_button = QPushButton("기존 벤치 돌리기", self._benchmark_container)
+        self._benchmark_run_button.clicked.connect(self._emit_benchmark_run)
+        benchmark_button_row.addWidget(self._benchmark_run_button)
+
+        self._benchmark_view_button = QPushButton("벤치 결과 확인하기", self._benchmark_container)
+        self._benchmark_view_button.setObjectName("GhostButton")
+        self._benchmark_view_button.clicked.connect(self._emit_benchmark_view)
+        benchmark_button_row.addWidget(self._benchmark_view_button)
+        benchmark_button_row.addStretch()
+        benchmark_layout.addLayout(benchmark_button_row)
+
+        benchmark_hint = QLabel(
+            "사이트별 링크를 저장해두고, 저장된 suite가 있으면 바로 실행하고 결과 보드를 브라우저 패널에서 확인할 수 있습니다.",
+            self._benchmark_container,
+        )
+        benchmark_hint.setWordWrap(True)
+        benchmark_layout.addWidget(benchmark_hint)
+        layout.addWidget(self._benchmark_container)
 
         # 특정 기능 테스트 입력창 (처음엔 숨김)
         self._feature_input_container = QFrame(page)
@@ -1338,6 +1413,13 @@ class MainWindow(QMainWindow):
         self._back_to_setup_button.setEnabled(False)
         self._set_browser_panel_visible(False)
 
+    def show_setup_stage_with_browser(self) -> None:
+        self._workflow_stage = "setup"
+        if self._workflow_stack.currentWidget() is not self._setup_page:
+            self._workflow_stack.setCurrentWidget(self._setup_page)
+        self._back_to_setup_button.setEnabled(False)
+        self._set_browser_panel_visible(True)
+
     def show_review_stage(self) -> None:
         self._workflow_stage = "review"
         if self._workflow_stack.currentWidget() is not self._review_page:
@@ -1565,6 +1647,16 @@ class MainWindow(QMainWindow):
         )
         self._drop_area.setEnabled(not busy)
         self._url_input.setEnabled(not busy)
+        if hasattr(self, "_benchmark_site_combo"):
+            self._benchmark_site_combo.setEnabled(not busy)
+        if hasattr(self, "_benchmark_url_combo"):
+            self._benchmark_url_combo.setEnabled(not busy)
+        if hasattr(self, "_benchmark_add_button"):
+            self._benchmark_add_button.setEnabled(not busy)
+        if hasattr(self, "_benchmark_run_button"):
+            self._benchmark_run_button.setEnabled(not busy)
+        if hasattr(self, "_benchmark_view_button"):
+            self._benchmark_view_button.setEnabled(not busy)
         if hasattr(self, "_source_none_button"):
             self._source_none_button.setEnabled(not busy)
         if hasattr(self, "_source_file_button"):
@@ -1595,6 +1687,40 @@ class MainWindow(QMainWindow):
         self._feature_input.setText(query)
         self._current_feature_query = query.strip()
         self._feature_input_container.setVisible(self._selected_run_mode == "quick")
+
+    def set_benchmark_catalog(
+        self,
+        catalog: Sequence[Mapping[str, Any]],
+        *,
+        selected_site_key: str | None = None,
+        selected_url: str | None = None,
+    ) -> None:
+        self._benchmark_catalog = [dict(item) for item in catalog]
+        if not hasattr(self, "_benchmark_site_combo"):
+            return
+        self._benchmark_site_combo.blockSignals(True)
+        self._benchmark_site_combo.clear()
+        for item in self._benchmark_catalog:
+            self._benchmark_site_combo.addItem(str(item.get("label") or item.get("key") or "-"), str(item.get("key") or ""))
+        selected_index = 0
+        if selected_site_key:
+            for idx, item in enumerate(self._benchmark_catalog):
+                if str(item.get("key") or "") == str(selected_site_key):
+                    selected_index = idx
+                    break
+        self._benchmark_site_combo.setCurrentIndex(selected_index if self._benchmark_catalog else -1)
+        self._benchmark_site_combo.blockSignals(False)
+        self._update_benchmark_url_choices(selected_url=selected_url)
+
+    def get_selected_benchmark_site(self) -> str:
+        if not hasattr(self, "_benchmark_site_combo"):
+            return ""
+        return str(self._benchmark_site_combo.currentData() or "").strip()
+
+    def get_selected_benchmark_url(self) -> str:
+        if not hasattr(self, "_benchmark_url_combo"):
+            return ""
+        return str(self._benchmark_url_combo.currentText() or "").strip()
 
     def show_html_in_browser(self, html_content: str) -> None:
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
@@ -1877,12 +2003,13 @@ class MainWindow(QMainWindow):
         self._current_feature_query = str(text or "").strip()
 
     def set_selected_run_mode(self, mode: str) -> None:
-        normalized = mode if mode in {"quick", "ai", "bundle"} else "quick"
+        normalized = mode if mode in {"quick", "ai", "bundle", "benchmark"} else "quick"
         self._selected_run_mode = normalized
         mapping = {
             "quick": getattr(self, "_quick_mode_button", None),
             "ai": getattr(self, "_ai_mode_button", None),
             "bundle": getattr(self, "_bundle_mode_button", None),
+            "benchmark": getattr(self, "_benchmark_mode_button", None),
         }
         for key, button in mapping.items():
             if button is None:
@@ -1894,6 +2021,10 @@ class MainWindow(QMainWindow):
             button.style().polish(button)
         if hasattr(self, "_feature_input_container"):
             self._feature_input_container.setVisible(normalized == "quick")
+        if hasattr(self, "_standard_action_container"):
+            self._standard_action_container.setVisible(normalized != "benchmark")
+        if hasattr(self, "_benchmark_container"):
+            self._benchmark_container.setVisible(normalized == "benchmark")
 
     def set_selected_input_source(self, source: str) -> None:
         normalized = source if source in {"none", "file", "bundle"} else "none"
@@ -1914,6 +2045,44 @@ class MainWindow(QMainWindow):
 
     def get_selected_run_mode(self) -> str:
         return self._selected_run_mode
+
+    def _on_benchmark_site_changed(self) -> None:
+        self._update_benchmark_url_choices()
+
+    def _update_benchmark_url_choices(self, *, selected_url: str | None = None) -> None:
+        if not hasattr(self, "_benchmark_url_combo"):
+            return
+        site_key = self.get_selected_benchmark_site()
+        selected = None
+        for item in self._benchmark_catalog:
+            if str(item.get("key") or "") == site_key:
+                selected = item
+                break
+        urls = [str(item).strip() for item in list((selected or {}).get("urls") or []) if str(item).strip()]
+        default_url = str((selected or {}).get("default_url") or "").strip()
+        effective_url = str(selected_url or "").strip() or default_url
+        self._benchmark_url_combo.blockSignals(True)
+        self._benchmark_url_combo.clear()
+        for url in urls:
+            self._benchmark_url_combo.addItem(url)
+        if effective_url and effective_url not in urls:
+            self._benchmark_url_combo.addItem(effective_url)
+        self._benchmark_url_combo.setCurrentText(effective_url)
+        self._benchmark_url_combo.blockSignals(False)
+        status_text = str((selected or {}).get("status_text") or "상태 정보 없음")
+        self._benchmark_status_label.setText(f"{status_text} · 저장 링크 {len(urls)}개")
+
+    def _emit_benchmark_save(self) -> None:
+        self.benchmarkSaveRequested.emit(self.get_selected_benchmark_site(), self.get_selected_benchmark_url())
+
+    def _emit_benchmark_run(self) -> None:
+        self.benchmarkRunRequested.emit(self.get_selected_benchmark_site(), self.get_selected_benchmark_url())
+
+    def _emit_benchmark_view(self) -> None:
+        self.benchmarkViewRequested.emit(
+            self.get_selected_benchmark_site(),
+            self.get_selected_benchmark_url(),
+        )
 
     def set_control_channel(self, channel: str) -> None:
         self._control_channel = "telegram" if str(channel or "").strip().lower() == "telegram" else "local"

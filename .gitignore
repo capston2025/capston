@@ -72,6 +72,7 @@ gaia/.env.local
 /artifacts/tmp/
 /artifacts/wrapper_trace/
 /gaia/artifacts/
+/.gaia/
 /output/
 /tmp/
 vendor/openclaw/node_modules/
