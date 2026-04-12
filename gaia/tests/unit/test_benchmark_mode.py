@@ -124,7 +124,7 @@ def test_scan_benchmark_reports_filters_by_selected_url_host(tmp_path: Path) -> 
     assert reports[0]["summary"]["site"]["base_url"] == "https://inuu-timetable.vercel.app/"
 
 
-def test_render_benchmark_reports_html_surfaces_metrics_and_empty_state() -> None:
+def test_render_benchmark_reports_html_groups_by_scenario_and_surfaces_quant_metrics() -> None:
     html_doc = render_benchmark_reports_html(
         site_label="INU TIMETABLE",
         selected_url="https://inuu-timetable.vercel.app/",
@@ -133,12 +133,44 @@ def test_render_benchmark_reports_html_surfaces_metrics_and_empty_state() -> Non
                 "artifact_dir": "/tmp/run_1",
                 "summary": {
                     "started_at": "2026-04-11 12:00:00",
-                    "status_counts": {"SUCCESS": 2, "FAIL": 1},
-                    "metrics": {"success_rate": 0.66, "avg_time_seconds": 21.5},
+                    "provider": "openai",
+                    "model": "gpt-5.4",
                 },
                 "results": [
-                    {"scenario_id": "INUU_001", "status": "SUCCESS", "reason": "ok"},
-                    {"scenario_id": "INUU_002", "status": "FAIL", "reason": "timeout"},
+                    {
+                        "scenario_id": "INUU_001",
+                        "goal": "홈 화면 확인",
+                        "status": "SUCCESS",
+                        "reason": "ok",
+                        "duration_seconds": 12.5,
+                        "summary": {"goal_completion_source": "judge"},
+                    },
+                    {
+                        "scenario_id": "INUU_002",
+                        "goal": "검색 결과 변화",
+                        "status": "FAIL",
+                        "reason": "timeout",
+                        "duration_seconds": 20.0,
+                        "summary": {"goal_completion_source": "judge"},
+                    },
+                ],
+            },
+            {
+                "artifact_dir": "/tmp/run_2",
+                "summary": {
+                    "started_at": "2026-04-12 08:00:00",
+                    "provider": "gemini",
+                    "model": "gemini-2.5-pro",
+                },
+                "results": [
+                    {
+                        "scenario_id": "INUU_001",
+                        "goal": "홈 화면 확인",
+                        "status": "SUCCESS",
+                        "reason": "ok-again",
+                        "duration_seconds": 10.0,
+                        "summary": {"goal_completion_source": "expected_signals"},
+                    },
                 ],
             }
         ],
@@ -147,7 +179,15 @@ def test_render_benchmark_reports_html_surfaces_metrics_and_empty_state() -> Non
     assert "INU TIMETABLE" in html_doc
     assert "INUU_001" in html_doc
     assert "timeout" in html_doc
-    assert "66%" in html_doc
+    assert "Latest Sec" in html_doc
+    assert "Median Sec" in html_doc
+    assert "10.00s" in html_doc
+    assert "12.50s" in html_doc
+    assert "11.25s" in html_doc
+    assert "expected_signals" in html_doc
+    assert "/tmp/run_2" in html_doc
+    assert "openai / gpt-5.4" in html_doc
+    assert "gemini / gemini-2.5-pro" in html_doc
 
     empty_doc = render_benchmark_reports_html(
         site_label="MDN",

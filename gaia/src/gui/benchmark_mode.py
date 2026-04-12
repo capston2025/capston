@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import html
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -73,7 +74,7 @@ BENCHMARK_PRESETS: tuple[BenchmarkPreset, ...] = (
         key="spell_checker",
         label="맞춤법 검사기",
         default_url="https://nara-speller.co.kr/speller/",
-        suite_path=None,
+        suite_path="gaia/tests/scenarios/spell_checker_public_suite.json",
         host_aliases=("nara-speller.co.kr",),
     ),
     BenchmarkPreset(
@@ -274,53 +275,127 @@ def render_benchmark_reports_html(
     selected_url: str,
     reports: Iterable[Mapping[str, Any]],
 ) -> str:
-    report_cards: list[str] = []
+    scenario_cards: list[str] = []
+    scenario_groups: dict[str, list[dict[str, Any]]] = {}
     reports_list = list(reports)
     for report in reports_list:
         summary = report.get("summary") if isinstance(report.get("summary"), Mapping) else {}
         results = report.get("results") if isinstance(report.get("results"), list) else []
-        started_at = html.escape(str(summary.get("started_at") or "-"))
-        success_rate = float(summary.get("metrics", {}).get("success_rate", 0.0) or 0.0) if isinstance(summary.get("metrics"), Mapping) else 0.0
-        avg_time = html.escape(str(summary.get("metrics", {}).get("avg_time_seconds", "-"))) if isinstance(summary.get("metrics"), Mapping) else "-"
-        status_counts = summary.get("status_counts") if isinstance(summary.get("status_counts"), Mapping) else {}
-        success_count = int(status_counts.get("SUCCESS") or 0)
-        fail_count = int(status_counts.get("FAIL") or 0)
-        artifact_dir = html.escape(str(report.get("artifact_dir") or "-"))
+        started_at = str(summary.get("started_at") or "-")
+        artifact_dir = str(report.get("artifact_dir") or "-")
+        report_provider = str(summary.get("provider") or "").strip() or _infer_provider_from_model(str(summary.get("model") or ""))
+        report_model = str(summary.get("model") or "").strip() or "-"
+        for row in results:
+            if not isinstance(row, Mapping):
+                continue
+            scenario_id = str(row.get("scenario_id") or "-").strip() or "-"
+            row_model = str(row.get("model") or "").strip() or report_model
+            row_provider = str(row.get("provider") or "").strip() or report_provider or _infer_provider_from_model(row_model)
+            entry = {
+                "scenario_id": scenario_id,
+                "goal": str(row.get("goal") or "").strip(),
+                "status": str(row.get("status") or "-").strip() or "-",
+                "reason": str(row.get("reason") or "-").strip() or "-",
+                "duration_seconds": row.get("duration_seconds"),
+                "started_at": started_at,
+                "artifact_dir": artifact_dir,
+                "provider": row_provider or "-",
+                "model": row_model or "-",
+                "completion_source": (
+                    str(
+                        (row.get("summary") or {}).get("goal_completion_source")
+                        if isinstance(row.get("summary"), Mapping)
+                        else ""
+                    ).strip()
+                    or "-"
+                ),
+            }
+            scenario_groups.setdefault(scenario_id, []).append(entry)
+
+    for scenario_id in sorted(scenario_groups):
+        entries = sorted(
+            scenario_groups[scenario_id],
+            key=lambda item: str(item.get("started_at") or ""),
+            reverse=True,
+        )
+        durations = [
+            float(item["duration_seconds"])
+            for item in entries
+            if isinstance(item.get("duration_seconds"), (int, float))
+        ]
+        run_count = len(entries)
+        success_count = sum(1 for item in entries if str(item.get("status") or "").upper() == "SUCCESS")
+        fail_count = sum(1 for item in entries if str(item.get("status") or "").upper() == "FAIL")
+        success_rate = (success_count / run_count) if run_count else 0.0
+        latest_duration = durations[0] if durations else None
+        avg_duration = statistics.mean(durations) if durations else None
+        median_duration = statistics.median(durations) if durations else None
+        min_duration = min(durations) if durations else None
+        max_duration = max(durations) if durations else None
+        models = sorted({f"{str(item.get('provider') or '-')} / {str(item.get('model') or '-')}" for item in entries})
+
+        goal_text = html.escape(str(entries[0].get("goal") or "-"))
+        metrics_html = "".join(
+            [
+                _render_benchmark_metric("Runs", str(run_count)),
+                _render_benchmark_metric("Success", str(success_count)),
+                _render_benchmark_metric("Fail", str(fail_count)),
+                _render_benchmark_metric("Success Rate", f"{success_rate:.0%}"),
+                _render_benchmark_metric("Latest Sec", _format_seconds(latest_duration)),
+                _render_benchmark_metric("Avg Sec", _format_seconds(avg_duration)),
+                _render_benchmark_metric("Median Sec", _format_seconds(median_duration)),
+                _render_benchmark_metric("Min~Max", _format_range(min_duration, max_duration)),
+            ]
+        )
+        model_html = html.escape(", ".join(models))
+
         rows = []
-        for row in results[:8]:
-            scenario_id = html.escape(str(row.get("scenario_id") or "-"))
-            status = html.escape(str(row.get("status") or "-"))
-            reason = html.escape(str(row.get("reason") or "-"))
+        for item in entries:
+            status = html.escape(str(item.get("status") or "-"))
+            reason = html.escape(str(item.get("reason") or "-"))
+            started_at = html.escape(str(item.get("started_at") or "-"))
+            completion_source = html.escape(str(item.get("completion_source") or "-"))
+            artifact_dir = html.escape(str(item.get("artifact_dir") or "-"))
+            duration = html.escape(_format_seconds(item.get("duration_seconds")))
+            provider_model = html.escape(f"{str(item.get('provider') or '-')} / {str(item.get('model') or '-')}")
             rows.append(
-                f"<tr><td>{scenario_id}</td><td><span class='badge {status.lower()}'>{status}</span></td><td>{reason}</td></tr>"
+                f"""
+                <tr>
+                  <td>{started_at}</td>
+                  <td class="mono">{provider_model}</td>
+                  <td class="mono">{duration}</td>
+                  <td><span class='badge {status.lower()}'>{status}</span></td>
+                  <td class="mono">{completion_source}</td>
+                  <td>{reason}</td>
+                  <td class="path-cell">{artifact_dir}</td>
+                </tr>
+                """
             )
-        row_html = "".join(rows) or "<tr><td colspan='3'>상세 결과 없음</td></tr>"
-        report_cards.append(
+        row_html = "".join(rows) or "<tr><td colspan='6'>상세 결과 없음</td></tr>"
+        scenario_cards.append(
             f"""
             <section class="report-card">
               <div class="report-top">
-                <div>
-                  <div class="eyebrow">RUN</div>
-                  <h3>{started_at}</h3>
+                <div class="title-block">
+                  <div class="eyebrow">SCENARIO</div>
+                  <h3>{html.escape(scenario_id)}</h3>
+                  <p class="goal">{goal_text}</p>
+                  <p class="goal"><strong>Models:</strong> {model_html}</p>
                 </div>
-                <div class="metrics">
-                  <div class="metric"><span>{success_count}</span><label>Success</label></div>
-                  <div class="metric"><span>{fail_count}</span><label>Fail</label></div>
-                  <div class="metric"><span>{success_rate:.0%}</span><label>Success Rate</label></div>
-                  <div class="metric"><span>{avg_time}</span><label>Avg Sec</label></div>
+                <div class="metrics scenario-metrics">
+                  {metrics_html}
                 </div>
               </div>
-              <div class="path">artifact: {artifact_dir}</div>
               <table>
-                <thead><tr><th>Scenario</th><th>Status</th><th>Reason</th></tr></thead>
+                <thead><tr><th>Run Started</th><th>Provider / Model</th><th>Duration</th><th>Status</th><th>Completion</th><th>Reason</th><th>Artifact</th></tr></thead>
                 <tbody>{row_html}</tbody>
               </table>
             </section>
             """
         )
 
-    if not report_cards:
-        report_cards.append(
+    if not scenario_cards:
+        scenario_cards.append(
             """
             <section class="empty-card">
               <h3>아직 실행 이력이 없습니다</h3>
@@ -396,11 +471,17 @@ def render_benchmark_reports_html(
           margin-bottom: 14px;
         }}
         .report-top h3 {{ margin: 0; font-size: 20px; }}
+        .title-block {{ min-width: 0; }}
+        .goal {{ margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; }}
         .metrics {{
           display: grid;
           grid-template-columns: repeat(4, minmax(80px, 1fr));
           gap: 10px;
           min-width: 360px;
+        }}
+        .scenario-metrics {{
+          grid-template-columns: repeat(4, minmax(92px, 1fr));
+          min-width: min(100%, 560px);
         }}
         .metric {{
           background: rgba(255,255,255,0.9);
@@ -411,10 +492,11 @@ def render_benchmark_reports_html(
         }}
         .metric span {{ display: block; font-size: 20px; font-weight: 800; }}
         .metric label {{ display: block; color: var(--muted); font-size: 11px; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.08em; }}
-        .path {{ font-size: 12px; color: var(--muted); margin-bottom: 12px; word-break: break-all; }}
         table {{ width: 100%; border-collapse: collapse; }}
         th, td {{ text-align: left; padding: 12px 10px; border-top: 1px solid rgba(24, 32, 58, 0.08); vertical-align: top; }}
         th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }}
+        .mono {{ font-family: 'SFMono-Regular', 'Menlo', monospace; white-space: nowrap; }}
+        .path-cell {{ font-size: 12px; color: var(--muted); word-break: break-all; min-width: 220px; }}
         .badge {{
           display: inline-flex;
           padding: 4px 10px;
@@ -426,6 +508,13 @@ def render_benchmark_reports_html(
         .badge.fail {{ color: white; background: var(--fail); }}
         .badge.blocked {{ color: white; background: #f59e0b; }}
         .badge.skipped {{ color: white; background: #6b7280; }}
+        @media (max-width: 960px) {{
+          .report-top {{ flex-direction: column; }}
+          .metrics, .scenario-metrics {{
+            min-width: 100%;
+            grid-template-columns: repeat(2, minmax(120px, 1fr));
+          }}
+        }}
       </style>
     </head>
     <body>
@@ -434,11 +523,42 @@ def render_benchmark_reports_html(
           <div class="eyebrow">Benchmark Results</div>
           <h1>{safe_site_label}</h1>
           <div class="sub">선택 URL: {safe_url}</div>
+          <div class="sub">시나리오별로 묶어서 최신 이력과 정량 시간 지표를 보여줍니다.</div>
         </section>
         <section class="stack">
-          {''.join(report_cards)}
+          {''.join(scenario_cards)}
         </section>
       </main>
     </body>
     </html>
     """
+
+
+def _render_benchmark_metric(label: str, value: str) -> str:
+    return (
+        "<div class=\"metric\">"
+        f"<span>{html.escape(value)}</span>"
+        f"<label>{html.escape(label)}</label>"
+        "</div>"
+    )
+
+
+def _format_seconds(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{float(value):.2f}s"
+
+
+def _format_range(min_value: float | None, max_value: float | None) -> str:
+    if min_value is None or max_value is None:
+        return "-"
+    return f"{min_value:.2f}s ~ {max_value:.2f}s"
+
+
+def _infer_provider_from_model(model_name: str) -> str:
+    normalized = str(model_name or "").strip().lower()
+    if normalized.startswith("gpt-") or "codex" in normalized:
+        return "openai"
+    if normalized.startswith("gemini"):
+        return "gemini"
+    return ""

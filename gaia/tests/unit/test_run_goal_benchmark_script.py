@@ -1,5 +1,6 @@
 from scripts.run_goal_benchmark import (
     _build_child_code,
+    _infer_provider_from_model,
     _prepare_scenario_env,
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
@@ -65,3 +66,10 @@ def test_prepare_scenario_env_sets_codex_runtime_guards() -> None:
     assert env["FOO"] == "bar"
     assert env["GAIA_CODEX_EXEC_TIMEOUT_SEC"] == "300"
     assert env["GAIA_CODEX_REASONING_EFFORT"] == "low"
+
+
+def test_infer_provider_from_model_handles_openai_and_gemini() -> None:
+    assert _infer_provider_from_model("gpt-5.4") == "openai"
+    assert _infer_provider_from_model("gpt-5.3-codex") == "openai"
+    assert _infer_provider_from_model("gemini-2.5-pro") == "gemini"
+    assert _infer_provider_from_model("unknown-model") == ""
