@@ -35,6 +35,11 @@ LOADING_STATE_RULES: list[str] = [
     "연속 3턴 이상 DOM에 의미 있는 변화가 없으면 scroll, 다른 요소 클릭 등 구조 탐색으로 전환하세요.",
 ]
 
+RESULT_RECOVERY_RULES: list[str] = [
+    "실행/생성/apply 이후 `0개`, `없음`, `no results` 같은 명시적 zero-result surface가 뜨면 숨겨진 결과를 스크롤로 찾지 마세요. 현재 입력/선택/설정이 부족하다고 보고 수집 또는 파라미터 조정으로 돌아가세요.",
+    "전면 모달/오버레이를 닫으려다 stale ref/not_found가 나오면 배경 탐색으로 넘어가지 말고, 새 snapshot에서 현재 전면 surface의 닫기/확인 CTA를 다시 찾으세요.",
+]
+
 DIALOG_AVOIDANCE_RULES: list[str] = [
     "alert/confirm/prompt 등 blocking dialog를 유발할 수 있는 action은 피하세요. 삭제/초기화/reset 계열 버튼은 목표가 직접 요구하지 않는 한 선택하지 마세요.",
     "모달/오버레이가 실제로 열려 있지 않다면 닫기/close/dismiss를 선택하지 마세요.",
@@ -96,6 +101,7 @@ def build_browser_action_rules_block() -> str:
     all_rules.extend(ANTI_LOOP_RULES)
     all_rules.extend(STALE_REF_RULES)
     all_rules.extend(LOADING_STATE_RULES)
+    all_rules.extend(RESULT_RECOVERY_RULES)
     all_rules.extend(DIALOG_AVOIDANCE_RULES)
     all_rules.extend(CONTEXT_SHIFT_RULES)
     all_rules.extend(GOAL_COMPLETION_RULES)

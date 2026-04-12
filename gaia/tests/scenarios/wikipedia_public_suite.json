@@ -1,0 +1,67 @@
+{
+  "suite_id": "wikipedia_public_v1",
+  "site": {
+    "name": "Wikipedia Korea",
+    "base_url": "https://ko.wikipedia.org/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "WIKI_001_HOME_SEARCH_READY",
+      "url": "https://ko.wikipedia.org/wiki/위키백과:대문",
+      "goal": "위키백과 메인 화면에서 검색창과 핵심 링크가 이미 보이는지 확인하고 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "searchbox_visible",
+        "link_visible"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 60
+    },
+    {
+      "id": "WIKI_002_SEARCH_OPENS_ARTICLE",
+      "url": "https://ko.wikipedia.org/wiki/위키백과:대문",
+      "goal": "검색창으로 자바스크립트를 검색해 해당 문서 페이지를 열고 문서 제목이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "article_heading_visible",
+        "search_results_changed"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 120
+    },
+    {
+      "id": "WIKI_003_OPEN_INTRO_PAGE",
+      "url": "https://ko.wikipedia.org/wiki/위키백과:대문",
+      "goal": "메인 화면에서 위키백과 소개 또는 도움말 성격의 안내 페이지로 들어가 소개 문구나 제목이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "heading_visible",
+        "text_visible"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 120
+    }
+  ]
+}

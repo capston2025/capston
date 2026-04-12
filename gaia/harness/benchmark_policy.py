@@ -4,9 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-REJECTED_SUCCESS_COMPLETION_SOURCES = {
-    "wait_fallback",
-}
+REJECTED_SUCCESS_COMPLETION_SOURCES: set[str] = set()
 
 
 def apply_benchmark_success_policy(

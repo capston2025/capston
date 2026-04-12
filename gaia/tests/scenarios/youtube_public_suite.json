@@ -1,0 +1,67 @@
+{
+  "suite_id": "youtube_public_v1",
+  "site": {
+    "name": "YouTube",
+    "base_url": "https://www.youtube.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "YT_001_HOME_SEARCH_READY",
+      "url": "https://www.youtube.com/",
+      "goal": "유튜브 홈에서 검색창과 로그인 또는 상단 내비가 이미 보이는지 확인하고 종료해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "searchbox_visible",
+        "cta_visible"
+      ],
+      "difficulty": "easy",
+      "time_budget_sec": 60
+    },
+    {
+      "id": "YT_002_SEARCH_RESULTS_VISIBLE",
+      "url": "https://www.youtube.com/",
+      "goal": "검색창으로 openai를 검색하고 결과 목록이 실제로 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "results_list_visible",
+        "dom_changed"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 150
+    },
+    {
+      "id": "YT_003_OPEN_CHANNEL_FROM_RESULTS",
+      "url": "https://www.youtube.com/results?search_query=openai",
+      "goal": "검색 결과에서 OpenAI 채널 또는 공식 채널 성격의 결과를 열고 채널 이름과 탭이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "url_change",
+        "channel_name_visible",
+        "tabs_visible"
+      ],
+      "difficulty": "medium",
+      "time_budget_sec": 180
+    }
+  ]
+}

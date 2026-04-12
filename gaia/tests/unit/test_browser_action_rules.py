@@ -7,6 +7,7 @@ from gaia.src.phase4.goal_driven.browser_action_rules import (
     DOM_TRUST_RULES,
     GOAL_COMPLETION_RULES,
     LOADING_STATE_RULES,
+    RESULT_RECOVERY_RULES,
     STALE_REF_RULES,
     _detect_repeated_failure,
     _detect_repeated_wait,
@@ -60,6 +61,7 @@ def test_build_browser_action_rules_block_total_rule_count():
         + len(ANTI_LOOP_RULES)
         + len(STALE_REF_RULES)
         + len(LOADING_STATE_RULES)
+        + len(RESULT_RECOVERY_RULES)
         + len(DIALOG_AVOIDANCE_RULES)
         + len(CONTEXT_SHIFT_RULES)
         + len(GOAL_COMPLETION_RULES)

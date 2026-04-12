@@ -26,7 +26,18 @@ from gaia.src.utils.models import Assertion, TestScenario, TestStep
 from gaia.src.utils.plan_repository import PlanRepository
 
 from gaia.src.gui.analysis_worker import AnalysisWorker
-from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker
+from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker, BenchmarkWorker
+from gaia.src.gui.benchmark_mode import (
+    BENCHMARK_PRESETS,
+    BenchmarkPreset,
+    build_benchmark_catalog,
+    find_preset,
+    load_benchmark_registry,
+    render_benchmark_reports_html,
+    save_benchmark_registry,
+    scan_benchmark_reports,
+    upsert_benchmark_site_url,
+)
 from gaia.chat_hub import HubContext, _compile_steering_policy, _format_steering_status, _looks_like_steering_text
 
 TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
@@ -77,6 +88,7 @@ class AppController(QObject):
         self._current_execution_step: str = ""
         self._blocked_reason: str = ""
         self._active_steering_policy: dict[str, Any] = {}
+        self._benchmark_registry = load_benchmark_registry()
         self._pending_intervention: dict[str, Any] | None = None
         self._pending_intervention_event: threading.Event | None = None
         self._plan: Sequence[TestScenario] = ()
@@ -103,6 +115,10 @@ class AppController(QObject):
         self._window.cancelRequested.connect(self._on_cancel_requested)
         self._window.chatMessageSubmitted.connect(self._on_chat_message_submitted)
         self._window.urlSubmitted.connect(self._on_url_submitted)
+        self._window.benchmarkSaveRequested.connect(self._on_benchmark_save_requested)
+        self._window.benchmarkRunRequested.connect(self._on_benchmark_run_requested)
+        self._window.benchmarkViewRequested.connect(self._on_benchmark_view_requested)
+        self._refresh_benchmark_catalog()
 
     def apply_run_context(
         self,
@@ -175,7 +191,7 @@ class AppController(QObject):
             normalized = "ai"
         elif mode == "chat":
             normalized = "quick"
-        elif mode in {"bundle", "ai", "quick"}:
+        elif mode in {"bundle", "ai", "quick", "benchmark"}:
             normalized = mode
         self._startup_mode = normalized
         if normalized:
@@ -885,6 +901,11 @@ class AppController(QObject):
     # ------------------------------------------------------------------
     @Slot()
     def _on_start_requested(self) -> None:
+        selected_mode = self._window.get_selected_run_mode()
+        if selected_mode == "benchmark":
+            self._window.append_log("ℹ️ 벤치마킹 모드에서는 '추가하기', '기존 벤치 돌리기', '벤치 결과 확인하기' 버튼을 사용하세요.")
+            return
+
         if not self._current_url:
             self._window.append_log("⚠️ 테스트할 URL을 입력하거나 PDF에서 URL을 추출해주세요.")
             return
@@ -952,6 +973,113 @@ class AppController(QObject):
         self._window.append_log("ℹ️ 목표가 없어 Exploratory 모드로 실행합니다.")
         self._window.set_busy(True, message="AI가 자율 탐색을 수행하는 중이에요…")
         self._start_exploratory_worker(self._current_url)
+
+    def _refresh_benchmark_catalog(
+        self,
+        *,
+        selected_site_key: str | None = None,
+        selected_url: str | None = None,
+    ) -> None:
+        catalog = build_benchmark_catalog(self._benchmark_registry)
+        self._window.set_benchmark_catalog(
+            catalog,
+            selected_site_key=selected_site_key or (catalog[0]["key"] if catalog else None),
+            selected_url=selected_url,
+        )
+
+    @Slot(str, str)
+    def _on_benchmark_save_requested(self, site_key: str, url: str) -> None:
+        clean_site = str(site_key or "").strip()
+        clean_url = str(url or "").strip()
+        preset = find_preset(clean_site)
+        if preset is None:
+            self._window.append_log("⚠️ 저장할 벤치 사이트를 먼저 선택해주세요.")
+            return
+        if not clean_url:
+            self._window.append_log("⚠️ 저장할 링크를 입력해주세요.")
+            return
+        self._benchmark_registry = upsert_benchmark_site_url(self._benchmark_registry, clean_site, clean_url)
+        registry_path = save_benchmark_registry(self._benchmark_registry)
+        self._window.append_log(f"💾 {preset.label} 링크 저장: {clean_url}")
+        self._window.append_log(f"   - 저장 위치: {registry_path}")
+        self._refresh_benchmark_catalog(selected_site_key=clean_site, selected_url=clean_url)
+
+    @Slot(str, str)
+    def _on_benchmark_run_requested(self, site_key: str, url: str) -> None:
+        clean_site = str(site_key or "").strip()
+        clean_url = str(url or "").strip()
+        preset = find_preset(clean_site)
+        if preset is None:
+            self._window.append_log("⚠️ 실행할 벤치 사이트를 먼저 선택해주세요.")
+            return
+        if self._worker_thread:
+            self._window.append_log("⚠️ 이미 다른 실행이 진행 중입니다.")
+            return
+        if clean_url:
+            self._benchmark_registry = upsert_benchmark_site_url(self._benchmark_registry, clean_site, clean_url)
+            save_benchmark_registry(self._benchmark_registry)
+            self._refresh_benchmark_catalog(selected_site_key=clean_site, selected_url=clean_url)
+        if not preset.suite_path:
+            self._window.append_log(f"ℹ️ {preset.label}용 기존 suite는 아직 저장소에 없습니다. 링크는 저장했지만 바로 실행할 benchmark는 없습니다.")
+            return
+
+        self._last_result_summary = None
+        self._current_execution_goal = f"{preset.label} 벤치"
+        self._current_execution_step = "0/0"
+        self._blocked_reason = ""
+        self._window.reset_result_summary()
+        self._sync_execution_status()
+        self._window.set_busy(True, message=f"{preset.label} 벤치를 실행하는 중이에요…")
+        self._start_benchmark_worker(preset, clean_url or preset.default_url)
+
+    def _start_benchmark_worker(self, preset: BenchmarkPreset, target_url: str) -> None:
+        thread = QThread(self)
+        worker = BenchmarkWorker(
+            site_key=preset.key,
+            site_label=preset.label,
+            suite_path=preset.suite_path or "",
+            target_url=target_url,
+            workspace_root=Path(__file__).resolve().parents[3],
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.start)
+        worker.progress.connect(self._handle_worker_progress)
+        worker.result_ready.connect(self._on_benchmark_result_ready)
+        worker.finished.connect(self._on_intelligent_worker_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._worker_thread = thread
+        self._worker = worker
+        thread.start()
+
+    @Slot(str, str)
+    def _on_benchmark_view_requested(self, site_key: str, url: str) -> None:
+        clean_site = str(site_key or "").strip()
+        preset = find_preset(clean_site)
+        if preset is None:
+            self._window.append_log("⚠️ 결과를 볼 벤치 사이트를 먼저 선택해주세요.")
+            return
+        site_state = (self._benchmark_registry.get("sites") or {}).get(clean_site, {})
+        selected_url = (
+            str(url or "").strip()
+            or str((site_state or {}).get("default_url") or preset.default_url).strip()
+        )
+        reports = scan_benchmark_reports(
+            workspace_root=Path(__file__).resolve().parents[3],
+            site_key=clean_site,
+            selected_url=selected_url,
+        )
+        html_doc = render_benchmark_reports_html(
+            site_label=preset.label,
+            selected_url=selected_url,
+            reports=reports,
+        )
+        self._window.show_setup_stage_with_browser()
+        self._window.show_html_in_browser(html_doc)
+        self._window.append_log(f"📊 {preset.label} 벤치 결과 보드를 열었습니다. ({len(reports)}건)")
 
     def _start_goal_worker(self, url: str, goals: Sequence[TestGoal]) -> None:
         """Goal-Driven 에이전트를 백그라운드에서 시작합니다."""
@@ -1177,6 +1305,33 @@ class AppController(QObject):
             self._persist_execution_history(normalized_summary)
             self._sync_execution_status()
             self._window.show_result_summary(normalized_summary)
+
+    @Slot(object)
+    def _on_benchmark_result_ready(self, summary: object) -> None:
+        if not isinstance(summary, dict):
+            return
+        normalized_summary = dict(summary)
+        self._last_result_summary = normalized_summary
+        self._current_execution_goal = str(normalized_summary.get("current_goal") or "")
+        self._current_execution_step = str(normalized_summary.get("current_step") or "")
+        self._blocked_reason = str(normalized_summary.get("blocked_reason") or "")
+        self._sync_execution_status()
+        self._window.show_result_summary(normalized_summary)
+
+        site_key = str(normalized_summary.get("site_key") or "").strip()
+        site_label = str(normalized_summary.get("site_label") or "Benchmark").strip()
+        target_url = str(normalized_summary.get("target_url") or "").strip()
+        reports = scan_benchmark_reports(
+            workspace_root=Path(__file__).resolve().parents[3],
+            site_key=site_key,
+            selected_url=target_url,
+        )
+        html_doc = render_benchmark_reports_html(
+            site_label=site_label,
+            selected_url=target_url,
+            reports=reports,
+        )
+        self._window.show_html_in_browser(html_doc)
 
     def _persist_execution_history(self, summary: dict[str, Any]) -> None:
         try:
