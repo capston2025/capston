@@ -563,6 +563,115 @@ def open_scenario_form_windows_dialogs(
     )
 
 
+def open_scenario_form_pyside(
+    *,
+    emit: OutputFn,
+    existing: Mapping[str, Any] | None = None,
+    existing_ids: set[str] | None = None,
+    default_url: str = "",
+    title: str = "새 테스트 추가",
+) -> dict[str, Any] | None:
+    del emit
+    current = dict(existing or {})
+    try:
+        from PySide6.QtWidgets import (
+            QApplication,
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QLineEdit,
+            QMessageBox,
+            QTextEdit,
+            QVBoxLayout,
+            QWidget,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"PySide6를 불러오지 못했습니다: {exc}") from exc
+
+    app = QApplication.instance()
+    created_app = False
+    if app is None:
+        app = QApplication([])
+        created_app = True
+
+    dialog = QDialog(None)
+    dialog.setWindowTitle(title)
+    dialog.resize(640, 320)
+
+    layout = QVBoxLayout(dialog)
+    form_layout = QFormLayout()
+    layout.addLayout(form_layout)
+
+    name_input = QLineEdit(_default_scenario_name(current), dialog)
+    url_input = QLineEdit(str(current.get("url") or default_url or "").strip(), dialog)
+    goal_input = QTextEdit(dialog)
+    goal_input.setPlainText(str(current.get("goal") or "").strip())
+    timeout_input = QLineEdit(str(current.get("time_budget_sec") or 300), dialog)
+
+    form_layout.addRow("테스트 이름", name_input)
+    form_layout.addRow("url", url_input)
+    form_layout.addRow("goal", goal_input)
+    form_layout.addRow("time_budget_sec", timeout_input)
+
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        parent=dialog,
+    )
+    layout.addWidget(buttons)
+
+    def _show_error(message: str, widget: QWidget | None = None) -> None:
+        QMessageBox.warning(dialog, "입력 오류", message)
+        if widget is not None:
+            widget.setFocus()
+
+    def _validate_and_accept() -> None:
+        test_name = name_input.text().strip()
+        url = url_input.text().strip()
+        goal = goal_input.toPlainText().strip()
+        timeout_raw = timeout_input.text().strip()
+        if not test_name:
+            _show_error("테스트 이름을 입력해주세요.", name_input)
+            return
+        if not url:
+            _show_error("url을 입력해주세요.", url_input)
+            return
+        if not goal:
+            _show_error("goal을 입력해주세요.", goal_input)
+            return
+        try:
+            parsed = max(1, int(timeout_raw))
+        except Exception:
+            _show_error("time_budget_sec는 1 이상의 정수여야 합니다.", timeout_input)
+            return
+        dialog.setProperty(
+            "_scenario_result",
+            _build_scenario_payload(
+                current=current,
+                test_name=test_name,
+                url=url,
+                goal=goal,
+                time_budget_sec=parsed,
+                existing_ids=set(existing_ids or set()),
+            ),
+        )
+        dialog.accept()
+
+    buttons.accepted.connect(_validate_and_accept)
+    buttons.rejected.connect(dialog.reject)
+    name_input.setFocus()
+
+    try:
+        accepted = dialog.exec() == int(QDialog.DialogCode.Accepted)
+        if not accepted:
+            return None
+        result = dialog.property("_scenario_result")
+        return dict(result) if isinstance(result, Mapping) else None
+    finally:
+        dialog.deleteLater()
+        if created_app:
+            app.quit()
+
+
 def open_scenario_form_macos_dialogs(
     *,
     emit: OutputFn,
@@ -628,146 +737,42 @@ def open_scenario_form_gui(
     current = dict(existing or {})
 
     try:
-        import tkinter as tk
-        from tkinter import messagebox, ttk
-    except Exception as exc:
-        if sys.platform == "darwin":
-            emit(f"tkinter GUI를 사용할 수 없어 macOS 입력창으로 전환합니다: {exc}")
-            try:
-                return open_scenario_form_macos_dialogs(
-                    emit=emit,
-                    existing=current,
-                    existing_ids=set(existing_ids or set()),
-                    default_url=default_url,
-                    title=title,
-                )
-            except Exception as fallback_exc:
-                emit(f"macOS 입력창도 열지 못해 터미널 입력으로 전환합니다: {fallback_exc}")
-                return None
-        if sys.platform.startswith("win"):
-            emit(f"tkinter GUI를 사용할 수 없어 Windows 입력창으로 전환합니다: {exc}")
-            try:
-                return open_scenario_form_windows_dialogs(
-                    emit=emit,
-                    existing=current,
-                    existing_ids=set(existing_ids or set()),
-                    default_url=default_url,
-                    title=title,
-                )
-            except Exception as fallback_exc:
-                emit(f"Windows 입력창도 열지 못해 터미널 입력으로 전환합니다: {fallback_exc}")
-                return None
-        emit(f"GUI 입력창을 사용할 수 없어 터미널 입력으로 전환합니다: {exc}")
-        return None
+        return open_scenario_form_pyside(
+            emit=emit,
+            existing=current,
+            existing_ids=set(existing_ids or set()),
+            default_url=default_url,
+            title=title,
+        )
+    except Exception as pyside_exc:
+        emit(f"PySide6 GUI를 사용할 수 없어 대체 입력창으로 전환합니다: {pyside_exc}")
 
-    root: Any = None
-    dialog: Any = None
-    result: dict[str, Any] | None = None
-    cancelled = True
-    try:
-        root = tk.Tk()
-        root.withdraw()
-        dialog = tk.Toplevel(root)
-        dialog.title(title)
-        dialog.resizable(False, False)
-
-        frame = ttk.Frame(dialog, padding=16)
-        frame.grid(row=0, column=0, sticky="nsew")
-        dialog.columnconfigure(0, weight=1)
-        dialog.rowconfigure(0, weight=1)
-
-        ttk.Label(frame, text="테스트 이름").grid(row=0, column=0, sticky="w")
-        name_var = tk.StringVar(value=_default_scenario_name(current))
-        name_entry = ttk.Entry(frame, textvariable=name_var, width=56)
-        name_entry.grid(row=1, column=0, sticky="ew", pady=(4, 12))
-
-        ttk.Label(frame, text="url").grid(row=2, column=0, sticky="w")
-        url_var = tk.StringVar(value=str(current.get("url") or default_url or "").strip())
-        url_entry = ttk.Entry(frame, textvariable=url_var, width=56)
-        url_entry.grid(row=3, column=0, sticky="ew", pady=(4, 12))
-
-        ttk.Label(frame, text="goal").grid(row=4, column=0, sticky="w")
-        goal_text = tk.Text(frame, width=56, height=6, wrap="word")
-        goal_text.grid(row=5, column=0, sticky="ew", pady=(4, 12))
-        goal_text.insert("1.0", str(current.get("goal") or "").strip())
-
-        ttk.Label(frame, text="time_budget_sec").grid(row=6, column=0, sticky="w")
-        timeout_var = tk.StringVar(value=str(current.get("time_budget_sec") or 300))
-        timeout_entry = ttk.Entry(frame, textvariable=timeout_var, width=20)
-        timeout_entry.grid(row=7, column=0, sticky="w", pady=(4, 12))
-
-        button_row = ttk.Frame(frame)
-        button_row.grid(row=8, column=0, sticky="e")
-
-        def _finish_cancel() -> None:
-            nonlocal cancelled
-            cancelled = True
-            dialog.destroy()
-
-        def _finish_submit() -> None:
-            nonlocal result, cancelled
-            test_name = str(name_var.get() or "").strip()
-            url = str(url_var.get() or "").strip()
-            goal = str(goal_text.get("1.0", "end-1c") or "").strip()
-            timeout_raw = str(timeout_var.get() or "").strip()
-            if not test_name:
-                messagebox.showerror("입력 오류", "테스트 이름을 입력해주세요.", parent=dialog)
-                name_entry.focus_set()
-                return
-            if not url:
-                messagebox.showerror("입력 오류", "url을 입력해주세요.", parent=dialog)
-                url_entry.focus_set()
-                return
-            if not goal:
-                messagebox.showerror("입력 오류", "goal을 입력해주세요.", parent=dialog)
-                goal_text.focus_set()
-                return
-            try:
-                time_budget_sec = max(1, int(timeout_raw))
-            except Exception:
-                messagebox.showerror("입력 오류", "time_budget_sec는 1 이상의 정수여야 합니다.", parent=dialog)
-                timeout_entry.focus_set()
-                return
-            result = _build_scenario_payload(
-                current=current,
-                test_name=test_name,
-                url=url,
-                goal=goal,
-                time_budget_sec=time_budget_sec,
+    if sys.platform == "darwin":
+        try:
+            return open_scenario_form_macos_dialogs(
+                emit=emit,
+                existing=current,
                 existing_ids=set(existing_ids or set()),
+                default_url=default_url,
+                title=title,
             )
-            cancelled = False
-            dialog.destroy()
-
-        ttk.Button(button_row, text="취소", command=_finish_cancel).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(button_row, text="저장", command=_finish_submit).grid(row=0, column=1)
-
-        dialog.protocol("WM_DELETE_WINDOW", _finish_cancel)
-        dialog.transient(root)
-        dialog.grab_set()
-        frame.columnconfigure(0, weight=1)
-        name_entry.focus_set()
-        dialog.bind("<Return>", lambda _event: _finish_submit())
-        root.wait_window(dialog)
-    except Exception as exc:
-        emit(f"GUI 입력창을 열지 못해 터미널 입력으로 전환합니다: {exc}")
-        return None
-    finally:
+        except Exception as fallback_exc:
+            emit(f"macOS 입력창도 열지 못해 터미널 입력으로 전환합니다: {fallback_exc}")
+            return None
+    if sys.platform.startswith("win"):
         try:
-            if dialog is not None and dialog.winfo_exists():
-                dialog.destroy()
-        except Exception:
-            pass
-        try:
-            if root is not None:
-                root.destroy()
-        except Exception:
-            pass
-
-    if cancelled:
-        emit("GUI 입력이 취소되어 터미널 입력으로 전환합니다.")
-        return None
-    return result
+            return open_scenario_form_windows_dialogs(
+                emit=emit,
+                existing=current,
+                existing_ids=set(existing_ids or set()),
+                default_url=default_url,
+                title=title,
+            )
+        except Exception as fallback_exc:
+            emit(f"Windows 입력창도 열지 못해 터미널 입력으로 전환합니다: {fallback_exc}")
+            return None
+    emit("GUI 입력창을 열지 못해 터미널 입력으로 전환합니다.")
+    return None
 
 
 def write_benchmark_report_html(
