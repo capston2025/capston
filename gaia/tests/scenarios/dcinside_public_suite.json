@@ -12,5 +12,58 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "디시인사이드 홈 화면에서 통합검색 입력창이나 주요 내비게이션이 보이는지 확인해줘.",
+      "id": "DCINSIDE_001_BENCHMARK",
+      "name": "디시 홈 검색창 확인",
+      "time_budget_sec": 300,
+      "url": "https://www.dcinside.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "홈 화면에서 갤러리 목록 화면으로 이동해 갤러리 리스트나 카테고리 영역이 보이는지 확인해줘.",
+      "id": "DCINSIDE_002_BENCHMARK",
+      "name": "갤러리 메인 진입",
+      "time_budget_sec": 300,
+      "url": "https://www.dcinside.com/"
+    },
+    {
+      "id": "DCINSIDE_003_BENCHMARK",
+      "name": "통합검색으로 한로로 검색",
+      "url": "https://www.dcinside.com/",
+      "goal": "검색창에 한로로를 입력한 뒤 검색을 실행하고, 관련 게시글이나 갤러리 결과 목록이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    },
+    {
+      "id": "DCINSIDE_004_BENCHMARK",
+      "name": "갤러리에서 첫 글 열기",
+      "url": "https://www.dcinside.com/",
+      "goal": "특이점이 온다를 검색해서 첫번째로 나오는 갤러리를 연 뒤, 첫 번째 게시글을 클릭해서 글 상세 화면의 제목이나 본문이 보이는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    }
+  ]
 }
