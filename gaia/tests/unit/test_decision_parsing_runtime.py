@@ -131,3 +131,16 @@ def test_parse_select_with_list_value():
     d = parse_decision(agent, resp)
     assert d.action == ActionType.SELECT
     assert "option1" in d.value
+
+
+def test_parse_switch_alias_maps_to_focus_and_uses_value():
+    agent = _FakeAgent()
+    resp = json.dumps({
+        "action": "switch",
+        "value": 2,
+        "reasoning": "move into popup",
+    })
+    d = parse_decision(agent, resp)
+    assert d.action == ActionType.FOCUS
+    assert d.value == "2"
+    assert d.ref_id is None

@@ -234,7 +234,7 @@
     {
       "id": "INUU_009_LOGIN_AND_GENERATE_COMBINATION",
       "url": "https://inuu-timetable.vercel.app/",
-      "goal": "로그인 후 위시리스트 기반으로 조합 만들기를 실행하고 조합 결과 리스트가 실제로 나타나는지 확인해줘.",
+      "goal": "로그인 후 위시리스트를 최소 18학점 이상 채운 뒤 조합 만들기를 실행하고, 조합 결과 리스트가 실제로 나타나는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -246,7 +246,7 @@
         "combination_results_visible"
       ],
       "difficulty": "hard",
-      "time_budget_sec": 240
+      "time_budget_sec": 300
     },
     {
       "id": "INUU_010_LOGIN_APPLY_FRIDAY_FREE_COMBINATION",

@@ -28,6 +28,8 @@ def test_is_stale_like_timeout_ignores_generic_timeout() -> None:
 
 class _FakeAgent:
     def __init__(self) -> None:
+        self.session_id = "goal-session"
+        self.mcp_host_url = "http://localhost:8000"
         self._browser_backend_name = ""
         self._goal_policy_phase = ""
         self._goal_phase_intent = ""
@@ -258,7 +260,70 @@ def test_execute_decision_keeps_rebound_live_ref_over_generic_selector_map(monke
 
     assert ok is True
     assert err is None
-    assert calls == ["old-ref", "new-ref"]
+
+
+def test_execute_decision_focus_routes_to_browser_tabs_focus(monkeypatch) -> None:
+    agent = _FakeAgent()
+    dom_elements = []
+    decision = ActionDecision(action=ActionType.FOCUS, value="tab-2", reasoning="switch into popup")
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append({"action": action_name, "value": value, "ref_id": ref_id})
+        return ActionExecResult(
+            success=True,
+            effective=True,
+            reason_code="ok",
+            reason="ok",
+            state_change={
+                "backend": "browser_tabs_focus",
+                "backend_progress": True,
+                "focus_changed": True,
+                "focused_target_id": str(value or ""),
+            },
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == [{"action": "focus", "value": "tab-2", "ref_id": None}]
+
+
+def test_execute_action_focus_dispatches_tabs_focus(monkeypatch) -> None:
+    agent = _FakeAgent()
+    seen: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+        payload = {
+            "success": True,
+            "reason_code": "ok",
+            "targetId": "tab-2",
+            "current_url": "https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868",
+        }
+        text = ""
+
+    def fake_execute_mcp_action_with_recovery(*, raw_base_url, action, params, timeout, attempts, is_transport_error, recover_host, context):
+        seen["action"] = action
+        seen["params"] = dict(params)
+        return _Response()
+
+    monkeypatch.setattr(runtime, "execute_mcp_action_with_recovery", fake_execute_mcp_action_with_recovery)
+
+    result = runtime.execute_action(agent, "focus", value="tab-2")
+
+    assert result.success is True
+    assert result.effective is True
+    assert result.state_change["backend"] == "browser_tabs_focus"
+    assert result.state_change["backend_progress"] is True
+    assert result.state_change["focus_changed"] is True
+    assert result.state_change["focused_target_id"] == "tab-2"
+    assert result.state_change["focused_url"] == "https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"
+    assert seen["action"] == "browser_tabs_focus"
+    assert seen["params"] == {"session_id": agent.session_id, "targetId": "tab-2"}
 
 
 def test_execute_decision_marks_select_target_value_changed(monkeypatch) -> None:

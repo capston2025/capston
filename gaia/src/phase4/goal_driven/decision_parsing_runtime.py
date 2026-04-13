@@ -11,6 +11,11 @@ _ACTION_ALIASES = {
     "check": ActionType.WAIT.value,
     "validate": ActionType.WAIT.value,
     "confirm": ActionType.WAIT.value,
+    "switch": ActionType.FOCUS.value,
+    "switch_tab": ActionType.FOCUS.value,
+    "switch_page": ActionType.FOCUS.value,
+    "focus_tab": ActionType.FOCUS.value,
+    "tabs.focus": ActionType.FOCUS.value,
     "none": ActionType.WAIT.value,
     "done": ActionType.WAIT.value,
     "finish": ActionType.WAIT.value,
@@ -68,10 +73,10 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
         final_action = ActionType(normalized_action)
         if final_action == ActionType.WAIT and (normalized_value is None or (isinstance(normalized_value, str) and not normalized_value.strip())):
             normalized_value = json.dumps({"time_ms": 700}, ensure_ascii=False)
-        final_ref_id = None if final_action == ActionType.WAIT else data.get("ref_id")
+        final_ref_id = None if final_action in {ActionType.WAIT, ActionType.FOCUS} else data.get("ref_id")
         if final_ref_id is not None:
             final_ref_id = str(final_ref_id).strip() or None
-        final_element_id = None if final_action == ActionType.WAIT else data.get("element_id")
+        final_element_id = None if final_action in {ActionType.WAIT, ActionType.FOCUS} else data.get("element_id")
 
         return ActionDecision(
             action=final_action,

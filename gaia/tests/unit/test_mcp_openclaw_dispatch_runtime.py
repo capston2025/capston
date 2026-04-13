@@ -54,6 +54,111 @@ def test_request_uses_default_timeout_tuple(monkeypatch) -> None:
     assert seen["timeout"] == (3.0, 12.0)
 
 
+def test_derive_state_change_from_snapshot_payloads_surfaces_new_page_evidence() -> None:
+    before_payload = {
+        "current_url": "https://cyber.inu.ac.kr/mod/page/view.php?id=123",
+        "evidence": {
+            "text_digest": "same",
+            "live_texts": ["동영상 보기"],
+            "list_count": 1,
+            "interactive_count": 1,
+            "modal_count": 0,
+            "backdrop_count": 0,
+            "dialog_count": 0,
+            "modal_open": False,
+            "auth_prompt_visible": False,
+            "login_visible": False,
+            "logout_visible": True,
+        },
+    }
+    after_payload = {
+        "current_url": "https://cyber.inu.ac.kr/mod/page/view.php?id=123",
+        "evidence": {
+            "text_digest": "same",
+            "live_texts": ["동영상 보기"],
+            "list_count": 1,
+            "interactive_count": 1,
+            "modal_count": 0,
+            "backdrop_count": 0,
+            "dialog_count": 0,
+            "modal_open": False,
+            "auth_prompt_visible": False,
+            "login_visible": False,
+            "logout_visible": True,
+        },
+    }
+
+    state_change = runtime._derive_state_change_from_snapshot_payloads(
+        before_payload=before_payload,
+        after_payload=after_payload,
+        new_page_evidence={
+            "new_page_detected": True,
+            "new_page_count": 1,
+            "new_page_same_origin_detected": True,
+            "new_page_same_origin_count": 1,
+            "new_page_urls": ["https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"],
+            "new_page_titles": ["대중_6주차_1차시"],
+            "new_page_kinds": ["viewer_like"],
+        },
+    )
+
+    assert state_change["new_page_detected"] is True
+    assert state_change["new_page_count"] == 1
+    assert state_change["new_page_same_origin_detected"] is True
+    assert state_change["new_page_urls"] == ["https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"]
+    assert state_change["backend_progress"] is True
+    assert state_change["backend_effective_only"] is False
+
+
+def test_dispatch_openclaw_action_browser_tabs_focus_switches_session_target(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    runtime._clear_session_target("focus-s1")
+
+    def fake_ensure_target(*, base_url, session_id, requested_url, timeout):
+        state = runtime._session_state(session_id)
+        state["target_id"] = "tab-1"
+        state["current_url"] = "https://cyber.inu.ac.kr/mod/vod/view.php?id=1346868"
+        return state
+
+    monkeypatch.setattr(runtime, "_ensure_target", fake_ensure_target)
+    monkeypatch.setattr(
+        runtime,
+        "_tabs_payload_for_target",
+        lambda **kwargs: {
+            "current_tab_id": "1",
+            "cdp_target_id": "tab-1",
+            "tabs": [
+                {
+                    "tab_id": "1",
+                    "cdp_target_id": "tab-1",
+                    "url": "https://cyber.inu.ac.kr/mod/vod/view.php?id=1346868",
+                    "title": "main",
+                },
+                {
+                    "tab_id": "2",
+                    "cdp_target_id": "tab-2",
+                    "url": "https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868",
+                    "title": "viewer",
+                },
+            ],
+        },
+    )
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_tabs_focus",
+        params={"session_id": "focus-s1", "targetId": "tab-2"},
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["targetId"] == "tab-2"
+    assert payload["current_tab_id"] == "2"
+    assert payload["current_url"] == "https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"
+    assert runtime._session_state("focus-s1")["target_id"] == "tab-2"
+
+
 def test_dispatch_openclaw_action_capture_screenshot_returns_base64(monkeypatch, tmp_path) -> None:
     shot = tmp_path / "shot.png"
     shot.write_bytes(b"fake-image-bytes")

@@ -11,6 +11,12 @@ from .browser_action_rules import (
 from .dom_prompt_formatting import detect_active_surface_context, semantic_tags_for_element
 from .goal_policy_phase_runtime import goal_phase_intent
 from .goal_replanning_runtime import sync_goal_replanning_state
+from .media_playback_helpers import (
+    collect_visible_play_controls,
+    describe_play_control,
+    dom_has_media_player_surface,
+    goal_requires_media_playback,
+)
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 from .run_history_runtime import (
     build_run_history_replay_packet_context as build_run_history_replay_packet_context_impl,
@@ -341,7 +347,7 @@ def _build_active_surface_summary(agent: Any, dom_elements: List[DOMElement]) ->
             )
         )
     lines.append(
-        "- 현재 foreground surface가 열린 동안 배경 CTA는 DOM에 보여도 `not visible`로 실패할 수 있습니다. 배경 검색결과를 쓰려면 먼저 현재 surface를 닫거나 벗어나세요."
+        "- 현재 foreground surface가 목표와 무관하게 진행을 실제로 막고 있을 때만 먼저 닫거나 벗어나세요. 임시 성공 토스트/배너처럼 배경 진행을 막지 않는 약한 신호라면 닫기보다 원래 목표 진행을 우선하세요."
     )
     return "\n".join(lines)
 
@@ -389,6 +395,96 @@ def _build_target_destination_summary(agent: Any, dom_elements: List[DOMElement]
         )
     lines.append(
         "- 삭제가 필요하면 목표 과목 행에 직접 연결된 제거 버튼만 사용하세요. 충돌 토스트에 나온 다른 과목명을 제거 대상으로 해석하지 마세요."
+    )
+    return "\n".join(lines)
+
+
+def _build_new_page_signal_summary(agent: Any) -> str:
+    exec_result = getattr(agent, "_last_exec_result", None)
+    state_change = getattr(exec_result, "state_change", None)
+    if not isinstance(state_change, dict) or not bool(state_change.get("new_page_detected")):
+        return ""
+
+    try:
+        new_page_count = int(state_change.get("new_page_count") or 0)
+    except Exception:
+        new_page_count = 0
+    try:
+        same_origin_count = int(state_change.get("new_page_same_origin_count") or 0)
+    except Exception:
+        same_origin_count = 0
+
+    lines = ["## 직전 액션 이후 새 창/페이지 신호"]
+    if new_page_count > 0:
+        lines.append(f"- new page count: {new_page_count}")
+    if same_origin_count > 0:
+        lines.append(f"- same-origin new pages: {same_origin_count}")
+
+    raw_new_pages = state_change.get("new_pages") if isinstance(state_change.get("new_pages"), list) else []
+    if raw_new_pages:
+        for idx, item in enumerate(raw_new_pages[:3], start=1):
+            if not isinstance(item, dict):
+                continue
+            target_id = str(item.get("target_id") or item.get("tab_id") or "").strip()
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            kind_guess = str(item.get("kind_guess") or "").strip()
+            same_origin = bool(item.get("same_origin"))
+            details = [
+                f"target_id={target_id}" if target_id else "",
+                f"url={url}" if url else "",
+                f'title="{title}"' if title else "",
+                f"kind={kind_guess}" if kind_guess else "",
+                "same_origin=true" if same_origin else "same_origin=false",
+            ]
+            lines.append(f"- candidate {idx}: " + " ".join(part for part in details if part))
+    else:
+        urls = state_change.get("new_page_urls") if isinstance(state_change.get("new_page_urls"), list) else []
+        titles = state_change.get("new_page_titles") if isinstance(state_change.get("new_page_titles"), list) else []
+        kinds = state_change.get("new_page_kinds") if isinstance(state_change.get("new_page_kinds"), list) else []
+        for idx, raw_url in enumerate(urls[:3], start=1):
+            url = str(raw_url or "").strip()
+            title = str(titles[idx - 1] or "").strip() if idx - 1 < len(titles) else ""
+            kind_guess = str(kinds[idx - 1] or "").strip() if idx - 1 < len(kinds) else ""
+            details = [
+                f"url={url}" if url else "",
+                f'title="{title}"' if title else "",
+                f"kind={kind_guess}" if kind_guess else "",
+            ]
+            lines.append(f"- candidate {idx}: " + " ".join(part for part in details if part))
+
+    lines.append(
+        "- 이 신호는 직전 클릭의 후속 결과일 수 있습니다. 현재 goal과 직접 관련된 same-origin viewer/help 창이라면 "
+        "기존 opener CTA를 반복하기 전에 그 창이 새 작업 surface인지 먼저 고려하세요. "
+        "그 창으로 전환해야 하면 `action=\"focus\"`와 candidate의 `target_id`를 사용하세요."
+    )
+    return "\n".join(lines)
+
+
+def _build_media_playback_signal_summary(
+    agent: Any,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> str:
+    if not goal_requires_media_playback(agent.__class__, goal):
+        return ""
+
+    play_controls = collect_visible_play_controls(agent.__class__, dom_elements or [], limit=3)
+    if not play_controls:
+        return ""
+
+    lines = ["## media/player 재생 신호"]
+    if dom_has_media_player_surface(agent.__class__, dom_elements or []):
+        lines.append("- current surface looks like a media/player viewer.")
+    for idx, element in enumerate(play_controls, start=1):
+        lines.append(f"- play candidate {idx}: {describe_play_control(element)}")
+    lines.append(
+        "- 목표가 재생/play/watch/listen을 직접 요구합니다. viewer surface 진입만으로 완료 처리하지 말고 "
+        "가능한 경우 위 play candidate를 먼저 실행하세요."
+    )
+    lines.append(
+        "- 위 play/start control 클릭이 목표의 마지막 단계라면 해당 click action에서 "
+        "`is_goal_achieved=true`를 함께 반환할 수 있습니다."
     )
     return "\n".join(lines)
 
@@ -494,6 +590,8 @@ def decide_next_action(
     prompt_test_data = goal.test_data if auth_phase_active and isinstance(goal.test_data, dict) else {}
     auth_surface_summary = _build_auth_surface_summary(agent, dom_elements or [], prompt_test_data) if auth_phase_active else ""
     feedback_signal_summary = _build_feedback_signal_summary(agent, dom_elements or [])
+    new_page_signal_summary = _build_new_page_signal_summary(agent)
+    media_playback_signal_summary = _build_media_playback_signal_summary(agent, goal, dom_elements or [])
     active_surface_summary = _build_active_surface_summary(agent, dom_elements or [])
     target_destination_summary = _build_target_destination_summary(agent, dom_elements or [])
     wrapper_observation_lines = [
@@ -501,6 +599,8 @@ def decide_next_action(
         for summary in (
             auth_surface_summary,
             feedback_signal_summary,
+            new_page_signal_summary,
+            media_playback_signal_summary,
             active_surface_summary,
             target_destination_summary,
         )
@@ -582,7 +682,7 @@ def decide_next_action(
 - 5순위: compact state는 보조 기록으로만 쓴다.
 
 ## 진행 위생 규칙
-- mutation/수집/적용 goal에서는 새 CTA를 반복하기 전에 현재 열린 modal/overlay/panel이 진행을 막는지 먼저 확인하고, 막고 있으면 원래 작업 surface로 복귀하는 한 단계를 우선하세요.
+- mutation/수집/적용 goal에서는 새 CTA를 반복하기 전에 현재 열린 modal/overlay/panel이 목표와 무관하게 진행을 실제로 막는지 먼저 확인하세요. 막고 있을 때만 원래 작업 surface로 복귀하는 한 단계를 우선하고, 임시 성공 토스트/배너처럼 약한 신호는 닫기보다 원래 목표 진행을 우선하세요.
 
 {run_history_replay_block}
 
@@ -604,10 +704,10 @@ def decide_next_action(
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
-    \"action\": \"click\" | \"fill\" | \"press\" | \"scroll\" | \"wait\" | \"select\",
-    \"ref_id\": 요소 ref ID (문자열, DOM에 [ref=...]로 표시된 값을 우선 사용),
-    \"element_id\": 요소ID (숫자, 없으면 null 허용),
-    \"value\": \"입력값 (fill), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms)\",
+    \"action\": \"click\" | \"fill\" | \"focus\" | \"press\" | \"scroll\" | \"wait\" | \"select\",
+    \"ref_id\": 요소 ref ID (문자열, DOM에 [ref=...]로 표시된 값을 우선 사용; focus/wait면 null 허용),
+    \"element_id\": 요소ID (숫자, 없으면 null 허용; focus/wait면 null 허용),
+    \"value\": \"입력값 (fill), target_id/tab_id (focus), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms)\",
     \"reasoning\": \"현재 화면 기준으로 이 행동이 왜 다음 단계인지\",
     \"confidence\": 0.0~1.0,
     \"is_goal_achieved\": true | false,

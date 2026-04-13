@@ -7,6 +7,7 @@ from gaia.src.phase4.goal_driven.browser_action_rules import (
     DOM_TRUST_RULES,
     GOAL_COMPLETION_RULES,
     LOADING_STATE_RULES,
+    MEDIA_PLAYBACK_RULES,
     RESULT_RECOVERY_RULES,
     STALE_REF_RULES,
     _detect_repeated_failure,
@@ -29,6 +30,7 @@ def test_all_rule_lists_are_nonempty():
         ANTI_LOOP_RULES,
         STALE_REF_RULES,
         LOADING_STATE_RULES,
+        MEDIA_PLAYBACK_RULES,
         DIALOG_AVOIDANCE_RULES,
         CONTEXT_SHIFT_RULES,
         DOM_TRUST_RULES,
@@ -62,6 +64,7 @@ def test_build_browser_action_rules_block_total_rule_count():
         + len(STALE_REF_RULES)
         + len(LOADING_STATE_RULES)
         + len(RESULT_RECOVERY_RULES)
+        + len(MEDIA_PLAYBACK_RULES)
         + len(DIALOG_AVOIDANCE_RULES)
         + len(CONTEXT_SHIFT_RULES)
         + len(GOAL_COMPLETION_RULES)
@@ -154,3 +157,15 @@ def test_rules_block_is_concise():
     """규칙 블록이 지나치게 길지 않다 (40줄 이내)."""
     block = build_browser_action_rules_block()
     assert len(block.splitlines()) <= 40
+
+
+def test_rules_block_includes_media_playback_guidance():
+    block = build_browser_action_rules_block()
+    assert "재생/play/watch/listen" in block
+    assert "viewer 진입만으로 완료 처리하지 말고" in block
+
+
+def test_rules_block_includes_no_unbound_targeted_action_guidance():
+    block = build_browser_action_rules_block()
+    assert "click/fill/select/press" in block
+    assert "ref_id 또는 element_id를 반드시 포함" in block

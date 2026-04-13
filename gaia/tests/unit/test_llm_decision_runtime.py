@@ -9,8 +9,10 @@ from gaia.src.phase4.goal_driven.llm_decision_runtime import (
     _build_auth_surface_summary,
     _build_feedback_signal_summary,
     _build_goal_state_summary,
-    _is_forbidden_global_control,
+    _build_media_playback_signal_summary,
+    _build_new_page_signal_summary,
     _build_target_destination_summary,
+    _is_forbidden_global_control,
 )
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 
@@ -19,6 +21,7 @@ class _FakeAgent:
     def __init__(self) -> None:
         self._goal_semantics = SimpleNamespace(target_terms=["포용사회와문화탐방1"], destination_terms=["시간표", "내 시간표"])
         self._last_snapshot_evidence = {}
+        self._last_exec_result = None
 
     def _normalize_text(self, value: object) -> str:
         return str(value or "").strip().lower()
@@ -344,6 +347,78 @@ def test_build_feedback_signal_summary_treats_success_toast_as_provisional_until
     assert 'result signal: ref=e4' in summary
     assert 'inspect destination: ref=e724 label="내 시간표 보기 (10)"' in summary
     assert "토스트/스낵바는 약한 진행 신호" in summary
+
+
+def test_build_new_page_signal_summary_describes_recent_popup_candidates():
+    agent = _FakeAgent()
+    agent._last_exec_result = SimpleNamespace(
+        state_change={
+            "new_page_detected": True,
+            "new_page_count": 1,
+            "new_page_same_origin_count": 1,
+            "new_pages": [
+                {
+                    "target_id": "tab-2",
+                    "url": "https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868",
+                    "title": "대중_6주차_1차시_동물복제",
+                    "kind_guess": "viewer_like",
+                    "same_origin": True,
+                }
+            ],
+        }
+    )
+
+    summary = _build_new_page_signal_summary(agent)
+
+    assert "직전 액션 이후 새 창/페이지 신호" in summary
+    assert "new page count: 1" in summary
+    assert "same-origin new pages: 1" in summary
+    assert "target_id=tab-2" in summary
+    assert "viewer.php?id=1346868" in summary
+    assert 'title="대중_6주차_1차시_동물복제"' in summary
+    assert "kind=viewer_like" in summary
+    assert "opener CTA를 반복하기 전에" in summary
+    assert 'action="focus"' in summary
+
+
+def test_build_media_playback_signal_summary_describes_visible_play_controls():
+    agent = _FakeAgent()
+    goal = SimpleNamespace(
+        name="6주차 1차시 동영상을 재생한다",
+        description="viewer 창에서 play 버튼을 눌러 재생을 시작해줘.",
+        success_criteria=["play 버튼을 눌러 동영상을 재생한다"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="application",
+            text="Video Player",
+            aria_label="Video Player",
+            ref_id="e10",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="재생",
+            aria_label="재생",
+            title="재생",
+            ref_id="e15",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    summary = _build_media_playback_signal_summary(agent, goal, dom)
+
+    assert "media/player 재생 신호" in summary
+    assert "media/player viewer" in summary
+    assert 'play candidate 1: ref=e15 label="재생" role=button' in summary
+    assert "viewer surface 진입만으로 완료 처리하지 말고" in summary
+    assert "`is_goal_achieved=true`" in summary
 
 
 def test_forbidden_global_control_does_not_block_destination_reveal_with_logout_in_context():

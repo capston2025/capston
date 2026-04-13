@@ -11,7 +11,7 @@ DOM 기반 + LLM 판단으로 목표 달성까지 자동 실행
 2. Exploratory Mode: 화면의 모든 요소를 자율적으로 탐색 및 테스트
 """
 
-from .models import TestGoal, ActionDecision, GoalResult, GoalTestPlan
+from .models import TestGoal, ActionDecision, GoalResult
 from .agent import GoalDrivenAgent
 from .goal_builder import goals_from_scenarios, normalize_priority, sort_goals_by_priority
 from .exploratory_models import (
@@ -30,7 +30,6 @@ __all__ = [
     "TestGoal",
     "ActionDecision",
     "GoalResult",
-    "GoalTestPlan",
     "GoalDrivenAgent",
     "goals_from_scenarios",
     "normalize_priority",

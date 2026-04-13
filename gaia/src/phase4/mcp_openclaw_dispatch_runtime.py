@@ -1457,10 +1457,238 @@ def _sorted_evidence_list(value: Any) -> List[str]:
     return normalized[:100]
 
 
+def _same_origin(left: str, right: str) -> bool:
+    try:
+        left_parts = urlparse(str(left or "").strip())
+        right_parts = urlparse(str(right or "").strip())
+    except Exception:
+        return False
+    if not left_parts.scheme or not right_parts.scheme:
+        return False
+    return (
+        str(left_parts.scheme).lower(),
+        str(left_parts.netloc).lower(),
+    ) == (
+        str(right_parts.scheme).lower(),
+        str(right_parts.netloc).lower(),
+    )
+
+
+def _tabs_payload_for_target(
+    *,
+    base_url: str,
+    target_id: str,
+    timeout: Any,
+) -> Optional[Dict[str, Any]]:
+    params: Dict[str, Any] = {}
+    if str(target_id or "").strip():
+        params["targetId"] = str(target_id or "").strip()
+    status_code, data, text = _request(
+        "GET",
+        base_url=base_url,
+        path="/tabs",
+        timeout=timeout,
+        params=params,
+    )
+    if status_code >= 400 or not isinstance(data, dict):
+        return None
+    return data
+
+
+def _normalize_tab_descriptor(
+    raw_tab: Any,
+    *,
+    current_tab_id: str,
+    current_target_id: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw_tab, dict):
+        return None
+    target_id = str(
+        raw_tab.get("cdp_target_id")
+        or raw_tab.get("targetId")
+        or raw_tab.get("target_id")
+        or ""
+    ).strip()
+    tab_id = str(raw_tab.get("tab_id") or raw_tab.get("id") or raw_tab.get("index") or "").strip()
+    url = str(raw_tab.get("url") or raw_tab.get("current_url") or "").strip()
+    title = str(raw_tab.get("title") or raw_tab.get("label") or raw_tab.get("name") or "").strip()
+    descriptor_key = target_id or f"{tab_id}|{url}|{title}"
+    if not descriptor_key.strip():
+        return None
+    return {
+        "descriptor_key": descriptor_key,
+        "target_id": target_id,
+        "tab_id": tab_id,
+        "url": url,
+        "title": title,
+        "active": bool(
+            str(current_tab_id or "").strip() and tab_id and tab_id == str(current_tab_id or "").strip()
+        )
+        or bool(
+            str(current_target_id or "").strip() and target_id and target_id == str(current_target_id or "").strip()
+        )
+        or bool(raw_tab.get("active")),
+    }
+
+
+def _extract_tab_descriptors(payload: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    current_tab_id = str(payload.get("current_tab_id") or payload.get("targetId") or "").strip()
+    current_target_id = str(payload.get("cdp_target_id") or "").strip()
+    raw_tabs = payload.get("tabs") if isinstance(payload.get("tabs"), list) else []
+    if not raw_tabs and isinstance(payload.get("tab"), dict):
+        raw_tabs = [payload.get("tab")]
+
+    descriptors: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for raw_tab in raw_tabs:
+        descriptor = _normalize_tab_descriptor(
+            raw_tab,
+            current_tab_id=current_tab_id,
+            current_target_id=current_target_id,
+        )
+        if not descriptor:
+            continue
+        descriptor_key = str(descriptor.get("descriptor_key") or "").strip()
+        if not descriptor_key or descriptor_key in seen_keys:
+            continue
+        seen_keys.add(descriptor_key)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def _resolve_openclaw_tab_descriptor(
+    descriptors: List[Dict[str, Any]],
+    identifier: str,
+) -> Optional[Dict[str, Any]]:
+    normalized = str(identifier or "").strip()
+    if not normalized:
+        return None
+
+    exact_matches: List[Dict[str, Any]] = []
+    prefix_matches: List[Dict[str, Any]] = []
+    for item in descriptors:
+        if not isinstance(item, dict):
+            continue
+        candidates = [
+            str(item.get("target_id") or "").strip(),
+            str(item.get("tab_id") or "").strip(),
+            str(item.get("descriptor_key") or "").strip(),
+        ]
+        if normalized in candidates:
+            exact_matches.append(item)
+            continue
+        if any(candidate.startswith(normalized) for candidate in candidates if candidate):
+            prefix_matches.append(item)
+
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if not exact_matches and len(prefix_matches) == 1:
+        return prefix_matches[0]
+    return None
+
+
+def _guess_new_page_kind(*, url: str, title: str) -> str:
+    blob = f"{str(url or '').lower()} {str(title or '').lower()}"
+    if any(token in blob for token in ("viewer", "vod", "video", "player", "lecture", "stream", "watch")):
+        return "viewer_like"
+    if any(token in blob for token in ("doubleclick", "adservice", "promo", "promotion", "advert", "ads")):
+        return "ad_like"
+    if any(token in blob for token in ("help", "guide", "faq", "support")):
+        return "help_like"
+    return "unknown"
+
+
+def _derive_new_page_evidence_from_tabs(
+    *,
+    before_tabs_payload: Optional[Dict[str, Any]],
+    after_tabs_payload: Optional[Dict[str, Any]],
+    reference_url: str,
+) -> Dict[str, Any]:
+    before_tabs = _extract_tab_descriptors(before_tabs_payload)
+    after_tabs = _extract_tab_descriptors(after_tabs_payload)
+    if not before_tabs or not after_tabs:
+        return {}
+
+    before_keys = {
+        str(item.get("descriptor_key") or "").strip()
+        for item in before_tabs
+        if str(item.get("descriptor_key") or "").strip()
+    }
+    new_pages_raw = [
+        item
+        for item in after_tabs
+        if str(item.get("descriptor_key") or "").strip()
+        and str(item.get("descriptor_key") or "").strip() not in before_keys
+    ]
+    if not new_pages_raw:
+        return {}
+
+    new_pages: List[Dict[str, Any]] = []
+    same_origin_count = 0
+    urls: List[str] = []
+    titles: List[str] = []
+    kinds: List[str] = []
+    for item in new_pages_raw[:5]:
+        url = str(item.get("url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        same_origin = bool(reference_url and url and _same_origin(reference_url, url))
+        kind_guess = _guess_new_page_kind(url=url, title=title)
+        if same_origin:
+            same_origin_count += 1
+        if url:
+            urls.append(url)
+        if title:
+            titles.append(title)
+        kinds.append(kind_guess)
+        new_pages.append(
+            {
+                "target_id": str(item.get("target_id") or "").strip(),
+                "tab_id": str(item.get("tab_id") or "").strip(),
+                "url": url,
+                "title": title,
+                "same_origin": same_origin,
+                "kind_guess": kind_guess,
+                "active": bool(item.get("active")),
+            }
+        )
+
+    return {
+        "new_page_detected": True,
+        "new_page_count": len(new_pages_raw),
+        "new_page_same_origin_detected": bool(same_origin_count),
+        "new_page_same_origin_count": int(same_origin_count),
+        "new_page_urls": urls[:5],
+        "new_page_titles": titles[:5],
+        "new_page_kinds": kinds[:5],
+        "new_pages": new_pages,
+    }
+
+
+def _merge_state_change_evidence(
+    *,
+    state_change: Optional[Dict[str, Any]],
+    evidence: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    merged = dict(state_change or {})
+    if not isinstance(evidence, dict) or not evidence:
+        return merged
+    for key, value in evidence.items():
+        if value in (None, "", [], {}):
+            continue
+        merged[key] = value
+    if bool(evidence.get("new_page_detected")):
+        merged["backend_progress"] = True
+        merged["backend_effective_only"] = False
+    return merged
+
+
 def _derive_state_change_from_snapshot_payloads(
     *,
     before_payload: Optional[Dict[str, Any]],
     after_payload: Optional[Dict[str, Any]],
+    new_page_evidence: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     before = before_payload if isinstance(before_payload, dict) else {}
     after = after_payload if isinstance(after_payload, dict) else {}
@@ -1539,7 +1767,10 @@ def _derive_state_change_from_snapshot_payloads(
         "snapshot_id_before": str(before.get("snapshot_id") or ""),
         "snapshot_id_after": str(after.get("snapshot_id") or ""),
     }
-    return state_change
+    return _merge_state_change_evidence(
+        state_change=state_change,
+        evidence=new_page_evidence,
+    )
 
 
 def _reason_code_from_error(message: str, status_code: int) -> str:
@@ -1711,6 +1942,52 @@ def dispatch_openclaw_action(
     base_url = _resolve_base_url(raw_base_url)
     session_id = str((effective_params or {}).get("session_id") or "default")
     requested_url = str((effective_params or {}).get("url") or "").strip()
+    if action == "browser_tabs_focus":
+        target_identifier = str(
+            (effective_params or {}).get("targetId")
+            or (effective_params or {}).get("tab_id")
+            or (effective_params or {}).get("index")
+            or ""
+        ).strip()
+        if not target_identifier:
+            return _normalize_failure(400, {"error": "targetId/tab_id/index is required for tabs.focus"}, "")
+        state = _ensure_target(
+            base_url=base_url,
+            session_id=session_id,
+            requested_url="",
+            timeout=timeout,
+        )
+        current_target_id = str(state.get("target_id") or "").strip()
+        tabs_payload = _tabs_payload_for_target(
+            base_url=base_url,
+            target_id=current_target_id,
+            timeout=timeout,
+        )
+        descriptors = _extract_tab_descriptors(tabs_payload)
+        matched = _resolve_openclaw_tab_descriptor(descriptors, target_identifier)
+        if matched is None:
+            return _normalize_failure(404, {"error": f"tab not found: {target_identifier}"}, "")
+        matched_target_id = str(matched.get("target_id") or "").strip()
+        matched_tab_id = str(matched.get("tab_id") or "").strip()
+        matched_url = _normalize_url(str(matched.get("url") or "").strip())
+        if matched_target_id:
+            state["target_id"] = matched_target_id
+        if matched_url:
+            state["current_url"] = matched_url
+        return (
+            200,
+            {
+                "success": True,
+                "reason_code": "ok",
+                "session_id": session_id,
+                "targetId": matched_target_id or matched_tab_id or target_identifier,
+                "current_tab_id": matched_tab_id,
+                "current_url": str(state.get("current_url") or matched_url or ""),
+                "tab": matched,
+                "tabs": descriptors,
+            },
+            "",
+        )
     if action == "browser_snapshot":
         fallback_url = requested_url
         state = _ensure_target(
@@ -1858,6 +2135,7 @@ def dispatch_openclaw_action(
     probe_kind = str(payload.get("kind") or "").strip()
     probe_post_action = probe_kind in {"click", "fill", "press", "select", "drag", "hover", "evaluate"}
     before_payload: Optional[Dict[str, Any]] = None
+    before_tabs_payload: Optional[Dict[str, Any]] = None
     snapshot_before_ms = 0
     post_act_probe_ms = 0
     post_act_probe_rounds = 0
@@ -1878,6 +2156,15 @@ def dispatch_openclaw_action(
             snapshot_before_ms = int((time.perf_counter() - snapshot_before_started) * 1000)
         except Exception:
             before_payload = None
+        if probe_kind in {"click", "press"}:
+            try:
+                before_tabs_payload = _tabs_payload_for_target(
+                    base_url=base_url,
+                    target_id=target_id,
+                    timeout=timeout,
+                )
+            except Exception:
+                before_tabs_payload = None
 
     act_started = time.perf_counter()
     status_code, data, text = _request(
@@ -1891,6 +2178,7 @@ def dispatch_openclaw_action(
     if status_code >= 400 and _target_missing(status_code, data, text):
         _clear_session_target(session_id)
         before_payload = None
+        before_tabs_payload = None
         target_reopen_count += 1
         state = _ensure_target(
             base_url=base_url,
@@ -1934,6 +2222,7 @@ def dispatch_openclaw_action(
             state_change["backend_effective_only"] = False
     current_url = str(data.get("url") or state.get("current_url") or "")
     post_action_snapshot: Optional[Dict[str, Any]] = None
+    new_page_evidence: Dict[str, Any] = {}
     if probe_post_action:
         settle_ms = 350 if probe_kind in {"click", "press", "select", "drag"} else 180
         if settle_ms > 0:
@@ -1951,16 +2240,42 @@ def dispatch_openclaw_action(
             post_act_probe_rounds = 1
         except Exception:
             after_payload = None
+        after_tabs_payload: Optional[Dict[str, Any]] = None
+        if before_tabs_payload:
+            try:
+                after_tabs_payload = _tabs_payload_for_target(
+                    base_url=base_url,
+                    target_id=target_id,
+                    timeout=timeout,
+                )
+            except Exception:
+                after_tabs_payload = None
+            new_page_evidence = _derive_new_page_evidence_from_tabs(
+                before_tabs_payload=before_tabs_payload,
+                after_tabs_payload=after_tabs_payload,
+                reference_url=str(
+                    (before_payload or {}).get("current_url")
+                    or (before_payload or {}).get("url")
+                    or state.get("current_url")
+                    or ""
+                ),
+            )
         if before_payload and after_payload:
             post_action_snapshot = after_payload
             state_change = _derive_state_change_from_snapshot_payloads(
                 before_payload=before_payload,
                 after_payload=after_payload,
+                new_page_evidence=new_page_evidence,
             )
             current_url = str(after_payload.get("current_url") or after_payload.get("url") or current_url)
         elif after_payload:
             post_action_snapshot = after_payload
             current_url = str(after_payload.get("current_url") or after_payload.get("url") or current_url)
+        if new_page_evidence:
+            state_change = _merge_state_change_evidence(
+                state_change=state_change,
+                evidence=new_page_evidence,
+            )
         if (
             probe_kind in {"click", "press", "select", "drag"}
             and not bool(state_change.get("backend_progress"))
@@ -1982,10 +2297,36 @@ def dispatch_openclaw_action(
             if second_after_payload:
                 post_action_snapshot = second_after_payload
                 current_url = str(second_after_payload.get("current_url") or second_after_payload.get("url") or current_url)
+                second_after_tabs_payload: Optional[Dict[str, Any]] = None
+                if before_tabs_payload:
+                    try:
+                        second_after_tabs_payload = _tabs_payload_for_target(
+                            base_url=base_url,
+                            target_id=target_id,
+                            timeout=timeout,
+                        )
+                    except Exception:
+                        second_after_tabs_payload = None
+                    new_page_evidence = _derive_new_page_evidence_from_tabs(
+                        before_tabs_payload=before_tabs_payload,
+                        after_tabs_payload=second_after_tabs_payload,
+                        reference_url=str(
+                            (before_payload or {}).get("current_url")
+                            or (before_payload or {}).get("url")
+                            or state.get("current_url")
+                            or ""
+                        ),
+                    )
                 if before_payload:
                     state_change = _derive_state_change_from_snapshot_payloads(
                         before_payload=before_payload,
                         after_payload=second_after_payload,
+                        new_page_evidence=new_page_evidence,
+                    )
+                elif new_page_evidence:
+                    state_change = _merge_state_change_evidence(
+                        state_change=state_change,
+                        evidence=new_page_evidence,
                     )
 
     backend_trace = {

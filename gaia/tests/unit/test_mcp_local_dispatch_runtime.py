@@ -58,6 +58,26 @@ def test_execute_mcp_action_routes_capture_screenshot_to_openclaw(monkeypatch) -
     assert calls == [("capture_screenshot", {"session_id": "shot-1"})]
 
 
+def test_execute_mcp_action_routes_tabs_focus_to_openclaw(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_dispatch_openclaw_action(raw_base_url, *, action, params, timeout=None):
+        calls.append((str(action), dict(params or {})))
+        return 200, {"success": True, "reason_code": "ok", "targetId": "tab-2"}, ""
+
+    monkeypatch.setattr(runtime, "dispatch_openclaw_action", fake_dispatch_openclaw_action)
+
+    result = runtime.execute_mcp_action(
+        "http://127.0.0.1:8000",
+        action="browser_tabs_focus",
+        params={"session_id": "s1", "targetId": "tab-2"},
+    )
+
+    assert result.status_code == 200
+    assert result.payload["targetId"] == "tab-2"
+    assert calls == [("browser_tabs_focus", {"session_id": "s1", "targetId": "tab-2"})]
+
+
 def test_execute_mcp_action_routes_console_logs_to_openclaw(monkeypatch) -> None:
     calls: list[tuple[str, str, int]] = []
 

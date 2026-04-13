@@ -18,6 +18,7 @@ from .models import ActionDecision, DOMElement, TestGoal
 _DEFAULT_HISTORY_ENABLED = "1"
 _DEFAULT_PROMPT_CHAR_LIMIT = 12000
 _DEFAULT_COMPACT_CHAR_LIMIT = 6000
+_DEFAULT_TRANSCRIPT_CHAR_LIMIT = 200000
 _DEFAULT_REPLAY_CHAR_LIMIT = 3200
 _DEFAULT_BACKGROUND_LOCK_LEASE_SEC = 90.0
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -3270,6 +3271,15 @@ def record_run_history_transcript(
     if not _history_enabled(agent):
         return
     text = str(content or "")
+    transcript_limit = int(
+        str(
+            os.getenv(
+                "GAIA_RUN_HISTORY_TRANSCRIPT_CHAR_LIMIT",
+                str(_DEFAULT_TRANSCRIPT_CHAR_LIMIT),
+            )
+        ).strip()
+        or str(_DEFAULT_TRANSCRIPT_CHAR_LIMIT)
+    )
     _append_transcript(
         agent,
         {
@@ -3280,7 +3290,7 @@ def record_run_history_transcript(
             "stage": str(stage or "").strip(),
             "role": str(role or "").strip(),
             "char_count": len(text),
-            "content": _truncate_large_text(text, 5000),
+            "content": _truncate_large_text(text, transcript_limit),
             "metadata": dict(metadata or {}),
         },
     )

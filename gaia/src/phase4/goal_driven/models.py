@@ -16,6 +16,7 @@ class ActionType(str, Enum):
 
     CLICK = "click"
     FILL = "fill"
+    FOCUS = "focus"
     PRESS = "press"
     SCROLL = "scroll"
     WAIT = "wait"
@@ -173,22 +174,3 @@ class GoalResult(BaseModel):
     final_reason: str = Field(default="", description="성공/실패 이유")
 
     duration_seconds: float = 0.0
-
-
-class GoalTestPlan(BaseModel):
-    """
-    목표 기반 테스트 플랜
-
-    기존 방식: steps 배열에 모든 단계 정의
-    새 방식: goals 배열에 목표만 정의, AI가 스텝 결정
-    """
-
-    profile: str = Field(..., description="테스트 프로필/사이트 식별자")
-    url: str = Field(..., description="시작 URL")
-    version: str = Field(default="2.0", description="플랜 버전")
-
-    goals: List[TestGoal] = Field(default_factory=list, description="테스트 목표 목록")
-
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict, description="추가 메타데이터"
-    )

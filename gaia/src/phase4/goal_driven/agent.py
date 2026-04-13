@@ -132,7 +132,6 @@ from .goal_execution_setup_runtime import (
 )
 from .goal_constraint_runtime import (
     apply_steering_policy_on_decision as apply_steering_policy_on_decision_impl,
-    enforce_goal_constraints_on_decision as enforce_goal_constraints_on_decision_impl,
 )
 from .steering_decision_runtime import (
     apply_steering_assertions_on_decision as apply_steering_assertions_on_decision_impl,
@@ -603,24 +602,6 @@ class GoalDrivenAgent:
             return dom_value
         return float(max(float(dom_value), float(evidence_value)))
 
-    def _evaluate_goal_mutation_contract(
-        self,
-        *,
-        before_dom: List[DOMElement],
-        after_dom: List[DOMElement],
-    ) -> Optional[str]:
-        try:
-            from .constraints import evaluate_mutation_contract
-
-            return evaluate_mutation_contract(
-                before_dom=before_dom,
-                after_dom=after_dom,
-                goal_constraints=self._goal_constraints,
-                normalize_text=self._normalize_text,
-            )
-        except Exception:
-            return None
-
     def _is_collect_constraint_unmet(self) -> bool:
         return is_collect_constraint_unmet_impl(
             self._goal_constraints,
@@ -745,13 +726,6 @@ class GoalDrivenAgent:
             dom_elements=dom_elements,
         )
 
-    def _enforce_goal_constraints_on_decision(
-        self,
-        decision: ActionDecision,
-        dom_elements: List[DOMElement],
-    ) -> ActionDecision:
-        return enforce_goal_constraints_on_decision_impl(self, decision, dom_elements)
-
     def _pick_context_target_click_candidate(
         self,
         dom_elements: List[DOMElement],
@@ -833,6 +807,7 @@ class GoalDrivenAgent:
             "text_digest_changed",
             "nav_detected",
             "popup_detected",
+            "new_page_detected",
             "dialog_detected",
         )
         return any(bool(state_change.get(key)) for key in strong_progress_keys)
@@ -1652,6 +1627,19 @@ class GoalDrivenAgent:
                     memory_context=memory_context,
                 )
                 self._log(f"LLM 결정: {decision.action.value} - {decision.reasoning}")
+                decision, dom_elements, screenshot, retried_visual_dom_mismatch = (
+                    self._retry_decision_after_visual_dom_ref_mismatch(
+                        decision=decision,
+                        dom_elements=dom_elements,
+                        goal=goal,
+                        screenshot=screenshot,
+                        memory_context=memory_context,
+                    )
+                )
+                if retried_visual_dom_mismatch:
+                    self._log(
+                        f"♻️ 불일치 재수집 후 최종 결정: {decision.action.value} - {decision.reasoning}"
+                    )
 
             if decision.action == ActionType.WAIT:
                 self._consecutive_wait_count = int(getattr(self, "_consecutive_wait_count", 0) or 0) + 1
@@ -1708,7 +1696,6 @@ class GoalDrivenAgent:
                     reason=fatal_reason,
                 )
 
-            decision = self._enforce_goal_constraints_on_decision(decision, dom_elements)
             decision = self._apply_steering_policy_on_decision(
                 goal=goal,
                 decision=decision,
@@ -1926,6 +1913,9 @@ class GoalDrivenAgent:
             post_dom = post_action_result.get("post_dom") or []
             changed = bool(post_action_result.get("changed"))
             state_change = post_action_result.get("state_change")
+            if success and changed:
+                orchestrator.same_dom_count = 0
+                orchestrator.last_dom_signature = None
             filter_semantic_attempts = int(
                 post_action_result.get("filter_semantic_attempts", filter_semantic_attempts)
             )
@@ -2001,6 +1991,93 @@ class GoalDrivenAgent:
                 f"has_image={bool(result)}"
             )
         return result
+
+    @staticmethod
+    def _looks_like_visual_dom_ref_mismatch(reasoning: str) -> bool:
+        text = str(reasoning or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        has_visual_signal = (
+            "스크린샷" in text
+            or "화면" in text
+            or "screenshot" in lowered
+            or "screen" in lowered
+        )
+        has_dom_signal = "dom" in lowered
+        has_missing_ref_signal = (
+            "ref_id" in lowered
+            or "element_id" in lowered
+            or "dom에 없는" in text
+            or "dom에는" in text
+            or "ref가 없" in text
+            or "없습니다" in text
+            or "cannot guess" in lowered
+            or "not present in dom" in lowered
+        )
+        has_visibility_signal = (
+            "보이" in text
+            or "명확" in text
+            or "visible" in lowered
+        )
+        return bool(
+            has_visual_signal
+            and has_dom_signal
+            and has_missing_ref_signal
+            and has_visibility_signal
+        )
+
+    def _retry_decision_after_visual_dom_ref_mismatch(
+        self,
+        *,
+        decision: ActionDecision,
+        dom_elements: List[DOMElement],
+        goal: TestGoal,
+        screenshot: Optional[str],
+        memory_context: str,
+    ) -> tuple[ActionDecision, List[DOMElement], Optional[str], bool]:
+        if decision.action != ActionType.WAIT:
+            return decision, dom_elements, screenshot, False
+        if decision.is_goal_achieved:
+            return decision, dom_elements, screenshot, False
+        if not screenshot:
+            return decision, dom_elements, screenshot, False
+        if not self._looks_like_visual_dom_ref_mismatch(decision.reasoning):
+            return decision, dom_elements, screenshot, False
+
+        delay_ms_raw = str(os.getenv("GAIA_VISUAL_DOM_MISMATCH_DELAY_MS", "350") or "350").strip()
+        try:
+            delay_ms = int(delay_ms_raw)
+        except Exception:
+            delay_ms = 350
+        delay_ms = max(300, min(delay_ms, 500))
+
+        self._log(
+            f"🕒 스크린샷/DOM 불일치 감지: {delay_ms}ms 대기 후 DOM을 한 번 더 수집합니다."
+        )
+        time.sleep(delay_ms / 1000.0)
+
+        refreshed_dom = self._analyze_dom()
+        if not refreshed_dom:
+            return decision, dom_elements, screenshot, False
+
+        refreshed_screenshot = self._capture_screenshot()
+        self._action_feedback.append(
+            f"스크린샷에는 목표 CTA가 보이지만 DOM ref가 없어서 {delay_ms}ms 대기 후 DOM을 재수집했습니다."
+        )
+        if len(self._action_feedback) > 10:
+            self._action_feedback = self._action_feedback[-10:]
+
+        refreshed_decision = self._decide_next_action(
+            dom_elements=refreshed_dom,
+            goal=goal,
+            screenshot=refreshed_screenshot,
+            memory_context=memory_context,
+        )
+        self._log(
+            f"LLM 재결정(visual-dom mismatch): {refreshed_decision.action.value} - {refreshed_decision.reasoning}"
+        )
+        return refreshed_decision, refreshed_dom, refreshed_screenshot, True
 
     def run_filter_semantic_validation(
         self,

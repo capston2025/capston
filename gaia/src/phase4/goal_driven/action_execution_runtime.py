@@ -860,6 +860,18 @@ def execute_decision(
                 _remember_persistent_control_state()
             return ok, err
 
+        if decision.action == ActionType.FOCUS:
+            if not str(decision.value or "").strip():
+                agent._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="invalid_input",
+                    reason="focus 액션에는 target_id/tab_id value가 필요함",
+                )
+                return False, "focus 액션에는 target_id/tab_id value가 필요함"
+            agent._last_exec_result = execute_action(agent, "focus", value=decision.value)
+            return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
+
         if decision.action == ActionType.PRESS:
             ok, err = _execute_with_ref_recovery("press", action_value=decision.value or "Enter")
             if ok:
@@ -1035,7 +1047,21 @@ def execute_action(
             params["value"] = value
         request_action = "browser_act"
     else:
-        if action == "wait":
+        if action == "focus":
+            target_id = str(value or "").strip()
+            if not target_id:
+                return ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="invalid_input",
+                    reason="focus 액션에는 targetId/tab_id가 필요합니다.",
+                )
+            params = {
+                "session_id": agent.session_id,
+                "targetId": target_id,
+            }
+            request_action = "browser_tabs_focus"
+        elif action == "wait":
             wait_payload = parse_wait_payload(value)
             if not wait_payload:
                 wait_payload = {"time_ms": 1000}
@@ -1134,12 +1160,22 @@ def execute_action(
             or 0
         )
         if is_success and is_effective:
+            state_change = data.get("state_change") if isinstance(data.get("state_change"), dict) else {}
+            if action == "focus":
+                state_change = {
+                    **dict(state_change or {}),
+                    "backend": "browser_tabs_focus",
+                    "backend_progress": True,
+                    "focus_changed": True,
+                    "focused_target_id": str(data.get("targetId") or data.get("current_tab_id") or ""),
+                    "focused_url": str(data.get("current_url") or ""),
+                }
             return ActionExecResult(
                 success=True,
                 effective=True,
                 reason_code="ok",
                 reason="ok",
-                state_change=data.get("state_change") if isinstance(data.get("state_change"), dict) else {},
+                state_change=state_change,
                 attempt_logs=attempt_logs if isinstance(attempt_logs, list) else [],
                 retry_path=retry_path if isinstance(retry_path, list) else [],
                 attempt_count=attempt_count,

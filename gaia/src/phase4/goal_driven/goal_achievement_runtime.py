@@ -8,6 +8,7 @@ from .goal_completion_helpers import (
     evaluate_wait_goal_completion,
     is_readonly_visibility_goal,
 )
+from .media_playback_helpers import collect_visible_play_controls, goal_requires_media_playback
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
 
@@ -92,6 +93,7 @@ def has_recent_transition_completion_proof(
         "status_text_changed",
         "interactive_count_changed",
         "list_count_changed",
+        "new_page_detected",
         "target_value_changed",
         "target_value_matches",
     )
@@ -187,6 +189,13 @@ def validate_goal_achievement_claim(
         ready = wait_completion_ready(agent, dom_elements)
         if not ready:
             return False, "첫 WAIT는 완료 판정을 내리지 않고 한 번 더 상태 변화를 관찰합니다."
+        if goal_requires_media_playback(agent.__class__, goal):
+            visible_play_controls = collect_visible_play_controls(agent.__class__, dom_elements or [], limit=3)
+            if visible_play_controls:
+                return (
+                    False,
+                    "재생 목표는 현재 player surface에 play/start control이 남아 있으면 완료로 보지 않습니다. 먼저 재생 버튼을 누르세요.",
+                )
 
     expected_signals = [
         str(item or "").strip().lower()
@@ -254,6 +263,10 @@ def validate_goal_achievement_claim(
         decision.goal_achievement_reason = judge_reason
         return True, None
 
+    if decision.action != ActionType.WAIT:
+        setattr(agent, "_last_goal_completion_source", "direct")
+        return True, None
+
     if missing and not wait_contract_override:
         return (
             False,
@@ -266,15 +279,11 @@ def validate_goal_achievement_claim(
             decision.goal_achievement_reason = "goal contract signal 충족"
         return True, None
 
-    if decision.action == ActionType.WAIT:
-        if wait_fallback_reason:
-            setattr(agent, "_last_goal_completion_source", "wait_fallback")
-            decision.goal_achievement_reason = wait_fallback_reason
-            return True, None
-        return (
-            False,
-            "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
-        )
-
-    setattr(agent, "_last_goal_completion_source", "direct")
-    return True, None
+    if wait_fallback_reason:
+        setattr(agent, "_last_goal_completion_source", "wait_fallback")
+        decision.goal_achievement_reason = wait_fallback_reason
+        return True, None
+    return (
+        False,
+        "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다.",
+    )

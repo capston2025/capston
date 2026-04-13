@@ -28,6 +28,7 @@ STALE_REF_RULES: list[str] = [
     "페이지 네비게이션이 발생했거나 URL이 바뀌면 이전 턴의 ref_id를 신뢰하지 마세요. 현재 DOM에 존재하는 ref만 사용하세요.",
     "DOM 리스트에 없는 ref_id나 element_id를 추측하지 마세요.",
     "DOM이 'DOM 변경 없음'으로 표시되어도 ref는 현재 DOM 기준으로만 사용하세요.",
+    "click/fill/select/press처럼 요소를 겨냥하는 action은 현재 DOM에 보이는 ref_id 또는 element_id를 반드시 포함하세요. 현재 DOM에 바인딩할 수 없으면 action을 추측하지 말고 wait/scroll로 재탐색하세요.",
 ]
 
 LOADING_STATE_RULES: list[str] = [
@@ -38,6 +39,11 @@ LOADING_STATE_RULES: list[str] = [
 RESULT_RECOVERY_RULES: list[str] = [
     "실행/생성/apply 이후 `0개`, `없음`, `no results` 같은 명시적 zero-result surface가 뜨면 숨겨진 결과를 스크롤로 찾지 마세요. 현재 입력/선택/설정이 부족하다고 보고 수집 또는 파라미터 조정으로 돌아가세요.",
     "전면 모달/오버레이를 닫으려다 stale ref/not_found가 나오면 배경 탐색으로 넘어가지 말고, 새 snapshot에서 현재 전면 surface의 닫기/확인 CTA를 다시 찾으세요.",
+]
+
+MEDIA_PLAYBACK_RULES: list[str] = [
+    "목표가 재생/play/watch/listen 같은 media 시작을 직접 요구하고 현재 player/viewer surface 안에 play/start control이 보이면 viewer 진입만으로 완료 처리하지 말고 먼저 그 control을 실행하세요.",
+    "재생/start control이 현재 DOM에 남아 있으면 그 control을 누르기 전에는 `is_goal_achieved=true`로 종료하지 마세요. 단, 그 control 클릭이 목표의 마지막 단계라면 해당 click action에서 바로 완료를 선언할 수 있습니다.",
 ]
 
 DIALOG_AVOIDANCE_RULES: list[str] = [
@@ -102,6 +108,7 @@ def build_browser_action_rules_block() -> str:
     all_rules.extend(STALE_REF_RULES)
     all_rules.extend(LOADING_STATE_RULES)
     all_rules.extend(RESULT_RECOVERY_RULES)
+    all_rules.extend(MEDIA_PLAYBACK_RULES)
     all_rules.extend(DIALOG_AVOIDANCE_RULES)
     all_rules.extend(CONTEXT_SHIFT_RULES)
     all_rules.extend(GOAL_COMPLETION_RULES)
