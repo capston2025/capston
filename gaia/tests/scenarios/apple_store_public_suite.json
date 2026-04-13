@@ -12,56 +12,5 @@
       ]
     }
   },
-  "scenarios": [
-    {
-      "id": "APPLE_001_HOME_STORE_NAV_READY",
-      "url": "https://www.apple.com/kr/store",
-      "goal": "애플 스토어 화면에서 제품 카테고리와 스토어 내비게이션이 이미 보이는지 확인하고 종료해줘.",
-      "constraints": {
-        "allow_navigation": false,
-        "require_ref_only": true,
-        "require_state_change": false
-      },
-      "expected_signals": [
-        "nav_visible",
-        "product_card_visible"
-      ],
-      "difficulty": "easy",
-      "time_budget_sec": 60
-    },
-    {
-      "id": "APPLE_002_OPEN_IPHONE_SHOPPING",
-      "url": "https://www.apple.com/kr/store",
-      "goal": "스토어 화면에서 iPhone 구매 또는 iPhone 카테고리 페이지로 이동해 제목이 보이는지 확인해줘.",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": true
-      },
-      "expected_signals": [
-        "url_change",
-        "title_visible",
-        "product_card_visible"
-      ],
-      "difficulty": "medium",
-      "time_budget_sec": 120
-    },
-    {
-      "id": "APPLE_003_OPEN_MAC_SHOPPING",
-      "url": "https://www.apple.com/kr/store",
-      "goal": "스토어 화면에서 Mac 구매 또는 Mac 카테고리 페이지로 이동해 제목과 제품 영역이 보이는지 확인해줘.",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": true
-      },
-      "expected_signals": [
-        "url_change",
-        "title_visible",
-        "product_card_visible"
-      ],
-      "difficulty": "medium",
-      "time_budget_sec": 120
-    }
-  ]
+  "scenarios": []
 }

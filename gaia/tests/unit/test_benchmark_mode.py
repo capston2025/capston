@@ -60,6 +60,13 @@ def test_build_benchmark_catalog_includes_requested_presets_and_saved_urls() -> 
     assert wiki["suite_available"] is True
 
 
+def test_benchmark_presets_include_moneytoring_and_exclude_mdn() -> None:
+    keys = {preset.key for preset in BENCHMARK_PRESETS}
+
+    assert "moneytoring" in keys
+    assert "mdn" not in keys
+
+
 def test_override_suite_urls_updates_site_and_preserves_relative_paths() -> None:
     suite_payload = {
         "site": {"base_url": "https://old.example"},

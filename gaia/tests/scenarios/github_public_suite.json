@@ -12,56 +12,5 @@
       ]
     }
   },
-  "scenarios": [
-    {
-      "id": "GH_001_HOME_SEARCH_READY",
-      "url": "https://github.com/",
-      "goal": "깃허브 홈에서 검색 버튼과 상단 내비게이션이 보이는지 확인하고 종료해줘.",
-      "constraints": {
-        "allow_navigation": false,
-        "require_ref_only": true,
-        "require_state_change": false
-      },
-      "expected_signals": [
-        "search_button_visible",
-        "nav_visible"
-      ],
-      "difficulty": "easy",
-      "time_budget_sec": 60
-    },
-    {
-      "id": "GH_002_SEARCH_HELLO_WORLD_REPO",
-      "url": "https://github.com/",
-      "goal": "깃허브 검색으로 octocat Hello-World 저장소를 찾아 들어가고 저장소 제목이 보이는지 확인해줘.",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": true
-      },
-      "expected_signals": [
-        "search_results_changed",
-        "url_change",
-        "repo_title_visible"
-      ],
-      "difficulty": "medium",
-      "time_budget_sec": 180
-    },
-    {
-      "id": "GH_003_OPEN_PULL_REQUESTS_TAB",
-      "url": "https://github.com/octocat/Hello-World",
-      "goal": "공개 저장소에서 Pull requests 탭을 열고 목록이나 빈 상태가 보이는지 확인해줘.",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": true
-      },
-      "expected_signals": [
-        "tab_active",
-        "list_visible",
-        "url_change"
-      ],
-      "difficulty": "medium",
-      "time_budget_sec": 150
-    }
-  ]
+  "scenarios": []
 }

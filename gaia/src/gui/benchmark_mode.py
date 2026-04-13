@@ -36,13 +36,6 @@ BENCHMARK_PRESETS: tuple[BenchmarkPreset, ...] = (
         host_aliases=("wikipedia.org", "ko.wikipedia.org"),
     ),
     BenchmarkPreset(
-        key="mdn",
-        label="MDN",
-        default_url="https://developer.mozilla.org/ko/",
-        suite_path="gaia/tests/scenarios/mdn_public_suite.json",
-        host_aliases=("developer.mozilla.org",),
-    ),
-    BenchmarkPreset(
         key="fow_kr",
         label="Fow.kr",
         default_url="https://www.fow.lol/",
@@ -62,6 +55,13 @@ BENCHMARK_PRESETS: tuple[BenchmarkPreset, ...] = (
         default_url="https://github.com/",
         suite_path="gaia/tests/scenarios/github_public_suite.json",
         host_aliases=("github.com", "www.github.com"),
+    ),
+    BenchmarkPreset(
+        key="moneytoring",
+        label="머니터링",
+        default_url="https://www.moneytoring.ai/",
+        suite_path="gaia/tests/scenarios/moneytoring_public_suite.json",
+        host_aliases=("moneytoring.ai", "www.moneytoring.ai"),
     ),
     BenchmarkPreset(
         key="apple_store",

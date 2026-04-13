@@ -12,56 +12,5 @@
       ]
     }
   },
-  "scenarios": [
-    {
-      "id": "DC_001_HOME_SEARCH_READY",
-      "url": "https://www.dcinside.com/",
-      "goal": "디시인사이드 홈에서 검색창과 갤러리 계열 내비가 이미 보이는지 확인하고 종료해줘.",
-      "constraints": {
-        "allow_navigation": false,
-        "require_ref_only": true,
-        "require_state_change": false
-      },
-      "expected_signals": [
-        "searchbox_visible",
-        "nav_visible"
-      ],
-      "difficulty": "easy",
-      "time_budget_sec": 60
-    },
-    {
-      "id": "DC_002_OPEN_GALLERY_HOME",
-      "url": "https://www.dcinside.com/",
-      "goal": "홈 화면에서 갤러리 목록 화면으로 이동해 갤러리 리스트나 카테고리 영역이 보이는지 확인해줘.",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": true
-      },
-      "expected_signals": [
-        "url_change",
-        "gallery_list_visible",
-        "list_visible"
-      ],
-      "difficulty": "medium",
-      "time_budget_sec": 120
-    },
-    {
-      "id": "DC_003_SEARCH_AND_OPEN_GALLERY",
-      "url": "https://www.dcinside.com/",
-      "goal": "통합검색으로 공개 갤러리나 주제를 찾고 결과 페이지 또는 해당 갤러리 화면이 보이는지 확인해줘.",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": true
-      },
-      "expected_signals": [
-        "search_results_visible",
-        "url_change",
-        "gallery_list_visible"
-      ],
-      "difficulty": "medium",
-      "time_budget_sec": 150
-    }
-  ]
+  "scenarios": []
 }
