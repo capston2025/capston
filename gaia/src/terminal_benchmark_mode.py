@@ -277,6 +277,51 @@ def delete_scenario_from_suite(
     return payload
 
 
+def _default_scenario_name(current: Mapping[str, Any]) -> str:
+    name = str(current.get("name") or "").strip()
+    if name:
+        return name
+    scenario_id = str(current.get("id") or "").strip()
+    if scenario_id:
+        return scenario_id
+    return ""
+
+
+def _infer_scenario_prefix(existing_ids: set[str], default_url: str) -> str:
+    prefixes: list[str] = []
+    for item in sorted(existing_ids):
+        token = str(item or "").strip().split("_", 1)[0].strip().upper()
+        if token:
+            prefixes.append(token)
+    if prefixes:
+        counts: dict[str, int] = {}
+        for token in prefixes:
+            counts[token] = counts.get(token, 0) + 1
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    host = extract_url_host(default_url).removeprefix("www.")
+    host_token = host.split(".", 1)[0].strip().upper()
+    if host_token:
+        return re.sub(r"[^A-Z0-9]+", "", host_token) or "SCN"
+    return "SCN"
+
+
+def _generate_scenario_id(*, test_name: str, existing_ids: set[str], default_url: str) -> str:
+    prefix = _infer_scenario_prefix(existing_ids, default_url)
+    max_index = 0
+    pattern = re.compile(rf"^{re.escape(prefix)}_(\d+)(?:_|$)")
+    for item in existing_ids:
+        matched = pattern.match(str(item or "").strip().upper())
+        if matched:
+            try:
+                max_index = max(max_index, int(matched.group(1)))
+            except Exception:
+                continue
+    next_index = max_index + 1
+    suffix = _slugify(test_name).replace("-", "_").replace(".", "_").upper()
+    suffix = re.sub(r"_+", "_", suffix).strip("_") or "BENCHMARK"
+    return f"{prefix}_{next_index:03d}_{suffix}"
+
+
 def prompt_scenario_fields(
     *,
     prompt_select: PromptSelectFn,
@@ -287,6 +332,7 @@ def prompt_scenario_fields(
     existing_ids: set[str] | None = None,
     default_url: str = "",
 ) -> dict[str, Any]:
+    del prompt_select, prompt
     current = dict(existing or {})
     constraints = dict(current.get("constraints") or {})
     reserved_ids = {str(item).strip() for item in (existing_ids or set()) if str(item).strip()}
@@ -294,12 +340,17 @@ def prompt_scenario_fields(
     if current_id:
         reserved_ids.discard(current_id)
 
-    while True:
-        scenario_id = str(prompt_non_empty("id", default=current_id or None)).strip()
-        if scenario_id in reserved_ids:
-            emit(f"이미 존재하는 scenario id입니다: {scenario_id}")
-            continue
-        break
+    test_name = str(
+        prompt_non_empty(
+            "테스트 이름",
+            default=_default_scenario_name(current) or None,
+        )
+    ).strip()
+    scenario_id = current_id or _generate_scenario_id(
+        test_name=test_name,
+        existing_ids=reserved_ids,
+        default_url=str(current.get("url") or default_url or "").strip(),
+    )
 
     url = str(
         prompt_non_empty(
@@ -308,45 +359,7 @@ def prompt_scenario_fields(
         )
     ).strip()
     goal = str(prompt_non_empty("goal", default=str(current.get("goal") or "").strip() or None)).strip()
-
-    allow_navigation = (
-        prompt_select(
-            "allow_navigation",
-            ("true", "false"),
-            default="true" if bool(constraints.get("allow_navigation")) else "false",
-        )
-        == "true"
-    )
-    require_ref_only = (
-        prompt_select(
-            "require_ref_only",
-            ("true", "false"),
-            default="true" if bool(constraints.get("require_ref_only", True)) else "false",
-        )
-        == "true"
-    )
-    require_state_change = (
-        prompt_select(
-            "require_state_change",
-            ("true", "false"),
-            default="true" if bool(constraints.get("require_state_change")) else "false",
-        )
-        == "true"
-    )
-    requires_credentials_default = "비움"
-    if "requires_test_credentials" in constraints:
-        requires_credentials_default = "true" if bool(constraints.get("requires_test_credentials")) else "false"
-    requires_credentials_choice = prompt_select(
-        "requires_test_credentials (옵션)",
-        ("비움", "true", "false"),
-        default=requires_credentials_default,
-    )
-
-    expected_default = ", ".join(str(item).strip() for item in list(current.get("expected_signals") or []) if str(item).strip())
-    expected_raw = str(prompt("expected_signals (콤마 구분)", default=expected_default or None)).strip()
-    expected_signals = [item.strip() for item in expected_raw.split(",") if item.strip()]
-
-    time_budget_default = str(current.get("time_budget_sec") or 120)
+    time_budget_default = str(current.get("time_budget_sec") or 300)
     while True:
         time_budget_raw = str(prompt_non_empty("time_budget_sec", default=time_budget_default)).strip()
         try:
@@ -355,30 +368,24 @@ def prompt_scenario_fields(
         except Exception:
             emit("time_budget_sec는 1 이상의 정수여야 합니다.")
 
-    difficulty_default = str(current.get("difficulty") or "")
-    difficulty_raw = str(prompt("difficulty (옵션, 비우려면 -)", default=difficulty_default or None)).strip()
-
     scenario = dict(current)
     scenario["id"] = scenario_id
+    if str(current.get("name") or "").strip() or not current_id or test_name != current_id:
+        scenario["name"] = test_name
+    else:
+        scenario.pop("name", None)
     scenario["url"] = url
     scenario["goal"] = goal
-    updated_constraints = dict(constraints)
-    updated_constraints["allow_navigation"] = allow_navigation
-    updated_constraints["require_ref_only"] = require_ref_only
-    updated_constraints["require_state_change"] = require_state_change
-    if requires_credentials_choice == "비움":
-        updated_constraints.pop("requires_test_credentials", None)
-    else:
-        updated_constraints["requires_test_credentials"] = requires_credentials_choice == "true"
-    scenario["constraints"] = updated_constraints
-    scenario["expected_signals"] = expected_signals
+    scenario["constraints"] = dict(constraints) if constraints else {
+        "allow_navigation": True,
+        "require_ref_only": True,
+        "require_state_change": False,
+    }
     scenario["time_budget_sec"] = time_budget_sec
-    if difficulty_raw == "-":
-        scenario.pop("difficulty", None)
-    elif difficulty_raw:
-        scenario["difficulty"] = difficulty_raw
-    else:
-        scenario.pop("difficulty", None)
+    if "expected_signals" in current and not isinstance(current.get("expected_signals"), list):
+        scenario.pop("expected_signals", None)
+    elif "expected_signals" not in scenario and not current:
+        scenario["expected_signals"] = []
     return scenario
 
 
