@@ -110,6 +110,7 @@ def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path)
     assert result == 0
     first_prompt = script.select_calls[0]
     assert "INU TIMETABLE" in first_prompt[1]
+    assert "머니터링" in first_prompt[1]
     assert "맞춤법 검사기" in first_prompt[1]
     assert "디시인사이드" in first_prompt[1]
     assert "사이트 추가" in first_prompt[1]
@@ -195,29 +196,28 @@ def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) 
     assert [row["id"] for row in calls[0]["suite_payload"]["scenarios"]] == ["INUU_001_HOME_LOGIN_VISIBLE"]
 
 
-def test_prompt_scenario_fields_rejects_duplicate_scenario_id() -> None:
+def test_prompt_scenario_fields_auto_generates_id_and_defaults_for_new_scenario() -> None:
     script = _PromptScript(
-        selections=["false", "true", "false", "비움"],
-        texts=["text_visible, link_visible", "easy"],
-        non_empty=["WIKI_001_HOME_SEARCH_READY", "WIKI_010_NEW_CASE", "https://ko.wikipedia.org/wiki/Test", "새 시나리오 목표", "90"],
+        non_empty=["새 갤러리 진입", "https://ko.wikipedia.org/wiki/Test", "새 시나리오 목표", "90"],
     )
-    emitted: list[str] = []
 
     scenario = prompt_scenario_fields(
         prompt_select=script.select,
         prompt=script.text,
         prompt_non_empty=script.non_empty_prompt,
-        emit=emitted.append,
+        emit=lambda message: None,
         existing=None,
         existing_ids={"WIKI_001_HOME_SEARCH_READY"},
         default_url="https://ko.wikipedia.org/",
     )
 
-    assert emitted == ["이미 존재하는 scenario id입니다: WIKI_001_HOME_SEARCH_READY"]
-    assert scenario["id"] == "WIKI_010_NEW_CASE"
-    assert scenario["constraints"]["allow_navigation"] is False
+    assert scenario["id"] == "WIKI_002_BENCHMARK"
+    assert scenario["name"] == "새 갤러리 진입"
+    assert scenario["constraints"]["allow_navigation"] is True
     assert scenario["constraints"]["require_ref_only"] is True
     assert scenario["constraints"]["require_state_change"] is False
+    assert scenario["expected_signals"] == []
+    assert scenario["time_budget_sec"] == 90
 
 
 def test_add_flow_appends_valid_scenario_and_validates_saved_json(tmp_path: Path) -> None:
@@ -280,6 +280,24 @@ def test_edit_flow_preserves_unchanged_fields_on_enter() -> None:
     assert scenario == existing
 
 
+def test_prompt_scenario_fields_uses_five_minute_default_timeout() -> None:
+    script = _PromptScript(
+        non_empty=["새 테스트", "https://example.com", "예시 목표", "300"],
+    )
+
+    scenario = prompt_scenario_fields(
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        existing=None,
+        existing_ids=set(),
+        default_url="https://example.com",
+    )
+
+    assert scenario["time_budget_sec"] == 300
+
+
 def test_delete_flow_removes_exactly_one_scenario() -> None:
     payload = {
         "scenarios": [
@@ -291,6 +309,57 @@ def test_delete_flow_removes_exactly_one_scenario() -> None:
     updated = delete_scenario_from_suite(payload, "A")
 
     assert [row["id"] for row in updated["scenarios"]] == ["B"]
+
+
+def test_run_terminal_benchmark_mode_deletes_scenario_without_confirmation(tmp_path: Path) -> None:
+    suite_path = tmp_path / "suite.json"
+    registry_path = tmp_path / "benchmark_registry.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "demo_suite",
+            "site": {"name": "Demo", "base_url": "https://example.com"},
+            "grader_configs": {},
+            "scenarios": [
+                {"id": "A", "goal": "alpha", "url": "https://example.com/a", "constraints": {}, "time_budget_sec": 300},
+                {"id": "B", "goal": "beta", "url": "https://example.com/b", "constraints": {}, "time_budget_sec": 300},
+            ],
+        },
+    )
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "테스트 편집",
+            "A | alpha",
+            "삭제",
+            "이전으로",
+            "종료",
+        ]
+    )
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="storybook_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": str(suite_path.relative_to(tmp_path)),
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=registry_path,
+    )
+
+    reloaded = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert [row["id"] for row in reloaded["scenarios"]] == ["B"]
 
 
 def test_metrics_view_writes_html_board_and_opens_report(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
@@ -20,6 +21,15 @@ from gaia.src.utils.models import DomElement
 
 class LLMVisionClient:
     """Client for LLM-powered vision analysis of web pages."""
+
+    @staticmethod
+    def _console_text(text: str, *, windows_fallback: str | None = None) -> str:
+        if os.name != "nt":
+            return text
+        encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+        if "utf" in encoding:
+            return text
+        return windows_fallback or text.encode("ascii", "replace").decode("ascii")
 
     @staticmethod
     def _load_profile_token() -> str | None:
@@ -76,8 +86,18 @@ class LLMVisionClient:
             and shutil.which("codex") is not None
         )
         if self._prefer_codex_cli:
-            print("🔐 OpenAI OAuth(Codex) 감지: Codex CLI 경로를 우선 사용합니다.")
-        print(f"🤖 Vision AI: Using OpenAI ({self.model})")
+            print(
+                self._console_text(
+                    "🔐 OpenAI OAuth(Codex) 감지: Codex CLI 경로를 우선 사용합니다.",
+                    windows_fallback="OpenAI OAuth(Codex) 감지: Codex CLI 경로를 우선 사용합니다.",
+                )
+            )
+        print(
+            self._console_text(
+                f"🤖 Vision AI: Using OpenAI ({self.model})",
+                windows_fallback=f"Vision AI: Using OpenAI ({self.model})",
+            )
+        )
 
     @staticmethod
     def _strip_code_fences(text: str) -> str:
