@@ -513,8 +513,11 @@ def run_benchmark_suite(
     env = os.environ.copy()
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.4"))
+    if os.name == "nt":
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
 
-    emit(f"🚀 {preset.label} 벤치를 실행합니다.")
+    emit(f"{preset.label} 벤치를 실행합니다.")
     emit(f"   - target: {target_url}")
     emit(f"   - suite: {tmp_suite_path}")
 
@@ -524,6 +527,8 @@ def run_benchmark_suite(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         env=env,
     )
@@ -544,7 +549,7 @@ def run_benchmark_suite(
     status_counts = summary_payload.get("status_counts") if isinstance(summary_payload, Mapping) else {}
     status_counts = status_counts if isinstance(status_counts, Mapping) else {}
     emit(
-        "✅ 벤치 실행 완료"
+        "벤치 실행 완료"
         f" | success={int(status_counts.get('SUCCESS') or 0)}"
         f" fail={int(status_counts.get('FAIL') or 0)}"
         f" | artifact={output_dir}"
