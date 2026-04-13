@@ -14,6 +14,9 @@ from gaia.src.terminal_benchmark_mode import (
     delete_scenario_from_suite,
     delete_custom_benchmark_site,
     manage_benchmark_sites,
+    open_scenario_form_gui,
+    open_scenario_form_macos_dialogs,
+    open_scenario_form_windows_dialogs,
     open_benchmark_report,
     prompt_scenario_fields,
     replace_scenario_in_suite,
@@ -196,6 +199,120 @@ def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) 
     assert [row["id"] for row in calls[0]["suite_payload"]["scenarios"]] == ["INUU_001_HOME_LOGIN_VISIBLE"]
 
 
+def test_run_terminal_benchmark_mode_add_flow_uses_gui_form_when_available(tmp_path: Path) -> None:
+    suite_path = tmp_path / "suite.json"
+    registry_path = tmp_path / "benchmark_registry.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "demo_suite",
+            "site": {"name": "Demo", "base_url": "https://example.com"},
+            "grader_configs": {},
+            "scenarios": [],
+        },
+    )
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "새로운 테스트 추가",
+            "이전으로",
+            "종료",
+        ]
+    )
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="storybook_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": str(suite_path.relative_to(tmp_path)),
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    gui_calls: list[dict[str, object]] = []
+
+    def fake_form(**kwargs):
+        gui_calls.append(kwargs)
+        return {
+            "id": "STORYBOOK_001_HOME_READY",
+            "name": "스토리북 홈 확인",
+            "url": "https://storybook.js.org/",
+            "goal": "홈이 보이는지 확인",
+            "constraints": {
+                "allow_navigation": True,
+                "require_ref_only": True,
+                "require_state_change": False,
+            },
+            "expected_signals": [],
+            "time_budget_sec": 300,
+        }
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=registry_path,
+        scenario_form_opener=fake_form,
+    )
+
+    reloaded = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert gui_calls
+    assert reloaded["scenarios"][0]["id"] == "STORYBOOK_001_HOME_READY"
+
+
+def test_run_terminal_benchmark_mode_add_flow_falls_back_to_terminal_when_gui_returns_none(tmp_path: Path) -> None:
+    suite_path = tmp_path / "suite.json"
+    registry_path = tmp_path / "benchmark_registry.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "demo_suite",
+            "site": {"name": "Demo", "base_url": "https://example.com"},
+            "grader_configs": {},
+            "scenarios": [],
+        },
+    )
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "새로운 테스트 추가",
+            "이전으로",
+            "종료",
+        ],
+        non_empty=["스토리북 홈 확인", "https://storybook.js.org/", "홈이 보이는지 확인", "300"],
+    )
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="storybook_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": str(suite_path.relative_to(tmp_path)),
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=registry_path,
+        scenario_form_opener=lambda **kwargs: None,
+    )
+
+    reloaded = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert reloaded["scenarios"][0]["name"] == "스토리북 홈 확인"
+    assert reloaded["scenarios"][0]["time_budget_sec"] == 300
+
+
 def test_prompt_scenario_fields_auto_generates_id_and_defaults_for_new_scenario() -> None:
     script = _PromptScript(
         non_empty=["새 갤러리 진입", "https://ko.wikipedia.org/wiki/Test", "새 시나리오 목표", "90"],
@@ -296,6 +413,138 @@ def test_prompt_scenario_fields_uses_five_minute_default_timeout() -> None:
     )
 
     assert scenario["time_budget_sec"] == 300
+
+
+def test_open_scenario_form_macos_dialogs_builds_payload(monkeypatch) -> None:
+    answers = iter(["스토리북 홈 확인", "https://storybook.js.org/", "홈이 보이는지 확인", "300"])
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._prompt_macos_dialog",
+        lambda **kwargs: next(answers),
+    )
+
+    scenario = open_scenario_form_macos_dialogs(
+        emit=lambda message: None,
+        existing=None,
+        existing_ids={"STORYBOOK_001_OLD"},
+        default_url="https://storybook.js.org/",
+        title="Storybook 테스트 추가",
+    )
+
+    assert scenario is not None
+    assert scenario["name"] == "스토리북 홈 확인"
+    assert scenario["url"] == "https://storybook.js.org/"
+    assert scenario["goal"] == "홈이 보이는지 확인"
+    assert scenario["time_budget_sec"] == 300
+
+
+def test_open_scenario_form_gui_uses_macos_dialog_fallback_when_tkinter_missing(monkeypatch) -> None:
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.sys.platform", "darwin")
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tkinter":
+            raise ModuleNotFoundError("No module named '_tkinter'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    fallback_calls: list[dict[str, object]] = []
+
+    def fake_macos_form(**kwargs):
+        fallback_calls.append(kwargs)
+        return {
+            "id": "STORYBOOK_001_HOME_READY",
+            "name": "스토리북 홈 확인",
+            "url": "https://storybook.js.org/",
+            "goal": "홈이 보이는지 확인",
+            "constraints": {
+                "allow_navigation": True,
+                "require_ref_only": True,
+                "require_state_change": False,
+            },
+            "expected_signals": [],
+            "time_budget_sec": 300,
+        }
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.open_scenario_form_macos_dialogs", fake_macos_form)
+
+    scenario = open_scenario_form_gui(
+        emit=lambda message: None,
+        existing=None,
+        existing_ids=set(),
+        default_url="https://storybook.js.org/",
+        title="Storybook 테스트 추가",
+    )
+
+    assert fallback_calls
+    assert scenario is not None
+    assert scenario["id"] == "STORYBOOK_001_HOME_READY"
+
+
+def test_open_scenario_form_windows_dialogs_builds_payload(monkeypatch) -> None:
+    answers = iter(["스토리북 홈 확인", "https://storybook.js.org/", "홈이 보이는지 확인", "300"])
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._prompt_windows_dialog",
+        lambda **kwargs: next(answers),
+    )
+
+    scenario = open_scenario_form_windows_dialogs(
+        emit=lambda message: None,
+        existing=None,
+        existing_ids={"STORYBOOK_001_OLD"},
+        default_url="https://storybook.js.org/",
+        title="Storybook 테스트 추가",
+    )
+
+    assert scenario is not None
+    assert scenario["name"] == "스토리북 홈 확인"
+    assert scenario["url"] == "https://storybook.js.org/"
+    assert scenario["goal"] == "홈이 보이는지 확인"
+    assert scenario["time_budget_sec"] == 300
+
+
+def test_open_scenario_form_gui_uses_windows_dialog_fallback_when_tkinter_missing(monkeypatch) -> None:
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.sys.platform", "win32")
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tkinter":
+            raise ModuleNotFoundError("No module named '_tkinter'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    fallback_calls: list[dict[str, object]] = []
+
+    def fake_windows_form(**kwargs):
+        fallback_calls.append(kwargs)
+        return {
+            "id": "STORYBOOK_001_HOME_READY",
+            "name": "스토리북 홈 확인",
+            "url": "https://storybook.js.org/",
+            "goal": "홈이 보이는지 확인",
+            "constraints": {
+                "allow_navigation": True,
+                "require_ref_only": True,
+                "require_state_change": False,
+            },
+            "expected_signals": [],
+            "time_budget_sec": 300,
+        }
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.open_scenario_form_windows_dialogs", fake_windows_form)
+
+    scenario = open_scenario_form_gui(
+        emit=lambda message: None,
+        existing=None,
+        existing_ids=set(),
+        default_url="https://storybook.js.org/",
+        title="Storybook 테스트 추가",
+    )
+
+    assert fallback_calls
+    assert scenario is not None
+    assert scenario["id"] == "STORYBOOK_001_HOME_READY"
 
 
 def test_delete_flow_removes_exactly_one_scenario() -> None:
