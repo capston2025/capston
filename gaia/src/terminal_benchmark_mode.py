@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -30,6 +31,7 @@ PromptTextFn = Callable[[str, str | None], str]
 OutputFn = Callable[[str], None]
 ProcessFactory = Callable[..., subprocess.Popen[str]]
 ReportOpener = Callable[[str], bool]
+ScenarioFormOpener = Callable[..., Mapping[str, Any] | None]
 
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
@@ -389,6 +391,390 @@ def prompt_scenario_fields(
     return scenario
 
 
+def _build_scenario_payload(
+    *,
+    current: Mapping[str, Any],
+    test_name: str,
+    url: str,
+    goal: str,
+    time_budget_sec: int,
+    existing_ids: set[str],
+) -> dict[str, Any]:
+    constraints = dict(current.get("constraints") or {})
+    current_id = str(current.get("id") or "").strip()
+    reserved_ids = {str(item).strip() for item in existing_ids if str(item).strip()}
+    if current_id:
+        reserved_ids.discard(current_id)
+    scenario_id = current_id or _generate_scenario_id(
+        test_name=test_name,
+        existing_ids=reserved_ids,
+        default_url=url,
+    )
+    scenario = dict(current)
+    scenario["id"] = scenario_id
+    if str(current.get("name") or "").strip() or not current_id or test_name != current_id:
+        scenario["name"] = test_name
+    else:
+        scenario.pop("name", None)
+    scenario["url"] = url
+    scenario["goal"] = goal
+    scenario["constraints"] = dict(constraints) if constraints else {
+        "allow_navigation": True,
+        "require_ref_only": True,
+        "require_state_change": False,
+    }
+    scenario["time_budget_sec"] = time_budget_sec
+    if "expected_signals" in current and not isinstance(current.get("expected_signals"), list):
+        scenario.pop("expected_signals", None)
+    elif "expected_signals" not in scenario and not current:
+        scenario["expected_signals"] = []
+    return scenario
+
+
+def _applescript_quote(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _prompt_macos_dialog(
+    *,
+    title: str,
+    field_label: str,
+    default: str,
+    hidden: bool = False,
+) -> str | None:
+    prompt_text = _applescript_quote(field_label)
+    title_text = _applescript_quote(title)
+    default_text = _applescript_quote(default)
+    hidden_flag = " with hidden answer" if hidden else ""
+    script = (
+        f'text returned of (display dialog "{prompt_text}" '
+        f'default answer "{default_text}" with title "{title_text}"{hidden_flag})'
+    )
+    proc = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        stderr = f"{proc.stderr or ''} {proc.stdout or ''}".lower()
+        if "user canceled" in stderr or "cancel" in stderr:
+            return None
+        raise RuntimeError((proc.stderr or proc.stdout or "osascript dialog failed").strip())
+    return str(proc.stdout or "").strip()
+
+
+def _powershell_quote(value: str) -> str:
+    return str(value or "").replace("'", "''")
+
+
+def _find_windows_shell() -> str:
+    for candidate in ("powershell", "pwsh"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    raise RuntimeError("powershell 또는 pwsh를 찾을 수 없습니다.")
+
+
+def _prompt_windows_dialog(
+    *,
+    title: str,
+    field_label: str,
+    default: str,
+) -> str | None:
+    shell = _find_windows_shell()
+    title_text = _powershell_quote(title)
+    prompt_text = _powershell_quote(field_label)
+    default_text = _powershell_quote(default)
+    script = f"""
+Add-Type -AssemblyName Microsoft.VisualBasic
+$value = [Microsoft.VisualBasic.Interaction]::InputBox('{prompt_text}', '{title_text}', '{default_text}')
+if ($value -eq $null) {{ exit 1 }}
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Write-Output $value
+""".strip()
+    proc = subprocess.run(
+        [shell, "-NoProfile", "-Command", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        stderr = f"{proc.stderr or ''} {proc.stdout or ''}".lower()
+        if "cancel" in stderr or "canceled" in stderr:
+            return None
+        raise RuntimeError((proc.stderr or proc.stdout or "powershell dialog failed").strip())
+    return str(proc.stdout or "").rstrip("\r\n")
+
+
+def open_scenario_form_windows_dialogs(
+    *,
+    emit: OutputFn,
+    existing: Mapping[str, Any] | None = None,
+    existing_ids: set[str] | None = None,
+    default_url: str = "",
+    title: str = "새 테스트 추가",
+) -> dict[str, Any] | None:
+    del emit
+    current = dict(existing or {})
+    name_default = _default_scenario_name(current)
+    url_default = str(current.get("url") or default_url or "").strip()
+    goal_default = str(current.get("goal") or "").strip()
+    timeout_default = str(current.get("time_budget_sec") or 300)
+
+    test_name = _prompt_windows_dialog(title=title, field_label="테스트 이름", default=name_default)
+    if test_name is None:
+        return None
+    test_name = test_name.strip()
+    if not test_name:
+        raise ValueError("테스트 이름을 입력해주세요.")
+
+    url = _prompt_windows_dialog(title=title, field_label="url", default=url_default)
+    if url is None:
+        return None
+    url = url.strip()
+    if not url:
+        raise ValueError("url을 입력해주세요.")
+
+    goal = _prompt_windows_dialog(title=title, field_label="goal", default=goal_default)
+    if goal is None:
+        return None
+    goal = goal.strip()
+    if not goal:
+        raise ValueError("goal을 입력해주세요.")
+
+    timeout_raw = _prompt_windows_dialog(title=title, field_label="time_budget_sec", default=timeout_default)
+    if timeout_raw is None:
+        return None
+    try:
+        time_budget_sec = max(1, int(str(timeout_raw).strip()))
+    except Exception as exc:
+        raise ValueError("time_budget_sec는 1 이상의 정수여야 합니다.") from exc
+
+    return _build_scenario_payload(
+        current=current,
+        test_name=test_name,
+        url=url,
+        goal=goal,
+        time_budget_sec=time_budget_sec,
+        existing_ids=set(existing_ids or set()),
+    )
+
+
+def open_scenario_form_pyside(
+    *,
+    emit: OutputFn,
+    existing: Mapping[str, Any] | None = None,
+    existing_ids: set[str] | None = None,
+    default_url: str = "",
+    title: str = "새 테스트 추가",
+) -> dict[str, Any] | None:
+    del emit
+    current = dict(existing or {})
+    try:
+        from PySide6.QtWidgets import (
+            QApplication,
+            QDialog,
+            QDialogButtonBox,
+            QFormLayout,
+            QLineEdit,
+            QMessageBox,
+            QTextEdit,
+            QVBoxLayout,
+            QWidget,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"PySide6를 불러오지 못했습니다: {exc}") from exc
+
+    app = QApplication.instance()
+    created_app = False
+    if app is None:
+        app = QApplication([])
+        created_app = True
+
+    dialog = QDialog(None)
+    dialog.setWindowTitle(title)
+    dialog.resize(640, 320)
+
+    layout = QVBoxLayout(dialog)
+    form_layout = QFormLayout()
+    layout.addLayout(form_layout)
+
+    name_input = QLineEdit(_default_scenario_name(current), dialog)
+    url_input = QLineEdit(str(current.get("url") or default_url or "").strip(), dialog)
+    goal_input = QTextEdit(dialog)
+    goal_input.setPlainText(str(current.get("goal") or "").strip())
+    timeout_input = QLineEdit(str(current.get("time_budget_sec") or 300), dialog)
+
+    form_layout.addRow("테스트 이름", name_input)
+    form_layout.addRow("url", url_input)
+    form_layout.addRow("goal", goal_input)
+    form_layout.addRow("time_budget_sec", timeout_input)
+
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        parent=dialog,
+    )
+    layout.addWidget(buttons)
+
+    def _show_error(message: str, widget: QWidget | None = None) -> None:
+        QMessageBox.warning(dialog, "입력 오류", message)
+        if widget is not None:
+            widget.setFocus()
+
+    def _validate_and_accept() -> None:
+        test_name = name_input.text().strip()
+        url = url_input.text().strip()
+        goal = goal_input.toPlainText().strip()
+        timeout_raw = timeout_input.text().strip()
+        if not test_name:
+            _show_error("테스트 이름을 입력해주세요.", name_input)
+            return
+        if not url:
+            _show_error("url을 입력해주세요.", url_input)
+            return
+        if not goal:
+            _show_error("goal을 입력해주세요.", goal_input)
+            return
+        try:
+            parsed = max(1, int(timeout_raw))
+        except Exception:
+            _show_error("time_budget_sec는 1 이상의 정수여야 합니다.", timeout_input)
+            return
+        dialog.setProperty(
+            "_scenario_result",
+            _build_scenario_payload(
+                current=current,
+                test_name=test_name,
+                url=url,
+                goal=goal,
+                time_budget_sec=parsed,
+                existing_ids=set(existing_ids or set()),
+            ),
+        )
+        dialog.accept()
+
+    buttons.accepted.connect(_validate_and_accept)
+    buttons.rejected.connect(dialog.reject)
+    name_input.setFocus()
+
+    try:
+        accepted = dialog.exec() == int(QDialog.DialogCode.Accepted)
+        if not accepted:
+            return None
+        result = dialog.property("_scenario_result")
+        return dict(result) if isinstance(result, Mapping) else None
+    finally:
+        dialog.deleteLater()
+        if created_app:
+            app.quit()
+
+
+def open_scenario_form_macos_dialogs(
+    *,
+    emit: OutputFn,
+    existing: Mapping[str, Any] | None = None,
+    existing_ids: set[str] | None = None,
+    default_url: str = "",
+    title: str = "새 테스트 추가",
+) -> dict[str, Any] | None:
+    del emit
+    current = dict(existing or {})
+    name_default = _default_scenario_name(current)
+    url_default = str(current.get("url") or default_url or "").strip()
+    goal_default = str(current.get("goal") or "").strip()
+    timeout_default = str(current.get("time_budget_sec") or 300)
+
+    test_name = _prompt_macos_dialog(title=title, field_label="테스트 이름", default=name_default)
+    if test_name is None:
+        return None
+    test_name = test_name.strip()
+    if not test_name:
+        raise ValueError("테스트 이름을 입력해주세요.")
+
+    url = _prompt_macos_dialog(title=title, field_label="url", default=url_default)
+    if url is None:
+        return None
+    url = url.strip()
+    if not url:
+        raise ValueError("url을 입력해주세요.")
+
+    goal = _prompt_macos_dialog(title=title, field_label="goal", default=goal_default)
+    if goal is None:
+        return None
+    goal = goal.strip()
+    if not goal:
+        raise ValueError("goal을 입력해주세요.")
+
+    timeout_raw = _prompt_macos_dialog(title=title, field_label="time_budget_sec", default=timeout_default)
+    if timeout_raw is None:
+        return None
+    try:
+        time_budget_sec = max(1, int(str(timeout_raw).strip()))
+    except Exception as exc:
+        raise ValueError("time_budget_sec는 1 이상의 정수여야 합니다.") from exc
+
+    return _build_scenario_payload(
+        current=current,
+        test_name=test_name,
+        url=url,
+        goal=goal,
+        time_budget_sec=time_budget_sec,
+        existing_ids=set(existing_ids or set()),
+    )
+
+
+def open_scenario_form_gui(
+    *,
+    emit: OutputFn,
+    existing: Mapping[str, Any] | None = None,
+    existing_ids: set[str] | None = None,
+    default_url: str = "",
+    title: str = "새 테스트 추가",
+) -> dict[str, Any] | None:
+    current = dict(existing or {})
+
+    try:
+        return open_scenario_form_pyside(
+            emit=emit,
+            existing=current,
+            existing_ids=set(existing_ids or set()),
+            default_url=default_url,
+            title=title,
+        )
+    except Exception as pyside_exc:
+        emit(f"PySide6 GUI를 사용할 수 없어 대체 입력창으로 전환합니다: {pyside_exc}")
+
+    if sys.platform == "darwin":
+        try:
+            return open_scenario_form_macos_dialogs(
+                emit=emit,
+                existing=current,
+                existing_ids=set(existing_ids or set()),
+                default_url=default_url,
+                title=title,
+            )
+        except Exception as fallback_exc:
+            emit(f"macOS 입력창도 열지 못해 터미널 입력으로 전환합니다: {fallback_exc}")
+            return None
+    if sys.platform.startswith("win"):
+        try:
+            return open_scenario_form_windows_dialogs(
+                emit=emit,
+                existing=current,
+                existing_ids=set(existing_ids or set()),
+                default_url=default_url,
+                title=title,
+            )
+        except Exception as fallback_exc:
+            emit(f"Windows 입력창도 열지 못해 터미널 입력으로 전환합니다: {fallback_exc}")
+            return None
+    emit("GUI 입력창을 열지 못해 터미널 입력으로 전환합니다.")
+    return None
+
+
 def write_benchmark_report_html(
     *,
     workspace_root: Path,
@@ -682,6 +1068,7 @@ def run_terminal_benchmark_mode(
     run_suite_handler: Callable[..., dict[str, Any]] = run_benchmark_suite,
     report_writer: Callable[..., Path] = write_benchmark_report_html,
     report_opener: Callable[[Path], bool] = open_benchmark_report,
+    scenario_form_opener: ScenarioFormOpener = open_scenario_form_gui,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
 
@@ -752,15 +1139,23 @@ def run_terminal_benchmark_mode(
                     for row in list(suite_payload.get("scenarios") or [])
                     if isinstance(row, Mapping)
                 }
-                new_scenario = prompt_scenario_fields(
-                    prompt_select=prompt_select,
-                    prompt=prompt,
-                    prompt_non_empty=prompt_non_empty,
+                new_scenario = scenario_form_opener(
                     emit=emit,
                     existing=None,
                     existing_ids=existing_ids,
                     default_url=selected_url,
+                    title=f"{preset.label} 테스트 추가",
                 )
+                if new_scenario is None:
+                    new_scenario = prompt_scenario_fields(
+                        prompt_select=prompt_select,
+                        prompt=prompt,
+                        prompt_non_empty=prompt_non_empty,
+                        emit=emit,
+                        existing=None,
+                        existing_ids=existing_ids,
+                        default_url=selected_url,
+                    )
                 updated_payload = append_scenario_to_suite(suite_payload, new_scenario)
                 save_suite_payload(suite_path, updated_payload)
                 emit(f"💾 테스트 추가 완료: {new_scenario['id']}")
