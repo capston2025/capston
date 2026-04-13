@@ -408,6 +408,10 @@ def detect_active_surface_context(
         )
         role = str(getattr(element, "role", "") or "").strip().lower()
         tag = str(getattr(element, "tag", "") or "").strip().lower()
+        container_role = str(getattr(element, "container_role", "") or "").strip().lower()
+        if "feedback_success_signal" in tags and (role == "banner" or container_role == "banner"):
+            # Success toast/banner is a weak progress signal, not a blocking foreground surface.
+            continue
         is_heading_like = role in {"heading", "dialog", "alertdialog", "banner"} or tag in {"h1", "h2", "h3"}
         heading_destination_hit = any(term and term in blob for term in destination_terms)
         if destination_heading is None and is_heading_like and (heading_destination_hit or role in {"dialog", "alertdialog"}):
@@ -567,75 +571,6 @@ def pick_scoped_container(
     if best_score < 6.0:
         return None, None, None, best_score, ambiguous
     return best_ref, best_name, best_source, float(best_score), ambiguous
-
-
-def _collect_openclaw_role_tree_focus_refs(
-    agent: Any,
-    elements: List[DOMElement],
-    active_surface_context: Dict[str, Any],
-) -> List[str]:
-    recent_blob = "\n".join(
-        [
-            *(str(item or "") for item in list(getattr(agent, "_action_history", []) or [])[-8:]),
-            *(str(item or "") for item in list(getattr(agent, "_action_feedback", []) or [])[-8:]),
-        ]
-    )
-    recent_refs = {match for match in re.findall(r"\b(e\d+)\b", recent_blob)}
-    focus_refs: List[Tuple[float, int, str]] = []
-    goal_tokens = set(getattr(agent, "_goal_tokens", set()) or set())
-    normalized_goal_text = agent._normalize_text(str(getattr(agent, "_active_goal_text", "") or ""))
-    normalized_phrases = [
-        agent._normalize_text(v)
-        for v in re.findall(r'["\']([^"\']+)["\']', str(getattr(agent, "_active_goal_text", "") or ""))
-        if agent._normalize_text(v)
-    ]
-    for index, el in enumerate(elements or []):
-        ref_id = str(getattr(el, "ref_id", "") or "").strip()
-        if not ref_id:
-            continue
-        role = str(getattr(el, "role", "") or "").strip().lower()
-        tag = str(getattr(el, "tag", "") or "").strip().lower()
-        blob = agent._normalize_text(
-            " ".join(
-                [
-                    str(getattr(el, "text", "") or ""),
-                    str(getattr(el, "aria_label", "") or ""),
-                    str(getattr(el, "container_name", "") or ""),
-                    str(getattr(el, "context_text", "") or ""),
-                    str(getattr(el, "role_ref_name", "") or ""),
-                ]
-            )
-        )
-        overlap = goal_tokens.intersection(set(agent._tokenize_text(blob)))
-        score = 0.0
-        if ref_id in recent_refs:
-            score += 26.0
-        score += min(12.0, 3.0 * len(overlap))
-        if normalized_goal_text and normalized_goal_text in blob:
-            score += 8.0
-        if any(phrase and phrase in blob for phrase in normalized_phrases):
-            score += 10.0
-        if role in {"textbox", "combobox"} and agent._contains_login_hint(blob):
-            score += 18.0
-        elif role in {"button", "link"} and agent._contains_login_hint(blob):
-            score += 12.0
-        elif tag in {"input", "textarea"} and agent._contains_login_hint(blob):
-            score += 15.0
-        if role in {"button", "link", "tab", "menuitem", "option"}:
-            score += 2.0
-        if ref_id in {
-            str(getattr(active_surface_context.get("heading"), "ref_id", "") or "").strip(),
-            str(getattr(active_surface_context.get("close_candidate"), "ref_id", "") or "").strip(),
-        }:
-            score += 6.0
-        if score > 0.0:
-            focus_refs.append((score, index, ref_id))
-    focus_refs.sort(key=lambda item: (-item[0], item[1], item[2]))
-    ordered_unique: List[str] = []
-    for _, _, ref_id in focus_refs:
-        if ref_id and ref_id not in ordered_unique:
-            ordered_unique.append(ref_id)
-    return ordered_unique[:18]
 
 
 def _compute_delta_snapshot(

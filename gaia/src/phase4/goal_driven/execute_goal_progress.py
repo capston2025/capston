@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+from .goal_completion_helpers import evaluate_goal_completion_judge
 from .goal_policy_phase_runtime import goal_phase_intent
 from .models import ActionDecision, ActionType, DOMElement, GoalResult, StepResult, TestGoal
 
@@ -37,6 +38,7 @@ def _strong_state_progress(state_change: Optional[Dict[str, Any]]) -> bool:
         "text_digest_changed",
         "nav_detected",
         "popup_detected",
+        "new_page_detected",
         "dialog_detected",
     )
     return any(bool(state_change.get(key)) for key in keys)
@@ -88,6 +90,77 @@ def _is_weak_dom_only_change(
     if abs(int(after_count) - int(before_count)) <= 12:
         return True
     return False
+
+
+def _should_attempt_post_action_judge(
+    *,
+    agent: Any,
+    goal: TestGoal,
+    decision: ActionDecision,
+    success: bool,
+    changed: bool,
+    post_dom: List[DOMElement],
+) -> bool:
+    if not bool(success and changed):
+        return False
+    if decision.action in {ActionType.WAIT, ActionType.SCROLL}:
+        return False
+    if not post_dom:
+        return False
+
+    direction = str(getattr(agent, "_goal_constraints", {}).get("mutation_direction") or "").strip().lower()
+    semantics = getattr(agent, "_goal_semantics", None)
+    goal_kind = str(getattr(semantics, "goal_kind", "") or "").strip().lower()
+    mutate_required = bool(getattr(semantics, "mutate_required", False))
+    has_destination_terms = bool(getattr(agent, "_goal_destination_terms", lambda _goal: [])(goal))
+
+    return bool(
+        direction in {"increase", "decrease", "clear"}
+        or goal_kind in {"add_to_list", "remove_from_list", "clear_list", "apply_selection"}
+        or mutate_required
+        or has_destination_terms
+    )
+
+
+def _evaluate_post_action_judge_completion(
+    *,
+    agent: Any,
+    goal: TestGoal,
+    decision: ActionDecision,
+    success: bool,
+    changed: bool,
+    post_dom: List[DOMElement],
+) -> Optional[str]:
+    if not _should_attempt_post_action_judge(
+        agent=agent,
+        goal=goal,
+        decision=decision,
+        success=success,
+        changed=changed,
+        post_dom=post_dom,
+    ):
+        return None
+
+    synthetic_decision = ActionDecision(
+        action=decision.action,
+        ref_id=decision.ref_id,
+        element_id=decision.element_id,
+        value=decision.value,
+        reasoning=decision.reasoning,
+        confidence=max(float(decision.confidence or 0.0), 0.75),
+        is_goal_achieved=True,
+        goal_achievement_reason=(
+            str(decision.goal_achievement_reason or "").strip()
+            or str(decision.reasoning or "").strip()
+            or "직전 action 이후 현재 DOM 기준 목표 완료 여부를 다시 판정합니다."
+        ),
+    )
+    return evaluate_goal_completion_judge(
+        agent,
+        goal=goal,
+        decision=synthetic_decision,
+        dom_elements=post_dom,
+    )
 
 
 def evaluate_post_action_progress(
@@ -299,37 +372,6 @@ def evaluate_post_action_progress(
 
     terminal_result: Optional[GoalResult] = None
     if terminal_result is None:
-        mutation_reason = agent._evaluate_goal_mutation_contract(
-            before_dom=dom_elements,
-            after_dom=post_dom or [],
-        )
-        if mutation_reason:
-            target_reason = agent._evaluate_goal_target_completion(
-                goal=goal,
-                dom_elements=post_dom or [],
-            )
-            if target_reason:
-                _emit_reason(agent, "mutation_contract_satisfied")
-                agent._log(f"✅ 목표 달성! 이유: {target_reason}")
-                terminal_result = GoalResult(
-                    goal_id=goal.id,
-                    goal_name=goal.name,
-                    success=True,
-                    steps_taken=steps,
-                    total_steps=step_count,
-                    final_reason=target_reason,
-                    duration_seconds=time.time() - start_time,
-                )
-                agent._record_goal_summary(
-                    goal=goal,
-                    status="success",
-                    reason=terminal_result.final_reason,
-                    step_count=step_count,
-                    duration_seconds=terminal_result.duration_seconds,
-                )
-            else:
-                _emit_reason(agent, "mutation_contract_missing_target_proof")
-    if terminal_result is None:
         target_reason = agent._evaluate_goal_target_completion(
             goal=goal,
             dom_elements=post_dom or [],
@@ -344,6 +386,34 @@ def evaluate_post_action_progress(
                 steps_taken=steps,
                 total_steps=step_count,
                 final_reason=target_reason,
+                duration_seconds=time.time() - start_time,
+            )
+            agent._record_goal_summary(
+                goal=goal,
+                status="success",
+                reason=terminal_result.final_reason,
+                step_count=step_count,
+                duration_seconds=terminal_result.duration_seconds,
+            )
+    if terminal_result is None:
+        judge_reason = _evaluate_post_action_judge_completion(
+            agent=agent,
+            goal=goal,
+            decision=decision,
+            success=success,
+            changed=changed,
+            post_dom=post_dom or [],
+        )
+        if judge_reason:
+            _emit_reason(agent, "post_action_judge_completion")
+            agent._log(f"✅ 목표 달성! 이유: {judge_reason}")
+            terminal_result = GoalResult(
+                goal_id=goal.id,
+                goal_name=goal.name,
+                success=True,
+                steps_taken=steps,
+                total_steps=step_count,
+                final_reason=judge_reason,
                 duration_seconds=time.time() - start_time,
             )
             agent._record_goal_summary(

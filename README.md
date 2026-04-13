@@ -440,9 +440,7 @@ gaia/
 │   ├── phase5/                # 리포트/요약 유틸 (WIP)
 │   ├── utils/                 # 설정/데이터 모델 (Pydantic)
 │   └── orchestrator.py        # CLI 오케스트레이터
-├── artifacts/
-│   ├── cache/                 # selector_cache.json, embedding_cache.json
-│   └── plans/                 # Planner 출력 저장본
+├── artifacts/                 # benchmark, wrapper trace, 임시 디버그 산출물 (source of truth 아님)
 ├── scripts/                   # run_gui.sh 등
 ├── tests/                     # Pytest (planner, scheduler, orchestration)
 ├── homebrew/                  # Homebrew formula
@@ -466,7 +464,7 @@ python run_local_test.py            # 로컬 UI 테스트 사이트용 데모
 - `gaia/docs/INSTALL_WINDOWS_MAC.md`: 플랫폼별 설치 가이드.
 - `gaia/docs/team/*.md`: 팀원별 세부 실행 가이드.
 - `PORTFOLIO_SKELETON.md`, `PORTFOLIO_RUN_LOG.md`: 발표/포트폴리오 서술 + 증빙 로그.
-- `artifacts/plans/*.json`: QA 데모/회귀 테스트용 고정 플랜.
+- `artifacts/`: benchmark, wrapper trace, tmp 산출물. 필요 시 재생성 가능.
 
 ---
-GAIA는 “학생/초기 팀도 버튼 몇 번이면 회귀 테스트를 돌릴 수 있는” QA 파이프라인을 목표로 계속 진화하고 있다. 새로운 기능을 추가할 때는 `gaia/docs/TEAM_PLAYBOOK.md`와 관련 팀 문서를 함께 갱신하고, 캐시 구조 변경 시 `artifacts/cache` 포맷을 함께 기록해 주세요.
+GAIA는 “학생/초기 팀도 버튼 몇 번이면 회귀 테스트를 돌릴 수 있는” QA 파이프라인을 목표로 계속 진화하고 있다. 새로운 기능을 추가할 때는 `gaia/docs/TEAM_PLAYBOOK.md`와 관련 팀 문서를 함께 갱신하고, generated artifact 경로가 바뀌면 관련 문서를 함께 갱신해 주세요.

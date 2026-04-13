@@ -584,6 +584,104 @@ def test_validate_goal_achievement_claim_accepts_wait_via_generic_judge_for_late
         assert "assistant response" in agent._last_judge_prompt
 
 
+def test_validate_goal_achievement_claim_includes_new_page_evidence_in_judge_prompt() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "새 창 viewer evidence와 현재 DOM 증거를 함께 확인했습니다.",
+  "confidence": 0.94
+}
+""".strip()
+    agent._last_exec_result = SimpleNamespace(
+        state_change={
+            "new_page_detected": True,
+            "new_page_count": 1,
+            "new_page_same_origin_detected": True,
+            "new_page_urls": ["https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"],
+            "new_page_titles": ["대중_6주차_1차시_동물복제"],
+            "new_page_kinds": ["viewer_like"],
+        }
+    )
+    goal = SimpleNamespace(
+        name="6주차 1차시 수강 버튼 누르기",
+        description="동영상 보기 클릭 후 실제 관련 viewer 창이 뜨는지 확인",
+        success_criteria=["관련 viewer 창 또는 수강 surface가 열리는지 확인"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="방금 동영상 보기 클릭 이후 별도 viewer 창이 열린 것으로 보입니다.",
+        confidence=0.9,
+        is_goal_achieved=True,
+        goal_achievement_reason="viewer 창 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="a",
+            role="link",
+            text="동영상 보기",
+            context_text="6주차 1차시 상세",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is True
+    assert reason is None
+    assert agent._last_goal_completion_source == "judge"
+    assert '"new_page_detected": true' in agent._last_judge_prompt
+    assert "viewer.php?id=1346868" in agent._last_judge_prompt
+    assert "viewer_like" in agent._last_judge_prompt
+
+
+def test_validate_goal_achievement_claim_rejects_wait_when_play_control_is_still_visible() -> None:
+    agent = _FakeAgent()
+    goal = SimpleNamespace(
+        name="6주차 1차시 동영상을 재생한다",
+        description="viewer 창에서 재생 버튼을 눌러 동영상을 재생해줘.",
+        success_criteria=["재생 버튼을 눌러 동영상을 재생한다"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="viewer 창과 play 버튼이 보이므로 목표를 달성했다고 판단합니다.",
+        confidence=0.88,
+        is_goal_achieved=True,
+        goal_achievement_reason="viewer surface 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="application",
+            text="Video Player",
+            aria_label="Video Player",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            ref_id="e15",
+            tag="button",
+            role="button",
+            text="재생",
+            aria_label="재생",
+            title="재생",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is False
+    assert reason == "재생 목표는 현재 player surface에 play/start control이 남아 있으면 완료로 보지 않습니다. 먼저 재생 버튼을 누르세요."
+
+
 def test_validate_goal_achievement_claim_accepts_wait_via_reasoning_result_quote_without_judge() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
@@ -834,3 +932,40 @@ def test_validate_goal_achievement_claim_allows_judge_to_bypass_missing_expected
     assert ok is True
     assert reason is None
     assert agent._last_goal_completion_source == "judge"
+
+
+def test_validate_goal_achievement_claim_allows_direct_click_without_expected_signal_gate() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="공개 문서 열기",
+        description="문서를 여는 버튼을 누르면 완료",
+        success_criteria=["문서 열기 버튼 클릭"],
+        expected_signals=["url_changed"],
+    )
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        ref_id="e9",
+        reasoning="현재 화면의 직접 CTA를 눌렀고, 이 클릭 자체가 목표의 마지막 단계입니다.",
+        confidence=0.91,
+        is_goal_achieved=True,
+        goal_achievement_reason="문서 열기 버튼 클릭 완료",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            ref_id="e9",
+            tag="button",
+            role="button",
+            text="문서 열기",
+            context_text="상세 페이지",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is True
+    assert reason is None
+    assert agent._last_goal_completion_source == "direct"

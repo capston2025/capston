@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
 
@@ -148,11 +148,4 @@ def apply_steering_policy_on_decision(
     decision = self._apply_steering_assertions_on_decision(decision, policy, dom_elements)
     if self._steering_remaining_steps <= 0:
         self._expire_steering_policy("steering_expired")
-    return decision
-
-def enforce_goal_constraints_on_decision(
-    self,
-    decision: ActionDecision,
-    dom_elements: List[DOMElement],
-) -> ActionDecision:
     return decision

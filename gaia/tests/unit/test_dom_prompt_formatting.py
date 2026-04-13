@@ -737,6 +737,63 @@ def test_detect_active_surface_context_ignores_persistent_wishlist_sidebar_witho
     assert surface["active"] is False
 
 
+def test_detect_active_surface_context_ignores_success_banner_toast() -> None:
+    agent = _FakeAgent()
+    agent._goal_semantics = SimpleNamespace(
+        target_terms=["건강과심리"],
+        destination_terms=["내 시간표", "시간표"],
+    )
+    elements = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="banner",
+            text="'(HUSS서강대)건강과심리' 과목을 위시리스트에 담았어요!",
+            aria_label="'(HUSS서강대)건강과심리' 과목을 위시리스트에 담았어요!",
+            title="'(HUSS서강대)건강과심리' 과목을 위시리스트에 담았어요!",
+            ref_id="e4",
+            container_role="banner",
+            container_source="openclaw-role-tree",
+            context_text="'(HUSS서강대)건강과심리' 과목을 위시리스트에 담았어요! | X",
+            role_ref_role="banner",
+            role_ref_name="'(HUSS서강대)건강과심리' 과목을 위시리스트에 담았어요!",
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="X",
+            aria_label="X",
+            title="X",
+            ref_id="e5",
+            container_role="banner",
+            container_source="openclaw-role-tree",
+            context_text="'(HUSS서강대)건강과심리' 과목을 위시리스트에 담았어요!",
+            role_ref_role="button",
+            role_ref_name="X",
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="담기",
+            aria_label="담기",
+            title="담기",
+            ref_id="e353",
+            container_name="검색 결과(총 2,894개 중 20개 표시)",
+            container_role="main",
+            container_source="openclaw-role-tree",
+            context_text="(HUSS서강대)건강과심리 | 검색 결과",
+            role_ref_role="button",
+            role_ref_name="담기",
+        ),
+    ]
+
+    surface = detect_active_surface_context(agent, elements)
+
+    assert surface["active"] is False
+
+
 def test_detect_active_surface_context_uses_goal_destination_terms_without_domain_keywords() -> None:
     agent = _FakeAgent()
     agent._goal_semantics = SimpleNamespace(

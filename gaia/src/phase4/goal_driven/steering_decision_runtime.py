@@ -77,6 +77,7 @@ def _decision_steering_tags(
         ActionType.CLICK: "intent.click",
         ActionType.SELECT: "intent.select",
         ActionType.FILL: "intent.fill",
+        ActionType.FOCUS: "intent.focus",
         ActionType.PRESS: "intent.press",
         ActionType.SCROLL: "intent.scroll",
         ActionType.WAIT: "intent.wait",

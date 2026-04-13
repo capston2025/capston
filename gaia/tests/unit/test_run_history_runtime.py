@@ -1378,6 +1378,36 @@ def test_run_history_transcript_persists_to_run_and_session(monkeypatch, tmp_pat
     assert rows[1]["role"] == "assistant"
 
 
+def test_run_history_transcript_uses_configurable_large_char_limit(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("GAIA_RUN_HISTORY_DIR", str(tmp_path))
+    monkeypatch.setenv("GAIA_RUN_HISTORY_ENABLED", "1")
+    monkeypatch.setenv("GAIA_RUN_HISTORY_TRANSCRIPT_CHAR_LIMIT", "7000")
+    agent = _HistoryAgent()
+    goal = _build_goal()
+
+    initialize_run_history(agent, goal)
+    content = "x" * 6000
+    record_run_history_transcript(
+        agent,
+        stage="actor_decision_prompt",
+        role="user",
+        content=content,
+        metadata={"phase": "collect"},
+    )
+
+    session_dir = tmp_path / "sessions" / agent._run_history_session_key
+    run_dir = session_dir / "runs" / agent._run_history_run_id
+    run_transcript = run_dir / "transcript.jsonl"
+    rows = [
+        json.loads(line)
+        for line in run_transcript.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert rows[0]["char_count"] == 6000
+    assert rows[0]["content"] == content
+
+
 def test_run_history_retrieval_context_finds_relevant_session_memory(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("GAIA_RUN_HISTORY_DIR", str(tmp_path))
     monkeypatch.setenv("GAIA_RUN_HISTORY_ENABLED", "1")

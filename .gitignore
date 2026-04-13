@@ -61,7 +61,6 @@ gaia/.env.local
 .claude/worktrees/
 /artifacts/*.log
 /artifacts/benchmarks/
-/artifacts/cache/
 /artifacts/harness/
 /artifacts/embedded_openclaw/
 /artifacts/exploration_results/

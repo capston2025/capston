@@ -33,6 +33,31 @@ def _selected_element_for_decision(decision: Any, dom_elements: List[Any]) -> An
     return None
 
 
+def _has_zero_result_surface(agent: Any, dom_elements: List[Any]) -> bool:
+    visible_blob = agent._normalize_text(
+        " ".join(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+            for el in list(dom_elements or [])
+            if bool(getattr(el, "is_visible", True))
+        )
+    )
+    if not visible_blob:
+        return False
+    zero_tokens = ("0개", "0 건", "0건", "없음", "없어요", "no results", "no result", "empty")
+    result_tokens = ("결과", "result", "results", "조합", "list", "리스트")
+    return any(token in visible_blob for token in zero_tokens) and any(
+        token in visible_blob for token in result_tokens
+    )
+
+
 def handle_post_action_runtime(
     agent,
     *,
@@ -392,6 +417,15 @@ def handle_post_action_runtime(
     elif reason_code in {"not_actionable", "no_state_change"} and agent._error_indicates_overlay_intercept(error):
         agent._overlay_intercept_pending = True
         agent._record_reason_code("overlay_intercept_detected")
+    if (
+        reason_code in {"not_found", "ref_stale", "missing_element_id"}
+        and _has_zero_result_surface(agent, post_dom)
+    ):
+        agent._action_feedback.append(
+            "전면 zero-result surface가 아직 남아 있습니다. 스크롤로 결과를 찾지 말고, 새 snapshot에서 현재 전면 surface의 닫기/확인 CTA를 다시 찾으세요."
+        )
+        if len(agent._action_feedback) > 10:
+            agent._action_feedback = agent._action_feedback[-10:]
     ref_used = agent._last_exec_result.ref_id_used if agent._last_exec_result else ""
     agent._track_ref_outcome(
         ref_id=ref_used,

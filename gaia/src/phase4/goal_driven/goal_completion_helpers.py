@@ -5,8 +5,14 @@ import os
 import re
 from typing import List, Optional
 
-from .models import ActionDecision, ActionType, DOMElement, TestGoal
 from .goal_verification_helpers import extract_goal_query_tokens, is_filter_style_goal
+from .media_playback_helpers import (
+    collect_visible_play_controls,
+    describe_play_control,
+    dom_has_media_player_surface,
+    goal_requires_media_playback,
+)
+from .models import ActionDecision, ActionType, DOMElement, TestGoal
 from .run_history_runtime import (
     build_run_history_replay_packet_context as build_run_history_replay_packet_context_impl,
     record_run_history_transcript as record_run_history_transcript_impl,
@@ -798,6 +804,29 @@ def _goal_completion_judge_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _build_media_playback_judge_summary(
+    agent,
+    *,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> str:
+    if not goal_requires_media_playback(agent.__class__, goal):
+        return ""
+    play_controls = collect_visible_play_controls(agent.__class__, dom_elements or [], limit=3)
+    if not play_controls:
+        return ""
+
+    lines = ["현재 media/player 관련 control:"]
+    if dom_has_media_player_surface(agent.__class__, dom_elements or []):
+        lines.append("- current surface looks like a media/player viewer.")
+    for idx, element in enumerate(play_controls, start=1):
+        lines.append(f"- play candidate {idx}: {describe_play_control(element)}")
+    lines.append("- 목표가 재생/play/watch/listen을 직접 요구하면 viewer/player surface 진입만으로는 성공이 아닙니다.")
+    lines.append("- 현재 action이 위 play/start control 클릭이 아니라면 success=false로 보는 쪽을 우선하세요.")
+    lines.append("- 현재 action이 위 play/start control 클릭이라면 그 click 자체가 마지막 단계일 수 있습니다.")
+    return "\n".join(lines)
+
+
 def evaluate_goal_completion_judge(
     agent,
     *,
@@ -893,6 +922,13 @@ def evaluate_goal_completion_judge(
             "interactive_count_changed",
             "list_count_changed",
             "url_changed",
+            "new_page_detected",
+            "new_page_count",
+            "new_page_same_origin_detected",
+            "new_page_same_origin_count",
+            "new_page_urls",
+            "new_page_titles",
+            "new_page_kinds",
             "target_value_changed",
             "target_value_matches",
         }
@@ -914,6 +950,11 @@ def evaluate_goal_completion_judge(
                 "container_name": str(item.get("container_name") or "").strip(),
             }
         )
+    media_playback_summary = _build_media_playback_judge_summary(
+        agent,
+        goal=goal,
+        dom_elements=list(dom_elements or []),
+    )
 
     prompt = f"""너는 웹 자동화의 최종 성공 판정 judge다.
 actor의 완료 주장을 그대로 믿지 말고, 현재 DOM과 최근 행동 증거를 보고 독립적으로 판정하라.
@@ -963,6 +1004,9 @@ expected_signals:
 현재 visible DOM 요약:
 {chr(10).join(dom_lines)}
 
+media/player 보조 관찰:
+{media_playback_summary or "(없음)"}
+
 판정 규칙:
 - continuity 우선순위는 replay packet(boundary/checklist/attempt digest) -> summary.md -> MEMORY -> retrieval -> compact state 순서다.
 - replay packet의 resume checklist와 recent attempt digest를 먼저 읽고, summary.md 안의 Startup Continuity Audit와 Session Start Rules를 그 다음에 읽어라.
@@ -973,6 +1017,9 @@ expected_signals:
 - 응답형/결과형 UI에서는 사용자가 입력한 내용이 전송되었고, 그 뒤의 결과 본문/응답이 별도 surface에 보이면 success=true다.
 - 로딩/생각중/스피너만 보이면 success=false다.
 - 회원가입/로그인 goal은 단순 폼 노출이나 화면 진입만으로 success가 아니다.
+- 재생/play/watch/listen goal에서는 viewer/player surface 진입만으로 success가 아니다.
+- 현재 DOM에 actionable play/start control이 남아 있고 현재 action이 그 control 클릭이 아니라면 success=false를 우선하라.
+- 현재 action이 visible play/start control 클릭이라면 그 click 자체가 마지막 단계일 수 있다.
 
 JSON만 출력:
 {{
@@ -1032,23 +1079,6 @@ JSON만 출력:
     if reason:
         return reason
     return "현재 화면의 직접적인 결과 증거를 바탕으로 목표가 완료된 것으로 판정했습니다."
-
-
-def evaluate_generic_wait_judge_completion(
-    agent,
-    *,
-    goal: TestGoal,
-    decision: ActionDecision,
-    dom_elements: Optional[List[DOMElement]] = None,
-) -> Optional[str]:
-    if decision.action != ActionType.WAIT:
-        return None
-    return evaluate_goal_completion_judge(
-        agent,
-        goal=goal,
-        decision=decision,
-        dom_elements=dom_elements,
-    )
 
 
 def evaluate_wait_goal_completion(

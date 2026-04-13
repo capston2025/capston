@@ -152,7 +152,3 @@ def run_policy_validators(policy: Any, phase: str, ctx: Any, semantics: Any, evi
             continue
         results.append(runner(ctx, semantics, evidence, is_mandatory))
     return results
-
-
-def has_mandatory_failures(results: List[ValidatorResult]) -> bool:
-    return any(bool(r.mandatory) and str(r.status) == "fail" for r in results)
