@@ -1,8 +1,8 @@
 {
-  "title": "GAIA Benchmark KPI",
+  "title": "GAIA Benchmark Results",
   "uid": "gaia-kpi-v1",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-7d", "to": "now" },
   "timezone": "browser",
@@ -12,19 +12,31 @@
       {
         "name": "suite_id",
         "type": "query",
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "query": "label_values(gaia_scenario_success_rate, suite_id)",
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "query": { "query": "label_values(gaia_scenario_runs_total, suite_id)", "refId": "A" },
         "refresh": 2,
-        "multi": true,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "label": "Suite"
+      },
+      {
+        "name": "scenario_id",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "query": { "query": "label_values(gaia_scenario_runs_total{suite_id=\"$suite_id\"}, scenario_id)", "refId": "A" },
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
         "includeAll": true,
         "allValue": ".*",
-        "label": "Suite"
+        "label": "Scenario"
       },
       {
         "name": "model",
         "type": "query",
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "query": "label_values(gaia_scenario_success_rate, model)",
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "query": { "query": "label_values(gaia_scenario_runs_total{suite_id=\"$suite_id\"}, model)", "refId": "A" },
         "refresh": 2,
         "multi": true,
         "includeAll": true,
@@ -34,266 +46,384 @@
     ]
   },
   "panels": [
+
+    {
+      "id": 100,
+      "type": "row",
+      "title": "📊 Suite Overview",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
     {
       "id": 1,
       "title": "시나리오 성공률",
       "type": "gauge",
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 5 },
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 5 },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.5 },
-              { "color": "green", "value": 0.7 }
-            ]
-          }
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 0.5 },
+            { "color": "green", "value": 0.7 }
+          ]}
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_scenario_success_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{suite_id}}"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_scenario_success_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
+        "legendFormat": "{{scenario_id}}"
+      }]
     },
     {
       "id": 2,
       "title": "자가 회복률",
       "type": "gauge",
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 5 },
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 5 },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.4 },
-              { "color": "green", "value": 0.6 }
-            ]
-          }
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 0.4 },
+            { "color": "green", "value": 0.6 }
+          ]}
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_self_recovery_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{suite_id}}"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_self_recovery_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
+        "legendFormat": "{{suite_id}}"
+      }]
     },
     {
       "id": 3,
-      "title": "진행 중단 실패율 (낮을수록 좋음)",
+      "title": "진행 중단 실패율",
       "type": "gauge",
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 5 },
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 5 },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.1 },
-              { "color": "red", "value": 0.3 }
-            ]
-          }
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.1 },
+            { "color": "red", "value": 0.3 }
+          ]}
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_progress_stop_failure_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{suite_id}}"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_progress_stop_failure_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
+        "legendFormat": "{{suite_id}}"
+      }]
     },
     {
       "id": 4,
-      "title": "개입 필요율 (낮을수록 좋음)",
+      "title": "개입 필요율",
       "type": "gauge",
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 5 },
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 5 },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 0.2 },
-              { "color": "red", "value": 0.4 }
-            ]
-          }
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 0.2 },
+            { "color": "red", "value": 0.4 }
+          ]}
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_intervention_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{suite_id}}"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_intervention_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
+        "legendFormat": "{{suite_id}}"
+      }]
     },
     {
       "id": 5,
       "title": "재현성",
       "type": "gauge",
-      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 5 },
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 5 },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.6 },
-              { "color": "green", "value": 0.8 }
-            ]
-          }
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 0.6 },
+            { "color": "green", "value": 0.8 }
+          ]}
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_reproducibility_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{suite_id}}"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_reproducibility_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
+        "legendFormat": "{{suite_id}}"
+      }]
     },
     {
       "id": 6,
-      "title": "평균 실행 시간 (초)",
+      "title": "평균 실행 시간",
       "type": "stat",
-      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 5 },
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 5 },
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 60 },
-              { "color": "red", "value": 120 }
-            ]
-          }
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 60 },
+            { "color": "red", "value": 120 }
+          ]}
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_avg_time_seconds{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{suite_id}}"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_avg_time_seconds{suite_id=\"$suite_id\",model=~\"$model\"}",
+        "legendFormat": "{{suite_id}}"
+      }]
     },
+
+    {
+      "id": 200,
+      "type": "row",
+      "title": "🗂 Scenario Cards  (Suite: $suite_id)",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
     {
       "id": 10,
-      "title": "시나리오 성공률 추이 (목표선 포함)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 8 },
+      "title": "RUNS",
+      "description": "시나리오별 총 실행 횟수",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 7, "w": 3, "h": 4 },
+      "repeat": "scenario_id",
+      "repeatDirection": "h",
+      "maxPerRow": 8,
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "mappings": []
         }
       },
-      "targets": [
-        {
-          "expr": "gaia_scenario_success_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "성공률 - {{suite_id}} ({{model}})"
-        },
-        {
-          "expr": "gaia_target_scenario_success_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "목표 - {{suite_id}}"
-        }
-      ],
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      }
-    },
-    {
-      "id": 11,
-      "title": "진행 중단 실패율 추이 (목표선 포함)",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1
-        }
-      },
-      "targets": [
-        {
-          "expr": "gaia_progress_stop_failure_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "실패율 - {{suite_id}} ({{model}})"
-        },
-        {
-          "expr": "gaia_target_progress_stop_failure_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "목표 상한 - {{suite_id}}"
-        }
-      ],
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      }
-    },
-    {
-      "id": 20,
-      "title": "상태별 카운트 (SUCCESS / FAIL / PARTIAL)",
-      "type": "barchart",
-      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": { "unit": "short" }
-      },
-      "targets": [
-        {
-          "expr": "gaia_status_count{suite_id=~\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "{{status}} - {{suite_id}}"
-        }
-      ],
-      "options": {
-        "xField": "Time",
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      }
-    },
-    {
-      "id": 21,
-      "title": "모델별 성공률 비교",
-      "type": "bargauge",
-      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0, "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.5 },
-              { "color": "green", "value": 0.7 }
-            ]
-          }
-        }
-      },
-      "targets": [
-        {
-          "expr": "gaia_scenario_success_rate",
-          "legendFormat": "{{model}} / {{suite_id}}"
-        }
-      ],
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
-        "orientation": "horizontal",
-        "displayMode": "gradient"
-      }
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [{
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "expr": "gaia_scenario_runs_total{suite_id=\"$suite_id\",scenario_id=\"$scenario_id\",model=~\"$model\"}",
+        "legendFormat": "{{scenario_id}}"
+      }]
+    },
+
+    {
+      "id": 300,
+      "type": "row",
+      "title": "📋 Scenario Detail Table  (Suite: $suite_id)",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 30,
+      "title": "Scenario Results",
+      "description": "시나리오별 RUNS / SUCCESS / FAIL / SUCCESS RATE / AVG / MEDIAN / MIN / MAX",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 13, "w": 24, "h": 10 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "SUCCESS RATE" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "custom.displayMode", "value": "color-background" },
+              { "id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 0.5 },
+                  { "color": "green", "value": 0.7 }
+                ]
+              }}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "LAST STATUS" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "color-background" },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "1": { "text": "SUCCESS", "color": "green" }, "0": { "text": "FAIL", "color": "red" } } }
+              ]}
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*(SEC|DURATION).*" },
+            "properties": [{ "id": "unit", "value": "s" }]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "displayName": "SCENARIO", "desc": false }],
+        "footer": { "show": false }
+      },
+      "transformations": [
+        {
+          "id": "joinByLabels",
+          "options": { "join": "scenario_id" }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "gaia_scenario_runs_total":         "RUNS",
+              "gaia_scenario_success_count":      "SUCCESS",
+              "gaia_scenario_fail_count":         "FAIL",
+              "gaia_scenario_success_rate":       "SUCCESS RATE",
+              "gaia_scenario_latest_duration_sec":"LATEST SEC",
+              "gaia_scenario_avg_duration_sec":   "AVG SEC",
+              "gaia_scenario_median_duration_sec":"MEDIAN SEC",
+              "gaia_scenario_min_duration_sec":   "MIN SEC",
+              "gaia_scenario_max_duration_sec":   "MAX SEC",
+              "gaia_scenario_last_status":        "LAST STATUS",
+              "scenario_id":                      "SCENARIO",
+              "model":                            "MODEL",
+              "provider":                         "PROVIDER"
+            },
+            "indexByName": {
+              "SCENARIO": 0, "PROVIDER": 1, "MODEL": 2,
+              "RUNS": 3, "SUCCESS": 4, "FAIL": 5, "SUCCESS RATE": 6,
+              "LATEST SEC": 7, "AVG SEC": 8, "MEDIAN SEC": 9,
+              "MIN SEC": 10, "MAX SEC": 11, "LAST STATUS": 12
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_runs_total{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "RUNS"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_success_count{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "SUCCESS"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_fail_count{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "FAIL"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_success_rate{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "RATE"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_latest_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "LATEST"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_avg_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "AVG"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_median_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "MEDIAN"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_min_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "MIN"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_max_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "MAX"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_last_status{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "refId": "STATUS"
+        }
+      ]
+    },
+
+    {
+      "id": 400,
+      "type": "row",
+      "title": "📈 Trends",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 40,
+      "title": "시나리오 성공률 추이",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 25, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_success_rate{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_target_scenario_success_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "🎯 목표"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "실행 시간 추이 (시나리오별)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 25, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_scenario_latest_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "{{scenario_id}}"
+        }
+      ]
     }
   ]
 }

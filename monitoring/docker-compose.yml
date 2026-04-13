@@ -12,15 +12,27 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=90d"
       - "--web.enable-lifecycle"
-    ports:
-      - "9090:9090"
     restart: unless-stopped
+    # Prometheus는 외부에 직접 노출하지 않음 (내부 전용)
 
   pushgateway:
     image: prom/pushgateway:v1.8.0
     container_name: gaia_pushgateway
+    restart: unless-stopped
+    # Pushgateway도 외부에 직접 노출하지 않음 → nginx가 앞에서 인증 처리
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: gaia_nginx
     ports:
-      - "9091:9091"
+      - "9091:9091"   # 팀원이 push하는 포트 (토큰 인증)
+      - "3000:3000"   # Grafana (Grafana가 직접 처리)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/tokens:/etc/nginx/tokens:ro
+    depends_on:
+      - pushgateway
+      - grafana
     restart: unless-stopped
 
   grafana:
@@ -31,12 +43,11 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SERVER_HTTP_PORT=3000
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports:
-      - "3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped
