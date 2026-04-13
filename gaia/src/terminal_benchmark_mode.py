@@ -663,15 +663,6 @@ def manage_benchmark_sites(
         emit(f"✏️ 사이트 수정 완료: {updated_label} ({preset.key})")
         return normalized
 
-    confirmation = str(
-        prompt_non_empty(
-            f"{preset.key} 삭제 확인 (삭제하려면 {preset.key} 입력)",
-            default=None,
-        )
-    ).strip()
-    if confirmation != preset.key:
-        emit("사이트 삭제를 취소했습니다.")
-        return normalized
     suite_path = (workspace_root / str(preset.suite_path or "")).resolve()
     if suite_path.exists():
         suite_path.unlink()
@@ -832,15 +823,6 @@ def run_terminal_benchmark_mode(
                     emit(f"선택한 테스트를 찾지 못했습니다: {scenario_id}")
                     continue
                 if edit_action == "삭제":
-                    confirmation = str(
-                        prompt_non_empty(
-                            f"{scenario_id} 삭제 확인 (삭제하려면 {scenario_id} 입력)",
-                            default=None,
-                        )
-                    ).strip()
-                    if confirmation != scenario_id:
-                        emit("삭제를 취소했습니다.")
-                        continue
                     updated_payload = delete_scenario_from_suite(suite_payload, scenario_id)
                     save_suite_payload(suite_path, updated_payload)
                     emit(f"🗑️ 테스트 삭제 완료: {scenario_id}")

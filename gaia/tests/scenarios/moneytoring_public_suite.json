@@ -1,8 +1,8 @@
 {
-  "suite_id": "youtube_public_v1",
+  "suite_id": "moneytoring_public_v1",
   "site": {
-    "name": "YouTube",
-    "base_url": "https://www.youtube.com/",
+    "name": "머니터링",
+    "base_url": "https://www.moneytoring.ai/",
     "mode": "public_readonly"
   },
   "grader_configs": {
