@@ -1,0 +1,299 @@
+{
+  "title": "GAIA Benchmark KPI",
+  "uid": "gaia-kpi-v1",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "browser",
+  "tags": ["gaia", "benchmark"],
+  "templating": {
+    "list": [
+      {
+        "name": "suite_id",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(gaia_scenario_success_rate, suite_id)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Suite"
+      },
+      {
+        "name": "model",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(gaia_scenario_success_rate, model)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Model"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "시나리오 성공률",
+      "type": "gauge",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 0.7 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_scenario_success_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{suite_id}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 2,
+      "title": "자가 회복률",
+      "type": "gauge",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.4 },
+              { "color": "green", "value": 0.6 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_self_recovery_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{suite_id}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "title": "진행 중단 실패율 (낮을수록 좋음)",
+      "type": "gauge",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "red", "value": 0.3 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_progress_stop_failure_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{suite_id}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "title": "개입 필요율 (낮을수록 좋음)",
+      "type": "gauge",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.2 },
+              { "color": "red", "value": 0.4 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_intervention_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{suite_id}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "title": "재현성",
+      "type": "gauge",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.6 },
+              { "color": "green", "value": 0.8 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_reproducibility_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{suite_id}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 6,
+      "title": "평균 실행 시간 (초)",
+      "type": "stat",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 60 },
+              { "color": "red", "value": 120 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_avg_time_seconds{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{suite_id}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 10,
+      "title": "시나리오 성공률 추이 (목표선 포함)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_scenario_success_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "성공률 - {{suite_id}} ({{model}})"
+        },
+        {
+          "expr": "gaia_target_scenario_success_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "목표 - {{suite_id}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 11,
+      "title": "진행 중단 실패율 추이 (목표선 포함)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_progress_stop_failure_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "실패율 - {{suite_id}} ({{model}})"
+        },
+        {
+          "expr": "gaia_target_progress_stop_failure_rate{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "목표 상한 - {{suite_id}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 20,
+      "title": "상태별 카운트 (SUCCESS / FAIL / PARTIAL)",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "gaia_status_count{suite_id=~\"$suite_id\",model=~\"$model\"}",
+          "legendFormat": "{{status}} - {{suite_id}}"
+        }
+      ],
+      "options": {
+        "xField": "Time",
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
+    },
+    {
+      "id": 21,
+      "title": "모델별 성공률 비교",
+      "type": "bargauge",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0, "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 0.7 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "gaia_scenario_success_rate",
+          "legendFormat": "{{model}} / {{suite_id}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    }
+  ]
+}
