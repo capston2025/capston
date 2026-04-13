@@ -12,5 +12,45 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "MONEYTORING_001_BENCHMARK",
+      "name": "종목 검색 후 진입",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "선진뷰티사이언스 검색 후 종목 상세페이지로 진입해봐",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    },
+    {
+      "id": "MONEYTORING_002_BENCHMARK",
+      "name": "종목 검색 후 상세 탭 진입",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "선진뷰티사이언스 검색 후 종목 상세페이지로 진입 후에 기업정보, 재무정보, 투자지표, 실적전망 탭에 순서대로 진입해봐",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    },
+    {
+      "id": "MONEYTORING_003_BENCHMARK",
+      "name": "커뮤니티 및 상세 탭 진입",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "커뮤니티 메뉴 클릭 후 인기, 최신, 관심 순서대로 진입 하고 관심 페이지에서 최신순 or 인기순 정렬 버튼 테스트 해봐",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    }
+  ]
 }
