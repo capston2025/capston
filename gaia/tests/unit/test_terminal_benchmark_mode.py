@@ -16,6 +16,7 @@ from gaia.src.terminal_benchmark_mode import (
     manage_benchmark_sites,
     open_scenario_form_gui,
     open_scenario_form_macos_dialogs,
+    open_scenario_form_pyside,
     open_scenario_form_windows_dialogs,
     open_benchmark_report,
     prompt_scenario_fields,
@@ -438,14 +439,8 @@ def test_open_scenario_form_macos_dialogs_builds_payload(monkeypatch) -> None:
     assert scenario["time_budget_sec"] == 300
 
 
-def test_open_scenario_form_gui_uses_macos_dialog_fallback_when_tkinter_missing(monkeypatch) -> None:
+def test_open_scenario_form_gui_uses_macos_dialog_fallback_when_pyside_unavailable(monkeypatch) -> None:
     monkeypatch.setattr("gaia.src.terminal_benchmark_mode.sys.platform", "darwin")
-    real_import = __import__
-
-    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "tkinter":
-            raise ModuleNotFoundError("No module named '_tkinter'")
-        return real_import(name, globals, locals, fromlist, level)
 
     fallback_calls: list[dict[str, object]] = []
 
@@ -465,7 +460,10 @@ def test_open_scenario_form_gui_uses_macos_dialog_fallback_when_tkinter_missing(
             "time_budget_sec": 300,
         }
 
-    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.open_scenario_form_pyside",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("PySide6 unavailable")),
+    )
     monkeypatch.setattr("gaia.src.terminal_benchmark_mode.open_scenario_form_macos_dialogs", fake_macos_form)
 
     scenario = open_scenario_form_gui(
@@ -504,14 +502,8 @@ def test_open_scenario_form_windows_dialogs_builds_payload(monkeypatch) -> None:
     assert scenario["time_budget_sec"] == 300
 
 
-def test_open_scenario_form_gui_uses_windows_dialog_fallback_when_tkinter_missing(monkeypatch) -> None:
+def test_open_scenario_form_gui_uses_windows_dialog_fallback_when_pyside_unavailable(monkeypatch) -> None:
     monkeypatch.setattr("gaia.src.terminal_benchmark_mode.sys.platform", "win32")
-    real_import = __import__
-
-    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "tkinter":
-            raise ModuleNotFoundError("No module named '_tkinter'")
-        return real_import(name, globals, locals, fromlist, level)
 
     fallback_calls: list[dict[str, object]] = []
 
@@ -531,7 +523,10 @@ def test_open_scenario_form_gui_uses_windows_dialog_fallback_when_tkinter_missin
             "time_budget_sec": 300,
         }
 
-    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.open_scenario_form_pyside",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("PySide6 unavailable")),
+    )
     monkeypatch.setattr("gaia.src.terminal_benchmark_mode.open_scenario_form_windows_dialogs", fake_windows_form)
 
     scenario = open_scenario_form_gui(
@@ -543,6 +538,40 @@ def test_open_scenario_form_gui_uses_windows_dialog_fallback_when_tkinter_missin
     )
 
     assert fallback_calls
+    assert scenario is not None
+    assert scenario["id"] == "STORYBOOK_001_HOME_READY"
+
+
+def test_open_scenario_form_gui_prefers_pyside_when_available(monkeypatch) -> None:
+    pyside_calls: list[dict[str, object]] = []
+
+    def fake_pyside(**kwargs):
+        pyside_calls.append(kwargs)
+        return {
+            "id": "STORYBOOK_001_HOME_READY",
+            "name": "스토리북 홈 확인",
+            "url": "https://storybook.js.org/",
+            "goal": "홈이 보이는지 확인",
+            "constraints": {
+                "allow_navigation": True,
+                "require_ref_only": True,
+                "require_state_change": False,
+            },
+            "expected_signals": [],
+            "time_budget_sec": 300,
+        }
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.open_scenario_form_pyside", fake_pyside)
+
+    scenario = open_scenario_form_gui(
+        emit=lambda message: None,
+        existing=None,
+        existing_ids=set(),
+        default_url="https://storybook.js.org/",
+        title="Storybook 테스트 추가",
+    )
+
+    assert pyside_calls
     assert scenario is not None
     assert scenario["id"] == "STORYBOOK_001_HOME_READY"
 
