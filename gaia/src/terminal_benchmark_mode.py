@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
 from pathlib import Path
@@ -563,7 +564,7 @@ def open_scenario_form_windows_dialogs(
     )
 
 
-def open_scenario_form_pyside(
+def _open_scenario_form_pyside_inline(
     *,
     emit: OutputFn,
     existing: Mapping[str, Any] | None = None,
@@ -618,6 +619,7 @@ def open_scenario_form_pyside(
         parent=dialog,
     )
     layout.addWidget(buttons)
+    result: dict[str, Any] | None = None
 
     def _show_error(message: str, widget: QWidget | None = None) -> None:
         QMessageBox.warning(dialog, "입력 오류", message)
@@ -625,6 +627,7 @@ def open_scenario_form_pyside(
             widget.setFocus()
 
     def _validate_and_accept() -> None:
+        nonlocal result
         test_name = name_input.text().strip()
         url = url_input.text().strip()
         goal = goal_input.toPlainText().strip()
@@ -643,16 +646,13 @@ def open_scenario_form_pyside(
         except Exception:
             _show_error("time_budget_sec는 1 이상의 정수여야 합니다.", timeout_input)
             return
-        dialog.setProperty(
-            "_scenario_result",
-            _build_scenario_payload(
-                current=current,
-                test_name=test_name,
-                url=url,
-                goal=goal,
-                time_budget_sec=parsed,
-                existing_ids=set(existing_ids or set()),
-            ),
+        result = _build_scenario_payload(
+            current=current,
+            test_name=test_name,
+            url=url,
+            goal=goal,
+            time_budget_sec=parsed,
+            existing_ids=set(existing_ids or set()),
         )
         dialog.accept()
 
@@ -664,12 +664,25 @@ def open_scenario_form_pyside(
         accepted = dialog.exec() == int(QDialog.DialogCode.Accepted)
         if not accepted:
             return None
-        result = dialog.property("_scenario_result")
         return dict(result) if isinstance(result, Mapping) else None
     finally:
-        dialog.deleteLater()
+        try:
+            dialog.hide()
+            dialog.close()
+        except Exception:
+            pass
+        try:
+            dialog.deleteLater()
+        except Exception:
+            pass
         if created_app:
-            app.quit()
+            try:
+                app.processEvents()
+                app.closeAllWindows()
+                app.quit()
+                app.processEvents()
+            except Exception:
+                pass
 
 
 def open_scenario_form_macos_dialogs(
@@ -724,6 +737,56 @@ def open_scenario_form_macos_dialogs(
         time_budget_sec=time_budget_sec,
         existing_ids=set(existing_ids or set()),
     )
+
+
+def open_scenario_form_pyside(
+    *,
+    emit: OutputFn,
+    existing: Mapping[str, Any] | None = None,
+    existing_ids: set[str] | None = None,
+    default_url: str = "",
+    title: str = "새 테스트 추가",
+) -> dict[str, Any] | None:
+    del emit
+    request_payload = {
+        "existing": dict(existing or {}),
+        "existing_ids": sorted({str(item).strip() for item in (existing_ids or set()) if str(item).strip()}),
+        "default_url": str(default_url or ""),
+        "title": str(title or "새 테스트 추가"),
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as handle:
+        request_path = Path(handle.name)
+        handle.write(json.dumps(request_payload, ensure_ascii=False))
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "gaia.src.terminal_benchmark_mode",
+                "--scenario-form-worker",
+                str(request_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    finally:
+        try:
+            request_path.unlink()
+        except Exception:
+            pass
+    if proc.returncode == 0:
+        stdout = str(proc.stdout or "").strip()
+        if not stdout:
+            return None
+        parsed = json.loads(stdout)
+        if not isinstance(parsed, Mapping):
+            raise RuntimeError("PySide6 입력창 결과가 올바른 JSON 객체가 아닙니다.")
+        return dict(parsed)
+    if proc.returncode == 2:
+        return None
+    raise RuntimeError((proc.stderr or proc.stdout or "PySide6 입력창 실행 실패").strip())
 
 
 def open_scenario_form_gui(
@@ -1308,3 +1371,31 @@ def _select_benchmark_url(
 
 def _slugify(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value or "").strip()).strip("-").lower() or "benchmark"
+
+
+def _run_scenario_form_worker(request_path: str) -> int:
+    payload = json.loads(Path(request_path).read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("scenario form worker payload must be an object")
+    result = _open_scenario_form_pyside_inline(
+        emit=lambda _message: None,
+        existing=dict(payload.get("existing") or {}),
+        existing_ids={str(item).strip() for item in list(payload.get("existing_ids") or []) if str(item).strip()},
+        default_url=str(payload.get("default_url") or ""),
+        title=str(payload.get("title") or "새 테스트 추가"),
+    )
+    if result is None:
+        return 2
+    sys.stdout.write(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
+    args = list(argv or [])
+    if len(args) == 2 and args[0] == "--scenario-form-worker":
+        return _run_scenario_form_worker(args[1])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))

@@ -6,6 +6,7 @@ from pathlib import Path
 from gaia.cli import run_launcher
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
+    _main,
     append_scenario_to_suite,
     build_single_scenario_suite_payload,
     build_terminal_benchmark_catalog,
@@ -574,6 +575,79 @@ def test_open_scenario_form_gui_prefers_pyside_when_available(monkeypatch) -> No
     assert pyside_calls
     assert scenario is not None
     assert scenario["id"] == "STORYBOOK_001_HOME_READY"
+
+
+def test_open_scenario_form_pyside_reads_result_from_worker_subprocess(monkeypatch) -> None:
+    class _Result:
+        returncode = 0
+        stdout = json.dumps(
+            {
+                "id": "STORYBOOK_001_HOME_READY",
+                "name": "스토리북 홈 확인",
+                "url": "https://storybook.js.org/",
+                "goal": "홈이 보이는지 확인",
+                "constraints": {
+                    "allow_navigation": True,
+                    "require_ref_only": True,
+                    "require_state_change": False,
+                },
+                "expected_signals": [],
+                "time_budget_sec": 300,
+            },
+            ensure_ascii=False,
+        )
+        stderr = ""
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.subprocess.run", lambda *args, **kwargs: _Result())
+
+    scenario = open_scenario_form_pyside(
+        emit=lambda message: None,
+        existing=None,
+        existing_ids=set(),
+        default_url="https://storybook.js.org/",
+        title="Storybook 테스트 추가",
+    )
+
+    assert scenario is not None
+    assert scenario["id"] == "STORYBOOK_001_HOME_READY"
+
+
+def test_scenario_form_worker_main_returns_json(monkeypatch, tmp_path: Path, capsys) -> None:
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "existing": {},
+                "existing_ids": [],
+                "default_url": "https://storybook.js.org/",
+                "title": "Storybook 테스트 추가",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._open_scenario_form_pyside_inline",
+        lambda **kwargs: {
+            "id": "STORYBOOK_001_HOME_READY",
+            "name": "스토리북 홈 확인",
+            "url": "https://storybook.js.org/",
+            "goal": "홈이 보이는지 확인",
+            "constraints": {
+                "allow_navigation": True,
+                "require_ref_only": True,
+                "require_state_change": False,
+            },
+            "expected_signals": [],
+            "time_budget_sec": 300,
+        },
+    )
+
+    code = _main(["--scenario-form-worker", str(request_path)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "STORYBOOK_001_HOME_READY" in captured.out
 
 
 def test_delete_flow_removes_exactly_one_scenario() -> None:
