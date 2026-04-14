@@ -12,5 +12,58 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "GitHub 홈 화면에서 상단 검색 입력창이나 주요 내비게이션이 보이는지 확인해줘.",
+      "id": "GITHUB_001_GITHUB",
+      "name": "GitHub 홈 검색창 확인",
+      "time_budget_sec": 300,
+      "url": "https://github.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "검색창에 coldmans를 입력한 뒤 검색을 실행하고, 첫 번째로 보이는 저장소를 클릭해 들어가줘.",
+      "id": "GITHUB_002_COLDMANS",
+      "name": "coldmans 검색 후 첫 번째 레포 열기",
+      "time_budget_sec": 300,
+      "url": "https://github.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "gamegoo-server-v2를 검색 후 Pull requests 탭 누르는 동작 확인",
+      "id": "GITHUB_003_PULL_REQUESTS",
+      "name": "Pull requests 탭 열기",
+      "time_budget_sec": 300,
+      "url": "https://github.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "RC_PWM_decoding 검색해서 첫번째 저장소 들어간 다음 시연 영상 링크 찾아봐",
+      "id": "GITHUB_004_README",
+      "name": "readme 문서 링크 탐색",
+      "time_budget_sec": 300,
+      "url": "https://github.com/"
+    }
+  ]
 }

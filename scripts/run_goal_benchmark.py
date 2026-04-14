@@ -25,6 +25,15 @@ _MIN_BENCHMARK_TIMEOUT_SEC = 600
 _MIN_CODEX_EXEC_TIMEOUT_SEC = 180
 _MAX_CODEX_EXEC_TIMEOUT_SEC = 300
 _BENCHMARK_CODEX_REASONING_EFFORT = "low"
+_LIVE_TRACE_MARKERS = (
+    "🎯 목표 시작",
+    "--- Step ",
+    "LLM 결정:",
+    "✅ 목표 달성!",
+    "⚠️ 액션 실패:",
+    "🔁 phase 전환:",
+    "📍 시작 URL로 이동:",
+)
 
 
 def _load_suite(path: Path) -> Dict[str, Any]:
@@ -67,7 +76,19 @@ def _prepare_scenario_env(env: Dict[str, str], timeout_sec: int) -> Dict[str, st
     scenario_env = dict(env)
     scenario_env["GAIA_CODEX_EXEC_TIMEOUT_SEC"] = str(_resolve_codex_exec_timeout(timeout_sec))
     scenario_env["GAIA_CODEX_REASONING_EFFORT"] = _BENCHMARK_CODEX_REASONING_EFFORT
+    scenario_env.setdefault("PYTHONUNBUFFERED", "1")
     return scenario_env
+
+
+def _should_emit_live_trace_line(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    if any(text.startswith(marker) for marker in _LIVE_TRACE_MARKERS):
+        return True
+    if text.startswith("🧩 목표 제약 감지:"):
+        return True
+    return False
 
 
 def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
@@ -102,7 +123,23 @@ if constraints.get('requires_test_credentials'):
             goal_test_data['email'] = email
 prepared_goal.test_data = goal_test_data
 buf = io.StringIO()
-with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+class _TeeWriter:
+    def __init__(self, *writers):
+        self._writers = writers
+
+    def write(self, text):
+        for writer in self._writers:
+            writer.write(text)
+        return len(text)
+
+    def flush(self):
+        for writer in self._writers:
+            flush = getattr(writer, "flush", None)
+            if callable(flush):
+                flush()
+
+tee = _TeeWriter(sys.__stdout__, buf)
+with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
     code, summary = run_chat_terminal_once(
         url=scenario['url'],
         query=scenario['goal'],
@@ -130,17 +167,34 @@ def _run_scenario_once(
     code = _build_child_code(scenario, session_id)
     started = time.monotonic()
     try:
-        proc = subprocess.run(
-            [python_executable, "-c", code],
-            capture_output=True,
+        proc = subprocess.Popen(
+            [python_executable, "-u", "-c", code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout_sec,
+            bufsize=1,
             env=scenario_env,
             cwd=str(WORKSPACE_ROOT),
-            check=False,
         )
+        stdout_lines: list[str] = []
+        assert proc.stdout is not None
+        while True:
+            raw_line = proc.stdout.readline()
+            if raw_line == "" and proc.poll() is not None:
+                break
+            if raw_line == "":
+                continue
+            line = str(raw_line or "").rstrip("\n")
+            stdout_lines.append(line)
+            if _should_emit_live_trace_line(line):
+                print(line, flush=True)
+        return_code = proc.wait(timeout=max(1, timeout_sec - int(time.monotonic() - started)))
         duration = round(time.monotonic() - started, 2)
     except subprocess.TimeoutExpired as exc:
+        try:
+            proc.kill()
+        except Exception:
+            pass
         return {
             "scenario_id": scenario.get("id"),
             "goal": scenario.get("goal"),
@@ -152,8 +206,8 @@ def _run_scenario_once(
             "captured_log": str(exc.stdout or "") + str(exc.stderr or ""),
         }
 
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
+    stdout = "\n".join(stdout_lines).strip()
+    stderr = ""
     payload: Dict[str, Any] = {}
     if stdout:
         last_line = stdout.splitlines()[-1]
@@ -164,7 +218,7 @@ def _run_scenario_once(
         except Exception:
             payload = {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else proc.returncode)
+    exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else return_code)
     status = _normalize_status(summary, exit_code)
     reason = str(summary.get("reason") or stderr or "")
     status, reason, benchmark_policy = apply_benchmark_success_policy(
