@@ -482,9 +482,15 @@ def _try_auto_push_metrics(output_dir: Path) -> None:
     )
     if result.returncode == 0:
         print("  업로드 완료 ✅")
+        if result.stdout.strip():
+            print(f"  {result.stdout.strip()}")
     else:
         # 업로드 실패해도 벤치마크 결과에는 영향 없음
-        print(f"  업로드 실패 (벤치마크 결과는 정상 저장됨): {result.stderr.strip()}")
+        print(f"  업로드 실패 (벤치마크 결과는 정상 저장됨)")
+        if result.stderr.strip():
+            print(f"  오류: {result.stderr.strip()}")
+        if result.stdout.strip():
+            print(f"  출력: {result.stdout.strip()}")
 
 
 if __name__ == "__main__":

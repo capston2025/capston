@@ -392,21 +392,41 @@
 
     {
       "id": 40,
-      "title": "시나리오 성공률 추이",
-      "type": "timeseries",
+      "title": "시나리오별 성공률",
+      "type": "barchart",
       "gridPos": { "x": 0, "y": 25, "w": 12, "h": 8 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green",  "value": 0.7 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "barWidth": 0.7,
+        "groupWidth": 0.7,
+        "fillOpacity": 80,
+        "xTickLabelRotation": -30,
+        "xTickLabelMaxLength": 20,
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
           "expr": "gaia_scenario_success_rate{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
-          "legendFormat": "{{scenario_id}}"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "gaia_target_scenario_success_rate{suite_id=\"$suite_id\",model=~\"$model\"}",
-          "legendFormat": "🎯 목표"
+          "legendFormat": "{{scenario_id}}",
+          "instant": true,
+          "range": false
         }
       ]
     },
