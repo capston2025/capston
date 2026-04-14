@@ -22,6 +22,25 @@ from gaia.src.utils.models import DomElement
 class LLMVisionClient:
     """Client for LLM-powered vision analysis of web pages."""
 
+    _OPENAI_COMPATIBLE_PROVIDER_CONFIG = {
+        "openai": {
+            "api_key_env": "OPENAI_API_KEY",
+            "base_url_env": "",
+            "model_env": "",
+            "default_base_url": "",
+            "default_model": "gpt-5.4",
+            "display_name": "OpenAI",
+        },
+        "ollama": {
+            "api_key_env": "OLLAMA_API_KEY",
+            "base_url_env": "OLLAMA_BASE_URL",
+            "model_env": "OLLAMA_MODEL",
+            "default_base_url": "http://127.0.0.1:11434/v1",
+            "default_model": "gemma4:26b",
+            "display_name": "Ollama",
+        },
+    }
+
     @staticmethod
     def _console_text(text: str, *, windows_fallback: str | None = None) -> str:
         if os.name != "nt":
@@ -32,57 +51,94 @@ class LLMVisionClient:
         return windows_fallback or text.encode("ascii", "replace").decode("ascii")
 
     @staticmethod
-    def _load_profile_token() -> str | None:
+    def _load_profile_token(provider: str) -> str | None:
         profile_path = Path.home() / ".gaia" / "auth" / "profiles.json"
         try:
             raw = json.loads(profile_path.read_text(encoding="utf-8"))
         except Exception:
             return None
-        profile = raw.get("openai", {}) if isinstance(raw, dict) else {}
+        profile = raw.get(provider, {}) if isinstance(raw, dict) else {}
         token = profile.get("token")
         if isinstance(token, str) and token.strip():
             return token.strip()
         return None
 
-    def __init__(self, api_key: str | None = None) -> None:
+    @staticmethod
+    def _read_local_env_file_assignments() -> dict[str, str]:
+        env_file = Path(__file__).parent.parent.parent.parent / ".env"
+        if not env_file.exists():
+            return {}
+        assignments: dict[str, str] = {}
+        try:
+            for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                    value = value[1:-1]
+                assignments[key.strip()] = value
+        except Exception:
+            return {}
+        return assignments
+
+    def __init__(self, api_key: str | None = None, provider: str | None = None) -> None:
         """
         Initialize the LLM vision client.
 
         Args:
-            api_key: OpenAI API key (if None, reads from OPENAI_API_KEY env var or .env file)
+            api_key: Provider API key (if None, reads from provider env var or .env file)
         """
-        # Load .env file if it exists
-        if api_key is None:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if api_key is None:
-                # Try loading from .env file
-                env_file = Path(__file__).parent.parent.parent / ".env"
-                if env_file.exists():
-                    with open(env_file) as f:
-                        for line in f:
-                            line = line.strip()
-                            if line.startswith("OPENAI_API_KEY="):
-                                api_key = line.split("=", 1)[1].strip()
-                                os.environ["OPENAI_API_KEY"] = api_key
-                                break
-            if api_key is None:
-                api_key = self._load_profile_token()
-                if api_key:
-                    os.environ["OPENAI_API_KEY"] = api_key
+        self.provider = str(provider or os.getenv("GAIA_LLM_PROVIDER") or os.getenv("VISION_PROVIDER") or "openai").strip().lower() or "openai"
+        if self.provider not in self._OPENAI_COMPATIBLE_PROVIDER_CONFIG:
+            self.provider = "openai"
+        provider_config = self._OPENAI_COMPATIBLE_PROVIDER_CONFIG[self.provider]
+        env_key = str(provider_config["api_key_env"])
+        base_url_env = str(provider_config["base_url_env"])
+        model_env = str(provider_config.get("model_env") or "")
+        dotenv_assignments = self._read_local_env_file_assignments()
 
-        self.client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
+        if api_key is None:
+            api_key = os.getenv(env_key)
+            if api_key is None:
+                api_key = str(dotenv_assignments.get(env_key) or "").strip() or None
+                if api_key:
+                    os.environ[env_key] = api_key
+            if api_key is None:
+                api_key = self._load_profile_token(self.provider)
+                if api_key:
+                    os.environ[env_key] = api_key
+        if self.provider == "ollama" and not api_key:
+            api_key = "ollama"
+
+        base_url = ""
+        if base_url_env:
+            base_url = str(os.getenv(base_url_env) or dotenv_assignments.get(base_url_env) or provider_config["default_base_url"]).strip()
+            if base_url:
+                os.environ[base_url_env] = base_url
+
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": 60.0}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = openai.OpenAI(**client_kwargs)  # 60 second timeout
         configured_model = (
             os.getenv("GAIA_LLM_MODEL")
             or os.getenv("VISION_MODEL")
-            or "gpt-5.4"
+            or (os.getenv(model_env) if model_env else "")
+            or str(dotenv_assignments.get("GAIA_LLM_MODEL") or "")
+            or str(dotenv_assignments.get("VISION_MODEL") or "")
+            or (str(dotenv_assignments.get(model_env) or "") if model_env else "")
+            or str(provider_config["default_model"])
         ).strip()
-        if configured_model.lower().startswith("gemini-"):
+        if self.provider == "openai" and configured_model.lower().startswith("gemini-"):
             configured_model = "gpt-5.4"
         self.model = configured_model
-        self._auth_source = self._load_auth_source()
+        self._auth_source = self._load_auth_source(self.provider)
         model_prefers_codex = "codex" in self.model.lower()
         self._prefer_codex_cli = (
-            (self._auth_source.startswith("oauth_codex_cli") or model_prefers_codex)
+            self.provider == "openai"
+            and (self._auth_source.startswith("oauth_codex_cli") or model_prefers_codex)
             and shutil.which("codex") is not None
         )
         if self._prefer_codex_cli:
@@ -94,8 +150,8 @@ class LLMVisionClient:
             )
         print(
             self._console_text(
-                f"🤖 Vision AI: Using OpenAI ({self.model})",
-                windows_fallback=f"Vision AI: Using OpenAI ({self.model})",
+                f"🤖 Vision AI: Using {provider_config['display_name']} ({self.model})",
+                windows_fallback=f"Vision AI: Using {provider_config['display_name']} ({self.model})",
             )
         )
 
@@ -111,14 +167,15 @@ class LLMVisionClient:
         return value.strip()
 
     @staticmethod
-    def _load_auth_source() -> str:
-        env_source = os.getenv("GAIA_OPENAI_AUTH_SOURCE")
+    def _load_auth_source(provider: str) -> str:
+        env_var = "GAIA_OPENAI_AUTH_SOURCE" if provider == "openai" else f"GAIA_{provider.upper()}_AUTH_SOURCE"
+        env_source = os.getenv(env_var)
         if isinstance(env_source, str) and env_source.strip():
             return env_source.strip()
         profile_path = Path.home() / ".gaia" / "auth" / "profiles.json"
         try:
             raw = json.loads(profile_path.read_text(encoding="utf-8"))
-            profile = raw.get("openai", {}) if isinstance(raw, dict) else {}
+            profile = raw.get(provider, {}) if isinstance(raw, dict) else {}
             source = profile.get("source", "")
             return source if isinstance(source, str) else ""
         except Exception:
@@ -1538,8 +1595,7 @@ def get_vision_client():
     if provider.lower() == "gemini":
         from gaia.src.phase4.llm_vision_client_gemini import GeminiVisionClient
         return GeminiVisionClient()
-    else:
-        return LLMVisionClient()
+    return LLMVisionClient(provider=provider or "openai")
 
 
 __all__ = ["LLMVisionClient", "get_vision_client"]

@@ -397,6 +397,8 @@ def _infer_provider_from_model(model_name: str) -> str:
         return "openai"
     if normalized.startswith("gemini"):
         return "gemini"
+    if normalized.startswith("gemma") or normalized.startswith("ollama:"):
+        return "ollama"
     return ""
 
 

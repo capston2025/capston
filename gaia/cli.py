@@ -42,6 +42,7 @@ CONTROL_CHOICES = ("local", "telegram")
 TELEGRAM_MODE_CHOICES = ("polling", "webhook")
 TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
 TERMINAL_PURPOSE_CHOICES = ("실제 사용 모드 실행", "벤치마크 용도 실행")
+PROVIDER_CHOICES = ("openai", "gemini", "ollama")
 DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
 TELEGRAM_BRIDGE_PID_FILE = Path.home() / ".gaia" / "telegram_bridge.pid"
 TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
@@ -71,6 +72,11 @@ GEMINI_MODEL_CHOICES = (
     "직접 입력",
 )
 
+OLLAMA_MODEL_CHOICES = (
+    "gemma4:26b",
+    "직접 입력",
+)
+
 OPENAI_MODEL_PRIORITY = (
     "gpt-5.4",
     "gpt-5.3-codex",
@@ -93,6 +99,10 @@ GEMINI_MODEL_PRIORITY = (
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+)
+
+OLLAMA_MODEL_PRIORITY = (
+    "gemma4:26b",
 )
 
 
@@ -295,7 +305,11 @@ def _persist_session_state(
 
 
 def _default_model(provider: str) -> str:
-    return "gpt-5.4" if provider == "openai" else "gemini-2.5-pro"
+    if provider == "openai":
+        return "gpt-5.4"
+    if provider == "gemini":
+        return "gemini-2.5-pro"
+    return "gemma4:26b"
 
 
 def _prompt(prompt: str, default: str | None = None) -> str:
@@ -495,22 +509,15 @@ def _prompt_select(prompt: str, options: Sequence[str], default: str | None = No
             print(f"1~{len(choices)} 중에서 입력해주세요.")
 
 
-def _apply_llm_environment(
-    provider: str | None,
-    model: str | None,
-    openai_token: str | None,
-    gemini_token: str | None,
-) -> None:
+def _apply_llm_environment(provider: str | None, model: str | None, token: str | None) -> None:
     if provider:
         os.environ["GAIA_LLM_PROVIDER"] = provider
         os.environ["VISION_PROVIDER"] = provider
     if model:
         os.environ["GAIA_LLM_MODEL"] = model
         os.environ["VISION_MODEL"] = model
-    if openai_token:
-        os.environ["OPENAI_API_KEY"] = openai_token
-    if gemini_token:
-        os.environ["GEMINI_API_KEY"] = gemini_token
+    if provider:
+        gaia_auth.write_env_if_set(provider, token)
 
 
 def _is_openai_chat_model(model_id: str) -> bool:
@@ -617,6 +624,22 @@ def _resolve_account_model_choices(provider: str, token: str | None) -> list[str
     if provider == "gemini":
         return _fetch_gemini_models(token)
     return []
+
+
+def _provider_model_choices(provider: str) -> Sequence[str]:
+    if provider == "openai":
+        return OPENAI_MODEL_CHOICES
+    if provider == "gemini":
+        return GEMINI_MODEL_CHOICES
+    return OLLAMA_MODEL_CHOICES
+
+
+def _provider_model_priority(provider: str) -> Sequence[str]:
+    if provider == "openai":
+        return OPENAI_MODEL_PRIORITY
+    if provider == "gemini":
+        return GEMINI_MODEL_PRIORITY
+    return OLLAMA_MODEL_PRIORITY
 
 
 def _resolve_runtime(parsed: argparse.Namespace, profile: dict[str, str], default: str = "gui") -> str:
@@ -768,12 +791,12 @@ def _materialize_telegram_token(
 
 def _resolve_provider(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
     provider = parsed.llm_provider or profile.get("provider") or os.getenv("GAIA_LLM_PROVIDER", "openai")
-    if provider not in {"openai", "gemini"}:
+    if provider not in PROVIDER_CHOICES:
         provider = "openai"
     if sys.stdin.isatty() and not parsed.llm_provider and _should_prompt_interactive(parsed):
         provider = _prompt_select(
             "AI 제공자를 선택하세요",
-            ("openai", "gemini"),
+            PROVIDER_CHOICES,
             default=provider,
         )
     return provider
@@ -790,10 +813,10 @@ def _resolve_model(
         return model
 
     account_models = _resolve_account_model_choices(provider, token)
-    fallback_models = OPENAI_MODEL_CHOICES if provider == "openai" else GEMINI_MODEL_CHOICES
+    fallback_models = _provider_model_choices(provider)
     merged_models = _sort_by_priority(
         [*account_models, *fallback_models],
-        OPENAI_MODEL_PRIORITY if provider == "openai" else GEMINI_MODEL_PRIORITY,
+        _provider_model_priority(provider),
     )
     base_options = tuple(merged_models) if merged_models else fallback_models
     if "직접 입력" not in base_options:
@@ -812,9 +835,21 @@ def _resolve_model(
             return _prompt_non_empty("OpenAI 모델명을 입력하세요", default=_default_model(provider))
         return selected
 
-    selected = _prompt_select("Gemini 모델을 선택하세요", options, default=model)
+    if provider == "gemini":
+        selected = _prompt_select("Gemini 모델을 선택하세요", options, default=model)
+        if selected == "직접 입력":
+            return _prompt_non_empty("Gemini 모델명을 입력하세요", default=_default_model(provider))
+        return selected
+
+    if provider == "ollama":
+        selected = _prompt_select("Ollama 모델을 선택하세요", options, default=model)
+        if selected == "직접 입력":
+            return _prompt_non_empty("Ollama 모델명을 입력하세요", default=_default_model(provider))
+        return selected
+
+    selected = _prompt_select("Ollama 모델을 선택하세요", options, default=model)
     if selected == "직접 입력":
-        return _prompt_non_empty("Gemini 모델명을 입력하세요", default=_default_model(provider))
+        return _prompt_non_empty("Ollama 모델명을 입력하세요", default=_default_model(provider))
     return selected
 
 
@@ -885,7 +920,7 @@ def _resolve_auth(provider: str, strategy: str, method: str = "auto") -> str | N
 
 def _build_common_parser(prog: str, description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog, description=description)
-    parser.add_argument("--llm-provider", choices=("openai", "gemini"))
+    parser.add_argument("--llm-provider", choices=PROVIDER_CHOICES)
     parser.add_argument("--llm-model")
     parser.add_argument("--auth", choices=AUTH_CHOICES)
     parser.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
@@ -972,10 +1007,7 @@ def _configure_session(
         return None
     runtime = _resolve_runtime(parsed, profile, default="gui")
 
-    if provider == "openai":
-        _apply_llm_environment(provider, model, token, None)
-    else:
-        _apply_llm_environment(provider, model, None, token)
+    _apply_llm_environment(provider, model, token)
 
     _persist_profile(
         profile,
@@ -1252,7 +1284,7 @@ def run_prd(argv: Sequence[str] | None = None) -> int:
     inspect_parser.add_argument("--format", choices=("text", "json"), default="text")
 
     run_parser = subparsers.add_parser("run", help="Run generated goals from a PRD bundle.")
-    run_parser.add_argument("--llm-provider", choices=("openai", "gemini"))
+    run_parser.add_argument("--llm-provider", choices=PROVIDER_CHOICES)
     run_parser.add_argument("--llm-model")
     run_parser.add_argument("--auth", choices=AUTH_CHOICES)
     run_parser.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
@@ -1920,7 +1952,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     gui.add_argument("--feature-query")
     gui.add_argument("--max-actions", type=int, default=50)
     gui.add_argument("--time-budget-seconds", type=int)
-    gui.add_argument("--llm-provider", choices=("openai", "gemini"))
+    gui.add_argument("--llm-provider", choices=PROVIDER_CHOICES)
     gui.add_argument("--llm-model")
     gui.add_argument("--auth", choices=AUTH_CHOICES)
     gui.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
@@ -1935,14 +1967,14 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     terminal.add_argument("--feature-query")
     terminal.add_argument("--max-actions", type=int, default=50)
     terminal.add_argument("--time-budget-seconds", type=int)
-    terminal.add_argument("--llm-provider", choices=("openai", "gemini"))
+    terminal.add_argument("--llm-provider", choices=PROVIDER_CHOICES)
     terminal.add_argument("--llm-model")
     terminal.add_argument("--auth", choices=AUTH_CHOICES)
     terminal.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
     terminal.add_argument("--runtime", choices=RUNTIME_CHOICES, default="terminal")
     terminal.add_argument("--session")
     terminal.add_argument("--new-session", action="store_true")
-    parser.add_argument("--llm-provider", choices=("openai", "gemini"))
+    parser.add_argument("--llm-provider", choices=PROVIDER_CHOICES)
     parser.add_argument("--llm-model")
     parser.add_argument("--auth", choices=AUTH_CHOICES)
     parser.add_argument("--auth-method", choices=("auto", "oauth", "manual"))
