@@ -236,74 +236,86 @@
 
     {
       "id": 30,
-      "title": "Scenario Results",
-      "description": "시나리오별 RUNS / SUCCESS / FAIL / SUCCESS RATE / AVG / MEDIAN / MIN / MAX",
+      "title": "실행 결과 로그",
+      "description": "실행별 시나리오 / 모델 / 결과 / 실패 원인",
       "type": "table",
-      "gridPos": { "x": 0, "y": 13, "w": 24, "h": 10 },
+      "gridPos": { "x": 0, "y": 13, "w": 24, "h": 15 },
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto" } },
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto", "wrap": true } },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "SUCCESS RATE" },
-            "properties": [
-              { "id": "unit", "value": "percentunit" },
-              { "id": "custom.displayMode", "value": "color-background" },
-              { "id": "thresholds", "value": {
-                "mode": "absolute",
-                "steps": [
-                  { "color": "red", "value": null },
-                  { "color": "yellow", "value": 0.5 },
-                  { "color": "green", "value": 0.7 }
-                ]
-              }}
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "LAST STATUS" },
+            "matcher": { "id": "byName", "options": "STATUS" },
             "properties": [
               { "id": "custom.displayMode", "value": "color-background" },
+              { "id": "custom.width", "value": 110 },
               { "id": "mappings", "value": [
-                { "type": "value", "options": { "1": { "text": "SUCCESS", "color": "green" }, "0": { "text": "FAIL", "color": "red" } } }
+                { "type": "value", "options": {
+                    "1": { "text": "SUCCESS", "color": "green" },
+                    "0": { "text": "FAIL",    "color": "red"   }
+                }}
               ]}
             ]
           },
           {
-            "matcher": { "id": "byRegexp", "options": ".*(SEC|DURATION).*" },
-            "properties": [{ "id": "unit", "value": "s" }]
+            "matcher": { "id": "byName", "options": "gaia_scenario_last_status" },
+            "properties": [
+              { "id": "custom.displayMode", "value": "color-background" },
+              { "id": "custom.width", "value": 110 },
+              { "id": "mappings", "value": [
+                { "type": "value", "options": {
+                    "1": { "text": "SUCCESS", "color": "green" },
+                    "0": { "text": "FAIL",    "color": "red"   }
+                }}
+              ]}
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "REASON" },
+            "properties": [
+              { "id": "custom.wrap", "value": true },
+              { "id": "custom.minWidth", "value": 300 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "MODEL" },
+            "properties": [{ "id": "custom.width", "value": 120 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "RUN TIME" },
+            "properties": [{ "id": "custom.width", "value": 220 }]
           }
         ]
       },
       "options": {
-        "sortBy": [{ "displayName": "SCENARIO", "desc": false }],
-        "footer": { "show": false }
+        "sortBy": [{ "displayName": "RUN TIME", "desc": true }]
       },
       "transformations": [
+        { "id": "labelsToFields", "options": { "mode": "columns" } },
+        { "id": "merge", "options": {} },
         {
-          "id": "joinByLabels",
-          "options": { "join": ["scenario_id", "model"] }
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": ["scenario_id", "model", "gaia_scenario_last_status", "last_reason", "started_at"]
+            }
+          }
         },
         {
           "id": "organize",
           "options": {
             "renameByName": {
-              "gaia_scenario_runs_total":         "RUNS",
-              "gaia_scenario_success_count":      "SUCCESS",
-              "gaia_scenario_fail_count":         "FAIL",
-              "gaia_scenario_success_rate":       "SUCCESS RATE",
-              "gaia_scenario_latest_duration_sec":"LATEST SEC",
-              "gaia_scenario_avg_duration_sec":   "AVG SEC",
-              "gaia_scenario_median_duration_sec":"MEDIAN SEC",
-              "gaia_scenario_min_duration_sec":   "MIN SEC",
-              "gaia_scenario_max_duration_sec":   "MAX SEC",
-              "gaia_scenario_last_status":        "LAST STATUS",
-              "scenario_id":                      "SCENARIO",
-              "model":                            "MODEL"
+              "scenario_id":              "SCENARIO",
+              "model":                    "MODEL",
+              "last_reason":              "REASON",
+              "started_at":               "RUN TIME",
+              "gaia_scenario_last_status":"STATUS"
             },
             "indexByName": {
-              "SCENARIO": 0, "MODEL": 1,
-              "RUNS": 2, "SUCCESS": 3, "FAIL": 4, "SUCCESS RATE": 5,
-              "LATEST SEC": 6, "AVG SEC": 7, "MEDIAN SEC": 8,
-              "MIN SEC": 9, "MAX SEC": 10, "LAST STATUS": 11
+              "started_at": 0, "scenario_id": 1, "model": 2,
+              "gaia_scenario_last_status": 3, "last_reason": 4
+            },
+            "excludeByName": {
+              "Time": true
             }
           }
         }
@@ -311,73 +323,10 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "sum by (scenario_id, model) (gaia_scenario_runs_total{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
+          "expr": "gaia_scenario_last_status{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "STATUS",
           "instant": true,
-          "refId": "RUNS"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "sum by (scenario_id, model) (gaia_scenario_success_count{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "SUCCESS"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "sum by (scenario_id, model) (gaia_scenario_fail_count{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "FAIL"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "avg by (scenario_id, model) (gaia_scenario_success_rate{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "RATE"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "max by (scenario_id, model) (gaia_scenario_latest_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "LATEST"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "avg by (scenario_id, model) (gaia_scenario_avg_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "AVG"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "avg by (scenario_id, model) (gaia_scenario_median_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "MEDIAN"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "min by (scenario_id, model) (gaia_scenario_min_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "MIN"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "max by (scenario_id, model) (gaia_scenario_max_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "MAX"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "max by (scenario_id, model) (gaia_scenario_last_status{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "",
-          "instant": true,
-          "refId": "STATUS"
+          "refId": "A"
         }
       ]
     },

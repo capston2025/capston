@@ -174,11 +174,13 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
             lines.extend(_gauge(args[0], args[1], args[2], base, declared))
 
         last_status_ok = 1.0 if statuses and statuses[-1] == "SUCCESS" else 0.0
+        last_reason = str(last_run.get("reason") or "")[:100].replace("\n", " ").replace('"', "'")
         lines.extend(_gauge(
             "gaia_scenario_last_status",
             "Last run result (1=SUCCESS 0=FAIL)",
             last_status_ok,
-            {**base, "completion": completion, "site_url": site_url, "started_at": started_at},
+            {**base, "completion": completion, "site_url": site_url,
+             "started_at": started_at, "last_reason": last_reason},
             declared,
         ))
 
