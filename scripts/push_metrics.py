@@ -133,8 +133,6 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
         sid = row.get("scenario_id", "unknown")
         scenario_runs[sid].append(row)
 
-    declared: set = set()  # HELP/TYPE 중복 선언 방지
-
     for scenario_id, runs in scenario_runs.items():
         durations   = [r["duration_seconds"] for r in runs if r.get("duration_seconds") is not None]
         statuses    = [str(r.get("status", "")).upper() for r in runs]
