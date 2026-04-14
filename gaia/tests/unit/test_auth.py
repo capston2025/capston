@@ -82,3 +82,15 @@ def test_interactive_login_gemini_with_explicit_token_still_updates_env_file(tmp
     assert token == "AIza-direct"
     assert env_file.exists()
     assert 'GEMINI_API_KEY="AIza-direct"' in env_file.read_text(encoding="utf-8")
+
+
+def test_resolve_auth_reuse_returns_local_ollama_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    monkeypatch.setattr(gaia_auth, "AUTH_DIR", tmp_path / "auth")
+    monkeypatch.setattr(gaia_auth, "AUTH_FILE", tmp_path / "auth" / "profiles.json")
+
+    token, source = gaia_auth.resolve_auth(provider="ollama", strategy="reuse")
+
+    assert token == "ollama"
+    assert source == "local:ollama"
+    assert gaia_auth.os.environ["OLLAMA_API_KEY"] == "ollama"

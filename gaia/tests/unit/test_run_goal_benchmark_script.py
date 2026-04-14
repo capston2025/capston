@@ -71,10 +71,11 @@ def test_prepare_scenario_env_sets_codex_runtime_guards() -> None:
     assert env["GAIA_CODEX_REASONING_EFFORT"] == "low"
 
 
-def test_infer_provider_from_model_handles_openai_and_gemini() -> None:
+def test_infer_provider_from_model_handles_openai_gemini_and_ollama() -> None:
     assert _infer_provider_from_model("gpt-5.4") == "openai"
     assert _infer_provider_from_model("gpt-5.3-codex") == "openai"
     assert _infer_provider_from_model("gemini-2.5-pro") == "gemini"
+    assert _infer_provider_from_model("gemma4:26b") == "ollama"
     assert _infer_provider_from_model("unknown-model") == ""
 
 
