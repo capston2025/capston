@@ -4,6 +4,7 @@ from scripts.run_goal_benchmark import (
     _prepare_scenario_env,
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
+    _should_emit_live_trace_line,
 )
 
 
@@ -35,6 +36,8 @@ def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -
     assert "filter_control_hint" in code
     assert "text_visible" in code
     assert "cta_visible" in code
+    assert "_TeeWriter" in code
+    assert "sys.__stdout__" in code
 
 
 def test_timeout_floor_applies_by_default() -> None:
@@ -73,3 +76,12 @@ def test_infer_provider_from_model_handles_openai_and_gemini() -> None:
     assert _infer_provider_from_model("gpt-5.3-codex") == "openai"
     assert _infer_provider_from_model("gemini-2.5-pro") == "gemini"
     assert _infer_provider_from_model("unknown-model") == ""
+
+
+def test_should_emit_live_trace_line_filters_to_step_level_messages() -> None:
+    assert _should_emit_live_trace_line("🎯 목표 시작: 테스트")
+    assert _should_emit_live_trace_line("--- Step 2/40 ---")
+    assert _should_emit_live_trace_line("LLM 결정: click - 버튼을 누른다")
+    assert _should_emit_live_trace_line("✅ 목표 달성! 이유: 확인됨")
+    assert not _should_emit_live_trace_line("🧪 llm trace: {'used_llm': True}")
+    assert not _should_emit_live_trace_line('{"schema_version":"gaia.benchmark.v1"}')
