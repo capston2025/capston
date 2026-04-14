@@ -512,7 +512,41 @@ def main() -> int:
     (output_dir / "summary.md").write_text(md.getvalue(), encoding="utf-8")
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+    # ── 모니터링 서버 자동 push ──────────────────────────────────────────
+    # gaia_monitor_connect.py 로 연결 설정이 되어 있으면 자동으로 업로드
+    _try_auto_push_metrics(output_dir)
+
     return 0
+
+
+def _try_auto_push_metrics(output_dir: Path) -> None:
+    """모니터링 서버 설정이 있으면 자동으로 메트릭을 push합니다."""
+    monitoring_config = Path.home() / ".gaia" / "monitoring.json"
+    if not monitoring_config.exists():
+        return  # 연결 설정 없으면 조용히 건너뜀
+
+    push_script = Path(__file__).parent / "push_metrics.py"
+    if not push_script.exists():
+        return
+
+    print("\n  📡 모니터링 서버로 결과 업로드 중...")
+    result = subprocess.run(
+        [sys.executable, str(push_script), "--suite-dir", str(output_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  업로드 완료 ✅")
+        if result.stdout.strip():
+            print(f"  {result.stdout.strip()}")
+    else:
+        # 업로드 실패해도 벤치마크 결과에는 영향 없음
+        print(f"  업로드 실패 (벤치마크 결과는 정상 저장됨)")
+        if result.stderr.strip():
+            print(f"  오류: {result.stderr.strip()}")
+        if result.stdout.strip():
+            print(f"  출력: {result.stdout.strip()}")
 
 
 if __name__ == "__main__":

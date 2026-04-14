@@ -12,5 +12,19 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "2",
+      "url": "https://nara-speller.co.kr/speller/",
+      "goal": "안념하세요 라고 입력한 뒤 검사하기 버튼을 누르고 결과가 잘 나오는지 확인하고 종료해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "requires_test_credentials": true
+      },
+      "expected_signals": [],
+      "time_budget_sec": 120
+    }
+  ]
 }
