@@ -12,6 +12,7 @@ from urllib.parse import urlparse, urlunparse
 import requests
 
 from gaia.src.phase4.embedded_openclaw_runtime import ensure_embedded_openclaw_base_url
+from gaia.src.phase4.browser_context_manager import build_auto_follow_state_update
 from gaia.src.phase4.mcp_ref.snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_snapshot_from_elements,
@@ -2223,6 +2224,7 @@ def dispatch_openclaw_action(
     current_url = str(data.get("url") or state.get("current_url") or "")
     post_action_snapshot: Optional[Dict[str, Any]] = None
     new_page_evidence: Dict[str, Any] = {}
+    auto_follow_evidence: Dict[str, Any] = {}
     if probe_post_action:
         settle_ms = 350 if probe_kind in {"click", "press", "select", "drag"} else 180
         if settle_ms > 0:
@@ -2329,6 +2331,21 @@ def dispatch_openclaw_action(
                         evidence=new_page_evidence,
                     )
 
+        if new_page_evidence:
+            auto_follow_evidence = build_auto_follow_state_update(new_page_evidence)
+            if auto_follow_evidence:
+                follow_target_id = str(auto_follow_evidence.get("auto_follow_target_id") or "").strip()
+                follow_url = str(auto_follow_evidence.get("auto_follow_url") or "").strip()
+                if follow_target_id:
+                    state["target_id"] = follow_target_id
+                if follow_url:
+                    state["current_url"] = follow_url
+                    current_url = follow_url
+                state_change = _merge_state_change_evidence(
+                    state_change=state_change,
+                    evidence=auto_follow_evidence,
+                )
+
     backend_trace = {
         "name": "openclaw",
         "kind": probe_kind,
@@ -2344,7 +2361,12 @@ def dispatch_openclaw_action(
         "total_ms": int(snapshot_before_ms + act_ms + post_act_probe_ms + second_probe_ms),
         "owner": "openclaw_probe" if int(post_act_probe_ms) >= max(1, int(act_ms)) else "openclaw_act",
     }
+    if auto_follow_evidence:
+        backend_trace["auto_followed_new_page"] = True
+        backend_trace["auto_follow_reason"] = str(auto_follow_evidence.get("auto_follow_reason") or "")
+        backend_trace["auto_follow_target_id"] = str(auto_follow_evidence.get("auto_follow_target_id") or "")
     state_change["backend_trace"] = backend_trace
+    response_target_id = str(state.get("target_id") or data.get("targetId") or target_id)
 
     return (
         200,
@@ -2361,8 +2383,8 @@ def dispatch_openclaw_action(
             "retry_path": [],
             "attempt_count": 0,
             "current_url": current_url,
-            "targetId": str(data.get("targetId") or target_id),
-            "tab_id": str(data.get("targetId") or target_id),
+            "targetId": response_target_id,
+            "tab_id": response_target_id,
             "snapshot_id_used": str((params or {}).get("snapshot_id") or ""),
             "ref_id_used": str((params or {}).get("ref_id") or (params or {}).get("refId") or (params or {}).get("ref") or "").strip(),
         },
