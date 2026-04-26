@@ -65,7 +65,7 @@ GAIA_BROWSER_BACKEND=openclaw GAIA_OPENCLAW_HEADLESS=1 GAIA_RAIL_ENABLED=0 \
 python scripts/run_goal_benchmark.py \
   --suite artifacts/tmp/timeout420_reruns/INUU_001_HOME_LOGIN_VISIBLE.json \
   --provider openai \
-  --model gpt-5.4 \
+  --model gpt-5.5 \
   --timeout-cap 420
 ```
 

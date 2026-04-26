@@ -12,5 +12,60 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "SPELL_001_FORM_VISIBLE",
+      "name": "맞춤법 검사 입력창 확인",
+      "url": "https://nara-speller.co.kr/speller/",
+      "goal": "맞춤법 검사기 화면에서 문장을 입력할 수 있는 텍스트 영역과 검사 실행 버튼이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "SPELL_002_CHECK_SIMPLE_SENTENCE",
+      "name": "짧은 문장 검사",
+      "url": "https://nara-speller.co.kr/speller/",
+      "goal": "입력창에 '안녕 하세요 저는 학생 입니다.'를 입력한 뒤 검사 버튼을 눌러 검사 결과 영역의 '맞춤법/문법 오류' 또는 '교정' 안내가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "text_visible"
+      ],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "SPELL_003_CLEAR_AND_RECHECK",
+      "name": "입력 초기화 후 재검사",
+      "url": "https://nara-speller.co.kr/speller/",
+      "goal": "맞춤법 검사기 입력창에 문장을 넣었다가 지우거나 새로 입력한 뒤 다시 검사 버튼을 눌러 결과 영역이 갱신되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "SPELL_004_HELP_OR_GUIDE_VISIBLE",
+      "name": "도움말 또는 안내 확인",
+      "url": "https://nara-speller.co.kr/speller/",
+      "goal": "맞춤법 검사기 화면에서 사용 안내, 도움말, 예시 문구 같은 안내 영역이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 240
+    }
+  ]
 }

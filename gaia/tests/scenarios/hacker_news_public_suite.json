@@ -1,0 +1,82 @@
+{
+  "suite_id": "hacker_news_public_v1",
+  "site": {
+    "name": "Hacker News",
+    "base_url": "https://news.ycombinator.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "Hacker News 홈 화면에서 스토리 목록과 상단 내비게이션이 보이는지 확인해줘.",
+      "id": "HN_001_HOME_STORIES",
+      "name": "홈 스토리 목록 확인",
+      "time_budget_sec": 120,
+      "url": "https://news.ycombinator.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "Hacker News 홈 화면에서 newest 페이지로 이동하고 최신 글 목록이 보이는지 확인해줘.",
+      "id": "HN_002_NEWEST_NAV",
+      "name": "newest 페이지 이동",
+      "time_budget_sec": 120,
+      "url": "https://news.ycombinator.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "Hacker News 홈 화면에서 past 페이지로 이동하고 과거 글 목록이 보이는지 확인해줘.",
+      "id": "HN_003_PAST_NAV",
+      "name": "past 페이지 이동",
+      "time_budget_sec": 120,
+      "url": "https://news.ycombinator.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "Hacker News 홈 화면에서 jobs 페이지로 이동하고 채용 글 목록이 보이는지 확인해줘.",
+      "id": "HN_004_JOBS_NAV",
+      "name": "jobs 페이지 이동",
+      "time_budget_sec": 120,
+      "url": "https://news.ycombinator.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "Hacker News 2페이지에서 more 링크나 다음 페이지로 이어지는 목록 구조가 보이는지 확인해줘.",
+      "id": "HN_005_PAGE_TWO_LIST",
+      "name": "2페이지 목록 확인",
+      "time_budget_sec": 120,
+      "url": "https://news.ycombinator.com/news?p=2"
+    }
+  ]
+}

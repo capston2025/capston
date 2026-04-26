@@ -92,6 +92,387 @@ function buildLocalFallbackContext(): string {
   return sections.join("\n\n");
 }
 
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function stripTags(value: string): string {
+  return collapseWhitespace(value.replace(/<[^>]+>/g, " "));
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function normalizeBaseUrl(rawUrl: string | undefined): string {
+  const candidate = String(rawUrl ?? "").trim();
+  if (!candidate) return "";
+  try {
+    const normalized = new URL(candidate);
+    return normalized.toString();
+  } catch {
+    return "";
+  }
+}
+
+function extractAttribute(tagSource: string, attribute: string): string {
+  const pattern = new RegExp(`${attribute}=["']([^"']+)["']`, "i");
+  return String(tagSource.match(pattern)?.[1] ?? "").trim();
+}
+
+function cleanVisibleText(value: string): string {
+  return collapseWhitespace(decodeHtmlEntities(stripTags(value)));
+}
+
+function dedupeLimit(values: string[], limit: number): string[] {
+  const output: string[] = [];
+  const seen = new Set<string>();
+  for (const rawValue of values) {
+    const value = String(rawValue ?? "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    output.push(value);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+function extractUniqueTexts(html: string, tagName: "a" | "button" | "label", limit: number): string[] {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "gi");
+  const values: string[] = [];
+  const seen = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    const cleaned = cleanVisibleText(match[1] ?? "");
+    if (!cleaned || cleaned.length < 2 || cleaned.length > 42) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    values.push(cleaned);
+    if (values.length >= limit) break;
+  }
+  return values;
+}
+
+type LinkCandidate = {
+  url: string;
+  path: string;
+  label: string;
+  score: number;
+};
+
+type SitePageProfile = {
+  url: string;
+  path: string;
+  title: string;
+  headings: string[];
+  navLabels: string[];
+  buttonLabels: string[];
+  tabLabels: string[];
+  formFields: string[];
+  linkLabels: string[];
+  pathHints: string[];
+};
+
+type WebsiteProfile = {
+  baseUrl: string;
+  pages: SitePageProfile[];
+  navigationLabels: string[];
+  primaryPaths: string[];
+  notes: string[];
+};
+
+function scorePathCandidate(pathValue: string, label: string): number {
+  const pathLower = pathValue.toLowerCase();
+  const labelLower = label.toLowerCase();
+  let score = 0;
+
+  if (pathValue === "/" || pathValue === "") score += 1;
+  if (!/\.(png|jpg|jpeg|gif|svg|pdf|zip|js|css)$/i.test(pathValue)) score += 2;
+  if (pathValue.split("/").filter(Boolean).length <= 2) score += 2;
+  if (label.length >= 2 && label.length <= 24) score += 2;
+  if (/(home|main|docs|guide|community|market|product|products|search|gallery|ranking|insight|news|blog|pricing|about|dashboard|stocks|theme|calendar|category|menu|종목|커뮤니티|갤러리|인기|실시간|테마|시장|마켓|분석|캘린더|기업|재무|투자)/i.test(`${pathLower} ${labelLower}`)) {
+    score += 4;
+  }
+  if (/(logout|signout|sign-out|delete|remove|privacy|terms|policy|download|mailto:|tel:)/i.test(`${pathLower} ${labelLower}`)) {
+    score -= 6;
+  }
+  if (pathLower.includes("?")) score -= 1;
+  return score;
+}
+
+function extractSameOriginLinkCandidates(html: string, baseUrl: string, limit: number): LinkCandidate[] {
+  const normalizedBase = normalizeBaseUrl(baseUrl);
+  if (!normalizedBase) return [];
+  const base = new URL(normalizedBase);
+  const bestByPath = new Map<string, LinkCandidate>();
+  const pattern = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    const attrs = String(match[1] ?? "");
+    const href = extractAttribute(attrs, "href");
+    if (!href || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("tel:")) continue;
+    try {
+      const resolved = new URL(href, normalizedBase);
+      if (resolved.origin !== base.origin) continue;
+      const pathValue = `${resolved.pathname}${resolved.search}` || "/";
+      const label =
+        cleanVisibleText(match[2] ?? "") ||
+        cleanVisibleText(extractAttribute(attrs, "aria-label")) ||
+        cleanVisibleText(extractAttribute(attrs, "title"));
+      if (!label || label.length > 48) continue;
+      const candidate: LinkCandidate = {
+        url: resolved.toString(),
+        path: pathValue,
+        label,
+        score: scorePathCandidate(pathValue, label),
+      };
+      const existing = bestByPath.get(pathValue);
+      if (!existing || candidate.score > existing.score) {
+        bestByPath.set(pathValue, candidate);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return [...bestByPath.values()]
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
+    .slice(0, limit);
+}
+
+function extractSectionTagTexts(html: string, tagName: "nav" | "header", innerTag: "a" | "button", limit: number): string[] {
+  const sectionPattern = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "gi");
+  const collected: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = sectionPattern.exec(html)) !== null) {
+    collected.push(...extractUniqueTexts(match[1] ?? "", innerTag, limit));
+    if (collected.length >= limit) break;
+  }
+  return dedupeLimit(collected, limit);
+}
+
+function extractHeadingTexts(html: string, limit: number): string[] {
+  const values: string[] = [];
+  const pattern = /<(h1|h2|h3)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    const cleaned = cleanVisibleText(match[2] ?? "");
+    if (!cleaned || cleaned.length > 60) continue;
+    values.push(cleaned);
+    if (values.length >= limit) break;
+  }
+  return dedupeLimit(values, limit);
+}
+
+function extractTabLabels(html: string, limit: number): string[] {
+  const values: string[] = [];
+  const rolePattern = /<(a|button)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = rolePattern.exec(html)) !== null) {
+    const attrs = String(match[2] ?? "");
+    if (!/(role=["']tab["']|aria-controls=|tab)/i.test(attrs)) continue;
+    const cleaned = cleanVisibleText(match[3] ?? "") || cleanVisibleText(extractAttribute(attrs, "aria-label"));
+    if (!cleaned || cleaned.length > 36) continue;
+    values.push(cleaned);
+    if (values.length >= limit) break;
+  }
+  return dedupeLimit(values, limit);
+}
+
+function extractFormFields(html: string, limit: number): string[] {
+  const values: string[] = [];
+  values.push(...extractUniqueTexts(html, "label", limit));
+
+  const fieldPattern = /<(input|textarea|select)\b([^>]*)>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fieldPattern.exec(html)) !== null) {
+    const attrs = String(match[2] ?? "");
+    const raw =
+      extractAttribute(attrs, "placeholder") ||
+      extractAttribute(attrs, "aria-label") ||
+      extractAttribute(attrs, "name") ||
+      extractAttribute(attrs, "id") ||
+      extractAttribute(attrs, "type");
+    const cleaned = cleanVisibleText(raw);
+    if (!cleaned || cleaned.length > 40) continue;
+    values.push(cleaned);
+    if (values.length >= limit) break;
+  }
+  return dedupeLimit(values, limit);
+}
+
+function buildPageProfile(html: string, pageUrl: string, baseUrl: string): SitePageProfile {
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch ? cleanVisibleText(titleMatch[1] ?? "") : "";
+  const navLabels = dedupeLimit(
+    [
+      ...extractSectionTagTexts(html, "nav", "a", 10),
+      ...extractSectionTagTexts(html, "header", "a", 10),
+      ...extractUniqueTexts(html, "a", 12),
+    ],
+    10,
+  );
+  const buttonLabels = dedupeLimit(
+    [
+      ...extractSectionTagTexts(html, "nav", "button", 8),
+      ...extractSectionTagTexts(html, "header", "button", 8),
+      ...extractUniqueTexts(html, "button", 10),
+    ],
+    8,
+  );
+  const path = (() => {
+    try {
+      const resolved = new URL(pageUrl, baseUrl);
+      return `${resolved.pathname}${resolved.search}` || "/";
+    } catch {
+      return "/";
+    }
+  })();
+
+  return {
+    url: pageUrl,
+    path,
+    title,
+    headings: extractHeadingTexts(html, 8),
+    navLabels,
+    buttonLabels,
+    tabLabels: extractTabLabels(html, 8),
+    formFields: extractFormFields(html, 8),
+    linkLabels: extractUniqueTexts(html, "a", 12),
+    pathHints: extractSameOriginLinkCandidates(html, baseUrl, 8).map((item) => item.path),
+  };
+}
+
+async function fetchHtmlPage(pageUrl: string): Promise<{ url: string; html: string } | null> {
+  const normalized = normalizeBaseUrl(pageUrl);
+  if (!normalized) return null;
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(normalized, {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "GAIA-Agent-Builder/1.0",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+      },
+    });
+    if (!response.ok) return null;
+    return {
+      url: response.url || normalized,
+      html: (await response.text()).slice(0, 80000),
+    };
+  } catch (error) {
+    console.warn("[Website Context] Failed to fetch page", normalized, error);
+    return null;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function buildWebsiteProfile(baseUrl: string): Promise<WebsiteProfile> {
+  const normalized = normalizeBaseUrl(baseUrl);
+  const profile: WebsiteProfile = {
+    baseUrl: normalized,
+    pages: [],
+    navigationLabels: [],
+    primaryPaths: [],
+    notes: [],
+  };
+  if (!normalized) return profile;
+
+  const rootPage = await fetchHtmlPage(normalized);
+  if (!rootPage) {
+    profile.notes.push("홈 페이지를 가져오지 못했습니다. Base URL만 기준으로 사용합니다.");
+    return profile;
+  }
+
+  const rootProfile = buildPageProfile(rootPage.html, rootPage.url, normalized);
+  profile.pages.push(rootProfile);
+
+  const candidates = extractSameOriginLinkCandidates(rootPage.html, normalized, 10)
+    .filter((item) => item.path !== "/" && item.path !== rootProfile.path)
+    .slice(0, 3);
+
+  for (const candidate of candidates) {
+    const page = await fetchHtmlPage(candidate.url);
+    if (!page) {
+      profile.notes.push(`${candidate.path} 페이지를 가져오지 못했습니다.`);
+      continue;
+    }
+    profile.pages.push(buildPageProfile(page.html, page.url, normalized));
+  }
+
+  profile.navigationLabels = dedupeLimit(
+    profile.pages.flatMap((page) => [...page.navLabels, ...page.tabLabels]).filter(Boolean),
+    16,
+  );
+  profile.primaryPaths = dedupeLimit(
+    [
+      ...candidates.map((item) => item.path),
+      ...profile.pages.flatMap((page) => page.pathHints),
+    ],
+    12,
+  );
+  return profile;
+}
+
+function buildTargetWebsiteBlock(profile: WebsiteProfile): string {
+  const normalized = normalizeBaseUrl(profile.baseUrl);
+  if (!normalized) return "";
+  const lines: string[] = [
+    "🌐 TARGET WEBSITE PROFILE",
+    `- Base URL: ${normalized}`,
+    "- Use this site as the default navigation root when the spec does not provide a full URL.",
+  ];
+
+  if (profile.navigationLabels.length) {
+    lines.push(`- Observed navigation/tabs: ${profile.navigationLabels.join(", ")}`);
+  }
+  if (profile.primaryPaths.length) {
+    lines.push(`- Observed primary paths: ${profile.primaryPaths.join(", ")}`);
+  }
+  profile.pages.slice(0, 4).forEach((page, index) => {
+    lines.push(`- Page ${index + 1}: ${page.path || "/"}${page.title ? ` | title=${page.title}` : ""}`);
+    if (page.headings.length) {
+      lines.push(`  headings: ${page.headings.join(", ")}`);
+    }
+    if (page.tabLabels.length) {
+      lines.push(`  tabs: ${page.tabLabels.join(", ")}`);
+    }
+    if (page.buttonLabels.length) {
+      lines.push(`  buttons: ${page.buttonLabels.join(", ")}`);
+    }
+    if (page.formFields.length) {
+      lines.push(`  form fields: ${page.formFields.join(", ")}`);
+    }
+    if (page.linkLabels.length) {
+      lines.push(`  prominent links: ${page.linkLabels.slice(0, 8).join(", ")}`);
+    }
+  });
+  if (profile.notes.length) {
+    lines.push(`- Notes: ${profile.notes.join(" | ")}`);
+  }
+
+  return `${lines.join("\n")}
+
+IMPORTANT RULES FOR TEST GENERATION:
+- Use this Base URL as the default root for generated navigation steps.
+- Treat the website profile above as the current visible information architecture for this service.
+- Prefer site terminology that matches the observed labels, tabs, forms, buttons, and paths from this profile.
+- If the PRD is vague, anchor scenarios to the closest observed page structure instead of inventing new menus or screens.
+- Prefer tests that use observed entry points, tabs, and form fields from this profile.
+- If the spec says "페이지 이동" or gives only a relative path, keep navigation under this Base URL unless the spec explicitly says otherwise.
+- When naming test cases, prefer real menu/tab/section labels from this site if they are available.
+`;
+}
+
 function createResponseWaiter(child: ChildProcessWithoutNullStreams) {
   const pending = new Map<number, (value: any) => void>();
   let buffer = "";
@@ -355,12 +736,18 @@ const tcSimplifierAgent = new Agent({
   name: "TC Simplifier",
   instructions: `🎯 Goal: 기획서/스펙 문서에서 테스트 케이스를 간결하게 추출하라.
 
-입력: 기획서 텍스트 (+ GitHub 소스코드는 나중에 사용)
+입력: 기획서 텍스트 (+ 선택적 TARGET WEBSITE PROFILE + GitHub 소스코드는 나중에 사용)
 
 ⚠️ FEATURE FILTER: If the input starts with "🎯 FEATURE FILTER:", ONLY generate test cases for that specific feature.
    - Extract the feature name from the FEATURE FILTER line
    - Ignore all other features in the spec document
    - If no FEATURE FILTER is present, generate test cases for ALL features (default behavior)
+
+⚠️ TARGET WEBSITE PROFILE:
+   - If the input includes a TARGET WEBSITE PROFILE block, treat it as the observed live site structure.
+   - Prefer menu/tab/section/form labels that appear in that profile.
+   - If the PRD is vague, align scenarios to observed pages and entry points from the profile.
+   - Do not invent hidden screens or IA labels that contradict the profile unless the spec explicitly requires them.
 
 출력: 간결한 TC JSON 목록
 
@@ -402,6 +789,8 @@ RULES:
 6. 각 TC는 독립적으로 실행 가능해야 함
 7. ⚠️ If FEATURE FILTER is present, focus ONLY on that feature and related sub-features
 8. ⚠️ DO NOT create "로그아웃 상태 보장" or "로그아웃 버튼 클릭" steps - each test automatically starts with a clean browser state (cookies/storage cleared)
+9. ⚠️ If TARGET WEBSITE PROFILE exists, prefer real menu/tab/page names and observed entry points from that profile
+10. ⚠️ If the spec asks for a feature but the exact label is unclear, use the closest observed label from the profile instead of generic wording
 
 예시:
 - "로그인 페이지로 이동" → "페이지 이동"
@@ -421,9 +810,15 @@ const executableRTGeneratorAgent = new Agent({
   instructions: `🎯 Goal: 간결한 TC와 GitHub 소스코드를 매칭하여 실행 가능한 RT JSON을 생성하라.
 
 입력 1: TC JSON (간결한 자연어 steps)
-입력 2: GitHub 전체 소스코드 ("=== FILE: ===" 섹션들)
+입력 2: 선택적 TARGET WEBSITE PROFILE
+입력 3: GitHub 전체 소스코드 ("=== FILE: ===" 섹션들)
 
-YOUR TASK: 각 TC의 step을 코드에서 찾아서 실행 가능한 RT step으로 변환
+YOUR TASK: 각 TC의 step을 코드와 TARGET WEBSITE PROFILE에 매칭하여 실행 가능한 RT step으로 변환
+
+TARGET WEBSITE PROFILE RULES:
+- If TARGET WEBSITE PROFILE is present, treat it as the current live IA and visible navigation structure.
+- Prefer goto URLs under the provided Base URL and align step descriptions with observed page/tab/button labels.
+- When code is ambiguous, use the profile to choose the safer visible route instead of inventing hidden paths.
 
 🔍 MATCHING RULES (Step → Action/Selector/Params):
 
@@ -530,6 +925,7 @@ YOUR TASK: 각 TC의 step을 코드에서 찾아서 실행 가능한 RT step으�
 9. ⚠️ Default to selector="" - it's safer and more accurate than guessing
 10. ⚠️ Example GOOD: selector="" (let runtime handle), selector="input[type='email']" (simple)
 11. ⚠️ Example BAD: selector="button:has-text('로그인')" when label wraps input
+12. ⚠️ If TARGET WEBSITE PROFILE provides a more realistic page path or label than the generic example, follow the profile
 
 EXAMPLE MATCHING (PREFER EMPTY SELECTOR):
 
@@ -804,6 +1200,7 @@ function approvalRequest(_message: string) {
 export interface WorkflowInput {
   input_as_text: string;
   feature_query?: string;  // 특정 기능 필터링 쿼리 (선택사항)
+  base_url?: string;  // 테스트 생성 시 참조할 대상 사이트 링크 (선택사항)
 }
 
 export interface WorkflowOutput {
@@ -816,6 +1213,12 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
     console.log("[AgentBuilder] Augmenting spec with GitHub repo context...");
     const augmentedInput = await augmentSpecWithRepoContext(workflow.input_as_text);
     console.log(`[AgentBuilder] Augmented input length: ${augmentedInput.length}`);
+    const normalizedBaseUrl = normalizeBaseUrl(workflow.base_url);
+    const websiteProfile = normalizedBaseUrl ? await buildWebsiteProfile(normalizedBaseUrl) : null;
+    const targetWebsiteBlock = websiteProfile ? buildTargetWebsiteBlock(websiteProfile) : "";
+    if (targetWebsiteBlock) {
+      console.log(`[AgentBuilder] 🌐 Target website grounding enabled: ${normalizedBaseUrl}`);
+    }
 
     const runner = new Runner({
       traceMetadata: {
@@ -825,10 +1228,11 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
     });
 
     // feature_query가 있으면 필터링 지시사항 추가
-    let stage1Input = augmentedInput;
+    let stage1Input = targetWebsiteBlock ? `${targetWebsiteBlock}\n\n${augmentedInput}` : augmentedInput;
     if (workflow.feature_query && workflow.feature_query.trim()) {
       console.log(`[AgentBuilder] 🎯 Feature filtering enabled: "${workflow.feature_query}"`);
-      stage1Input = `🎯 FEATURE FILTER: "${workflow.feature_query}"\n\n` +
+      stage1Input = `${targetWebsiteBlock ? `${targetWebsiteBlock}\n\n` : ""}` +
+                    `🎯 FEATURE FILTER: "${workflow.feature_query}"\n\n` +
                     `IMPORTANT: Generate test cases ONLY for the feature described above. ` +
                     `Ignore all other features in the spec document.\n\n` +
                     `If the feature filter matches multiple related features, include all of them.\n` +
@@ -883,11 +1287,17 @@ export const runWorkflow = async (workflow: WorkflowInput): Promise<WorkflowOutp
           {
             type: "input_text",
             text: `Here are the simplified test cases from Stage 1:\n\n${tcResult.finalOutput}\n\n` +
+                  `${targetWebsiteBlock ? `${targetWebsiteBlock}\n\n` : ""}` +
                   `Now, use the full GitHub source code below to generate executable RT JSON with proper action/selector/params.\n\n` +
                   `CRITICAL: Every step MUST have:\n` +
                   `- action: one of [goto, fill, click, wait, expectVisible, expectText, select]\n` +
                   `- selector: found from the source code (not empty!)\n` +
-                  `- params: extracted from TC steps or source code\n\n` +
+                  `- params: extracted from TC steps or source code\n` +
+                  (
+                    normalizedBaseUrl
+                      ? `- use ${normalizedBaseUrl} as the default root URL for goto steps when the TC uses generic navigation text or relative paths\n\n`
+                      : `\n`
+                  ) +
                   `${augmentedInput}`
           }
         ]

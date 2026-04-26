@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from PySide6.QtCore import QObject, Signal
 
@@ -402,16 +403,20 @@ class BenchmarkWorker(QObject):
         site_key: str,
         site_label: str,
         suite_path: str,
+        suite_payload: Mapping[str, Any] | None = None,
         target_url: str,
         workspace_root: Path,
+        run_tag: str = "full_suite",
         timeout_cap: int = 600,
     ) -> None:
         super().__init__()
         self._site_key = site_key
         self._site_label = site_label
         self._suite_path = str(suite_path)
+        self._suite_payload = dict(suite_payload) if isinstance(suite_payload, Mapping) else None
         self._target_url = str(target_url or "").strip()
         self._workspace_root = Path(workspace_root)
+        self._run_tag = str(run_tag or "full_suite").strip() or "full_suite"
         self._timeout_cap = max(600, int(timeout_cap))
         self._cancel_requested = False
         self._process: subprocess.Popen[str] | None = None
@@ -420,21 +425,26 @@ class BenchmarkWorker(QObject):
         started = time.time()
         output_dir: Path | None = None
         try:
-            suite_path = (self._workspace_root / self._suite_path).resolve()
-            if not suite_path.exists():
-                raise FileNotFoundError(f"benchmark suite not found: {suite_path}")
-
-            suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
-            if not isinstance(suite_payload, dict):
-                raise ValueError("benchmark suite must be a JSON object")
+            suite_path: Path
+            if self._suite_payload is not None:
+                suite_payload = dict(self._suite_payload)
+                suite_path = (self._workspace_root / self._suite_path).resolve() if self._suite_path else (self._workspace_root / "in-memory-suite.json").resolve()
+            else:
+                suite_path = (self._workspace_root / self._suite_path).resolve()
+                if not suite_path.exists():
+                    raise FileNotFoundError(f"benchmark suite not found: {suite_path}")
+                suite_payload = json.loads(suite_path.read_text(encoding="utf-8"))
+                if not isinstance(suite_payload, dict):
+                    raise ValueError("benchmark suite must be a JSON object")
             overridden = override_suite_urls(suite_payload, self._target_url)
 
             tmp_root = self._workspace_root / "artifacts" / "tmp"
             tmp_root.mkdir(parents=True, exist_ok=True)
-            tmp_suite_path = tmp_root / f"{self._site_key}_gui_suite.json"
+            run_tag = re.sub(r"[^a-zA-Z0-9_]+", "_", self._run_tag).strip("_") or "full_suite"
+            tmp_suite_path = tmp_root / f"{self._site_key}_{run_tag}_gui_suite.json"
             tmp_suite_path.write_text(json.dumps(overridden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-            run_id = f"gui_{self._site_key}_{int(started)}"
+            run_id = f"gui_{self._site_key}_{run_tag}_{int(started)}"
             output_dir = (self._workspace_root / "artifacts" / "benchmarks" / run_id).resolve()
             cmd = [
                 sys.executable,
@@ -452,7 +462,7 @@ class BenchmarkWorker(QObject):
             ]
             env = os.environ.copy()
             env.setdefault("GAIA_RAIL_ENABLED", "0")
-            env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.4"))
+            env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
 
             self.progress.emit(f"🚀 벤치 실행 시작: {self._site_label}")
             self.progress.emit(f"   - suite: {suite_path.name}")

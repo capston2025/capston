@@ -46,8 +46,10 @@ PROVIDER_CHOICES = ("openai", "gemini", "ollama")
 DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
 TELEGRAM_BRIDGE_PID_FILE = Path.home() / ".gaia" / "telegram_bridge.pid"
 TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.json"
+DEFAULT_OPENAI_MODEL = "gpt-5.5"
 
 OPENAI_MODEL_CHOICES = (
+    DEFAULT_OPENAI_MODEL,
     "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
@@ -78,6 +80,7 @@ OLLAMA_MODEL_CHOICES = (
 )
 
 OPENAI_MODEL_PRIORITY = (
+    DEFAULT_OPENAI_MODEL,
     "gpt-5.4",
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
@@ -139,7 +142,7 @@ def _run_telegram_bridge_bg_entry() -> int:
     from gaia.telegram_bridge import TelegramConfig, run_telegram_bridge
 
     provider = str(os.getenv("GAIA_BG_PROVIDER") or "openai").strip() or "openai"
-    model = str(os.getenv("GAIA_BG_MODEL") or "gpt-5.4").strip() or "gpt-5.4"
+    model = str(os.getenv("GAIA_BG_MODEL") or DEFAULT_OPENAI_MODEL).strip() or DEFAULT_OPENAI_MODEL
     auth_strategy = str(os.getenv("GAIA_BG_AUTH_STRATEGY") or "reuse").strip() or "reuse"
     url = str(os.getenv("GAIA_BG_URL") or "").strip()
     runtime = str(os.getenv("GAIA_BG_RUNTIME") or "gui").strip() or "gui"
@@ -306,7 +309,7 @@ def _persist_session_state(
 
 def _default_model(provider: str) -> str:
     if provider == "openai":
-        return "gpt-5.4"
+        return DEFAULT_OPENAI_MODEL
     if provider == "gemini":
         return "gemini-2.5-pro"
     return "gemma4:26b"

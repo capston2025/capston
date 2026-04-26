@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from gaia.src.screenshot_quality import is_low_information_screenshot
 from gaia.src.phase4.mcp_local_dispatch_runtime import execute_mcp_action
 from gaia.src.phase4.memory.models import MemorySummaryRecord
 from gaia.src.phase4.memory.store import MemoryStore
@@ -151,31 +152,43 @@ def _capture_session_screenshot_attachment(session_id: str) -> dict | None:
         or os.getenv("MCP_HOST_URL")
         or "http://127.0.0.1:8001"
     ).rstrip("/")
-    response = execute_mcp_action(
-        host,
-        action="browser_screenshot",
-        params={
-            "session_id": session_id,
-            "full_page": False,
-            "type": "png",
-        },
-        timeout=90,
-    )
-    code, data = int(response.status_code), dict(response.payload or {})
-    if code >= 400:
-        return None
-    screenshot = data.get("screenshot")
-    if not isinstance(screenshot, str) or not screenshot.strip():
-        return None
-    payload: dict[str, Any] = {
-        "kind": "image_base64",
-        "mime": "image/png",
-        "data": screenshot,
-    }
-    saved_path = data.get("saved_path") or data.get("path")
-    if isinstance(saved_path, str) and saved_path.strip():
-        payload["path"] = saved_path
-    return payload
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        response = execute_mcp_action(
+            host,
+            action="browser_screenshot",
+            params={
+                "session_id": session_id,
+                "full_page": attempt == max_attempts - 1,
+                "type": "png",
+            },
+            timeout=90,
+        )
+        code, data = int(response.status_code), dict(response.payload or {})
+        if code >= 400:
+            return None
+        screenshot = data.get("screenshot")
+        if not isinstance(screenshot, str) or not screenshot.strip():
+            if attempt < max_attempts - 1:
+                time.sleep(0.35)
+                continue
+            return None
+        current_url = str(data.get("current_url") or "").strip().lower()
+        if current_url == "about:blank" or is_low_information_screenshot(screenshot):
+            if attempt < max_attempts - 1:
+                time.sleep(0.35)
+                continue
+            return None
+        payload: dict[str, Any] = {
+            "kind": "image_base64",
+            "mime": "image/png",
+            "data": screenshot,
+        }
+        saved_path = data.get("saved_path") or data.get("path")
+        if isinstance(saved_path, str) and saved_path.strip():
+            payload["path"] = saved_path
+        return payload
+    return None
 
 
 def _mcp_execute(action: str, params: dict) -> tuple[int, dict]:
