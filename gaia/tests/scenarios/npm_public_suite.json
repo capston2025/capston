@@ -1,0 +1,82 @@
+{
+  "suite_id": "npm_public_v1",
+  "site": {
+    "name": "npm",
+    "base_url": "https://www.npmjs.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "npm 홈 화면에서 패키지 검색 입력창과 주요 내비게이션이 보이는지 확인해줘.",
+      "id": "NPM_001_HOME_SEARCH",
+      "name": "홈 검색창 확인",
+      "time_budget_sec": 120,
+      "url": "https://www.npmjs.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "npm 검색에서 react를 찾아 검색 결과 목록이 보이는지 확인해줘.",
+      "id": "NPM_002_SEARCH_REACT",
+      "name": "react 검색 결과 확인",
+      "time_budget_sec": 120,
+      "url": "https://www.npmjs.com/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "react 패키지 상세 페이지에서 패키지 이름과 README 또는 설치 명령 영역이 보이는지 확인해줘.",
+      "id": "NPM_003_REACT_DETAIL",
+      "name": "react 상세 확인",
+      "time_budget_sec": 120,
+      "url": "https://www.npmjs.com/package/react"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "express 패키지 상세 페이지에서 패키지 이름과 README 또는 설치 명령 영역이 보이는지 확인해줘.",
+      "id": "NPM_004_EXPRESS_DETAIL",
+      "name": "express 상세 확인",
+      "time_budget_sec": 120,
+      "url": "https://www.npmjs.com/package/express"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "npm depended 목록 페이지에서 패키지 랭킹이나 목록 항목들이 보이는지 확인해줘.",
+      "id": "NPM_005_DEPENDED_BROWSE",
+      "name": "depended 목록 확인",
+      "time_budget_sec": 120,
+      "url": "https://www.npmjs.com/browse/depended"
+    }
+  ]
+}

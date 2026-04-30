@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
 
 from gaia.src.gui.screencast_client import ScreencastClient
 from gaia.src.gui.exploration_viewer import ExplorationViewer
+from gaia.src.gui.asset_widgets import GuiAssetLabel
+from gaia.src.screenshot_quality import is_low_information_screenshot
 
 
 class _WebViewFallback(QWidget):
@@ -447,6 +449,7 @@ class MainWindow(QMainWindow):
     planFileSelected = Signal(str)
     bugJsonSelected = Signal(str)
     inputSourceCleared = Signal()
+    benchmarkManageRequested = Signal(str, str)
     benchmarkSaveRequested = Signal(str, str)
     benchmarkRunRequested = Signal(str, str)
     benchmarkViewRequested = Signal(str, str)
@@ -475,54 +478,53 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f5f7ff, stop:1 #e6f0ff);
+                background: #f9fafb;
             }
 
             QWidget {
-                color: #12142b;
+                color: #191f28;
                 font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
-                font-size: 13.5px;
+                font-size: 13px;
             }
 
             QLabel#AppTitle {
-                font-size: 26px;
+                font-size: 28px;
                 font-weight: 700;
-                letter-spacing: 0.5px;
-                color: #12142b;
+                letter-spacing: -0.4px;
+                color: #191f28;
             }
 
             QFrame#SidePanel {
-                background: rgba(255, 255, 255, 0.62);
-                border-radius: 26px;
-                border: 1px solid rgba(255, 255, 255, 0.35);
+                background: #ffffff;
+                border-radius: 28px;
+                border: 1px solid #e5e8eb;
             }
 
             QFrame#BrowserCard {
-                background: rgba(255, 255, 255, 0.45);
-                border-radius: 26px;
-                border: 1px solid rgba(255, 255, 255, 0.3);
+                background: #ffffff;
+                border-radius: 28px;
+                border: 1px solid #e5e8eb;
             }
 
             QLabel#SectionLabel, QLabel#BrowserTitle {
                 font-weight: 600;
-                font-size: 12.4px;
-                letter-spacing: 0.6px;
-                text-transform: uppercase;
-                color: #64698b;
+                font-size: 13px;
+                letter-spacing: 0px;
+                color: #4e5968;
             }
 
             QLabel#BrowserTitle {
-                font-size: 14.5px;
-                color: #2c2f48;
+                font-size: 15px;
+                color: #191f28;
                 text-transform: none;
             }
 
             QLabel#DropArea {
-                border: 1.4px dashed rgba(109, 119, 255, 0.55);
+                border: 1.5px dashed #b2d4ff;
                 border-radius: 24px;
-                padding: 26px;
-                color: #5b5ff7;
-                background: rgba(99, 102, 241, 0.12);
+                padding: 28px;
+                color: #1b64da;
+                background: #eff6ff;
             }
 
             QListWidget {
@@ -532,124 +534,236 @@ class MainWindow(QMainWindow):
             }
 
             QTextEdit {
-                background: rgba(255, 255, 255, 0.5);
-                border-radius: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.30);
+                background: #ffffff;
+                border-radius: 18px;
+                border: 1px solid #d1d6db;
                 padding: 16px;
-                color: #22244c;
+                color: #191f28;
             }
 
-            QLineEdit {
-                background: rgba(255, 255, 255, 0.68);
+            QLineEdit, QComboBox {
+                background: #ffffff;
                 border-radius: 16px;
-                border: 1px solid rgba(138, 142, 255, 0.45);
+                border: 1px solid #d1d6db;
                 padding: 12px 16px;
                 min-height: 24px;
-                color: #1c1f3b;
+                color: #191f28;
             }
 
-            QLineEdit:focus {
-                border: 1px solid rgba(110, 120, 255, 0.8);
-                background: rgba(255, 255, 255, 0.85);
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+                border: 1px solid #3182f6;
+                background: #ffffff;
+            }
+
+            QComboBox::drop-down {
+                border: none;
+                width: 28px;
+            }
+
+            QComboBox QAbstractItemView {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #191f28;
+                selection-background-color: #e8f3ff;
+                selection-color: #1b64da;
             }
 
             QPushButton {
-                border-radius: 18px;
-                padding: 11px 20px;
+                border-radius: 16px;
+                padding: 12px 20px;
                 min-height: 22px;
                 color: #ffffff;
                 font-weight: 600;
-                border: none;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #7d5bff, stop:1 #5f9dff);
+                border: 1px solid #3182f6;
+                background: #3182f6;
             }
 
             QPushButton:hover {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8362ff, stop:1 #68a4ff);
+                background: #1b64da;
+                border: 1px solid #1b64da;
             }
 
             QPushButton:disabled {
-                background: rgba(142, 156, 200, 0.35);
-                color: rgba(255, 255, 255, 0.8);
+                background: #f2f4f6;
+                border: 1px solid #f2f4f6;
+                color: #b0b8c1;
             }
 
             QPushButton#GhostButton {
-                background: transparent;
-                border: 1px solid rgba(125, 135, 255, 0.5);
-                color: #5b5ff7;
+                background: #f2f4f6;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
             }
 
             QPushButton#GhostButton:hover {
-                background: rgba(125, 135, 255, 0.12);
+                background: #e5e8eb;
+                border: 1px solid #d1d6db;
+                color: #333d4b;
             }
 
             QPushButton[modeButton="true"] {
-                background: transparent;
-                border: 1px solid rgba(125, 135, 255, 0.5);
-                color: #5b5ff7;
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
             }
 
             QPushButton[modeButton="true"][modeSelected="true"] {
-                background: rgba(91, 95, 247, 0.14);
-                border: 1.4px solid rgba(91, 95, 247, 0.85);
-                color: #3e43d6;
+                background: #e8f3ff;
+                border: 1px solid #3182f6;
+                color: #1b64da;
             }
 
             QPushButton#DangerButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff6b8a, stop:1 #ff8f70);
+                background: #f04452;
+                border: 1px solid #f04452;
+            }
+
+            QPushButton#DangerButton:hover {
+                background: #d92d20;
+                border: 1px solid #d92d20;
+            }
+
+            QFrame#FeatureInputContainer {
+                background: #ffffff;
+                border-radius: 24px;
+                border: 1px solid #e5e8eb;
+            }
+
+            QLabel#FeatureLabel {
+                font-size: 14px;
+                font-weight: 700;
+                color: #191f28;
+            }
+
+            QLineEdit#FeatureInput {
+                background: #f9fafb;
+            }
+
+            QLabel#BenchmarkStatusLabel, QLabel#FeatureHintLabel {
+                color: #6b7684;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            QFrame#BenchmarkStageCard {
+                background: #ffffff;
+                border-radius: 18px;
+                border: 1px solid #e5e8eb;
+            }
+
+            QLabel#BenchmarkStageTitle {
+                color: #191f28;
+                font-size: 24px;
+                font-weight: 800;
+            }
+
+            QLabel#BenchmarkStageSubtitle {
+                color: #6b7684;
+                font-size: 13px;
+            }
+
+            QLabel#BenchmarkStageMetric {
+                color: #191f28;
+                font-size: 14px;
+                font-weight: 700;
+                padding: 10px 12px;
+                background: #f9fafb;
+                border: 1px solid #edf0f3;
+                border-radius: 12px;
+            }
+
+            QFrame#BenchmarkPortalPanel {
+                background: #f7fbff;
+                border: 1px solid #dbeafe;
+                border-radius: 18px;
+            }
+
+            QLabel#BenchmarkPortalImage {
+                background: transparent;
+            }
+
+            QLabel#BenchmarkHeroImage {
+                background: #f4f8ff;
+                border: 1px solid #edf0f3;
+                border-radius: 18px;
+            }
+
+            QLabel#BenchmarkHeroKicker {
+                color: #1b64da;
+                font-size: 12px;
+                font-weight: 800;
+                letter-spacing: 0.4px;
+            }
+
+            QLabel#BenchmarkHeroHeadline {
+                color: #191f28;
+                font-size: 20px;
+                font-weight: 800;
+                line-height: 1.25;
+            }
+
+            QLabel#BenchmarkStageChip {
+                color: #4e5968;
+                font-size: 12px;
+                font-weight: 700;
+                padding: 8px 10px;
+                background: #f2f8ff;
+                border: 1px solid #d6e8ff;
+                border-radius: 999px;
             }
 
             QFrame#ResultSummaryCard {
-                background: rgba(255, 255, 255, 0.85);
+                background: #ffffff;
                 border-radius: 22px;
-                border: 1px solid rgba(255, 255, 255, 0.4);
+                border: 1px solid #e5e8eb;
             }
 
             QLabel#ResultSummaryStatus {
                 font-size: 18px;
                 font-weight: 700;
-                color: #181b3d;
+                color: #191f28;
             }
 
             QLabel#ResultSummaryMeta {
-                color: #4b4f73;
+                color: #6b7684;
                 font-size: 13px;
             }
 
             QLabel#ResultSummaryReason {
-                color: #2c2f48;
+                color: #333d4b;
                 font-size: 13px;
             }
 
             QLabel#ResultSummaryHint {
-                color: #636b86;
+                color: #6b7684;
                 font-size: 12.5px;
                 font-weight: 600;
             }
 
             QLabel[role="stateLabel"] {
-                color: #252a46;
+                color: #191f28;
                 font-size: 13px;
                 font-weight: 600;
             }
 
             QTextEdit#ResultTimelineView {
-                background: rgba(247, 249, 255, 0.92);
+                background: #f9fafb;
                 border-radius: 16px;
-                border: 1px solid rgba(198, 205, 255, 0.85);
-                color: #1f2745;
+                border: 1px solid #e5e8eb;
+                color: #333d4b;
                 padding: 12px;
             }
 
             QFrame#ResultScreenshotCard {
-                background: rgba(247, 249, 255, 0.92);
+                background: #f9fafb;
                 border-radius: 16px;
-                border: 1px solid rgba(198, 205, 255, 0.85);
+                border: 1px solid #e5e8eb;
             }
 
             QLabel#ResultScreenshotThumb {
-                background: rgba(255, 255, 255, 0.95);
+                background: #ffffff;
                 border-radius: 12px;
-                border: 1px solid rgba(198, 205, 255, 0.85);
+                border: 1px solid #e5e8eb;
                 padding: 4px;
             }
 
@@ -659,30 +773,30 @@ class MainWindow(QMainWindow):
             }
 
             QFrame#ScenarioCard {
-                background: rgba(255, 255, 255, 0.68);
+                background: #ffffff;
                 border-radius: 20px;
-                border: 1px solid rgba(255, 255, 255, 0.38);
+                border: 1px solid #e5e8eb;
             }
 
             QLabel#ScenarioId {
                 font-weight: 600;
                 font-size: 13px;
-                color: #4b4f73;
+                color: #6b7684;
             }
 
             QLabel#ScenarioTitle {
                 font-size: 15px;
                 font-weight: 600;
-                color: #181b3d;
+                color: #191f28;
             }
 
             QLabel[role="step-text"] {
-                color: #3a3d5e;
+                color: #4e5968;
                 font-size: 13px;
             }
 
             QLabel[role="assertion-text"] {
-                color: #2563eb;
+                color: #1b64da;
                 font-weight: 600;
                 font-size: 13px;
             }
@@ -715,21 +829,21 @@ class MainWindow(QMainWindow):
             }
 
             QFrame#OverallProgressCard {
-                background: rgba(255, 255, 255, 0.85);
+                background: #ffffff;
                 border-radius: 26px;
-                border: 1px solid rgba(255, 255, 255, 0.4);
+                border: 1px solid #e5e8eb;
             }
 
             QLabel#OverallProgressDetail {
                 font-size: 14px;
-                color: #1f2937;
+                color: #191f28;
                 font-weight: 600;
             }
 
             QFrame#ScenarioProgressPanel {
-                background: rgba(255, 255, 255, 0.85);
+                background: #ffffff;
                 border-radius: 26px;
-                border: 1px solid rgba(255, 255, 255, 0.4);
+                border: 1px solid #e5e8eb;
             }
 
             QScrollArea#ScenarioProgressScroll {
@@ -756,36 +870,36 @@ class MainWindow(QMainWindow):
 
             QLabel#TestProgressCode {
                 font-weight: 600;
-                color: #1f2937;
+                color: #191f28;
                 font-size: 12px;
             }
 
             QFrame#BusyOverlay {
-                background: rgba(18, 23, 46, 0.25);
+                background: rgba(25, 31, 40, 0.28);
             }
 
             QFrame#OverlayContainer {
-                background: rgba(255, 255, 255, 0.86);
+                background: rgba(255, 255, 255, 0.96);
                 border-radius: 28px;
-                border: 1px solid rgba(255, 255, 255, 0.45);
+                border: 1px solid #e5e8eb;
                 min-width: 320px;
             }
 
             QLabel#OverlayLabel {
-                color: #1e2349;
+                color: #191f28;
                 font-size: 15px;
                 font-weight: 600;
             }
 
             QLabel#OverlayElapsedLabel {
-                color: #5b5ff7;
+                color: #3182f6;
                 font-size: 24px;
                 font-weight: 700;
                 margin-top: 8px;
             }
 
             QLabel#OverlayHintLabel {
-                color: #64698b;
+                color: #6b7684;
                 font-size: 12px;
                 font-weight: 500;
                 margin-top: 4px;
@@ -795,6 +909,7 @@ class MainWindow(QMainWindow):
 
         self._workflow_stack: QStackedWidget
         self._setup_page: QWidget
+        self._benchmark_page: QWidget
         self._review_page: QWidget
         self._drop_area: DropArea
         self._checklist_view: QListWidget
@@ -825,7 +940,10 @@ class MainWindow(QMainWindow):
         self._log_output = None
         self._view_logs_button = None
         self._is_busy = False
+        self._workflow_stage = "setup"
         self._benchmark_catalog: list[dict[str, Any]] = []
+        self._selected_benchmark_site_key: str = ""
+        self._selected_benchmark_url: str = ""
         self._build_layout()
         self._setup_screencast()
 
@@ -865,11 +983,13 @@ class MainWindow(QMainWindow):
 
         self._workflow_stack = QStackedWidget(control_panel)
         self._setup_page = self._create_setup_stage(control_panel)
+        self._benchmark_page = self._create_benchmark_stage(control_panel)
         self._review_page = self._create_review_stage(control_panel)
         self._exploration_page = ExplorationViewer(control_panel)
         self._exploration_page.back_requested.connect(self.show_setup_stage)
         self._exploration_page.replay_requested.connect(self._show_replay_html)
         self._workflow_stack.addWidget(self._setup_page)
+        self._workflow_stack.addWidget(self._benchmark_page)
         self._workflow_stack.addWidget(self._review_page)
         self._workflow_stack.addWidget(self._exploration_page)
         control_layout.addWidget(self._workflow_stack, stretch=1)
@@ -993,6 +1113,7 @@ class MainWindow(QMainWindow):
             page,
         )
         source_hint.setWordWrap(True)
+        source_hint.setObjectName("FeatureHintLabel")
         layout.addWidget(source_hint)
 
         mode_label = QLabel("2. 실행 모드", page)
@@ -1031,7 +1152,7 @@ class MainWindow(QMainWindow):
         self._benchmark_mode_button = QPushButton("벤치마킹 모드", page)
         self._benchmark_mode_button.setCheckable(True)
         self._benchmark_mode_button.setProperty("modeButton", True)
-        self._benchmark_mode_button.clicked.connect(lambda: self.set_selected_run_mode("benchmark"))
+        self._benchmark_mode_button.clicked.connect(self._activate_benchmark_mode)
         self._run_mode_group.addButton(self._benchmark_mode_button)
         mode_row.addWidget(self._benchmark_mode_button)
         mode_row.addStretch()
@@ -1056,63 +1177,6 @@ class MainWindow(QMainWindow):
         action_row.addStretch()
         action_container_layout.addLayout(action_row)
         layout.addWidget(self._standard_action_container)
-
-        self._benchmark_container = QFrame(page)
-        self._benchmark_container.setObjectName("FeatureInputContainer")
-        benchmark_layout = QVBoxLayout(self._benchmark_container)
-        benchmark_layout.setContentsMargins(12, 12, 12, 12)
-        benchmark_layout.setSpacing(10)
-
-        benchmark_label = QLabel("벤치마킹 대상", self._benchmark_container)
-        benchmark_label.setObjectName("FeatureLabel")
-        benchmark_layout.addWidget(benchmark_label)
-
-        self._benchmark_site_combo = QComboBox(self._benchmark_container)
-        self._benchmark_site_combo.currentIndexChanged.connect(self._on_benchmark_site_changed)
-        benchmark_layout.addWidget(self._benchmark_site_combo)
-
-        benchmark_url_label = QLabel("대상 링크", self._benchmark_container)
-        benchmark_url_label.setObjectName("FeatureLabel")
-        benchmark_layout.addWidget(benchmark_url_label)
-
-        self._benchmark_url_combo = QComboBox(self._benchmark_container)
-        self._benchmark_url_combo.setEditable(True)
-        self._benchmark_url_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        benchmark_layout.addWidget(self._benchmark_url_combo)
-
-        self._benchmark_status_label = QLabel(
-            "사이트를 선택하면 기존 입력 링크와 suite 상태를 보여줍니다.",
-            self._benchmark_container,
-        )
-        self._benchmark_status_label.setWordWrap(True)
-        benchmark_layout.addWidget(self._benchmark_status_label)
-
-        benchmark_button_row = QHBoxLayout()
-        benchmark_button_row.setSpacing(12)
-
-        self._benchmark_add_button = QPushButton("추가하기", self._benchmark_container)
-        self._benchmark_add_button.setObjectName("GhostButton")
-        self._benchmark_add_button.clicked.connect(self._emit_benchmark_save)
-        benchmark_button_row.addWidget(self._benchmark_add_button)
-
-        self._benchmark_run_button = QPushButton("기존 벤치 돌리기", self._benchmark_container)
-        self._benchmark_run_button.clicked.connect(self._emit_benchmark_run)
-        benchmark_button_row.addWidget(self._benchmark_run_button)
-
-        self._benchmark_view_button = QPushButton("벤치 결과 확인하기", self._benchmark_container)
-        self._benchmark_view_button.setObjectName("GhostButton")
-        self._benchmark_view_button.clicked.connect(self._emit_benchmark_view)
-        benchmark_button_row.addWidget(self._benchmark_view_button)
-        benchmark_button_row.addStretch()
-        benchmark_layout.addLayout(benchmark_button_row)
-
-        benchmark_hint = QLabel(
-            "사이트별 링크를 저장해두고, 저장된 suite가 있으면 바로 실행하고 결과 보드를 브라우저 패널에서 확인할 수 있습니다.",
-            self._benchmark_container,
-        )
-        benchmark_hint.setWordWrap(True)
-        benchmark_layout.addWidget(benchmark_hint)
-        layout.addWidget(self._benchmark_container)
 
         # 특정 기능 테스트 입력창 (처음엔 숨김)
         self._feature_input_container = QFrame(page)
@@ -1178,6 +1242,111 @@ class MainWindow(QMainWindow):
         chat_row.addWidget(self._chat_send_button)
         layout.addLayout(chat_row)
 
+        layout.addStretch(1)
+
+        scroll.setWidget(page)
+        return scroll
+
+    def _create_benchmark_stage(self, parent: QWidget) -> QWidget:
+        scroll = QScrollArea(parent)
+        scroll.setObjectName("StageScrollArea")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        page = QWidget(scroll)
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(16)
+
+        title_label = QLabel("벤치마킹", page)
+        title_label.setObjectName("BenchmarkStageTitle")
+        layout.addWidget(title_label)
+
+        card = QFrame(page)
+        card.setObjectName("BenchmarkStageCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(18, 18, 18, 18)
+        card_layout.setSpacing(14)
+
+        portal = QFrame(card)
+        portal.setObjectName("BenchmarkPortalPanel")
+        portal_layout = QVBoxLayout(portal)
+        portal_layout.setContentsMargins(16, 16, 16, 16)
+        portal_layout.setSpacing(10)
+
+        portal_image = GuiAssetLabel(
+            "benchmark_empty_state.png",
+            parent=portal,
+            min_height=108,
+            max_height=128,
+            fit="contain",
+        )
+        portal_image.setObjectName("BenchmarkPortalImage")
+        portal_layout.addWidget(portal_image)
+
+        hero_kicker = QLabel("BENCHMARK", portal)
+        hero_kicker.setObjectName("BenchmarkHeroKicker")
+        portal_layout.addWidget(hero_kicker)
+
+        card_title = QLabel("대상 선택 → 테스트 목록 → 실행", portal)
+        card_title.setObjectName("BenchmarkHeroHeadline")
+        card_title.setWordWrap(True)
+        portal_layout.addWidget(card_title)
+        card_layout.addWidget(portal)
+
+        self._benchmark_stage_summary_label = QLabel(
+            "아직 선택된 벤치가 없습니다. 벤치 관리에서 대상 사이트를 골라주세요.",
+            card,
+        )
+        self._benchmark_stage_summary_label.setObjectName("BenchmarkStatusLabel")
+        self._benchmark_stage_summary_label.setWordWrap(True)
+        card_layout.addWidget(self._benchmark_stage_summary_label)
+
+        self._benchmark_stage_detail_label = QLabel(
+            "사이트 목록과 테스트 목록은 관리 화면에서 이어서 선택합니다.",
+            card,
+        )
+        self._benchmark_stage_detail_label.setObjectName("BenchmarkStageSubtitle")
+        self._benchmark_stage_detail_label.setWordWrap(True)
+        card_layout.addWidget(self._benchmark_stage_detail_label)
+
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(8)
+        for text in ("1 대상", "2 테스트", "3 실행"):
+            chip = QLabel(text, card)
+            chip.setObjectName("BenchmarkStageChip")
+            chip_row.addWidget(chip)
+        chip_row.addStretch()
+        card_layout.addLayout(chip_row)
+
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(10)
+        self._benchmark_stage_site_metric = QLabel("사이트 -", card)
+        self._benchmark_stage_site_metric.setObjectName("BenchmarkStageMetric")
+        metrics_row.addWidget(self._benchmark_stage_site_metric)
+        self._benchmark_stage_url_metric = QLabel("링크 -", card)
+        self._benchmark_stage_url_metric.setObjectName("BenchmarkStageMetric")
+        self._benchmark_stage_url_metric.setWordWrap(True)
+        metrics_row.addWidget(self._benchmark_stage_url_metric, stretch=1)
+        card_layout.addLayout(metrics_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(12)
+
+        self._benchmark_add_button = QPushButton("벤치 관리 열기", card)
+        self._benchmark_add_button.clicked.connect(self._emit_benchmark_manage)
+        action_row.addWidget(self._benchmark_add_button)
+
+        self._benchmark_view_button = QPushButton("최근 결과 보기", card)
+        self._benchmark_view_button.setObjectName("GhostButton")
+        self._benchmark_view_button.clicked.connect(self._emit_benchmark_view)
+        action_row.addWidget(self._benchmark_view_button)
+        action_row.addStretch()
+        card_layout.addLayout(action_row)
+
+        layout.addWidget(card)
         layout.addStretch(1)
 
         scroll.setWidget(page)
@@ -1407,10 +1576,19 @@ class MainWindow(QMainWindow):
     # 워크플로 단계 헬퍼
     # ------------------------------------------------------------------
     def show_setup_stage(self) -> None:
+        if self._selected_run_mode == "benchmark":
+            self.show_benchmark_stage()
+            return
         self._workflow_stage = "setup"
         if self._workflow_stack.currentWidget() is not self._setup_page:
             self._workflow_stack.setCurrentWidget(self._setup_page)
         self._back_to_setup_button.setEnabled(False)
+        self._set_browser_panel_visible(False)
+
+    def show_benchmark_stage(self) -> None:
+        self._workflow_stage = "benchmark"
+        if self._workflow_stack.currentWidget() is not self._benchmark_page:
+            self._workflow_stack.setCurrentWidget(self._benchmark_page)
         self._set_browser_panel_visible(False)
 
     def show_setup_stage_with_browser(self) -> None:
@@ -1647,14 +1825,8 @@ class MainWindow(QMainWindow):
         )
         self._drop_area.setEnabled(not busy)
         self._url_input.setEnabled(not busy)
-        if hasattr(self, "_benchmark_site_combo"):
-            self._benchmark_site_combo.setEnabled(not busy)
-        if hasattr(self, "_benchmark_url_combo"):
-            self._benchmark_url_combo.setEnabled(not busy)
         if hasattr(self, "_benchmark_add_button"):
             self._benchmark_add_button.setEnabled(not busy)
-        if hasattr(self, "_benchmark_run_button"):
-            self._benchmark_run_button.setEnabled(not busy)
         if hasattr(self, "_benchmark_view_button"):
             self._benchmark_view_button.setEnabled(not busy)
         if hasattr(self, "_source_none_button"):
@@ -1681,6 +1853,9 @@ class MainWindow(QMainWindow):
     def set_url_field(self, url: str) -> None:
         self._url_input.setText(url)
 
+    def get_url_field_value(self) -> str:
+        return self._url_input.text().strip()
+
     def set_feature_query(self, query: str) -> None:
         if not hasattr(self, "_feature_input"):
             return
@@ -1696,31 +1871,56 @@ class MainWindow(QMainWindow):
         selected_url: str | None = None,
     ) -> None:
         self._benchmark_catalog = [dict(item) for item in catalog]
-        if not hasattr(self, "_benchmark_site_combo"):
-            return
-        self._benchmark_site_combo.blockSignals(True)
-        self._benchmark_site_combo.clear()
-        for item in self._benchmark_catalog:
-            self._benchmark_site_combo.addItem(str(item.get("label") or item.get("key") or "-"), str(item.get("key") or ""))
-        selected_index = 0
-        if selected_site_key:
-            for idx, item in enumerate(self._benchmark_catalog):
-                if str(item.get("key") or "") == str(selected_site_key):
-                    selected_index = idx
+        effective_site_key = str(selected_site_key or self._selected_benchmark_site_key or "").strip()
+        selected_item: Mapping[str, Any] | None = None
+        if effective_site_key:
+            for item in self._benchmark_catalog:
+                if str(item.get("key") or "").strip() == effective_site_key:
+                    selected_item = item
                     break
-        self._benchmark_site_combo.setCurrentIndex(selected_index if self._benchmark_catalog else -1)
-        self._benchmark_site_combo.blockSignals(False)
-        self._update_benchmark_url_choices(selected_url=selected_url)
+        if selected_item is None and self._benchmark_catalog:
+            selected_item = self._benchmark_catalog[0]
+        self._selected_benchmark_site_key = str((selected_item or {}).get("key") or "").strip()
+        self._selected_benchmark_url = str(
+            selected_url
+            or (selected_item or {}).get("default_url")
+            or self._selected_benchmark_url
+            or ""
+        ).strip()
+
+        if hasattr(self, "_benchmark_stage_summary_label"):
+            if selected_item is None:
+                self._benchmark_stage_summary_label.setText(
+                    "아직 선택된 벤치가 없습니다. 벤치 관리에서 대상 사이트를 골라주세요."
+                )
+                if hasattr(self, "_benchmark_stage_detail_label"):
+                    self._benchmark_stage_detail_label.setText(
+                        "벤치 관리에서 대상 목록을 고르면 테스트 목록과 실행 버튼이 이어서 보입니다."
+                    )
+                if hasattr(self, "_benchmark_stage_site_metric"):
+                    self._benchmark_stage_site_metric.setText("사이트 -")
+                if hasattr(self, "_benchmark_stage_url_metric"):
+                    self._benchmark_stage_url_metric.setText("링크 -")
+            else:
+                label = str(selected_item.get("label") or selected_item.get("key") or "-")
+                status_text = str(selected_item.get("status_text") or "")
+                self._benchmark_stage_summary_label.setText(
+                    f"선택된 대상: {label}\n{self._selected_benchmark_url or '-'}"
+                )
+                if hasattr(self, "_benchmark_stage_detail_label"):
+                    self._benchmark_stage_detail_label.setText(
+                        status_text or "관리 화면에서 테스트 목록을 고르고 실행할 수 있습니다."
+                    )
+                if hasattr(self, "_benchmark_stage_site_metric"):
+                    self._benchmark_stage_site_metric.setText(f"사이트 {label}")
+                if hasattr(self, "_benchmark_stage_url_metric"):
+                    self._benchmark_stage_url_metric.setText(f"링크 {self._selected_benchmark_url or '-'}")
 
     def get_selected_benchmark_site(self) -> str:
-        if not hasattr(self, "_benchmark_site_combo"):
-            return ""
-        return str(self._benchmark_site_combo.currentData() or "").strip()
+        return self._selected_benchmark_site_key
 
     def get_selected_benchmark_url(self) -> str:
-        if not hasattr(self, "_benchmark_url_combo"):
-            return ""
-        return str(self._benchmark_url_combo.currentText() or "").strip()
+        return self._selected_benchmark_url
 
     def show_html_in_browser(self, html_content: str) -> None:
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
@@ -1851,6 +2051,8 @@ class MainWindow(QMainWindow):
     def _record_result_screenshot(self, screenshot_base64: str) -> None:
         shot = str(screenshot_base64 or "").strip()
         if not shot:
+            return
+        if is_low_information_screenshot(shot):
             return
         if self._result_screenshot_history and self._result_screenshot_history[-1] == shot:
             return
@@ -2002,6 +2204,10 @@ class MainWindow(QMainWindow):
     def _sync_feature_query(self, text: str) -> None:
         self._current_feature_query = str(text or "").strip()
 
+    def _activate_benchmark_mode(self) -> None:
+        self.set_selected_run_mode("benchmark")
+        self._emit_benchmark_manage()
+
     def set_selected_run_mode(self, mode: str) -> None:
         normalized = mode if mode in {"quick", "ai", "bundle", "benchmark"} else "quick"
         self._selected_run_mode = normalized
@@ -2023,8 +2229,10 @@ class MainWindow(QMainWindow):
             self._feature_input_container.setVisible(normalized == "quick")
         if hasattr(self, "_standard_action_container"):
             self._standard_action_container.setVisible(normalized != "benchmark")
-        if hasattr(self, "_benchmark_container"):
-            self._benchmark_container.setVisible(normalized == "benchmark")
+        if normalized == "benchmark":
+            self.show_benchmark_stage()
+        elif self._workflow_stage == "benchmark":
+            self.show_setup_stage()
 
     def set_selected_input_source(self, source: str) -> None:
         normalized = source if source in {"none", "file", "bundle"} else "none"
@@ -2046,34 +2254,11 @@ class MainWindow(QMainWindow):
     def get_selected_run_mode(self) -> str:
         return self._selected_run_mode
 
-    def _on_benchmark_site_changed(self) -> None:
-        self._update_benchmark_url_choices()
-
-    def _update_benchmark_url_choices(self, *, selected_url: str | None = None) -> None:
-        if not hasattr(self, "_benchmark_url_combo"):
-            return
-        site_key = self.get_selected_benchmark_site()
-        selected = None
-        for item in self._benchmark_catalog:
-            if str(item.get("key") or "") == site_key:
-                selected = item
-                break
-        urls = [str(item).strip() for item in list((selected or {}).get("urls") or []) if str(item).strip()]
-        default_url = str((selected or {}).get("default_url") or "").strip()
-        effective_url = str(selected_url or "").strip() or default_url
-        self._benchmark_url_combo.blockSignals(True)
-        self._benchmark_url_combo.clear()
-        for url in urls:
-            self._benchmark_url_combo.addItem(url)
-        if effective_url and effective_url not in urls:
-            self._benchmark_url_combo.addItem(effective_url)
-        self._benchmark_url_combo.setCurrentText(effective_url)
-        self._benchmark_url_combo.blockSignals(False)
-        status_text = str((selected or {}).get("status_text") or "상태 정보 없음")
-        self._benchmark_status_label.setText(f"{status_text} · 저장 링크 {len(urls)}개")
-
     def _emit_benchmark_save(self) -> None:
         self.benchmarkSaveRequested.emit(self.get_selected_benchmark_site(), self.get_selected_benchmark_url())
+
+    def _emit_benchmark_manage(self) -> None:
+        self.benchmarkManageRequested.emit(self.get_selected_benchmark_site(), self.get_selected_benchmark_url())
 
     def _emit_benchmark_run(self) -> None:
         self.benchmarkRunRequested.emit(self.get_selected_benchmark_site(), self.get_selected_benchmark_url())

@@ -28,7 +28,7 @@ class LLMVisionClient:
             "base_url_env": "",
             "model_env": "",
             "default_base_url": "",
-            "default_model": "gpt-5.4",
+            "default_model": "gpt-5.5",
             "display_name": "OpenAI",
         },
         "ollama": {
@@ -132,7 +132,7 @@ class LLMVisionClient:
             or str(provider_config["default_model"])
         ).strip()
         if self.provider == "openai" and configured_model.lower().startswith("gemini-"):
-            configured_model = "gpt-5.4"
+            configured_model = "gpt-5.5"
         self.model = configured_model
         self._auth_source = self._load_auth_source(self.provider)
         model_prefers_codex = "codex" in self.model.lower()

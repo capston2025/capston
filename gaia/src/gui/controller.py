@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -26,14 +27,16 @@ from gaia.src.utils.models import Assertion, TestScenario, TestStep
 from gaia.src.utils.plan_repository import PlanRepository
 
 from gaia.src.gui.analysis_worker import AnalysisWorker
+from gaia.src.gui.benchmark_manager_dialog import BenchmarkManagerDialog
 from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker, BenchmarkWorker
-from gaia.src.gui.benchmark_mode import (
-    BENCHMARK_PRESETS,
+from gaia.src.benchmark_manager import (
     BenchmarkPreset,
-    build_benchmark_catalog,
-    find_preset,
+    build_benchmark_site_catalog,
+    build_single_scenario_suite_payload,
     load_benchmark_registry,
+    load_suite_payload,
     render_benchmark_reports_html,
+    resolve_benchmark_site,
     save_benchmark_registry,
     scan_benchmark_reports,
     upsert_benchmark_site_url,
@@ -47,6 +50,23 @@ TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.js
 class ControllerConfig:
     pdf_loader: PDFLoader | None = None
     analyzer: SpecAnalyzer | None = None
+
+
+def _parse_kv_tokens(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        tokens = shlex.split(str(raw or ""))
+    except ValueError:
+        tokens = str(raw or "").split()
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        clean_key = key.strip()
+        clean_value = value.strip().strip('"').strip("'")
+        if clean_key and clean_value:
+            out[clean_key] = clean_value
+    return out
 
 
 class AppController(QObject):
@@ -89,6 +109,7 @@ class AppController(QObject):
         self._blocked_reason: str = ""
         self._active_steering_policy: dict[str, Any] = {}
         self._benchmark_registry = load_benchmark_registry()
+        self._benchmark_manager_dialog: BenchmarkManagerDialog | None = None
         self._pending_intervention: dict[str, Any] | None = None
         self._pending_intervention_event: threading.Event | None = None
         self._plan: Sequence[TestScenario] = ()
@@ -115,6 +136,7 @@ class AppController(QObject):
         self._window.cancelRequested.connect(self._on_cancel_requested)
         self._window.chatMessageSubmitted.connect(self._on_chat_message_submitted)
         self._window.urlSubmitted.connect(self._on_url_submitted)
+        self._window.benchmarkManageRequested.connect(self._on_benchmark_manage_requested)
         self._window.benchmarkSaveRequested.connect(self._on_benchmark_save_requested)
         self._window.benchmarkRunRequested.connect(self._on_benchmark_run_requested)
         self._window.benchmarkViewRequested.connect(self._on_benchmark_view_requested)
@@ -222,10 +244,24 @@ class AppController(QObject):
             test_data=({"steering_policy": dict(self._active_steering_policy)} if self._active_steering_policy else {}),
         )
 
+    def _resolve_analysis_base_url(self) -> str:
+        candidate = str(self._current_url or "").strip()
+        if candidate:
+            return candidate
+        getter = getattr(self._window, "get_url_field_value", None)
+        if callable(getter):
+            try:
+                candidate = str(getter() or "").strip()
+            except Exception:
+                candidate = ""
+        if candidate:
+            self._current_url = candidate
+        return candidate
+
     def _hub_context(self) -> HubContext:
         return HubContext(
             provider=str(os.getenv("GAIA_LLM_PROVIDER") or "openai"),
-            model=str(os.getenv("GAIA_LLM_MODEL") or "gpt-5.4"),
+            model=str(os.getenv("GAIA_LLM_MODEL") or "gpt-5.5"),
             auth_strategy=str(os.getenv("GAIA_AUTH_STRATEGY") or "reuse"),
             url=str(self._current_url or ""),
             runtime="gui",
@@ -349,9 +385,10 @@ class AppController(QObject):
         if suffix != ".pdf":
             self._window.append_log(f"📄 기획서 로딩: {path.name}")
             try:
+                base_url = self._resolve_analysis_base_url()
                 bundle = ingest_prd_bundle(
                     input_path=path,
-                    base_url=self._current_url,
+                    base_url=base_url,
                 )
                 bundle_path = self._bundle_repository.save_bundle(bundle)
             except Exception as exc:
@@ -424,9 +461,15 @@ class AppController(QObject):
         # GUI에서 feature_query 가져오기
         feature_query = self._window.get_feature_query()
         self._current_feature_query = feature_query  # ICR 측정용 저장
+        base_url = self._resolve_analysis_base_url()
 
         thread = QThread(self)
-        worker = AnalysisWorker(pdf_text, analyzer=self._analyzer, feature_query=feature_query)
+        worker = AnalysisWorker(
+            pdf_text,
+            analyzer=self._analyzer,
+            feature_query=feature_query,
+            base_url=base_url,
+        )
         worker.moveToThread(thread)
 
         # 시그널 연결
@@ -980,7 +1023,7 @@ class AppController(QObject):
         selected_site_key: str | None = None,
         selected_url: str | None = None,
     ) -> None:
-        catalog = build_benchmark_catalog(self._benchmark_registry)
+        catalog, _ = build_benchmark_site_catalog(self._benchmark_registry)
         self._window.set_benchmark_catalog(
             catalog,
             selected_site_key=selected_site_key or (catalog[0]["key"] if catalog else None),
@@ -988,10 +1031,48 @@ class AppController(QObject):
         )
 
     @Slot(str, str)
+    def _on_benchmark_manage_requested(self, site_key: str, url: str) -> None:
+        if self._benchmark_manager_dialog is not None:
+            self._benchmark_manager_dialog.raise_()
+            self._benchmark_manager_dialog.activateWindow()
+            return
+        dialog = BenchmarkManagerDialog(
+            workspace_root=Path(__file__).resolve().parents[3],
+            selected_site_key=str(site_key or "").strip(),
+            selected_url=str(url or "").strip(),
+            parent=self._window,
+        )
+        dialog.catalogMutated.connect(self._on_benchmark_catalog_mutated)
+        dialog.runRequested.connect(self._on_benchmark_manager_run_requested)
+        dialog.viewRequested.connect(self._on_benchmark_view_requested)
+        dialog.finished.connect(self._on_benchmark_manager_closed)
+        self._benchmark_manager_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    @Slot(int)
+    def _on_benchmark_manager_closed(self, _result: int) -> None:
+        self._benchmark_manager_dialog = None
+
+    @Slot(str, str)
+    def _on_benchmark_catalog_mutated(self, site_key: str, url: str) -> None:
+        self._benchmark_registry = load_benchmark_registry()
+        self._refresh_benchmark_catalog(
+            selected_site_key=str(site_key or "").strip() or None,
+            selected_url=str(url or "").strip() or None,
+        )
+        self._window.append_log("💾 GUI 벤치 관리 변경사항을 반영했습니다.")
+
+    @Slot(str, str, str)
+    def _on_benchmark_manager_run_requested(self, site_key: str, url: str, scenario_id: str) -> None:
+        self._run_benchmark_request(site_key=site_key, url=url, scenario_id=scenario_id)
+
+    @Slot(str, str)
     def _on_benchmark_save_requested(self, site_key: str, url: str) -> None:
         clean_site = str(site_key or "").strip()
         clean_url = str(url or "").strip()
-        preset = find_preset(clean_site)
+        preset = resolve_benchmark_site(self._benchmark_registry, clean_site)
         if preset is None:
             self._window.append_log("⚠️ 저장할 벤치 사이트를 먼저 선택해주세요.")
             return
@@ -1006,9 +1087,13 @@ class AppController(QObject):
 
     @Slot(str, str)
     def _on_benchmark_run_requested(self, site_key: str, url: str) -> None:
+        self._run_benchmark_request(site_key=site_key, url=url, scenario_id="")
+
+    def _run_benchmark_request(self, *, site_key: str, url: str, scenario_id: str = "") -> None:
         clean_site = str(site_key or "").strip()
         clean_url = str(url or "").strip()
-        preset = find_preset(clean_site)
+        clean_scenario_id = str(scenario_id or "").strip()
+        preset = resolve_benchmark_site(self._benchmark_registry, clean_site)
         if preset is None:
             self._window.append_log("⚠️ 실행할 벤치 사이트를 먼저 선택해주세요.")
             return
@@ -1030,15 +1115,36 @@ class AppController(QObject):
         self._window.reset_result_summary()
         self._sync_execution_status()
         self._window.set_busy(True, message=f"{preset.label} 벤치를 실행하는 중이에요…")
-        self._start_benchmark_worker(preset, clean_url or preset.default_url)
+        suite_payload: dict[str, Any] | None = None
+        run_tag = clean_scenario_id or "full_suite"
+        if clean_scenario_id:
+            suite_payload = build_single_scenario_suite_payload(
+                load_suite_payload(Path(__file__).resolve().parents[3], preset.suite_path or ""),
+                clean_scenario_id,
+            )
+        self._start_benchmark_worker(
+            preset,
+            clean_url or preset.default_url,
+            suite_payload=suite_payload,
+            run_tag=run_tag,
+        )
 
-    def _start_benchmark_worker(self, preset: BenchmarkPreset, target_url: str) -> None:
+    def _start_benchmark_worker(
+        self,
+        preset: BenchmarkPreset,
+        target_url: str,
+        *,
+        suite_payload: Mapping[str, Any] | None = None,
+        run_tag: str = "full_suite",
+    ) -> None:
         thread = QThread(self)
         worker = BenchmarkWorker(
             site_key=preset.key,
             site_label=preset.label,
             suite_path=preset.suite_path or "",
+            suite_payload=suite_payload,
             target_url=target_url,
+            run_tag=run_tag,
             workspace_root=Path(__file__).resolve().parents[3],
         )
         worker.moveToThread(thread)
@@ -1058,7 +1164,7 @@ class AppController(QObject):
     @Slot(str, str)
     def _on_benchmark_view_requested(self, site_key: str, url: str) -> None:
         clean_site = str(site_key or "").strip()
-        preset = find_preset(clean_site)
+        preset = resolve_benchmark_site(self._benchmark_registry, clean_site)
         if preset is None:
             self._window.append_log("⚠️ 결과를 볼 벤치 사이트를 먼저 선택해주세요.")
             return
@@ -1071,6 +1177,7 @@ class AppController(QObject):
             workspace_root=Path(__file__).resolve().parents[3],
             site_key=clean_site,
             selected_url=selected_url,
+            registry_payload=self._benchmark_registry,
         )
         html_doc = render_benchmark_reports_html(
             site_label=preset.label,
@@ -1325,6 +1432,7 @@ class AppController(QObject):
             workspace_root=Path(__file__).resolve().parents[3],
             site_key=site_key,
             selected_url=target_url,
+            registry_payload=self._benchmark_registry,
         )
         html_doc = render_benchmark_reports_html(
             site_label=site_label,
@@ -1399,10 +1507,9 @@ class AppController(QObject):
                 self._window.append_chat_message("GAIA", "대기 중인 개입 요청이 없습니다.")
                 return
             response: dict[str, Any] = {"action": "resume", "proceed": True}
-            if "otp=" in lowered:
-                otp = text.split("otp=", 1)[1].strip()
-                if otp:
-                    response["otp"] = otp
+            parts = text.split(maxsplit=1)
+            if len(parts) == 2:
+                response.update(_parse_kv_tokens(parts[1]))
             self._pending_intervention["_response"] = response
             self._pending_intervention_event.set()
             self._blocked_reason = ""

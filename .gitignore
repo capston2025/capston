@@ -89,6 +89,10 @@ vendor/openclaw/dist-runtime/
 *.bmp
 *.ico
 
+# Allow committed GUI runtime assets.
+!gaia/src/gui/assets/
+!gaia/src/gui/assets/*.png
+
 # Presentation binaries
 *.ppt
 *.pptx

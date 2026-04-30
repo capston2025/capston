@@ -21,7 +21,7 @@ python scripts/lint_harness_docs.py
 ```bash
 python -m gaia.cli chat \
   --llm-provider openai \
-  --llm-model gpt-5.4 \
+  --llm-model gpt-5.5 \
   --auth reuse \
   --auth-method oauth \
   --url https://inuu-timetable.vercel.app/ \
@@ -349,7 +349,7 @@ python -m pip install -e .
 ```bash
 python -m gaia.cli chat \
   --llm-provider openai \
-  --llm-model gpt-5.4 \
+  --llm-model gpt-5.5 \
   --auth reuse \
   --auth-method oauth \
   --url https://inuu-timetable.vercel.app/ \

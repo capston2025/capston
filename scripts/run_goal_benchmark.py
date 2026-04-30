@@ -408,7 +408,7 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--provider", default="")
-    parser.add_argument("--model", default="gpt-5.4")
+    parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--timeout-cap", type=int, default=600)
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")

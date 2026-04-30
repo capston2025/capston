@@ -72,6 +72,7 @@ def test_prepare_scenario_env_sets_codex_runtime_guards() -> None:
 
 
 def test_infer_provider_from_model_handles_openai_gemini_and_ollama() -> None:
+    assert _infer_provider_from_model("gpt-5.5") == "openai"
     assert _infer_provider_from_model("gpt-5.4") == "openai"
     assert _infer_provider_from_model("gpt-5.3-codex") == "openai"
     assert _infer_provider_from_model("gemini-2.5-pro") == "gemini"
