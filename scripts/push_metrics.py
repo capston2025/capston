@@ -184,6 +184,16 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
             declared,
         ))
 
+        # 시나리오 설명 메트릭 (goal 텍스트를 라벨로 push)
+        goal = str(runs[0].get("goal") or "")[:200].replace("\n", " ").replace('"', "'")
+        lines.extend(_gauge(
+            "gaia_scenario_info",
+            "Scenario description (goal)",
+            1,
+            {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name, "goal": goal},
+            declared,
+        ))
+
     return "\n".join(lines) + "\n"
 
 
