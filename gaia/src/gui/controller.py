@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -49,6 +50,23 @@ TELEGRAM_BRIDGE_STATUS_FILE = Path.home() / ".gaia" / "telegram_bridge.status.js
 class ControllerConfig:
     pdf_loader: PDFLoader | None = None
     analyzer: SpecAnalyzer | None = None
+
+
+def _parse_kv_tokens(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        tokens = shlex.split(str(raw or ""))
+    except ValueError:
+        tokens = str(raw or "").split()
+    for token in tokens:
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        clean_key = key.strip()
+        clean_value = value.strip().strip('"').strip("'")
+        if clean_key and clean_value:
+            out[clean_key] = clean_value
+    return out
 
 
 class AppController(QObject):
@@ -1489,10 +1507,9 @@ class AppController(QObject):
                 self._window.append_chat_message("GAIA", "대기 중인 개입 요청이 없습니다.")
                 return
             response: dict[str, Any] = {"action": "resume", "proceed": True}
-            if "otp=" in lowered:
-                otp = text.split("otp=", 1)[1].strip()
-                if otp:
-                    response["otp"] = otp
+            parts = text.split(maxsplit=1)
+            if len(parts) == 2:
+                response.update(_parse_kv_tokens(parts[1]))
             self._pending_intervention["_response"] = response
             self._pending_intervention_event.set()
             self._blocked_reason = ""

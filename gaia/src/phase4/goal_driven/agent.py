@@ -185,6 +185,7 @@ from gaia.src.phase4.orchestrator import MasterOrchestrator
 from .text_llm_runtime import call_llm_text_only as call_llm_text_only_impl
 from .captcha_observer_runtime import run_captcha_observer as run_captcha_observer_impl
 from .wrapper_trace_runtime import thin_wrapper_enabled
+from .human_answer_runtime import parse_human_answer_request, request_human_answer
 
 
 class GoalDrivenAgent:
@@ -1640,6 +1641,40 @@ class GoalDrivenAgent:
                     self._log(
                         f"♻️ 불일치 재수집 후 최종 결정: {decision.action.value} - {decision.reasoning}"
                     )
+
+            human_answer_request = (
+                parse_human_answer_request(decision.value)
+                if decision.action == ActionType.WAIT
+                else {}
+            )
+            if human_answer_request:
+                ok, answer_reason = request_human_answer(
+                    self,
+                    goal,
+                    human_answer_request,
+                )
+                steps.append(
+                    StepResult(
+                        step_number=step_count,
+                        action=decision,
+                        success=ok,
+                        error_message=None if ok else answer_reason,
+                        duration_ms=int((time.time() - step_start) * 1000),
+                    )
+                )
+                if ok:
+                    self._log(f"🙋 human_answer skill 완료: {answer_reason}")
+                    self._action_feedback.append(answer_reason)
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+                    continue
+                return self._build_failure_result(
+                    goal=goal,
+                    steps=steps,
+                    step_count=step_count,
+                    start_time=start_time,
+                    reason=answer_reason,
+                )
 
             if decision.action == ActionType.WAIT:
                 self._consecutive_wait_count = int(getattr(self, "_consecutive_wait_count", 0) or 0) + 1

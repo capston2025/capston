@@ -24,9 +24,10 @@ from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, Goa
 from gaia.src.phase4.goal_driven.policies.filter import filter_goal_requires_semantic_validation
 from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
 from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
-from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session
+from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session, execute_mcp_action
 from gaia.src.phase4.validation_rail import run_validation_rail
 from gaia.src.phase4.session import WORKSPACE_DEFAULT
+from gaia.src.screenshot_quality import is_low_information_screenshot
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
 from gaia.src.utils.models import TestScenario
@@ -815,6 +816,77 @@ def _limit_attachments_for_status(
     return images
 
 
+def _capture_final_evidence_attachment(session_id: str) -> Optional[Dict[str, Any]]:
+    """Capture proof before the runner closes the browser session."""
+    last_error = ""
+    for attempt in range(2):
+        if attempt:
+            time.sleep(0.45)
+        try:
+            response = execute_mcp_action(
+                CONFIG.mcp.host_url,
+                action="browser_screenshot",
+                params={
+                    "session_id": session_id,
+                    "full_page": False,
+                    "type": "png",
+                },
+                timeout=90,
+            )
+            data = response.payload if not hasattr(response, "json") else response.json()
+            if int(getattr(response, "status_code", 500) or 500) >= 400:
+                last_error = str(data.get("detail") or data.get("error") or getattr(response, "text", "") or "")
+                continue
+            screenshot = str(data.get("screenshot") or "").strip()
+            if not screenshot:
+                last_error = "empty_screenshot"
+                continue
+            current_url = str(data.get("current_url") or "").strip()
+            if current_url.lower() == "about:blank":
+                last_error = "about_blank_screenshot"
+                continue
+            if is_low_information_screenshot(screenshot):
+                last_error = "low_information_screenshot"
+                continue
+            attachment: Dict[str, Any] = {
+                "kind": "image_base64",
+                "mime": str(data.get("mime_type") or "image/png"),
+                "data": screenshot,
+                "label": "최종 증거 화면",
+            }
+            saved_path = str(data.get("saved_path") or "").strip()
+            if saved_path:
+                attachment["path"] = saved_path
+            if current_url:
+                attachment["current_url"] = current_url
+            return attachment
+        except Exception as exc:
+            last_error = str(exc)
+    if last_error:
+        return {
+            "kind": "evidence_capture_error",
+            "reason": last_error,
+        }
+    return None
+
+
+def _captured_snapshot_attachments(captured_shots: Sequence[str]) -> List[Dict[str, Any]]:
+    sample = [
+        shot
+        for shot in list(captured_shots or [])[-3:]
+        if isinstance(shot, str) and shot.strip() and not is_low_information_screenshot(shot)
+    ]
+    return [
+        {
+            "kind": "image_base64",
+            "mime": "image/png",
+            "data": shot,
+            "label": f"실행 스냅샷 {idx + 1}/{len(sample)}",
+        }
+        for idx, shot in enumerate(sample)
+    ]
+
+
 def _merge_reason_code_summary(
     base: Dict[str, Any],
     extra: Dict[str, Any],
@@ -1043,6 +1115,21 @@ def _run_single_chat_goal(
             dom_elements=final_dom,
         )
 
+        validation_attachments = (
+            validation_report.get("attachments")
+            if isinstance(validation_report.get("attachments"), list)
+            else []
+        )
+        evidence_attachment = _capture_final_evidence_attachment(normalized_session_id)
+        summary_attachments: List[Dict[str, Any]] = []
+        if isinstance(evidence_attachment, dict) and evidence_attachment.get("kind") == "image_base64":
+            summary_attachments.append(evidence_attachment)
+        else:
+            summary_attachments.extend(_captured_snapshot_attachments(captured_shots))
+        summary_attachments.extend(
+            item for item in validation_attachments if isinstance(item, dict)
+        )
+
         summary = {
             "goal": result.goal_name,
             "status": "success" if effective_success else "failed",
@@ -1063,24 +1150,10 @@ def _run_single_chat_goal(
             "validation_rail_summary": rail_summary,
             "validation_rail_cases": rail_cases,
             "validation_rail_artifacts": rail_artifacts,
-            "attachments": (
-                validation_report.get("attachments")
-                if isinstance(validation_report.get("attachments"), list)
-                else []
-            ),
+            "attachments": summary_attachments,
         }
-        if not summary["attachments"] and captured_shots:
-            sample = captured_shots[-3:]
-            summary["attachments"] = [
-                {
-                    "kind": "image_base64",
-                    "mime": "image/png",
-                    "data": shot,
-                    "label": f"실행 스냅샷 {idx + 1}/{len(sample)}",
-                }
-                for idx, shot in enumerate(sample)
-                if isinstance(shot, str) and shot.strip()
-            ]
+        if isinstance(evidence_attachment, dict) and evidence_attachment.get("kind") == "evidence_capture_error":
+            summary["evidence_capture_error"] = str(evidence_attachment.get("reason") or "")
         summary["attachments"] = _limit_attachments_for_status(
             summary.get("attachments"),
             final_status=final_status,

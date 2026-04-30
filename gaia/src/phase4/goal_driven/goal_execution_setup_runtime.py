@@ -77,7 +77,7 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     auth_test_data = goal.test_data if isinstance(goal.test_data, dict) else {}
     agent._auth_identifier_values_norm = {
         agent._normalize_text(str(auth_test_data.get(key) or ""))
-        for key in ("username", "email", "login_id", "user_id")
+        for key in ("username", "email", "login_id", "user_id", "student_id", "id", "user")
     }
     agent._auth_identifier_values_norm = {
         value for value in agent._auth_identifier_values_norm if value

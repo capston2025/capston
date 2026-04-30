@@ -683,6 +683,9 @@ def decide_next_action(
 
 ## 진행 위생 규칙
 - mutation/수집/적용 goal에서는 새 CTA를 반복하기 전에 현재 열린 modal/overlay/panel이 목표와 무관하게 진행을 실제로 막는지 먼저 확인하세요. 막고 있을 때만 원래 작업 surface로 복귀하는 한 단계를 우선하고, 임시 성공 토스트/배너처럼 약한 신호는 닫기보다 원래 목표 진행을 우선하세요.
+- 로그인/인증/OTP/보안문자/정답 입력처럼 현재 화면에서 사용자의 실제 값이 필요하지만 `사용 가능한 테스트 데이터`에 그 값이 없으면 추측하지 마세요. 이때는 아래 human_answer skill을 호출하세요.
+- human_answer skill 사용법: `action`은 `wait`, `value`는 JSON 문자열/객체 `{{"skill":"human_answer","question":"사용자에게 물어볼 질문","fields":["필요한_key"],"reason_code":"human_answer_required"}}`로 응답합니다. 필요한 필드명은 현재 화면과 목표를 보고 직접 정하세요.
+- human_answer는 사용자에게 묻기 위한 skill입니다. 버튼 클릭/입력으로 해결 가능한 단계에는 쓰지 말고, 모델이 알 수 없는 실제 비밀값/정답/인증값이 필요할 때만 사용하세요.
 
 {run_history_replay_block}
 
@@ -707,7 +710,7 @@ def decide_next_action(
     \"action\": \"click\" | \"fill\" | \"focus\" | \"press\" | \"scroll\" | \"wait\" | \"select\",
     \"ref_id\": 요소 ref ID (문자열, DOM에 [ref=...]로 표시된 값을 우선 사용; focus/wait면 null 허용),
     \"element_id\": 요소ID (숫자, 없으면 null 허용; focus/wait면 null 허용),
-    \"value\": \"입력값 (fill), target_id/tab_id (focus), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms)\",
+    \"value\": \"입력값 (fill), target_id/tab_id (focus), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms), 또는 human_answer skill JSON\",
     \"reasoning\": \"현재 화면 기준으로 이 행동이 왜 다음 단계인지\",
     \"confidence\": 0.0~1.0,
     \"is_goal_achieved\": true | false,

@@ -8,6 +8,23 @@ from PIL import Image
 from gaia import chat_hub
 
 
+def test_parse_kv_tokens_keeps_dynamic_human_answer_fields() -> None:
+    parsed = chat_hub._parse_kv_tokens('student_id=20201234 otp=123456 answer="cold mans"')
+
+    assert parsed == {
+        "student_id": "20201234",
+        "otp": "123456",
+        "answer": "cold mans",
+    }
+
+
+def test_help_text_advertises_generic_resume_key_values() -> None:
+    help_text = chat_hub._help_text()
+
+    assert "/resume [key=value ...]" in help_text
+    assert 'otp=123456 answer="..." student_id=20201234' in help_text
+
+
 def test_capture_session_screenshot_attachment_uses_dispatch_runtime(monkeypatch) -> None:
     calls: list[tuple[str, str, dict[str, object], object]] = []
 

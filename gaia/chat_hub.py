@@ -5,6 +5,7 @@ import atexit
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -102,7 +103,8 @@ def _help_text() -> str:
         "/session reuse <key>             세션 키 재사용/전환\n"
         "/handoff                         pending 사용자 요청 조회\n"
         "/handoff key=value ...           pending 요청 응답 등록\n"
-        "/resume [otp=123456]             pending 개입을 proceed=true로 재개\n"
+        "/resume [key=value ...]          pending 개입을 proceed=true로 재개\n"
+        "                                 예: /resume otp=123456 answer=\"...\" student_id=20201234\n"
         "/steer <자연어 지시>             자연어 스티어링 정책 설정\n"
         "/steer status                    현재 스티어링 정책 조회\n"
         "/steer clear                     스티어링 정책 해제\n"
@@ -409,7 +411,11 @@ def _notify_session_update(context: HubContext) -> None:
 
 def _parse_kv_tokens(raw: str) -> Dict[str, str]:
     out: Dict[str, str] = {}
-    for token in str(raw or "").split():
+    try:
+        tokens = shlex.split(str(raw or ""))
+    except ValueError:
+        tokens = str(raw or "").split()
+    for token in tokens:
         if "=" not in token:
             continue
         key, value = token.split("=", 1)
@@ -1303,16 +1309,14 @@ def dispatch_command(
     if line.startswith("/handoff"):
         return _handle_handoff_command(context, line)
     if line.startswith("/resume"):
-        otp = ""
+        values: Dict[str, str] = {}
         parts = line.split(maxsplit=1)
         if len(parts) == 2:
-            kv = _parse_kv_tokens(parts[1])
-            otp = str(kv.get("otp") or "").strip()
+            values = _parse_kv_tokens(parts[1])
         if not context.pending_user_input:
             return CommandResult(code=0, output="대기 중인 개입 요청이 없어 /resume 대상이 없습니다.")
         response: Dict[str, Any] = {"action": "continue", "proceed": "true"}
-        if otp:
-            response["otp"] = otp
+        response.update(values)
         context.pending_user_response = response
         _notify_session_update(context)
         return CommandResult(code=0, output="개입 완료 응답을 저장했습니다. 다음 실행에서 재개됩니다.")
