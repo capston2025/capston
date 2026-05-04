@@ -22,6 +22,7 @@ from gaia.src.terminal_benchmark_mode import (
     open_benchmark_report,
     prompt_scenario_fields,
     replace_scenario_in_suite,
+    run_benchmark_suite,
     run_terminal_benchmark_mode,
     save_suite_payload,
     upsert_custom_benchmark_site,
@@ -90,8 +91,9 @@ def test_run_launcher_routes_terminal_benchmark_mode(monkeypatch) -> None:
     monkeypatch.setattr("gaia.cli.load_session_state", lambda session_key: None)
     monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
     monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "benchmark")
-    def _fake_benchmark_runner(*, workspace_root: Path) -> int:
+    def _fake_benchmark_runner(*, workspace_root: Path, push_metrics: bool = False) -> int:
         called["workspace_root"] = workspace_root
+        called["push_metrics"] = push_metrics
         return 37
 
     monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", _fake_benchmark_runner)
@@ -104,6 +106,46 @@ def test_run_launcher_routes_terminal_benchmark_mode(monkeypatch) -> None:
 
     assert result == 37
     assert called["workspace_root"] == _repo_root()
+    assert called["push_metrics"] is False
+
+
+def test_run_launcher_passes_terminal_benchmark_push_metrics_flag(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "gaia.cli._configure_session",
+        lambda parsed, require_url: (
+            "openai",
+            "gpt-5.4",
+            "reuse",
+            None,
+            "terminal",
+            "workspace",
+            "session-1",
+            False,
+        ),
+    )
+    monkeypatch.setattr("gaia.cli.load_session_state", lambda session_key: None)
+    monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
+    monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "benchmark")
+
+    def _fake_benchmark_runner(*, workspace_root: Path, push_metrics: bool = False) -> int:
+        called["workspace_root"] = workspace_root
+        called["push_metrics"] = push_metrics
+        return 0
+
+    monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", _fake_benchmark_runner)
+    monkeypatch.setattr(
+        "gaia.cli._resolve_control_channel",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("control prompt should be skipped")),
+    )
+
+    result = run_launcher(["--terminal", "--push-metrics"])
+
+    assert result == 0
+    assert called["workspace_root"] == _repo_root()
+    assert called["push_metrics"] is True
+
 
 def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path) -> None:
     script = _PromptScript(selections=["종료"])
@@ -170,7 +212,94 @@ def test_run_terminal_benchmark_mode_dispatches_full_suite(tmp_path: Path) -> No
     assert len(calls) == 1
     assert calls[0]["preset"].key == "inu_timetable"
     assert calls[0]["run_tag"] == "full_suite"
+    assert calls[0]["push_metrics"] is False
     assert len(list(calls[0]["suite_payload"]["scenarios"])) > 1
+
+
+def test_run_terminal_benchmark_mode_passes_push_metrics_opt_in(tmp_path: Path) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "이전으로",
+            "종료",
+        ],
+        texts=["y"],
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run_suite_handler(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "summary": {}, "results": [], "output_dir": "/tmp/out"}
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=fake_run_suite_handler,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["push_metrics"] is True
+
+
+def test_run_benchmark_suite_appends_push_metrics_flag_when_enabled(tmp_path: Path) -> None:
+    preset = find_preset("inu_timetable")
+    assert preset is not None
+    captured_cmd: list[str] = []
+
+    class _FakeProcess:
+        def __init__(self, cmd, **kwargs):
+            del kwargs
+            captured_cmd[:] = list(cmd)
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1, "FAIL": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "INUU_001_HOME_LOGIN_VISIBLE", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def wait(self):
+            return 0
+
+    run_benchmark_suite(
+        workspace_root=tmp_path,
+        preset=preset,
+        target_url="https://inuu-timetable.vercel.app/",
+        suite_payload={
+            "suite_id": "inu_timetable_public_v1",
+            "site": {"name": "INU TIMETABLE", "base_url": "https://inuu-timetable.vercel.app/"},
+            "scenarios": [
+                {
+                    "id": "INUU_001_HOME_LOGIN_VISIBLE",
+                    "url": "https://inuu-timetable.vercel.app/",
+                    "goal": "홈 화면 확인",
+                }
+            ],
+        },
+        emit=lambda message: None,
+        run_tag="full_suite",
+        process_factory=_FakeProcess,
+        push_metrics=True,
+    )
+
+    assert "--push-metrics" in captured_cmd
 
 
 def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) -> None:

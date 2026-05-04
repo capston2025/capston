@@ -413,6 +413,7 @@ class BenchmarkWorker(QObject):
         workspace_root: Path,
         run_tag: str = "full_suite",
         timeout_cap: int = 600,
+        push_metrics: bool = False,
     ) -> None:
         super().__init__()
         self._site_key = site_key
@@ -423,6 +424,7 @@ class BenchmarkWorker(QObject):
         self._workspace_root = Path(workspace_root)
         self._run_tag = str(run_tag or "full_suite").strip() or "full_suite"
         self._timeout_cap = max(600, int(timeout_cap))
+        self._push_metrics = bool(push_metrics)
         self._cancel_requested = False
         self._process: subprocess.Popen[str] | None = None
 
@@ -465,6 +467,8 @@ class BenchmarkWorker(QObject):
                 "--output-dir",
                 str(output_dir),
             ]
+            if self._push_metrics:
+                cmd.append("--push-metrics")
             env = os.environ.copy()
             env.setdefault("GAIA_RAIL_ENABLED", "0")
             env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
@@ -473,6 +477,8 @@ class BenchmarkWorker(QObject):
             self.progress.emit(f"   - suite: {suite_path.name}")
             if self._target_url:
                 self.progress.emit(f"   - target: {self._target_url}")
+            if self._push_metrics:
+                self.progress.emit("   - metrics: upload enabled (--push-metrics)")
 
             self._process = subprocess.Popen(
                 cmd,
@@ -521,6 +527,7 @@ class BenchmarkWorker(QObject):
                     "site_key": self._site_key,
                     "site_label": self._site_label,
                     "target_url": self._target_url,
+                    "push_metrics": self._push_metrics,
                     "output_dir": str(output_dir),
                     "summary_path": str(summary_path),
                     "results_path": str(results_path),
@@ -548,6 +555,7 @@ class BenchmarkWorker(QObject):
                     "site_key": self._site_key,
                     "site_label": self._site_label,
                     "target_url": self._target_url,
+                    "push_metrics": self._push_metrics,
                     "output_dir": str(output_dir) if output_dir else "",
                     "summary_path": str(output_dir / 'summary.json') if output_dir else "",
                     "results_path": str(output_dir / 'results.json') if output_dir else "",

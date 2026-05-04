@@ -232,13 +232,88 @@ def test_benchmark_manager_dialog_emits_single_run_request(tmp_path: Path) -> No
         registry_path=registry_path,
         selected_site_key="story_docs",
     )
-    emitted: list[tuple[str, str, str]] = []
-    dialog.runRequested.connect(lambda site_key, url, scenario_id: emitted.append((site_key, url, scenario_id)))
+    emitted: list[tuple[str, str, str, bool]] = []
+    dialog.runRequested.connect(
+        lambda site_key, url, scenario_id, push_metrics: emitted.append((site_key, url, scenario_id, push_metrics))
+    )
 
     dialog._scenario_list.setCurrentRow(0)
     dialog._run_selected_scenario()
 
-    assert emitted == [("story_docs", "https://storybook.js.org/", "STORY_001_HOME")]
+    assert emitted == [("story_docs", "https://storybook.js.org/", "STORY_001_HOME", False)]
+
+
+def test_benchmark_manager_dialog_emits_push_metrics_when_checked(tmp_path: Path) -> None:
+    _app()
+    _, registry_path = _build_custom_site(
+        tmp_path,
+        scenarios=[
+            {
+                "id": "STORY_001_HOME",
+                "name": "스토리북 홈 확인",
+                "url": "https://storybook.js.org/",
+                "goal": "홈이 보이는지 확인",
+                "constraints": {
+                    "allow_navigation": True,
+                    "require_ref_only": True,
+                    "require_state_change": False,
+                },
+                "expected_signals": [],
+                "time_budget_sec": 300,
+            }
+        ],
+    )
+    dialog = BenchmarkManagerDialog(
+        workspace_root=tmp_path,
+        registry_path=registry_path,
+        selected_site_key="story_docs",
+    )
+    emitted: list[tuple[str, str, str, bool]] = []
+    dialog.runRequested.connect(
+        lambda site_key, url, scenario_id, push_metrics: emitted.append((site_key, url, scenario_id, push_metrics))
+    )
+
+    dialog._push_metrics_checkbox.setChecked(True)
+    dialog._run_full_suite()
+
+    assert emitted == [("story_docs", "https://storybook.js.org/", "", True)]
+
+
+def test_controller_passes_push_metrics_to_benchmark_worker(tmp_path: Path) -> None:
+    _app()
+    window = _FakeWindow()
+    controller = AppController(window)
+    _, registry_path = _build_custom_site(
+        tmp_path,
+        scenarios=[
+            {
+                "id": "STORY_001_HOME",
+                "name": "스토리북 홈 확인",
+                "url": "https://storybook.js.org/",
+                "goal": "홈이 보이는지 확인",
+            }
+        ],
+    )
+    controller._benchmark_registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    captured: dict[str, object] = {}
+
+    def fake_start_benchmark_worker(preset, target_url, *, suite_payload=None, run_tag="full_suite", push_metrics=False):
+        captured["preset"] = preset
+        captured["target_url"] = target_url
+        captured["suite_payload"] = suite_payload
+        captured["run_tag"] = run_tag
+        captured["push_metrics"] = push_metrics
+
+    controller._start_benchmark_worker = fake_start_benchmark_worker
+
+    controller._run_benchmark_request(
+        site_key="story_docs",
+        url="https://storybook.js.org/",
+        push_metrics=True,
+    )
+
+    assert captured["push_metrics"] is True
+    assert captured["run_tag"] == "full_suite"
 
 
 def test_benchmark_worker_supports_in_memory_suite_payload(tmp_path: Path, monkeypatch) -> None:
@@ -300,6 +375,64 @@ def test_benchmark_worker_supports_in_memory_suite_payload(tmp_path: Path, monke
     assert results
     assert results[0]["successful_runs"] == 1
     assert "STORY_001_HOME" in str(results[0]["output_dir"])
+
+
+def test_benchmark_worker_appends_push_metrics_flag(tmp_path: Path, monkeypatch) -> None:
+    _app()
+    captured_cmd: list[str] = []
+
+    class _FakeProcess:
+        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None):
+            del cwd, stdout, stderr, text, bufsize, env
+            captured_cmd[:] = list(cmd)
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1, "FAIL": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "STORY_001_HOME", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr(subprocess, "Popen", _FakeProcess)
+
+    worker = BenchmarkWorker(
+        site_key="story_docs",
+        site_label="Storybook Docs",
+        suite_path="gaia/tests/scenarios/custom_story_docs_suite.json",
+        suite_payload={
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "grader_configs": {},
+            "scenarios": [{"id": "STORY_001_HOME", "url": "https://storybook.js.org/", "goal": "홈 확인"}],
+        },
+        target_url="https://storybook.js.org/",
+        run_tag="STORY_001_HOME",
+        workspace_root=tmp_path,
+        push_metrics=True,
+    )
+
+    worker.start()
+
+    assert "--push-metrics" in captured_cmd
 
 
 def test_main_window_benchmark_mode_uses_dedicated_stage_and_emits_manager_open(monkeypatch) -> None:

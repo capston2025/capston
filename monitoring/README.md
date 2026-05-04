@@ -85,7 +85,7 @@ python scripts/gaia_monitor_connect.py \
     --token <토큰>
 ```
 
-연결 후에는 벤치마크 실행 시 `--push-metrics`를 붙이면 업로드됩니다.
+연결 후에는 벤치마크 실행 시 명시적으로 업로드를 켠 경우에만 전송됩니다.
 
 ---
 
@@ -95,6 +95,10 @@ python scripts/gaia_monitor_connect.py \
 # 벤치마크 실행 + 명시적 push
 python scripts/run_goal_benchmark.py --suite ... --push-metrics
 
+# 터미널 벤치 모드
+python -m gaia.cli start --terminal --push-metrics
+# 또는 실행 직전 질문에서 y 선택
+
 # 수동으로 push하고 싶을 때
 python scripts/push_metrics.py           # 최근 결과 1개
 python scripts/push_metrics.py --all     # 전체 결과
@@ -102,6 +106,8 @@ python scripts/push_metrics.py --all     # 전체 결과
 # 연결 상태 확인
 python scripts/gaia_monitor_connect.py --status
 ```
+
+GUI 벤치 관리 화면에서는 `모니터링 서버로 메트릭 업로드 (--push-metrics)` 체크박스를 켠 실행만 업로드됩니다.
 
 ---
 

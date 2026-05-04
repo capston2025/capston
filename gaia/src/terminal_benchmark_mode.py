@@ -624,6 +624,7 @@ def run_benchmark_suite(
     run_tag: str,
     timeout_cap: int = 600,
     process_factory: ProcessFactory = subprocess.Popen,
+    push_metrics: bool = False,
 ) -> dict[str, Any]:
     scenarios = [dict(row) for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
     if not scenarios:
@@ -653,6 +654,8 @@ def run_benchmark_suite(
         "--output-dir",
         str(output_dir),
     ]
+    if push_metrics:
+        cmd.append("--push-metrics")
     env = os.environ.copy()
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
@@ -663,6 +666,8 @@ def run_benchmark_suite(
     emit(f"{preset.label} 벤치를 실행합니다.")
     emit(f"   - target: {target_url}")
     emit(f"   - suite: {tmp_suite_path}")
+    if push_metrics:
+        emit("   - metrics: upload enabled (--push-metrics)")
 
     process = process_factory(
         cmd,
@@ -819,6 +824,7 @@ def run_terminal_benchmark_mode(
     report_writer: Callable[..., Path] = write_benchmark_report_html,
     report_opener: Callable[[Path], bool] = open_benchmark_report,
     scenario_form_opener: ScenarioFormOpener = open_scenario_form_gui,
+    push_metrics: bool = False,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
 
@@ -920,6 +926,7 @@ def run_terminal_benchmark_mode(
                 if run_mode == "이전으로":
                     continue
                 if run_mode == "기존 테스트 전체 실행":
+                    push_metrics_for_run = bool(push_metrics) or _prompt_push_metrics(prompt=prompt)
                     run_suite_handler(
                         workspace_root=workspace_root,
                         preset=preset,
@@ -927,6 +934,7 @@ def run_terminal_benchmark_mode(
                         suite_payload=suite_payload,
                         emit=emit,
                         run_tag="full_suite",
+                        push_metrics=push_metrics_for_run,
                     )
                     continue
 
@@ -937,6 +945,7 @@ def run_terminal_benchmark_mode(
                 )
                 if not scenario_id:
                     continue
+                push_metrics_for_run = bool(push_metrics) or _prompt_push_metrics(prompt=prompt)
                 single_payload = build_single_scenario_suite_payload(suite_payload, scenario_id)
                 run_suite_handler(
                     workspace_root=workspace_root,
@@ -945,6 +954,7 @@ def run_terminal_benchmark_mode(
                     suite_payload=single_payload,
                     emit=emit,
                     run_tag=scenario_id,
+                    push_metrics=push_metrics_for_run,
                 )
                 continue
 
@@ -1030,6 +1040,17 @@ def _select_scenario_id(
     if selection == "이전으로":
         return None
     return selection.split(" | ", 1)[0].strip()
+
+
+def _prompt_push_metrics(*, prompt: PromptTextFn) -> bool:
+    answer = str(
+        prompt(
+            "모니터링 서버로 메트릭을 업로드할까요? (--push-metrics) [y/N]",
+            default="n",
+        )
+        or ""
+    ).strip().lower()
+    return answer in {"1", "true", "t", "yes", "y", "on", "예", "네", "ㅇ", "ㅇㅇ"}
 
 
 def _select_benchmark_url(
