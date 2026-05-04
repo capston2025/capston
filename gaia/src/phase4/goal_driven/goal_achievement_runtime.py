@@ -39,6 +39,9 @@ def dom_contains_any_hint(agent_cls, dom_elements: List[DOMElement], keywords: t
             el.placeholder,
             el.aria_label,
             getattr(el, "title", None),
+            getattr(el, "role_ref_name", None),
+            getattr(el, "context_text", None),
+            getattr(el, "container_name", None),
         ]
         for field in fields:
             normalized = agent_cls._normalize_text(field)
@@ -55,6 +58,11 @@ def has_signup_completion_evidence(agent_cls, dom_elements: List[DOMElement]) ->
         "가입 완료",
         "가입되었습니다",
         "가입이 완료",
+        "signed up",
+        "signup complete",
+        "registration complete",
+        "account created",
+        "created account",
         "환영합니다",
         "welcome",
         "로그아웃",
@@ -176,6 +184,78 @@ def wait_completion_ready(agent, dom_elements: Optional[List[DOMElement]] = None
     return not dom_has_transient_wait_signals(agent.__class__, list(dom_elements or []))
 
 
+def _evaluate_multi_user_completion_evidence(
+    agent,
+    *,
+    goal: TestGoal,
+    decision: ActionDecision,
+) -> Optional[str]:
+    registry = getattr(agent, "_participant_registry", None)
+    if not bool(getattr(registry, "is_multi", lambda: False)()):
+        return None
+    if decision.action != ActionType.WAIT:
+        return None
+    if not bool(getattr(decision, "is_goal_achieved", False)):
+        return None
+
+    evidence_parts: List[str] = []
+    evidence = getattr(agent, "_last_snapshot_evidence", None)
+    if isinstance(evidence, dict):
+        evidence_parts.append(str(evidence.get("text_digest") or ""))
+        live_texts = evidence.get("live_texts")
+        if isinstance(live_texts, list):
+            evidence_parts.extend(str(item or "") for item in live_texts)
+
+    blackboard = getattr(registry, "blackboard", None)
+    entries = []
+    if blackboard is not None and callable(getattr(blackboard, "all_entries", None)):
+        try:
+            entries = list(blackboard.all_entries() or [])
+        except Exception:
+            entries = []
+    for entry in entries:
+        key = str(getattr(entry, "key", "") or "")
+        value = getattr(entry, "value", None)
+        evidence_parts.append(key)
+        if isinstance(value, dict):
+            sender = str(value.get("sender") or "").strip()
+            text = str(value.get("text") or "").strip()
+            if sender and text:
+                evidence_parts.append(f"{sender}: {text}")
+            evidence_parts.append(" ".join(str(item or "") for item in value.values()))
+        else:
+            evidence_parts.append(str(value or ""))
+
+    evidence_blob = agent._normalize_text(" ".join(part for part in evidence_parts if str(part or "").strip()))
+    if not evidence_blob:
+        return None
+
+    required_terms = [
+        str(item or "").strip()
+        for item in list(getattr(goal, "success_criteria", []) or [])
+        if str(item or "").strip()
+    ]
+    if not required_terms:
+        required_terms = [
+            str(item or "").strip()
+            for item in (agent._goal_quoted_terms(goal) or agent._goal_target_terms(goal) or [])
+            if str(item or "").strip()
+        ]
+    if not required_terms:
+        return None
+
+    missing = [
+        term
+        for term in required_terms
+        if (normalized := agent._normalize_text(term)) and normalized not in evidence_blob
+    ]
+    if missing:
+        return None
+
+    setattr(agent, "_last_goal_completion_source", "multi_user_evidence")
+    return "multi-user blackboard와 현재 화면 증거가 성공 조건을 모두 포함해 목표를 완료로 판정했습니다."
+
+
 def validate_goal_achievement_claim(
     agent,
     goal: TestGoal,
@@ -231,6 +311,12 @@ def validate_goal_achievement_claim(
             dom_elements=dom_elements,
         )
         if not wait_fallback_reason:
+            wait_fallback_reason = _evaluate_multi_user_completion_evidence(
+                agent,
+                goal=goal,
+                decision=decision,
+            )
+        if not wait_fallback_reason:
             wait_fallback_reason = has_recent_transition_completion_proof(
                 agent,
                 goal=goal,
@@ -280,7 +366,8 @@ def validate_goal_achievement_claim(
         return True, None
 
     if wait_fallback_reason:
-        setattr(agent, "_last_goal_completion_source", "wait_fallback")
+        if not str(getattr(agent, "_last_goal_completion_source", "") or "").strip():
+            setattr(agent, "_last_goal_completion_source", "wait_fallback")
         decision.goal_achievement_reason = wait_fallback_reason
         return True, None
     return (

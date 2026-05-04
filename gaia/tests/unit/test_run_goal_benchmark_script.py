@@ -1,9 +1,12 @@
+from types import SimpleNamespace
+
 from scripts.run_goal_benchmark import (
     _build_child_code,
     _infer_provider_from_model,
     _prepare_scenario_env,
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
+    _should_push_metrics,
     _should_emit_live_trace_line,
 )
 
@@ -71,10 +74,12 @@ def test_prepare_scenario_env_sets_codex_runtime_guards() -> None:
     assert env["GAIA_CODEX_REASONING_EFFORT"] == "low"
 
 
-def test_infer_provider_from_model_handles_openai_and_gemini() -> None:
+def test_infer_provider_from_model_handles_openai_gemini_and_ollama() -> None:
+    assert _infer_provider_from_model("gpt-5.5") == "openai"
     assert _infer_provider_from_model("gpt-5.4") == "openai"
     assert _infer_provider_from_model("gpt-5.3-codex") == "openai"
     assert _infer_provider_from_model("gemini-2.5-pro") == "gemini"
+    assert _infer_provider_from_model("gemma4:26b") == "ollama"
     assert _infer_provider_from_model("unknown-model") == ""
 
 
@@ -85,3 +90,9 @@ def test_should_emit_live_trace_line_filters_to_step_level_messages() -> None:
     assert _should_emit_live_trace_line("✅ 목표 달성! 이유: 확인됨")
     assert not _should_emit_live_trace_line("🧪 llm trace: {'used_llm': True}")
     assert not _should_emit_live_trace_line('{"schema_version":"gaia.benchmark.v1"}')
+
+
+def test_monitoring_push_is_explicit_opt_in() -> None:
+    assert _should_push_metrics(SimpleNamespace(push_metrics=False)) is False
+    assert _should_push_metrics(SimpleNamespace(push_metrics=True)) is True
+    assert _should_push_metrics(SimpleNamespace()) is False

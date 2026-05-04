@@ -12,6 +12,7 @@ from urllib.parse import urlparse, urlunparse
 import requests
 
 from gaia.src.phase4.embedded_openclaw_runtime import ensure_embedded_openclaw_base_url
+from gaia.src.phase4.browser_context_manager import build_auto_follow_state_update
 from gaia.src.phase4.mcp_ref.snapshot_helpers import (
     _build_context_snapshot_from_elements,
     _build_role_snapshot_from_elements,
@@ -217,8 +218,20 @@ def _resolve_base_url(raw_base_url: str | None) -> str:
     return base_url
 
 
-def _profile_name() -> str:
-    return str(os.getenv("GAIA_OPENCLAW_PROFILE", "openclaw") or "openclaw").strip() or "openclaw"
+def _profile_name(raw: Any = None) -> str:
+    return str(raw or os.getenv("GAIA_OPENCLAW_PROFILE", "openclaw") or "openclaw").strip() or "openclaw"
+
+
+def _session_profile(session_id: str, explicit_profile: Any = None) -> str:
+    state = _session_state(session_id)
+    profile = _profile_name(explicit_profile or state.get("profile") or None)
+    previous = str(state.get("profile") or "").strip()
+    if previous and previous != profile:
+        state["target_id"] = ""
+        state["current_url"] = ""
+        state["last_snapshot_id"] = ""
+    state["profile"] = profile
+    return profile
 
 
 def _headers() -> Dict[str, str]:
@@ -255,7 +268,10 @@ def _request(
     payload: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, Dict[str, Any], str]:
     query = dict(params or {})
-    query.setdefault("profile", _profile_name())
+    payload_profile = ""
+    if isinstance(payload, dict):
+        payload_profile = str(payload.get("profile") or "").strip()
+    query.setdefault("profile", _profile_name(query.get("profile") or payload_profile or None))
     url = f"{base_url}{path}"
     response = requests.request(
         method=method.upper(),
@@ -283,6 +299,7 @@ def _session_state(session_id: str) -> Dict[str, Any]:
             {
                 "target_id": "",
                 "current_url": "",
+                "profile": "",
                 "snapshot_counter": 0,
                 "last_snapshot_id": "",
             },
@@ -319,6 +336,7 @@ def _ensure_target(
     timeout: Any,
 ) -> Dict[str, Any]:
     state = _session_state(session_id)
+    profile = _session_profile(session_id)
     target_id = str(state.get("target_id") or "").strip()
     current_url = _normalize_url(state.get("current_url"))
     normalized_requested = _normalize_url(requested_url)
@@ -330,7 +348,7 @@ def _ensure_target(
             base_url=base_url,
             path="/tabs/open",
             timeout=timeout,
-            payload={"url": open_url},
+            payload={"url": open_url, "profile": profile},
         )
         if status_code >= 400:
             raise RuntimeError(str(data.get("error") or text or "openclaw tabs/open failed"))
@@ -347,7 +365,7 @@ def _ensure_target(
             base_url=base_url,
             path="/navigate",
             timeout=timeout,
-            payload={"targetId": target_id, "url": normalized_requested},
+            payload={"targetId": target_id, "url": normalized_requested, "profile": profile},
         )
         if status_code >= 400 and _target_missing(status_code, data, text):
             _clear_session_target(session_id)
@@ -374,12 +392,14 @@ def dispatch_openclaw_console_logs(
     raw_base_url: str | None,
     *,
     session_id: str,
+    profile: str = "",
     level: str = "",
     limit: int = 100,
     timeout: Any = None,
 ) -> Tuple[int, Dict[str, Any], str]:
     base_url = _resolve_base_url(raw_base_url)
     normalized_session_id = str(session_id or "default")
+    profile_name = _session_profile(normalized_session_id, profile)
     state = _ensure_target(
         base_url=base_url,
         session_id=normalized_session_id,
@@ -389,6 +409,7 @@ def dispatch_openclaw_console_logs(
     fallback_url = str(state.get("current_url") or "")
     target_id = str(state.get("target_id") or "").strip()
     query: Dict[str, Any] = {"targetId": target_id}
+    query["profile"] = profile_name
     if str(level or "").strip():
         query["level"] = str(level).strip()
     status_code, data, text = _request(
@@ -434,6 +455,114 @@ def dispatch_openclaw_console_logs(
         "current_url": str(state.get("current_url") or ""),
     }
     return 200, payload, ""
+
+
+def ensure_openclaw_profile(
+    raw_base_url: str | None,
+    *,
+    profile: str,
+    timeout: Any = None,
+) -> Tuple[int, Dict[str, Any], str]:
+    """Ensure an OpenClaw browser profile exists and is started."""
+    base_url = _resolve_base_url(raw_base_url)
+    profile_name = _profile_name(profile)
+    status_code, data, text = _request(
+        "GET",
+        base_url=base_url,
+        path="/profiles",
+        timeout=timeout,
+        params={"profile": profile_name},
+    )
+    if status_code >= 400:
+        return _normalize_failure(status_code, data, text)
+
+    profiles = data.get("profiles") if isinstance(data, dict) else []
+    known_names: set[str] = set()
+    if isinstance(profiles, list):
+        for item in profiles:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("profile") or item.get("id") or "").strip()
+            if name:
+                known_names.add(name)
+
+    created = False
+    if profile_name not in known_names:
+        status_code, data, text = _request(
+            "POST",
+            base_url=base_url,
+            path="/profiles/create",
+            timeout=timeout,
+            payload={"name": profile_name, "profile": profile_name},
+        )
+        message = str((data or {}).get("error") or text or "").lower()
+        if status_code >= 400 and "already exists" not in message:
+            return _normalize_failure(status_code, data, text)
+        created = status_code < 400
+
+    status_code, data, text = _request(
+        "POST",
+        base_url=base_url,
+        path="/start",
+        timeout=timeout,
+        params={"profile": profile_name},
+    )
+    if status_code >= 400:
+        return _normalize_failure(status_code, data, text)
+    ok = bool((data or {}).get("ok", True))
+    return (
+        200,
+        {
+            "success": ok,
+            "ok": ok,
+            "reason_code": "ok" if ok else "openclaw_profile_start_failed",
+            "profile": profile_name,
+            "created": created,
+        },
+        "",
+    )
+
+
+def delete_openclaw_profile(
+    raw_base_url: str | None,
+    *,
+    profile: str,
+    timeout: Any = None,
+) -> Tuple[int, Dict[str, Any], str]:
+    """Stop and delete an OpenClaw browser profile."""
+    base_url = _resolve_base_url(raw_base_url)
+    profile_name = _profile_name(profile)
+    stop_status, _stop_data, _stop_text = _request(
+        "POST",
+        base_url=base_url,
+        path="/stop",
+        timeout=timeout,
+        params={"profile": profile_name},
+    )
+    path = f"/profiles/{requests.utils.quote(profile_name, safe='')}"
+    status_code, data, text = _request(
+        "DELETE",
+        base_url=base_url,
+        path=path,
+        timeout=timeout,
+        params={"profile": profile_name},
+    )
+    if status_code >= 400:
+        message = str((data or {}).get("error") or text or "").lower()
+        if "not found" not in message:
+            return _normalize_failure(status_code, data, text)
+    return (
+        200,
+        {
+            "success": True,
+            "ok": True,
+            "reason_code": "ok",
+            "profile": profile_name,
+            "stopped": stop_status < 400,
+            "deleted": status_code < 400,
+        },
+        "",
+    )
 
 
 def _role_to_tag(role: str) -> str:
@@ -1426,16 +1555,20 @@ def _snapshot_payload_for_target(
     timeout: Any,
     requested_scope_ref_id: str = "",
 ) -> Optional[Dict[str, Any]]:
+    profile = str(state.get("profile") or "").strip()
+    params = {
+        "targetId": target_id,
+        "format": "role",
+        "refs": "aria",
+    }
+    if profile:
+        params["profile"] = profile
     status_code, data, text = _request(
         "GET",
         base_url=base_url,
         path="/snapshot",
         timeout=timeout,
-        params={
-            "targetId": target_id,
-            "format": "role",
-            "refs": "aria",
-        },
+        params=params,
     )
     if status_code >= 400:
         return None
@@ -1478,11 +1611,14 @@ def _tabs_payload_for_target(
     *,
     base_url: str,
     target_id: str,
+    profile: str = "",
     timeout: Any,
 ) -> Optional[Dict[str, Any]]:
     params: Dict[str, Any] = {}
     if str(target_id or "").strip():
         params["targetId"] = str(target_id or "").strip()
+    if str(profile or "").strip():
+        params["profile"] = str(profile or "").strip()
     status_code, data, text = _request(
         "GET",
         base_url=base_url,
@@ -1941,6 +2077,13 @@ def dispatch_openclaw_action(
         effective_params["action"] = "wait"
     base_url = _resolve_base_url(raw_base_url)
     session_id = str((effective_params or {}).get("session_id") or "default")
+    profile_name = _session_profile(
+        session_id,
+        (effective_params or {}).get("profile")
+        or (effective_params or {}).get("browser_profile")
+        or (effective_params or {}).get("profile_name"),
+    )
+    effective_params["profile"] = profile_name
     requested_url = str((effective_params or {}).get("url") or "").strip()
     if action == "browser_tabs_focus":
         target_identifier = str(
@@ -1961,6 +2104,7 @@ def dispatch_openclaw_action(
         tabs_payload = _tabs_payload_for_target(
             base_url=base_url,
             target_id=current_target_id,
+            profile=profile_name,
             timeout=timeout,
         )
         descriptors = _extract_tab_descriptors(tabs_payload)
@@ -1980,6 +2124,7 @@ def dispatch_openclaw_action(
                 "success": True,
                 "reason_code": "ok",
                 "session_id": session_id,
+                "profile": profile_name,
                 "targetId": matched_target_id or matched_tab_id or target_identifier,
                 "current_tab_id": matched_tab_id,
                 "current_url": str(state.get("current_url") or matched_url or ""),
@@ -2005,7 +2150,8 @@ def dispatch_openclaw_action(
             params={
                 "targetId": target_id,
                 "format": "role",
-                    "refs": "aria",
+                "refs": "aria",
+                "profile": profile_name,
             },
         )
         if status_code >= 400 and _target_missing(status_code, data, text):
@@ -2027,6 +2173,7 @@ def dispatch_openclaw_action(
                     "targetId": target_id,
                     "format": "role",
                     "refs": "aria",
+                    "profile": profile_name,
                 },
             )
         if status_code >= 400:
@@ -2055,6 +2202,7 @@ def dispatch_openclaw_action(
             image_type = "png"
         payload = {
             "targetId": target_id,
+            "profile": profile_name,
             "fullPage": bool((effective_params or {}).get("fullPage") or (effective_params or {}).get("full_page")),
             "ref": str((effective_params or {}).get("ref") or "").strip() or None,
             "element": str((effective_params or {}).get("element") or "").strip() or None,
@@ -2100,6 +2248,7 @@ def dispatch_openclaw_action(
             "success": True,
             "reason_code": "ok",
             "session_id": session_id,
+            "profile": profile_name,
             "targetId": str((data or {}).get("targetId") or target_id),
             "current_url": current_url,
             "screenshot": screenshot_base64,
@@ -2121,6 +2270,35 @@ def dispatch_openclaw_action(
     )
     fallback_url = str(state.get("current_url") or requested_url or "")
     target_id = str(state.get("target_id") or "").strip()
+    browser_action = str((effective_params or {}).get("action") or "").strip()
+    if browser_action in {"goto", "navigate"}:
+        current_url = str(state.get("current_url") or requested_url or "")
+        return (
+            200,
+            {
+                "success": True,
+                "effective": True,
+                "reason_code": "ok",
+                "reason": "ok",
+                "changed": True,
+                "state_change": {
+                    "backend": "openclaw",
+                    "backend_progress": True,
+                    "backend_effective_only": False,
+                    "effective": True,
+                    "navigated": True,
+                },
+                "attempt_logs": [],
+                "retry_path": [],
+                "attempt_count": 0,
+                "current_url": current_url,
+                "session_id": session_id,
+                "profile": profile_name,
+                "targetId": target_id,
+                "tab_id": target_id,
+            },
+            "",
+        )
     try:
         payload = _build_openclaw_action_payload(
             target_id=target_id,
@@ -2131,6 +2309,7 @@ def dispatch_openclaw_action(
 
     if not payload:
         return _normalize_failure(400, {"error": f"unsupported openclaw action: {browser_action}"}, "")
+    payload["profile"] = profile_name
 
     probe_kind = str(payload.get("kind") or "").strip()
     probe_post_action = probe_kind in {"click", "fill", "press", "select", "drag", "hover", "evaluate"}
@@ -2161,6 +2340,7 @@ def dispatch_openclaw_action(
                 before_tabs_payload = _tabs_payload_for_target(
                     base_url=base_url,
                     target_id=target_id,
+                    profile=profile_name,
                     timeout=timeout,
                 )
             except Exception:
@@ -2223,6 +2403,7 @@ def dispatch_openclaw_action(
     current_url = str(data.get("url") or state.get("current_url") or "")
     post_action_snapshot: Optional[Dict[str, Any]] = None
     new_page_evidence: Dict[str, Any] = {}
+    auto_follow_evidence: Dict[str, Any] = {}
     if probe_post_action:
         settle_ms = 350 if probe_kind in {"click", "press", "select", "drag"} else 180
         if settle_ms > 0:
@@ -2246,6 +2427,7 @@ def dispatch_openclaw_action(
                 after_tabs_payload = _tabs_payload_for_target(
                     base_url=base_url,
                     target_id=target_id,
+                    profile=profile_name,
                     timeout=timeout,
                 )
             except Exception:
@@ -2303,6 +2485,7 @@ def dispatch_openclaw_action(
                         second_after_tabs_payload = _tabs_payload_for_target(
                             base_url=base_url,
                             target_id=target_id,
+                            profile=profile_name,
                             timeout=timeout,
                         )
                     except Exception:
@@ -2329,6 +2512,21 @@ def dispatch_openclaw_action(
                         evidence=new_page_evidence,
                     )
 
+        if new_page_evidence:
+            auto_follow_evidence = build_auto_follow_state_update(new_page_evidence)
+            if auto_follow_evidence:
+                follow_target_id = str(auto_follow_evidence.get("auto_follow_target_id") or "").strip()
+                follow_url = str(auto_follow_evidence.get("auto_follow_url") or "").strip()
+                if follow_target_id:
+                    state["target_id"] = follow_target_id
+                if follow_url:
+                    state["current_url"] = follow_url
+                    current_url = follow_url
+                state_change = _merge_state_change_evidence(
+                    state_change=state_change,
+                    evidence=auto_follow_evidence,
+                )
+
     backend_trace = {
         "name": "openclaw",
         "kind": probe_kind,
@@ -2344,7 +2542,12 @@ def dispatch_openclaw_action(
         "total_ms": int(snapshot_before_ms + act_ms + post_act_probe_ms + second_probe_ms),
         "owner": "openclaw_probe" if int(post_act_probe_ms) >= max(1, int(act_ms)) else "openclaw_act",
     }
+    if auto_follow_evidence:
+        backend_trace["auto_followed_new_page"] = True
+        backend_trace["auto_follow_reason"] = str(auto_follow_evidence.get("auto_follow_reason") or "")
+        backend_trace["auto_follow_target_id"] = str(auto_follow_evidence.get("auto_follow_target_id") or "")
     state_change["backend_trace"] = backend_trace
+    response_target_id = str(state.get("target_id") or data.get("targetId") or target_id)
 
     return (
         200,
@@ -2361,8 +2564,9 @@ def dispatch_openclaw_action(
             "retry_path": [],
             "attempt_count": 0,
             "current_url": current_url,
-            "targetId": str(data.get("targetId") or target_id),
-            "tab_id": str(data.get("targetId") or target_id),
+            "profile": profile_name,
+            "targetId": response_target_id,
+            "tab_id": response_target_id,
             "snapshot_id_used": str((params or {}).get("snapshot_id") or ""),
             "ref_id_used": str((params or {}).get("ref_id") or (params or {}).get("refId") or (params or {}).get("ref") or "").strip(),
         },
@@ -2378,6 +2582,7 @@ def dispatch_openclaw_close(
 ) -> Tuple[int, Dict[str, Any], str]:
     base_url = _resolve_base_url(raw_base_url)
     state = _session_state(session_id)
+    profile_name = _session_profile(session_id)
     target_id = str(state.get("target_id") or "").strip()
     if not target_id:
         return 200, {"success": True, "ok": True, "reason_code": "ok", "reason": "already_closed"}, ""
@@ -2387,6 +2592,7 @@ def dispatch_openclaw_close(
         base_url=base_url,
         path=path,
         timeout=timeout,
+        params={"profile": profile_name},
     )
     _clear_session_target(session_id)
     if status_code >= 400:

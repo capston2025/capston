@@ -97,9 +97,10 @@ def run_task(
     run_env = dict(os.environ)
     if env:
         run_env.update(env)
+    run_env.setdefault("PYTHONUNBUFFERED", "1")
     try:
         proc = subprocess.run(
-            [python_executable, "-c", code],
+            [python_executable, "-u", "-c", code],
             capture_output=True,
             text=True,
             timeout=timeout_sec,

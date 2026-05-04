@@ -397,7 +397,14 @@ def _infer_provider_from_model(model_name: str) -> str:
         return "openai"
     if normalized.startswith("gemini"):
         return "gemini"
+    if normalized.startswith("gemma") or normalized.startswith("ollama:"):
+        return "ollama"
     return ""
+
+
+def _should_push_metrics(args: Any) -> bool:
+    """Benchmark metrics leave the machine only when explicitly requested."""
+    return bool(getattr(args, "push_metrics", False))
 
 
 def main() -> int:
@@ -406,10 +413,15 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--provider", default="")
-    parser.add_argument("--model", default="gpt-5.4")
+    parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--timeout-cap", type=int, default=600)
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--push-metrics",
+        action="store_true",
+        help="Upload benchmark metrics to the configured monitoring server after the run.",
+    )
     args = parser.parse_args()
 
     suite_path = Path(args.suite).expanduser().resolve()
@@ -511,18 +523,19 @@ def main() -> int:
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
-    # ── 모니터링 서버 자동 push ──────────────────────────────────────────
-    # gaia_monitor_connect.py 로 연결 설정이 되어 있으면 자동으로 업로드
-    _try_auto_push_metrics(output_dir)
+    if _should_push_metrics(args):
+        _try_push_metrics(output_dir)
 
     return 0
 
 
-def _try_auto_push_metrics(output_dir: Path) -> None:
-    """모니터링 서버 설정이 있으면 자동으로 메트릭을 push합니다."""
+def _try_push_metrics(output_dir: Path) -> None:
+    """Push benchmark metrics when the caller explicitly opted in."""
     monitoring_config = Path.home() / ".gaia" / "monitoring.json"
     if not monitoring_config.exists():
-        return  # 연결 설정 없으면 조용히 건너뜀
+        print("\n  모니터링 서버 설정이 없어 업로드를 건너뜁니다.")
+        print("  연결: python scripts/gaia_monitor_connect.py <서버주소> --token <토큰>")
+        return
 
     push_script = Path(__file__).parent / "push_metrics.py"
     if not push_script.exists():

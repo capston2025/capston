@@ -226,6 +226,7 @@ class StepSubAgent:
             success=success,
             error_message=error,
             duration_ms=int((time.time() - step_start) * 1000),
+            participant_id=getattr(decision, "participant_id", None),
         )
         return step_result, success, error
 

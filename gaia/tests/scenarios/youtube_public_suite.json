@@ -12,5 +12,58 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "YOUTUBE_001_HOME_SEARCH_VISIBLE",
+      "name": "YouTube 홈 검색창 확인",
+      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
+      "goal": "YouTube 홈 화면에서 상단 검색창과 검색 버튼이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "YOUTUBE_002_SEARCH_HANRORO",
+      "name": "한로로 검색 결과 확인",
+      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
+      "goal": "검색창에 한로로 1111을 입력해 검색을 실행하고, 검색 결과 목록에서 관련 동영상 제목이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "YOUTUBE_003_OPEN_FIRST_VIDEO",
+      "name": "검색 첫 동영상 열기",
+      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
+      "goal": "검색창에 OpenAI를 입력해 검색한 뒤 첫 번째로 보이는 동영상을 열고 동영상 제목이나 플레이어가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "YOUTUBE_004_SEARCH_FILTER_SHORTS",
+      "name": "검색 결과 필터 탐색",
+      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
+      "goal": "검색창에 lo-fi music을 입력해 검색한 뒤 필터 또는 Shorts/동영상 같은 결과 유형 탭이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    }
+  ]
 }

@@ -54,13 +54,20 @@ class AgentServiceClient:
             print(f"Health check failed: {e}")
             return False
 
-    def analyze_document(self, text: str, feature_query: str = "", timeout: int = 1500) -> AnalysisResult:
+    def analyze_document(
+        self,
+        text: str,
+        feature_query: str = "",
+        base_url: str = "",
+        timeout: int = 1500,
+    ) -> AnalysisResult:
         """
         문서를 분석해 테스트 케이스를 생성합니다.
 
         매개변수:
             text: 분석할 문서 텍스트
             feature_query: 특정 기능 필터링 쿼리 (비어있으면 전체 TC 생성)
+            base_url: 테스트 시나리오를 생성할 때 참조할 대상 사이트 기본 URL
             timeout: 요청 타임아웃(초). 기본값 1500초(= GPT-5 기준 약 25분)
 
         반환:
@@ -77,6 +84,8 @@ class AgentServiceClient:
         payload = {"input_as_text": text}
         if feature_query:
             payload["feature_query"] = feature_query
+        if base_url:
+            payload["base_url"] = str(base_url).strip()
 
         # 요청 전송
         # 타임아웃=(connect_timeout, read_timeout)

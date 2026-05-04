@@ -12,5 +12,58 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "FOW_001_HOME_SEARCH_VISIBLE",
+      "name": "FOW 홈 검색창 확인",
+      "url": "https://www.fow.lol/",
+      "goal": "FOW.LOL 홈 화면에서 소환사나 챔피언을 검색할 수 있는 입력창과 주요 메뉴가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "FOW_002_SUMMONER_SEARCH",
+      "name": "소환사 검색 결과 확인",
+      "url": "https://www.fow.lol/",
+      "goal": "검색창에 Hide on bush를 입력해 검색하고, 소환사 검색 결과나 프로필 요약 영역이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "FOW_003_CHAMPION_MENU",
+      "name": "챔피언 메뉴 진입",
+      "url": "https://www.fow.lol/",
+      "goal": "챔피언 또는 통계 메뉴로 이동해 챔피언 목록이나 승률/픽률 같은 통계 표가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "FOW_004_RANKING_MENU",
+      "name": "랭킹 메뉴 진입",
+      "url": "https://www.fow.lol/",
+      "goal": "랭킹 또는 순위 메뉴로 이동해 랭킹 목록, 티어, 소환사명 같은 정보가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    }
+  ]
 }

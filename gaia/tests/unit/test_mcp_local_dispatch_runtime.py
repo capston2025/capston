@@ -81,8 +81,8 @@ def test_execute_mcp_action_routes_tabs_focus_to_openclaw(monkeypatch) -> None:
 def test_execute_mcp_action_routes_console_logs_to_openclaw(monkeypatch) -> None:
     calls: list[tuple[str, str, int]] = []
 
-    def fake_dispatch_console(raw_base_url, *, session_id, level="", limit=100, timeout=None):
-        del raw_base_url, timeout
+    def fake_dispatch_console(raw_base_url, *, session_id, profile="", level="", limit=100, timeout=None):
+        del raw_base_url, profile, timeout
         calls.append((str(session_id), str(level), int(limit)))
         return 200, {"success": True, "logs": ["a"], "items": ["a"]}, ""
 

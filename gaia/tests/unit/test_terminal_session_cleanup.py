@@ -7,7 +7,7 @@ from gaia.src.phase4.goal_driven import TestGoal
 
 
 def test_run_chat_terminal_once_closes_browser_session(monkeypatch) -> None:
-    close_calls: list[str] = []
+    events: list[str] = []
 
     class FakeAgent:
         def __init__(self, *args, **kwargs) -> None:
@@ -37,9 +37,26 @@ def test_run_chat_terminal_once_closes_browser_session(monkeypatch) -> None:
         lambda target_url, run_id: {"summary": {}, "cases": [], "artifacts": {}},
     )
     monkeypatch.setattr("gaia.terminal.derive_achieved_signals", lambda *args, **kwargs: [])
+    monkeypatch.setattr("gaia.terminal.is_low_information_screenshot", lambda *_args, **_kwargs: False)
+
+    class _ScreenshotResponse:
+        status_code = 200
+        payload = {
+            "screenshot": "proof-image",
+            "mime_type": "image/png",
+            "saved_path": "/tmp/final-proof.png",
+            "current_url": "https://example.com/done",
+        }
+
+    def fake_execute_mcp_action(*args, **kwargs):
+        del args, kwargs
+        events.append("screenshot")
+        return _ScreenshotResponse()
+
+    monkeypatch.setattr("gaia.terminal.execute_mcp_action", fake_execute_mcp_action)
     monkeypatch.setattr(
         "gaia.terminal.close_mcp_session",
-        lambda raw_base_url, *, session_id, timeout=None: close_calls.append(str(session_id)),
+        lambda raw_base_url, *, session_id, timeout=None: events.append(f"close:{session_id}"),
     )
 
     goal = TestGoal(
@@ -59,4 +76,6 @@ def test_run_chat_terminal_once_closes_browser_session(monkeypatch) -> None:
 
     assert code == 0
     assert summary["final_status"] == "SUCCESS"
-    assert close_calls == ["terminal-cleanup-test"]
+    assert events == ["screenshot", "close:terminal-cleanup-test"]
+    assert summary["attachments"][0]["label"] == "최종 증거 화면"
+    assert summary["attachments"][0]["path"] == "/tmp/final-proof.png"

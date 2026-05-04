@@ -12,5 +12,58 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "APPLE_001_HOME_NAV_VISIBLE",
+      "name": "Apple 홈 내비게이션 확인",
+      "url": "https://www.apple.com/kr/",
+      "goal": "Apple Korea 홈 화면에서 Mac, iPad, iPhone, Watch 같은 주요 내비게이션 항목이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "APPLE_002_IPHONE_PAGE",
+      "name": "iPhone 제품 페이지 진입",
+      "url": "https://www.apple.com/kr/",
+      "goal": "상단 내비게이션에서 iPhone을 선택해 iPhone 제품 페이지로 이동하고 대표 제품명이나 구매/더 알아보기 영역이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "APPLE_003_SUPPORT_PAGE",
+      "name": "지원 페이지 진입",
+      "url": "https://www.apple.com/kr/",
+      "goal": "상단 내비게이션이나 푸터에서 고객지원 또는 Support 페이지로 이동해 지원 검색창이나 제품 지원 카테고리가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "APPLE_004_STORE_AIRPODS_SEARCH",
+      "name": "스토어에서 AirPods 탐색",
+      "url": "https://www.apple.com/kr/",
+      "goal": "Apple Store 또는 쇼핑 영역으로 이동한 뒤 AirPods를 검색하거나 AirPods 제품 목록으로 진입해 관련 제품 카드가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    }
+  ]
 }

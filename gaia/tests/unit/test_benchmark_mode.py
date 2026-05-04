@@ -6,9 +6,11 @@ from pathlib import Path
 from gaia.src.gui.benchmark_mode import (
     BENCHMARK_PRESETS,
     build_benchmark_catalog,
+    build_benchmark_site_catalog,
     load_benchmark_registry,
     override_suite_urls,
     render_benchmark_reports_html,
+    resolve_benchmark_site,
     save_benchmark_registry,
     scan_benchmark_reports,
     upsert_benchmark_site_url,
@@ -19,7 +21,7 @@ def test_load_and_save_benchmark_registry_round_trip(tmp_path: Path) -> None:
     registry_path = tmp_path / "benchmark_mode_targets.json"
 
     initial = load_benchmark_registry(registry_path)
-    assert initial == {"sites": {}}
+    assert initial == {"sites": {}, "custom_sites": {}}
 
     payload = upsert_benchmark_site_url(initial, "inu_timetable", "https://example.com/app")
     saved_path = save_benchmark_registry(payload, registry_path)
@@ -64,7 +66,38 @@ def test_benchmark_presets_include_moneytoring_and_exclude_mdn() -> None:
     keys = {preset.key for preset in BENCHMARK_PRESETS}
 
     assert "moneytoring" in keys
+    assert "hacker_news" in keys
+    assert "pypi" in keys
+    assert "npm" in keys
     assert "mdn" not in keys
+
+
+def test_build_benchmark_site_catalog_includes_custom_sites_and_resolves_them() -> None:
+    payload = {
+        "sites": {
+            "story_docs": {
+                "default_url": "https://storybook.js.org/",
+                "urls": ["https://storybook.js.org/"],
+            }
+        },
+        "custom_sites": {
+            "story_docs": {
+                "label": "Storybook Docs",
+                "default_url": "https://storybook.js.org/",
+                "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+                "host_aliases": ["storybook.js.org"],
+            }
+        },
+    }
+
+    catalog, preset_map = build_benchmark_site_catalog(payload)
+
+    custom = next(item for item in catalog if item["key"] == "story_docs")
+    assert custom["is_custom"] is True
+    assert custom["suite_available"] is True
+    assert custom["status_text"] == "커스텀"
+    assert preset_map["story_docs"].label == "Storybook Docs"
+    assert resolve_benchmark_site(payload, "story_docs") == preset_map["story_docs"]
 
 
 def test_override_suite_urls_updates_site_and_preserves_relative_paths() -> None:

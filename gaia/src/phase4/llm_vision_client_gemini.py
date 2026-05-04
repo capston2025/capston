@@ -2,7 +2,7 @@
 Gemini Vision Client for intelligent browser automation.
 Uses Gemini 3 for DOM + screenshot analysis.
 
-To use: set VISION_PROVIDER=gemini in .env
+To use: explicitly set GAIA_LLM_PROVIDER=gemini or run scripts/with_gemini_env.sh.
 """
 
 from __future__ import annotations

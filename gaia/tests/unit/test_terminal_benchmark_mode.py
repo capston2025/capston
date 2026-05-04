@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from gaia.cli import run_launcher
+from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, run_launcher
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
     _main,
@@ -64,6 +64,11 @@ class _PromptScript:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def test_openai_default_model_is_gpt_55() -> None:
+    assert DEFAULT_OPENAI_MODEL == "gpt-5.5"
+    assert _default_model("openai") == "gpt-5.5"
 
 
 def test_run_launcher_routes_terminal_benchmark_mode(monkeypatch) -> None:

@@ -1,0 +1,28 @@
+{
+  "suite_id": "local_chat_login_v2",
+  "site": {
+    "name": "GAIA local chat login fixture",
+    "base_url": "http://127.0.0.1:8765/local_chat_login.html",
+    "mode": "local_fixture"
+  },
+  "scenarios": [
+    {
+      "id": "LOCAL_CHAT_001_LOGIN_AND_FIVE_TURNS",
+      "url": "http://127.0.0.1:8765/local_chat_login.html",
+      "goal": "로컬 채팅 fixture에서 demo@example.test / gaia-demo-password로 로그인한 뒤 채팅 입력창에 순서대로 'gaia turn 1', 'gaia turn 2', 'gaia turn 3', 'gaia turn 4', 'gaia turn 5' 총 5개의 메시지를 보내고, 각 전송 메시지와 assistant/bot 응답이 표시되는지 확인해줘. 마지막에는 총 턴 수가 5이고 다섯 번째 응답 'Assistant reply 5: received gaia turn 5'가 화면에 보이는지 검증해줘.",
+      "constraints": {
+        "allow_navigation": false,
+        "require_ref_only": true,
+        "require_state_change": true,
+        "local_fixture_path": "gaia/tests/fixtures/local_chat_login.html"
+      },
+      "expected_signals": [
+        "auth_completed",
+        "five_chat_turns_completed",
+        "fifth_reply_visible",
+        "turn_count_visible"
+      ],
+      "time_budget_sec": 120
+    }
+  ]
+}

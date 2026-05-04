@@ -13,7 +13,7 @@ def has_login_test_data(goal: TestGoal) -> bool:
     if not isinstance(data, dict):
         return False
     keys = {str(k).strip().lower() for k in data.keys()}
-    has_id = any(k in keys for k in {"email", "id", "username", "login_id", "user"})
+    has_id = any(k in keys for k in {"email", "id", "username", "login_id", "user", "user_id", "student_id"})
     has_pw = any(k in keys for k in {"password", "pw", "passwd"})
     return has_id and has_pw
 
@@ -100,20 +100,7 @@ def request_goal_clarification(agent: Any, goal: TestGoal) -> bool:
     tokens = {w.strip() for w in text.replace("/", " ").split() if w.strip()}
     looks_ambiguous = len(text) < 8 or (tokens and tokens.issubset(ambiguous_tokens))
 
-    sensitive_hints = (
-        "로그인",
-        "회원가입",
-        "인증",
-        "결제",
-        "payment",
-        "purchase",
-        "구매",
-        "주문",
-        "예약",
-    )
-    needs_sensitive_data = any(h in text for h in sensitive_hints)
-
-    if not looks_ambiguous and not (needs_sensitive_data and not has_login_test_data(goal)):
+    if not looks_ambiguous:
         agent._handoff_state = {
             "kind": "clarification",
             "provided": False,
@@ -126,10 +113,9 @@ def request_goal_clarification(agent: Any, goal: TestGoal) -> bool:
         "goal_name": goal.name,
         "goal_description": goal.description,
         "question": (
-            "목표가 모호하거나 중요한 입력 정보가 부족합니다. "
-            "구체 목표와 필요한 입력(id/pw/email 등)을 제공해 주세요."
+            "목표가 모호합니다. 어떤 화면에서 무엇을 확인하거나 수행해야 하는지 더 구체적으로 알려주세요."
         ),
-        "fields": ["goal_text", "username", "email", "password", "proceed"],
+        "fields": ["goal_text", "proceed"],
     }
     callback_resp = agent._request_user_intervention(callback_payload)
     if callback_resp is not None:
@@ -144,22 +130,10 @@ def request_goal_clarification(agent: Any, goal: TestGoal) -> bool:
             goal.description = goal_text
             goal.success_criteria = [goal_text]
 
-        username = str(callback_resp.get("username") or "").strip()
-        email = str(callback_resp.get("email") or "").strip()
-        password = str(callback_resp.get("password") or "").strip()
-        if username or email or password:
-            if not isinstance(goal.test_data, dict):
-                goal.test_data = {}
-            if username:
-                goal.test_data["username"] = username
-            if email:
-                goal.test_data["email"] = email
-            if password:
-                goal.test_data["password"] = password
         merge_test_data(
             goal,
             callback_resp,
-            blocked_keys={"action", "proceed", "goal_text", "username", "email", "password"},
+            blocked_keys={"action", "proceed", "goal_text"},
         )
         agent._handoff_state = {
             "kind": "clarification",
@@ -212,27 +186,11 @@ def request_goal_clarification(agent: Any, goal: TestGoal) -> bool:
             "timestamp": int(time.time()),
         }
 
-    if needs_sensitive_data and not has_login_test_data(goal):
-        try:
-            login_id = input("아이디/이메일 (건너뛰려면 Enter): ").strip()
-            password = input("비밀번호 (건너뛰려면 Enter): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            agent._log("사용자 입력이 중단되었습니다.")
-            return False
-        if login_id or password:
-            if not isinstance(goal.test_data, dict):
-                goal.test_data = {}
-            if login_id:
-                goal.test_data["username"] = login_id
-                if "@" in login_id and not str(goal.test_data.get("email") or "").strip():
-                    goal.test_data["email"] = login_id
-            if password:
-                goal.test_data["password"] = password
     return True
 
 
 def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
-    agent._log("🙋 사용자 개입 필요: 로그인 또는 회원가입 화면이 감지되었습니다.")
+    agent._log("🙋 사용자 개입 필요: 인증 화면에서 AI가 사용자 입력이 필요하다고 판단했습니다.")
     agent._handoff_state = {
         "kind": "auth",
         "phase": agent._runtime_phase,
@@ -244,9 +202,9 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
         "goal_name": goal.name,
         "goal_description": goal.description,
         "question": (
-            "로그인 또는 회원가입이 필요한 화면이 열렸습니다. "
-            "계정 정보를 전달하거나, 브라우저에서 직접 로그인한 뒤 완료 여부를 알려주세요. "
-            "회원가입으로 진행하려면 auth_mode=signup, 로그인하지 않고 계속하려면 auth_mode=skip을 함께 보내면 됩니다."
+            "현재 인증 화면에서 사용자의 정답/입력값이 필요합니다. "
+            "필요한 값을 key=value로 보내거나, 브라우저에서 직접 처리한 뒤 manual_done=true로 알려주세요. "
+            "로그인하지 않고 계속하려면 auth_mode=skip을 보내면 됩니다."
         ),
         "fields": [
             "proceed",
@@ -255,9 +213,9 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             "username",
             "email",
             "password",
-            "department",
-            "grade_year",
+            "otp",
             "return_credentials",
+            "instruction",
         ],
     }
     callback_resp = agent._request_user_intervention(callback_payload)
@@ -278,7 +236,7 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
         if str(callback_resp.get("action") or "").lower() in {"cancel", "deny", "no"}:
             agent._log("로그인 개입이 취소되었습니다.")
             return False
-        if bool(callback_resp.get("manual_done")):
+        if to_bool(callback_resp.get("manual_done"), default=False):
             agent._log("사용자가 수동 로그인 완료를 전달했습니다.")
             agent._handoff_state["provided"] = True
             agent._handoff_state["mode"] = "manual_done"
@@ -292,7 +250,7 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             agent._handoff_state["provided"] = True
             agent._handoff_state["mode"] = "declined"
             return True
-        username = str(callback_resp.get("username") or "").strip()
+        username = str(callback_resp.get("username") or callback_resp.get("login_id") or "").strip()
         email = str(callback_resp.get("email") or "").strip()
         password = str(callback_resp.get("password") or "").strip()
         login_id = username or email
@@ -356,6 +314,20 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             agent._handoff_state["mode"] = "signup"
             return True
 
+        blocked_keys = {
+            "action",
+            "proceed",
+            "auth_mode",
+            "manual_done",
+            "username",
+            "login_id",
+            "email",
+            "password",
+            "department",
+            "grade_year",
+            "return_credentials",
+            "instruction",
+        }
         if login_id and password:
             if not isinstance(goal.test_data, dict):
                 goal.test_data = {}
@@ -366,18 +338,7 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             merge_test_data(
                 goal,
                 callback_resp,
-                blocked_keys={
-                    "action",
-                    "proceed",
-                    "auth_mode",
-                    "manual_done",
-                    "username",
-                    "email",
-                    "password",
-                    "department",
-                    "grade_year",
-                    "return_credentials",
-                },
+                blocked_keys=blocked_keys,
             )
             save_site_credentials(
                 goal.start_url,
@@ -388,6 +349,16 @@ def request_login_intervention(agent: Any, goal: TestGoal) -> bool:
             agent._log("사용자 로그인 정보가 test_data에 반영되었습니다.")
             agent._handoff_state["provided"] = True
             agent._handoff_state["mode"] = "login"
+            return True
+        merge_test_data(goal, callback_resp, blocked_keys=blocked_keys)
+        if isinstance(goal.test_data, dict) and any(
+            str(goal.test_data.get(key) or "").strip()
+            for key in goal.test_data
+            if key not in {"auth_mode", "return_credentials"}
+        ):
+            agent._log("사용자 인증 입력값이 test_data에 반영되었습니다.")
+            agent._handoff_state["provided"] = True
+            agent._handoff_state["mode"] = "additional_auth_fields"
             return True
         agent._log("로그인 정보가 충분하지 않습니다.")
         return False

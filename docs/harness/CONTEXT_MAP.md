@@ -42,6 +42,19 @@
   - [README.md](/Users/coldmans/Documents/GitHub/capston/README.md)
   - [docs/harness/CHECKS.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/CHECKS.md)
   - [docs/harness/GARBAGE_COLLECTION.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/GARBAGE_COLLECTION.md)
+  - [docs/harness/DEVELOPMENT_HARNESS.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/DEVELOPMENT_HARNESS.md)
+
+### `development-harness`
+
+- 언제 쓰나:
+  - 프로젝트 자체를 개발할 때 사용할 lane, team pattern, eval contract, check tier를 조정할 때
+- 핵심 문서:
+  - [docs/harness/DEVELOPMENT_HARNESS.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/DEVELOPMENT_HARNESS.md)
+  - [docs/harness/development_harness_manifest.json](/Users/coldmans/Documents/GitHub/capston/docs/harness/development_harness_manifest.json)
+  - [docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md)
+- 핵심 코드:
+  - [dev_harness.py](/Users/coldmans/Documents/GitHub/capston/scripts/dev_harness.py)
+  - [lint_harness_docs.py](/Users/coldmans/Documents/GitHub/capston/scripts/lint_harness_docs.py)
 
 ### `gaia-goal-driven`
 
@@ -50,11 +63,26 @@
 - 핵심 문서:
   - [gaia/docs/AGENT_HARNESS_PLAYBOOK.md](/Users/coldmans/Documents/GitHub/capston/gaia/docs/AGENT_HARNESS_PLAYBOOK.md)
   - [gaia/docs/KPI_BENCHMARK_PROTOCOL.md](/Users/coldmans/Documents/GitHub/capston/gaia/docs/KPI_BENCHMARK_PROTOCOL.md)
+  - [docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md)
 - 핵심 코드:
   - [agent.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/goal_driven/agent.py)
   - [goal_completion_helpers.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/goal_driven/goal_completion_helpers.py)
   - [goal_achievement_runtime.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/goal_driven/goal_achievement_runtime.py)
   - [goal_verification_helpers.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/goal_driven/goal_verification_helpers.py)
+
+### `multi-user-interaction`
+
+- 언제 쓰나:
+  - 채팅, 알림, 친구 요청/수락, 승인, role별 검증처럼 둘 이상의 사용자 상호작용이 필요한 goal
+- 핵심 문서:
+  - [docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md)
+  - [gaia/docs/AGENT_HARNESS_PLAYBOOK.md](/Users/coldmans/Documents/GitHub/capston/gaia/docs/AGENT_HARNESS_PLAYBOOK.md)
+- 핵심 코드:
+  - [multi_user_interaction_runtime.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/goal_driven/multi_user_interaction_runtime.py)
+  - [models.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/participants/models.py)
+  - [registry.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/participants/registry.py)
+  - [blackboard.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/participants/blackboard.py)
+  - [turn_scheduler.py](/Users/coldmans/Documents/GitHub/capston/gaia/src/phase4/participants/turn_scheduler.py)
 
 ### `gaia-openclaw`
 

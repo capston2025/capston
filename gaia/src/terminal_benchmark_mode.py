@@ -14,17 +14,33 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from gaia.src.gui.benchmark_mode import (
+from gaia.src.benchmark_manager import (
     BenchmarkPreset,
-    build_benchmark_catalog,
+    append_scenario_to_suite,
+    build_benchmark_site_catalog,
+    build_scenario_labels,
+    build_scenario_payload,
+    build_single_scenario_suite_payload,
+    build_url_history,
+    create_custom_site_definition,
+    create_custom_suite_payload,
+    default_scenario_name,
+    delete_custom_benchmark_site,
+    delete_scenario_from_suite,
     extract_url_host,
     find_preset,
+    generate_scenario_id,
     load_benchmark_registry,
+    load_suite_payload,
     override_suite_urls,
     render_benchmark_reports_html,
-    scan_benchmark_reports,
+    replace_scenario_in_suite,
+    resolve_benchmark_site,
     save_benchmark_registry,
+    save_suite_payload,
+    scan_benchmark_reports,
     upsert_benchmark_site_url,
+    upsert_custom_benchmark_site,
 )
 
 PromptSelectFn = Callable[[str, Sequence[str], str | None], str]
@@ -43,286 +59,7 @@ SITE_EXIT_OPTION = "종료"
 def build_terminal_benchmark_catalog(
     payload: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
-    catalog = [{**item, "is_custom": False} for item in build_benchmark_catalog(payload)]
-    preset_map: dict[str, BenchmarkPreset] = {}
-    for item in catalog:
-        preset = find_preset(str(item.get("key") or "").strip())
-        if preset is not None:
-            preset_map[preset.key] = preset
-
-    custom_sites = payload.get("custom_sites") if isinstance(payload.get("custom_sites"), Mapping) else {}
-    for raw_key in sorted(custom_sites):
-        raw_entry = custom_sites.get(raw_key)
-        if not isinstance(raw_entry, Mapping):
-            continue
-        site_key = str(raw_key or "").strip()
-        label = str(raw_entry.get("label") or "").strip()
-        default_url = str(raw_entry.get("default_url") or "").strip()
-        suite_path = str(raw_entry.get("suite_path") or "").strip()
-        host_aliases_raw = list(raw_entry.get("host_aliases") or [])
-        host_aliases = tuple(
-            str(item).strip().lower()
-            for item in host_aliases_raw
-            if str(item).strip()
-        )
-        if not site_key or not label or not default_url or not suite_path:
-            continue
-        site_state = (
-            (payload.get("sites") or {}).get(site_key, {})
-            if isinstance(payload.get("sites"), Mapping)
-            else {}
-        )
-        site_state = site_state if isinstance(site_state, Mapping) else {}
-        urls = build_url_history(
-            {
-                "default_url": str(site_state.get("default_url") or default_url).strip() or default_url,
-                "urls": list(site_state.get("urls") or []),
-            }
-        )
-        preset = BenchmarkPreset(
-            key=site_key,
-            label=label,
-            default_url=default_url,
-            suite_path=suite_path,
-            host_aliases=host_aliases or tuple(filter(None, (extract_url_host(default_url),))),
-        )
-        preset_map[site_key] = preset
-        catalog.append(
-            {
-                "key": site_key,
-                "label": label,
-                "default_url": urls[0] if urls else default_url,
-                "urls": urls[:8],
-                "suite_path": suite_path,
-                "suite_available": bool(suite_path),
-                "status_text": "커스텀",
-                "is_custom": True,
-            }
-        )
-    return catalog, preset_map
-
-
-def create_custom_suite_payload(*, site_key: str, label: str, default_url: str) -> dict[str, Any]:
-    return {
-        "suite_id": f"{site_key}_public_v1",
-        "site": {
-            "name": label,
-            "base_url": default_url,
-            "mode": "public_browse",
-        },
-        "grader_configs": {},
-        "scenarios": [],
-    }
-
-
-def create_custom_site_definition(
-    *,
-    site_key: str,
-    label: str,
-    default_url: str,
-) -> dict[str, Any]:
-    host = extract_url_host(default_url)
-    host_aliases = tuple(
-        dict.fromkeys(
-            alias
-            for alias in (
-                host,
-                host.removeprefix("www.") if host.startswith("www.") else "",
-                f"www.{host}" if host and not host.startswith("www.") else "",
-            )
-            if alias
-        )
-    )
-    return {
-        "label": label,
-        "default_url": default_url,
-        "suite_path": f"gaia/tests/scenarios/custom_{site_key}_suite.json",
-        "host_aliases": list(host_aliases),
-    }
-
-
-def upsert_custom_benchmark_site(
-    payload: Mapping[str, Any],
-    *,
-    site_key: str,
-    site_definition: Mapping[str, Any],
-) -> dict[str, Any]:
-    normalized = dict(payload)
-    custom_sites = dict(normalized.get("custom_sites") or {})
-    custom_sites[site_key] = dict(site_definition)
-    normalized["custom_sites"] = custom_sites
-    normalized = upsert_benchmark_site_url(normalized, site_key, str(site_definition.get("default_url") or ""))
-    return normalized
-
-
-def delete_custom_benchmark_site(payload: Mapping[str, Any], site_key: str) -> dict[str, Any]:
-    normalized = dict(payload)
-    custom_sites = dict(normalized.get("custom_sites") or {})
-    custom_sites.pop(site_key, None)
-    normalized["custom_sites"] = custom_sites
-    sites = dict(normalized.get("sites") or {})
-    sites.pop(site_key, None)
-    normalized["sites"] = sites
-    return normalized
-
-
-def load_suite_payload(workspace_root: Path, suite_path: str) -> dict[str, Any]:
-    target = (workspace_root / str(suite_path)).resolve()
-    if not target.exists():
-        raise FileNotFoundError(f"benchmark suite not found: {target}")
-    payload = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("benchmark suite must be a JSON object")
-    payload.setdefault("scenarios", [])
-    if not isinstance(payload.get("scenarios"), list):
-        raise ValueError("benchmark suite scenarios must be a list")
-    return payload
-
-
-def save_suite_payload(target: Path, payload: Mapping[str, Any]) -> Path:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    normalized = dict(payload)
-    normalized.setdefault("scenarios", [])
-    target.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    reloaded = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(reloaded, dict):
-        raise ValueError("saved suite is not a JSON object")
-    return target
-
-
-def build_url_history(site_entry: Mapping[str, Any]) -> list[str]:
-    urls = [str(item).strip() for item in list(site_entry.get("urls") or []) if str(item).strip()]
-    default_url = str(site_entry.get("default_url") or "").strip()
-    if default_url:
-        urls = [default_url] + [item for item in urls if item != default_url]
-    return urls
-
-
-def build_scenario_labels(suite_payload: Mapping[str, Any]) -> list[str]:
-    labels: list[str] = []
-    for raw in list(suite_payload.get("scenarios") or []):
-        if not isinstance(raw, Mapping):
-            continue
-        scenario_id = str(raw.get("id") or "").strip() or "UNKNOWN"
-        goal = str(raw.get("goal") or "").strip() or "-"
-        labels.append(f"{scenario_id} | {goal}")
-    return labels
-
-
-def build_single_scenario_suite_payload(
-    suite_payload: Mapping[str, Any],
-    scenario_id: str,
-) -> dict[str, Any]:
-    target_id = str(scenario_id or "").strip()
-    payload = dict(suite_payload)
-    scenarios = [dict(row) for row in list(payload.get("scenarios") or []) if isinstance(row, Mapping)]
-    selected = [row for row in scenarios if str(row.get("id") or "").strip() == target_id]
-    if not selected:
-        raise KeyError(f"scenario not found: {target_id}")
-    payload["scenarios"] = selected
-    return payload
-
-
-def append_scenario_to_suite(
-    suite_payload: Mapping[str, Any],
-    scenario: Mapping[str, Any],
-) -> dict[str, Any]:
-    scenario_id = str(scenario.get("id") or "").strip()
-    if not scenario_id:
-        raise ValueError("scenario id is required")
-    payload = dict(suite_payload)
-    scenarios = [dict(row) for row in list(payload.get("scenarios") or []) if isinstance(row, Mapping)]
-    existing_ids = {str(row.get("id") or "").strip() for row in scenarios}
-    if scenario_id in existing_ids:
-        raise ValueError(f"duplicate scenario id: {scenario_id}")
-    scenarios.append(dict(scenario))
-    payload["scenarios"] = scenarios
-    return payload
-
-
-def replace_scenario_in_suite(
-    suite_payload: Mapping[str, Any],
-    original_id: str,
-    updated_scenario: Mapping[str, Any],
-) -> dict[str, Any]:
-    target_id = str(original_id or "").strip()
-    updated_id = str(updated_scenario.get("id") or "").strip()
-    if not target_id or not updated_id:
-        raise ValueError("scenario id is required")
-    payload = dict(suite_payload)
-    scenarios = [dict(row) for row in list(payload.get("scenarios") or []) if isinstance(row, Mapping)]
-    replaced = False
-    for index, row in enumerate(scenarios):
-        row_id = str(row.get("id") or "").strip()
-        if row_id == target_id:
-            scenarios[index] = dict(updated_scenario)
-            replaced = True
-            continue
-        if row_id == updated_id and updated_id != target_id:
-            raise ValueError(f"duplicate scenario id: {updated_id}")
-    if not replaced:
-        raise KeyError(f"scenario not found: {target_id}")
-    payload["scenarios"] = scenarios
-    return payload
-
-
-def delete_scenario_from_suite(
-    suite_payload: Mapping[str, Any],
-    scenario_id: str,
-) -> dict[str, Any]:
-    target_id = str(scenario_id or "").strip()
-    payload = dict(suite_payload)
-    scenarios = [dict(row) for row in list(payload.get("scenarios") or []) if isinstance(row, Mapping)]
-    filtered = [row for row in scenarios if str(row.get("id") or "").strip() != target_id]
-    if len(filtered) == len(scenarios):
-        raise KeyError(f"scenario not found: {target_id}")
-    payload["scenarios"] = filtered
-    return payload
-
-
-def _default_scenario_name(current: Mapping[str, Any]) -> str:
-    name = str(current.get("name") or "").strip()
-    if name:
-        return name
-    scenario_id = str(current.get("id") or "").strip()
-    if scenario_id:
-        return scenario_id
-    return ""
-
-
-def _infer_scenario_prefix(existing_ids: set[str], default_url: str) -> str:
-    prefixes: list[str] = []
-    for item in sorted(existing_ids):
-        token = str(item or "").strip().split("_", 1)[0].strip().upper()
-        if token:
-            prefixes.append(token)
-    if prefixes:
-        counts: dict[str, int] = {}
-        for token in prefixes:
-            counts[token] = counts.get(token, 0) + 1
-        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
-    host = extract_url_host(default_url).removeprefix("www.")
-    host_token = host.split(".", 1)[0].strip().upper()
-    if host_token:
-        return re.sub(r"[^A-Z0-9]+", "", host_token) or "SCN"
-    return "SCN"
-
-
-def _generate_scenario_id(*, test_name: str, existing_ids: set[str], default_url: str) -> str:
-    prefix = _infer_scenario_prefix(existing_ids, default_url)
-    max_index = 0
-    pattern = re.compile(rf"^{re.escape(prefix)}_(\d+)(?:_|$)")
-    for item in existing_ids:
-        matched = pattern.match(str(item or "").strip().upper())
-        if matched:
-            try:
-                max_index = max(max_index, int(matched.group(1)))
-            except Exception:
-                continue
-    next_index = max_index + 1
-    suffix = _slugify(test_name).replace("-", "_").replace(".", "_").upper()
-    suffix = re.sub(r"_+", "_", suffix).strip("_") or "BENCHMARK"
-    return f"{prefix}_{next_index:03d}_{suffix}"
+    return build_benchmark_site_catalog(payload)
 
 
 def prompt_scenario_fields(
@@ -337,7 +74,6 @@ def prompt_scenario_fields(
 ) -> dict[str, Any]:
     del prompt_select, prompt
     current = dict(existing or {})
-    constraints = dict(current.get("constraints") or {})
     reserved_ids = {str(item).strip() for item in (existing_ids or set()) if str(item).strip()}
     current_id = str(current.get("id") or "").strip()
     if current_id:
@@ -346,10 +82,10 @@ def prompt_scenario_fields(
     test_name = str(
         prompt_non_empty(
             "테스트 이름",
-            default=_default_scenario_name(current) or None,
+            default=default_scenario_name(current) or None,
         )
     ).strip()
-    scenario_id = current_id or _generate_scenario_id(
+    scenario_id = current_id or generate_scenario_id(
         test_name=test_name,
         existing_ids=reserved_ids,
         default_url=str(current.get("url") or default_url or "").strip(),
@@ -371,64 +107,15 @@ def prompt_scenario_fields(
         except Exception:
             emit("time_budget_sec는 1 이상의 정수여야 합니다.")
 
-    scenario = dict(current)
-    scenario["id"] = scenario_id
-    if str(current.get("name") or "").strip() or not current_id or test_name != current_id:
-        scenario["name"] = test_name
-    else:
-        scenario.pop("name", None)
-    scenario["url"] = url
-    scenario["goal"] = goal
-    scenario["constraints"] = dict(constraints) if constraints else {
-        "allow_navigation": True,
-        "require_ref_only": True,
-        "require_state_change": False,
-    }
-    scenario["time_budget_sec"] = time_budget_sec
-    if "expected_signals" in current and not isinstance(current.get("expected_signals"), list):
-        scenario.pop("expected_signals", None)
-    elif "expected_signals" not in scenario and not current:
-        scenario["expected_signals"] = []
-    return scenario
-
-
-def _build_scenario_payload(
-    *,
-    current: Mapping[str, Any],
-    test_name: str,
-    url: str,
-    goal: str,
-    time_budget_sec: int,
-    existing_ids: set[str],
-) -> dict[str, Any]:
-    constraints = dict(current.get("constraints") or {})
-    current_id = str(current.get("id") or "").strip()
-    reserved_ids = {str(item).strip() for item in existing_ids if str(item).strip()}
-    if current_id:
-        reserved_ids.discard(current_id)
-    scenario_id = current_id or _generate_scenario_id(
+    scenario = build_scenario_payload(
+        current=current,
         test_name=test_name,
+        url=url,
+        goal=goal,
+        time_budget_sec=time_budget_sec,
         existing_ids=reserved_ids,
-        default_url=url,
     )
-    scenario = dict(current)
     scenario["id"] = scenario_id
-    if str(current.get("name") or "").strip() or not current_id or test_name != current_id:
-        scenario["name"] = test_name
-    else:
-        scenario.pop("name", None)
-    scenario["url"] = url
-    scenario["goal"] = goal
-    scenario["constraints"] = dict(constraints) if constraints else {
-        "allow_navigation": True,
-        "require_ref_only": True,
-        "require_state_change": False,
-    }
-    scenario["time_budget_sec"] = time_budget_sec
-    if "expected_signals" in current and not isinstance(current.get("expected_signals"), list):
-        scenario.pop("expected_signals", None)
-    elif "expected_signals" not in scenario and not current:
-        scenario["expected_signals"] = []
     return scenario
 
 
@@ -520,7 +207,7 @@ def open_scenario_form_windows_dialogs(
 ) -> dict[str, Any] | None:
     del emit
     current = dict(existing or {})
-    name_default = _default_scenario_name(current)
+    name_default = default_scenario_name(current)
     url_default = str(current.get("url") or default_url or "").strip()
     goal_default = str(current.get("goal") or "").strip()
     timeout_default = str(current.get("time_budget_sec") or 300)
@@ -554,7 +241,7 @@ def open_scenario_form_windows_dialogs(
     except Exception as exc:
         raise ValueError("time_budget_sec는 1 이상의 정수여야 합니다.") from exc
 
-    return _build_scenario_payload(
+    return build_scenario_payload(
         current=current,
         test_name=test_name,
         url=url,
@@ -603,7 +290,7 @@ def _open_scenario_form_pyside_inline(
     form_layout = QFormLayout()
     layout.addLayout(form_layout)
 
-    name_input = QLineEdit(_default_scenario_name(current), dialog)
+    name_input = QLineEdit(default_scenario_name(current), dialog)
     url_input = QLineEdit(str(current.get("url") or default_url or "").strip(), dialog)
     goal_input = QTextEdit(dialog)
     goal_input.setPlainText(str(current.get("goal") or "").strip())
@@ -646,7 +333,7 @@ def _open_scenario_form_pyside_inline(
         except Exception:
             _show_error("time_budget_sec는 1 이상의 정수여야 합니다.", timeout_input)
             return
-        result = _build_scenario_payload(
+        result = build_scenario_payload(
             current=current,
             test_name=test_name,
             url=url,
@@ -695,7 +382,7 @@ def open_scenario_form_macos_dialogs(
 ) -> dict[str, Any] | None:
     del emit
     current = dict(existing or {})
-    name_default = _default_scenario_name(current)
+    name_default = default_scenario_name(current)
     url_default = str(current.get("url") or default_url or "").strip()
     goal_default = str(current.get("goal") or "").strip()
     timeout_default = str(current.get("time_budget_sec") or 300)
@@ -729,7 +416,7 @@ def open_scenario_form_macos_dialogs(
     except Exception as exc:
         raise ValueError("time_budget_sec는 1 이상의 정수여야 합니다.") from exc
 
-    return _build_scenario_payload(
+    return build_scenario_payload(
         current=current,
         test_name=test_name,
         url=url,
@@ -968,7 +655,7 @@ def run_benchmark_suite(
     ]
     env = os.environ.copy()
     env.setdefault("GAIA_RAIL_ENABLED", "0")
-    env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.4"))
+    env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
     if os.name == "nt":
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")

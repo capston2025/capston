@@ -36,11 +36,13 @@ GEMINI_ENV_DEFAULT_MODEL = "gemini-2.5-pro"
 PROVIDER_ENV_MAP = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "ollama": "OLLAMA_API_KEY",
 }
 
 PROVIDER_LOGIN_URL = {
     "openai": "https://platform.openai.com/settings/organization/api-keys",
     "gemini": "https://aistudio.google.com/app/apikey",
+    "ollama": "",
 }
 
 OPENAI_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -455,6 +457,9 @@ def get_token_source(provider: str) -> tuple[str | None, str | None]:
     if env_token:
         return env_token, f"env:{env_key}"
 
+    if provider == "ollama":
+        return "ollama", "local:ollama"
+
     if provider == "gemini":
         token, path = _read_gemini_env_token()
         if token and path is not None:
@@ -710,6 +715,9 @@ def interactive_login(
     provider = provider.lower().strip()
     if provider not in PROVIDER_ENV_MAP:
         return None
+    if provider == "ollama":
+        write_env_if_set(provider, "ollama")
+        return "ollama"
 
     if token and token.strip():
         _save_provider_profile(provider, token.strip(), source="manual")
@@ -735,7 +743,11 @@ def interactive_login(
             except Exception:
                 print("브라우저 자동 실행을 실패했습니다. 위 주소를 직접 열어주세요.")
 
-    prompt_map = {"openai": "OpenAI API 키", "gemini": "Gemini API 키"}
+    prompt_map = {
+        "openai": "OpenAI API 키",
+        "gemini": "Gemini API 키",
+        "ollama": "Ollama API 키",
+    }
     value = getpass.getpass(f"{prompt_map.get(provider, 'API 토큰')} 입력 (빈 값이면 취소): ").strip()
     if not value:
         return None
@@ -758,6 +770,9 @@ def resolve_auth(
     method = method.lower().strip()
     if provider not in PROVIDER_ENV_MAP:
         return None, None
+    if provider == "ollama":
+        write_env_if_set(provider, "ollama")
+        return "ollama", "local:ollama"
     if strategy not in {"reuse", "fresh"}:
         strategy = "reuse"
     if method not in {"auto", "oauth", "manual"}:
@@ -841,6 +856,9 @@ def write_env_if_set(provider: str, token: str | None) -> None:
     env_key = PROVIDER_ENV_MAP.get(provider)
     if not env_key:
         return
+    if provider == "ollama" and not token:
+        os.environ.setdefault(env_key, "ollama")
+        return
     if token:
         os.environ[env_key] = token
     else:
@@ -893,7 +911,7 @@ def build_auth_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status", help="Show configured auth providers")
 
     logout_parser = subparsers.add_parser("logout", help="Clear stored token")
-    logout_parser.add_argument("--provider", choices=("openai", "gemini", "all"), required=True)
+    logout_parser.add_argument("--provider", choices=("openai", "gemini", "ollama", "all"), required=True)
 
     return parser
 

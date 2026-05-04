@@ -70,6 +70,7 @@ gaia/.env.local
 /artifacts/gamegoo_check/
 /artifacts/plans/
 /artifacts/hardening/
+/artifacts/manual/
 /artifacts/reports/
 /artifacts/tmp/
 /artifacts/wrapper_trace/
@@ -91,6 +92,10 @@ vendor/openclaw/dist-runtime/
 *.svg
 *.bmp
 *.ico
+
+# Allow committed GUI runtime assets.
+!gaia/src/gui/assets/
+!gaia/src/gui/assets/*.png
 
 # Presentation binaries
 *.ppt

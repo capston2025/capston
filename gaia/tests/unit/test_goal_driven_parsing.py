@@ -16,3 +16,9 @@ def test_parse_wait_payload_preserves_network_idle_with_timeout() -> None:
         "load_state": "networkidle",
         "timeout_ms": 9000,
     }
+
+
+def test_parse_wait_payload_uses_timeout_as_duration_without_condition() -> None:
+    payload = parse_wait_payload('{"condition": "messages should propagate", "timeout_ms": 1000}')
+
+    assert payload == {"time_ms": 1000}

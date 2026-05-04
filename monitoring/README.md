@@ -2,7 +2,7 @@
 
 Prometheus + Pushgateway + Grafana + nginx 기반의 벤치마크 KPI 모니터링.
 
-벤치마크 실행이 끝나면 결과가 자동으로 팀 서버에 업로드되고,
+벤치마크 실행이 끝난 뒤 사용자가 명시적으로 업로드를 켜면
 팀원 누구나 Grafana 대시보드에서 확인할 수 있습니다.
 
 ---
@@ -85,15 +85,15 @@ python scripts/gaia_monitor_connect.py \
     --token <토큰>
 ```
 
-연결 후에는 벤치마크 실행하면 **자동으로 업로드**됩니다.
+연결 후에는 벤치마크 실행 시 `--push-metrics`를 붙이면 업로드됩니다.
 
 ---
 
 ## 이후 사용
 
 ```bash
-# 벤치마크 실행 → 자동 push (별도 명령어 없음)
-python scripts/run_goal_benchmark.py --suite ...
+# 벤치마크 실행 + 명시적 push
+python scripts/run_goal_benchmark.py --suite ... --push-metrics
 
 # 수동으로 push하고 싶을 때
 python scripts/push_metrics.py           # 최근 결과 1개

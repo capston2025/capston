@@ -12,5 +12,58 @@
       ]
     }
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "id": "WIKIPEDIA_001_HOME_SEARCH_VISIBLE",
+      "name": "홈 검색창 확인",
+      "url": "https://ko.wikipedia.org/",
+      "goal": "위키피디아 한국어 홈 화면에서 검색 입력창이나 주요 탐색 링크가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 240
+    },
+    {
+      "id": "WIKIPEDIA_002_SEARCH_AI_ARTICLE",
+      "name": "인공지능 문서 검색",
+      "url": "https://ko.wikipedia.org/",
+      "goal": "검색창에 인공지능을 입력해 검색한 뒤 인공지능 문서로 들어가 제목이나 본문 요약이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "WIKIPEDIA_003_SEARCH_KOREA_HISTORY",
+      "name": "대한민국 문서 목차 탐색",
+      "url": "https://ko.wikipedia.org/",
+      "goal": "검색창에 대한민국을 입력해 문서로 이동한 뒤 목차나 역사 섹션으로 이동해서 해당 섹션 제목이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    },
+    {
+      "id": "WIKIPEDIA_004_RANDOM_ARTICLE",
+      "name": "임의 문서 진입",
+      "url": "https://ko.wikipedia.org/",
+      "goal": "위키피디아 홈 화면에서 임의 문서 또는 무작위 문서 링크를 눌러 새 문서 제목과 본문이 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 300
+    }
+  ]
 }

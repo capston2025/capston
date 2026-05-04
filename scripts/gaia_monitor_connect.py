@@ -6,7 +6,7 @@
 
   python scripts/gaia_monitor_connect.py http://<서버IP>:9091 --token <토큰>
 
-이후 벤치마크 실행 시 자동으로 팀 서버에 결과가 업로드됩니다.
+이후 벤치마크 실행 시 --push-metrics 를 붙이면 팀 서버에 결과가 업로드됩니다.
 설정은 ~/.gaia/monitoring.json 에 저장됩니다.
 """
 
@@ -124,7 +124,7 @@ def main():
     print("  설정 완료!")
     print("=" * 50)
     print()
-    print("  이제 벤치마크를 실행하면 결과가 자동으로")
+    print("  이제 벤치마크를 실행할 때 --push-metrics 를 붙이면")
     print("  팀 모니터링 서버에 업로드됩니다.")
     print()
     print("  상태 확인: python scripts/gaia_monitor_connect.py --status")

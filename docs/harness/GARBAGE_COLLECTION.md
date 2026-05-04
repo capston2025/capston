@@ -29,6 +29,7 @@ du -sh .venv vendor/openclaw/node_modules artifacts gaia/artifacts 2>/dev/null
 - `.venv`
 - `vendor/openclaw/node_modules`
 - `artifacts/benchmarks`
+- `artifacts/manual`
 - `artifacts/wrapper_trace`
 - `tmp`
 - `output`

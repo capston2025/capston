@@ -107,6 +107,9 @@ def parse_wait_payload(raw: Optional[Any]) -> Dict[str, Any]:
             normalized_key = key_aliases.get(key, key)
             payload[normalized_key] = value
         if payload:
+            executable_wait_keys = {"time_ms", "selector", "text", "text_gone", "url", "load_state", "js"}
+            if "timeout_ms" in payload and not any(key in payload for key in executable_wait_keys):
+                payload["time_ms"] = payload.pop("timeout_ms")
             return payload
         return {"time_ms": 1000}
 

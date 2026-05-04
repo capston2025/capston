@@ -5,21 +5,23 @@ GAIA 벤치마크 메트릭을 Prometheus Pushgateway로 전송하는 스크립�
 summary.json  → suite 전체 KPI 메트릭
 results.json  → 시나리오별 상세 메트릭 (runs/success/fail/duration 등)
 
-팀원이 gaia_monitor_connect.py 로 한 번 연결 설정을 하고 나면
-~/.gaia/monitoring.json 을 자동으로 읽어 서버/토큰을 사용합니다.
+팀원이 gaia_monitor_connect.py 로 한 번 연결 설정을 하고 나면,
+이 스크립트가 ~/.gaia/monitoring.json 을 읽어 서버/토큰을 사용합니다.
 
 사용법:
   python scripts/push_metrics.py            # 가장 최근 결과 push
   python scripts/push_metrics.py --all      # 모든 기존 결과 push
   python scripts/push_metrics.py --gateway http://localhost:9091  # 직접 지정
+  python scripts/run_goal_benchmark.py --suite ... --push-metrics  # 실행 후 명시적 push
 """
 
 import argparse
 import json
 import statistics
 import sys
+from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 
@@ -51,6 +53,32 @@ def load_json(path: Path) -> dict | list | None:
 
 # ── 메트릭 텍스트 빌더 ────────────────────────────────────────────────────
 
+
+def _escape_label_value(value) -> str:
+    """Escape a Prometheus label value according to the text exposition format."""
+    return (
+        str(value if value is not None else "")
+        .replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace('"', '\\"')
+    )
+
+
+def _labels_to_text(labels: dict) -> str:
+    return ",".join(f'{key}="{_escape_label_value(value)}"' for key, value in sorted(labels.items()))
+
+
+def _timestamp_seconds(raw: str | None) -> float | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return float(datetime.fromisoformat(normalized).timestamp())
+    except ValueError:
+        return None
+
+
 def _gauge(name: str, help_text: str, value, labels: dict,
            declared: set | None = None) -> list[str]:
     """Prometheus exposition 형식 게이지 라인 생성.
@@ -58,7 +86,7 @@ def _gauge(name: str, help_text: str, value, labels: dict,
     """
     if value is None:
         return []
-    label_str = ",".join(f'{k}="{v}"' for k, v in labels.items())
+    label_str = _labels_to_text(labels)
     lines = []
     if declared is not None and name not in declared:
         lines += [f"# HELP {name} {help_text}", f"# TYPE {name} gauge"]
@@ -84,6 +112,7 @@ def build_suite_metrics(summary: dict, declared: set | None = None) -> str:
     kpi = summary.get("kpi_metrics", {})
     tgt = kpi.get("targets", {})
     cnt = kpi.get("counts", {})
+    started_ts = _timestamp_seconds(summary.get("started_at"))
 
     for args in [
         ("gaia_runs_total",                       "Total runs",                          m.get("runs_total")),
@@ -112,6 +141,14 @@ def build_suite_metrics(summary: dict, declared: set | None = None) -> str:
         lines.extend(_gauge("gaia_status_count", "Count by final status",
                             count, {**base, "status": status}, declared))
 
+    lines.extend(_gauge(
+        "gaia_suite_started_timestamp_seconds",
+        "Suite run start timestamp as Unix seconds",
+        started_ts,
+        base,
+        declared,
+    ))
+
     return "\n".join(lines) + "\n"
 
 
@@ -123,8 +160,7 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
 
     suite_id  = summary.get("suite_id", "unknown")
     site_name = summary.get("site", {}).get("name", "unknown")
-    site_url  = summary.get("site", {}).get("base_url", "")
-    started_at = summary.get("started_at", "")
+    started_ts = _timestamp_seconds(summary.get("started_at"))
 
     # scenario_id → 해당 실행 목록
     from collections import defaultdict
@@ -174,23 +210,25 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
             lines.extend(_gauge(args[0], args[1], args[2], base, declared))
 
         last_status_ok = 1.0 if statuses and statuses[-1] == "SUCCESS" else 0.0
-        last_reason = str(last_run.get("reason") or "")[:100].replace("\n", " ").replace('"', "'")
         lines.extend(_gauge(
             "gaia_scenario_last_status",
             "Last run result (1=SUCCESS 0=FAIL)",
             last_status_ok,
-            {**base, "completion": completion, "site_url": site_url,
-             "started_at": started_at, "last_reason": last_reason},
+            {**base, "completion": completion},
             declared,
         ))
-
-        # 시나리오 설명 메트릭 (goal 텍스트를 라벨로 push)
-        goal = str(runs[0].get("goal") or "")[:200].replace("\n", " ").replace('"', "'")
         lines.extend(_gauge(
             "gaia_scenario_info",
-            "Scenario description (goal)",
+            "Scenario presence marker with low-cardinality labels",
             1,
-            {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name, "goal": goal},
+            {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name},
+            declared,
+        ))
+        lines.extend(_gauge(
+            "gaia_scenario_last_run_timestamp_seconds",
+            "Scenario run start timestamp as Unix seconds",
+            started_ts,
+            base,
             declared,
         ))
 
@@ -200,7 +238,8 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
 # ── Pushgateway 전송 ───────────────────────────────────────────────────────
 
 def push_to_gateway(metrics_text: str, instance: str, gateway_url: str, token: str | None) -> bool:
-    url = urljoin(gateway_url.rstrip("/") + "/", f"metrics/job/gaia_benchmark/instance/{instance}")
+    safe_instance = quote(str(instance or "unknown"), safe="")
+    url = urljoin(gateway_url.rstrip("/") + "/", f"metrics/job/gaia_benchmark/instance/{safe_instance}")
     kwargs: dict = {
         "data": metrics_text.encode("utf-8"),
         "headers": {"Content-Type": "text/plain; version=0.0.4; charset=utf-8"},
@@ -253,7 +292,7 @@ def push_suite_dir(suite_dir: Path, gateway_url: str, token: str | None) -> bool
     scenario_metrics = build_scenario_metrics(summary, results or [], declared) if results else ""
 
     full_metrics = suite_metrics + scenario_metrics
-    instance = suite_dir.name.replace("/", "_").replace(" ", "_")
+    instance = str(suite_id or suite_dir.name)
 
     if push_to_gateway(full_metrics, instance, gateway_url, token):
         print(f"  [완료] {suite_id} ({len(results or [])}개 시나리오)")

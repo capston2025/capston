@@ -19,11 +19,18 @@ class AnalysisWorker(QObject):
     finished = Signal(object)  # AnalysisResult 객체
     error = Signal(str)  # 오류 메시지
 
-    def __init__(self, pdf_text: str, analyzer: SpecAnalyzer | None = None, feature_query: str = ""):
+    def __init__(
+        self,
+        pdf_text: str,
+        analyzer: SpecAnalyzer | None = None,
+        feature_query: str = "",
+        base_url: str = "",
+    ):
         super().__init__()
         self.pdf_text = pdf_text
         self._analyzer = analyzer or SpecAnalyzer()
         self.feature_query = feature_query
+        self.base_url = str(base_url or "").strip()
 
     def run(self) -> None:
         """워크 스레드에서 분석을 실행합니다."""
@@ -31,9 +38,15 @@ class AnalysisWorker(QObject):
             self.progress.emit("🤖 OpenAI Agent Builder에 분석을 요청하는 중입니다…")
             if self.feature_query:
                 self.progress.emit(f"🎯 특정 기능 필터링: {self.feature_query}")
+            if self.base_url:
+                self.progress.emit(f"🌐 참조 사이트 링크: {self.base_url}")
             self.progress.emit("⏱️  문서 길이에 따라 2-5분 가량 소요될 수 있어요.")
 
-            scenarios = self._analyzer.generate_from_spec(self.pdf_text, feature_query=self.feature_query)
+            scenarios = self._analyzer.generate_from_spec(
+                self.pdf_text,
+                feature_query=self.feature_query,
+                base_url=self.base_url,
+            )
             if not scenarios:
                 raise RuntimeError("Agent Builder가 테스트 시나리오를 생성하지 못했습니다.")
 

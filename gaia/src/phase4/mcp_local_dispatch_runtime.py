@@ -6,9 +6,11 @@ from typing import Any, Dict
 import requests
 
 from gaia.src.phase4.mcp_openclaw_dispatch_runtime import (
+    delete_openclaw_profile,
     dispatch_openclaw_action,
     dispatch_openclaw_close,
     dispatch_openclaw_console_logs,
+    ensure_openclaw_profile,
     get_openclaw_session_url,
 )
 
@@ -34,6 +36,34 @@ def current_browser_backend(raw_base_url: str | None = None) -> str:
     return "openclaw"
 
 
+def ensure_browser_profile(
+    raw_base_url: str | None,
+    *,
+    profile: str,
+    timeout: Any = None,
+) -> DispatchResult:
+    status_code, payload, text = ensure_openclaw_profile(
+        raw_base_url,
+        profile=profile,
+        timeout=timeout,
+    )
+    return DispatchResult(status_code=int(status_code), payload=payload, text=str(text or ""))
+
+
+def delete_browser_profile(
+    raw_base_url: str | None,
+    *,
+    profile: str,
+    timeout: Any = None,
+) -> DispatchResult:
+    status_code, payload, text = delete_openclaw_profile(
+        raw_base_url,
+        profile=profile,
+        timeout=timeout,
+    )
+    return DispatchResult(status_code=int(status_code), payload=payload, text=str(text or ""))
+
+
 def execute_mcp_action(
     raw_base_url: str | None,
     *,
@@ -55,6 +85,7 @@ def execute_mcp_action(
         status_code, payload, text = dispatch_openclaw_console_logs(
             raw_base_url,
             session_id=str(request_params.get("session_id") or "default"),
+            profile=str(request_params.get("profile") or ""),
             level=str(request_params.get("type") or request_params.get("level") or ""),
             limit=int(request_params.get("limit") or 100),
             timeout=timeout,

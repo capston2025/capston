@@ -1,0 +1,82 @@
+{
+  "suite_id": "pypi_public_v1",
+  "site": {
+    "name": "PyPI",
+    "base_url": "https://pypi.org/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "PyPI 홈 화면에서 패키지 검색 입력창과 주요 내비게이션이 보이는지 확인해줘.",
+      "id": "PYPI_001_HOME_SEARCH",
+      "name": "홈 검색창 확인",
+      "time_budget_sec": 120,
+      "url": "https://pypi.org/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "PyPI 검색에서 requests를 찾아 검색 결과 목록이 보이는지 확인해줘.",
+      "id": "PYPI_002_SEARCH_REQUESTS",
+      "name": "requests 검색 결과 확인",
+      "time_budget_sec": 120,
+      "url": "https://pypi.org/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "requests 패키지 상세 페이지에서 프로젝트 제목과 설치 명령 영역이 보이는지 확인해줘.",
+      "id": "PYPI_003_REQUESTS_DETAIL",
+      "name": "requests 상세 확인",
+      "time_budget_sec": 120,
+      "url": "https://pypi.org/project/requests/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "PyPI classifiers 페이지에서 분류 목록이나 필터 가능한 항목들이 보이는지 확인해줘.",
+      "id": "PYPI_004_CLASSIFIERS_LIST",
+      "name": "classifiers 목록 확인",
+      "time_budget_sec": 120,
+      "url": "https://pypi.org/classifiers/"
+    },
+    {
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "goal": "PyPI 도움말 페이지에서 사용자 가이드나 FAQ 항목이 보이는지 확인해줘.",
+      "id": "PYPI_005_HELP_PAGE",
+      "name": "도움말 페이지 확인",
+      "time_budget_sec": 120,
+      "url": "https://pypi.org/help/"
+    }
+  ]
+}
