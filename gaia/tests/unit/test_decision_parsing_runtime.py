@@ -144,3 +144,52 @@ def test_parse_switch_alias_maps_to_focus_and_uses_value():
     assert d.action == ActionType.FOCUS
     assert d.value == "2"
     assert d.ref_id is None
+
+
+def test_parse_preserves_multi_user_participant_plan_contract():
+    agent = _FakeAgent()
+    resp = json.dumps({
+        "action": "wait",
+        "value": {"time_ms": 700},
+        "reasoning": "need a second user to verify message delivery",
+        "participant_id": "sender",
+        "next_participant": "receiver",
+        "participant_plan": {
+            "skill": "multi_user_interaction",
+            "required": True,
+            "reason": "채팅 수신 여부는 sender와 receiver가 모두 필요하다.",
+            "participants": [
+                {"id": "sender", "role": "sender", "display_name": "Sender"},
+                {"id": "receiver", "role": "receiver", "display_name": "Receiver"},
+            ],
+            "credential_requests": [
+                {"participant_id": "sender", "fields": ["username", "password"]},
+                {"participant_id": "receiver", "fields": ["username", "password"]},
+            ],
+            "expected_events": ["message_sent", "message_received"],
+        },
+        "blackboard_event": "message_sent",
+        "blackboard_payload": {"text_present": True},
+        "turn_control": {
+            "status": "wait_for",
+            "wait_for": [
+                {"kind": "blackboard_key", "blackboard_key": "message_received"}
+            ],
+            "reason": "sender waits until receiver confirms the message",
+        },
+    })
+
+    d = parse_decision(agent, resp)
+
+    assert d.action == ActionType.WAIT
+    assert d.participant_id == "sender"
+    assert d.next_participant == "receiver"
+    assert d.participant_plan is not None
+    assert d.participant_plan.required is True
+    assert [p.id for p in d.participant_plan.participants] == ["sender", "receiver"]
+    assert d.participant_plan.credential_requests[0].participant_id == "sender"
+    assert d.blackboard_event == "message_sent"
+    assert d.blackboard_payload == {"text_present": True}
+    assert d.turn_control is not None
+    assert d.turn_control.status == "wait_for"
+    assert d.turn_control.wait_for[0].blackboard_key == "message_received"

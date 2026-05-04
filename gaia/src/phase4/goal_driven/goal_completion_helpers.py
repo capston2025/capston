@@ -338,6 +338,9 @@ def evaluate_goal_target_completion(
     goal: TestGoal,
     dom_elements: List[DOMElement],
 ) -> Optional[str]:
+    registry = getattr(agent, "_participant_registry", None)
+    if bool(getattr(registry, "is_multi", lambda: False)()):
+        return None
     policy_reason = agent._run_goal_policy_closer(goal=goal, dom_elements=dom_elements)
     if policy_reason:
         return policy_reason

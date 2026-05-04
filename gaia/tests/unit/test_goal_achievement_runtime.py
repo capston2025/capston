@@ -398,6 +398,56 @@ def test_validate_goal_achievement_claim_accepts_wait_when_expected_signals_are_
     assert reason is None
 
 
+def test_validate_goal_achievement_claim_accepts_multi_user_blackboard_evidence() -> None:
+    agent = _FakeAgent()
+    agent._last_snapshot_evidence = {
+        "text_digest": "receiver-user: round 6: receiver closes full e2e loop",
+        "live_texts": [],
+    }
+    agent._participant_registry = SimpleNamespace(
+        is_multi=lambda: True,
+        blackboard=SimpleNamespace(
+            all_entries=lambda: [
+                SimpleNamespace(
+                    key="sender_message_round_5",
+                    value={
+                        "sender": "sender-user",
+                        "text": "round 5: sender sends final challenge",
+                    },
+                ),
+                SimpleNamespace(
+                    key="receiver_message_round_6",
+                    value={
+                        "sender": "receiver-user",
+                        "text": "round 6: receiver closes full e2e loop",
+                    },
+                ),
+            ]
+        ),
+    )
+    goal = SimpleNamespace(
+        name="multi user chat",
+        description="sender와 receiver가 왕복 채팅한다",
+        success_criteria=[
+            "sender-user: round 5: sender sends final challenge",
+            "receiver-user: round 6: receiver closes full e2e loop",
+        ],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="전체 왕복 메시지 확인 완료",
+        is_goal_achieved=True,
+        goal_achievement_reason="sender/receiver transcript가 모두 표시되어 완료",
+    )
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, [])
+
+    assert ok is True
+    assert reason is None
+    assert agent._last_goal_completion_source == "multi_user_evidence"
+
+
 def test_validate_goal_achievement_claim_rejects_signup_goal_without_completion_signal() -> None:
     agent = _FakeAgent()
     goal = SimpleNamespace(
@@ -428,6 +478,73 @@ def test_validate_goal_achievement_claim_rejects_signup_goal_without_completion_
 
     assert ok is False
     assert reason == "회원가입 목표는 화면 진입만으로 성공으로 보지 않습니다. 회원가입 제출 및 완료 신호가 필요합니다."
+
+
+def test_validate_goal_achievement_claim_accepts_multi_user_signup_context_evidence() -> None:
+    agent = _FakeAgent()
+    agent._last_snapshot_evidence = {
+        "text_digest": "sender-signup-user: signup alpha final challenge receiver-signup-user: signup beta final closes loop",
+        "live_texts": [],
+    }
+    agent._participant_registry = SimpleNamespace(
+        is_multi=lambda: True,
+        blackboard=SimpleNamespace(
+            all_entries=lambda: [
+                SimpleNamespace(
+                    key="sender_message_round_5",
+                    value={
+                        "sender": "sender-signup-user",
+                        "text": "signup alpha final challenge",
+                    },
+                ),
+                SimpleNamespace(
+                    key="receiver_message_round_6",
+                    value={
+                        "sender": "receiver-signup-user",
+                        "text": "signup beta final closes loop",
+                    },
+                ),
+            ]
+        ),
+    )
+    goal = SimpleNamespace(
+        name="회원가입 후 multi user chat",
+        description="두 개의 새 계정을 회원가입한 뒤 서로 채팅한다",
+        success_criteria=[
+            "signup alpha final challenge",
+            "signup beta final closes loop",
+        ],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="양쪽 transcript와 가입 후 로그인 상태를 모두 확인했습니다.",
+        confidence=1.0,
+        is_goal_achieved=True,
+        goal_achievement_reason="두 새 계정의 채팅 검증 완료",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="input",
+            role="textbox",
+            text="",
+            aria_label="Message",
+            context_text=(
+                "Signed up and logged in as receiver-signup-user | Message | "
+                "sender-signup-user: signup alpha final challenge | "
+                "receiver-signup-user: signup beta final closes loop"
+            ),
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is True
+    assert reason is None
+    assert agent._last_goal_completion_source == "multi_user_evidence"
 
 
 def test_validate_goal_achievement_claim_accepts_wait_on_recent_transition_even_when_expected_signals_are_missing() -> None:

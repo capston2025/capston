@@ -19,6 +19,7 @@ from gaia.src.phase4.goal_driven import (
     TestGoal,
     sort_goals_by_priority,
 )
+from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import close_participant_browser_contexts
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
 from gaia.src.gui.benchmark_mode import override_suite_urls
@@ -251,6 +252,10 @@ class GoalDrivenWorker(QObject):
                 }
             )
         finally:
+            try:
+                close_participant_browser_contexts(self._goal_agent)
+            except Exception:
+                pass
             self.finished.emit()
 
     def _on_progress(self, message: str) -> None:
