@@ -21,6 +21,7 @@ from gaia.src.phase1.analyzer import SpecAnalyzer
 from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
+from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import close_participant_browser_contexts
 from gaia.src.phase4.goal_driven.policies.filter import filter_goal_requires_semantic_validation
 from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
 from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
@@ -1176,6 +1177,10 @@ def _run_single_chat_goal(
                 summary["auth"] = auth_payload
         return (0 if effective_success else 1), summary
     finally:
+        try:
+            close_participant_browser_contexts(agent)
+        except Exception:
+            pass
         try:
             close_mcp_session(
                 CONFIG.mcp.host_url,

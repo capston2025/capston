@@ -14,8 +14,9 @@
 처음 시작할 때는 아래 순서를 기본으로 쓴다.
 
 1. `python scripts/context_pack.py --area repo-entry`
-2. 작업 영역에 맞는 pack 1개만 추가로 로드
-3. 필요한 경우에만 pack 밖 파일을 연다
+2. 구현/수정 작업이면 `python scripts/dev_harness.py detect --changed` 또는 `python scripts/dev_harness.py plan --lane <lane>`로 개발 lane을 고른다
+3. 작업 영역에 맞는 pack 1개만 추가로 로드
+4. 필요한 경우에만 pack 밖 파일을 연다
 
 ## Context Packs
 
@@ -29,10 +30,15 @@
   - benchmark runner, graders, scenario/eval 계약
 - `runtime-entrypoints`
   - CLI, terminal, chat hub, auth, session 진입점
+- `multi-user-interaction`
+  - 다중 참여자, blackboard, event-driven turn scheduling
+- `development-harness`
+  - 프로젝트 개발용 lane, team pattern, eval/check orchestration
 - `cleanup-gc`
   - 큰 디렉토리, 슬롭 제거, fallback/legacy 제거 기준
 
 전체 목록과 파일 매핑은 [docs/harness/CONTEXT_MAP.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/CONTEXT_MAP.md) 와 [docs/harness/context_manifest.json](/Users/coldmans/Documents/GitHub/capston/docs/harness/context_manifest.json) 이 source of truth다.
+프로젝트 자체를 개발할 때의 lane/eval/check 계약은 [docs/harness/development_harness_manifest.json](/Users/coldmans/Documents/GitHub/capston/docs/harness/development_harness_manifest.json) 과 `python scripts/dev_harness.py plan --lane <lane>`가 source of truth다.
 
 ## Working Contract
 

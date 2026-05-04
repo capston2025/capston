@@ -13,6 +13,24 @@ python scripts/lint_harness_docs.py
 
 ## 영역별 체크
 
+### development harness / 프로젝트 개발 하네스
+
+다음 파일을 건드렸다면:
+
+- `docs/harness/DEVELOPMENT_HARNESS.md`
+- `docs/harness/development_harness_manifest.json`
+- `docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md`
+- `scripts/dev_harness.py`
+- `scripts/lint_harness_docs.py`
+
+최소 체크:
+
+```bash
+python scripts/dev_harness.py audit
+python scripts/dev_harness.py run --lane development-harness --tier smoke
+python scripts/lint_harness_docs.py
+```
+
 ### goal-driven / closer / verifier
 
 다음 파일을 건드렸다면:

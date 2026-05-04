@@ -18,6 +18,11 @@ from .media_playback_helpers import (
     goal_requires_media_playback,
 )
 from .models import ActionDecision, ActionType, DOMElement, TestGoal
+from .multi_user_interaction_runtime import (
+    build_multi_user_interaction_skill_prompt,
+    build_participant_prompt_block,
+    participant_test_data_for_prompt,
+)
 from .run_history_runtime import (
     build_run_history_replay_packet_context as build_run_history_replay_packet_context_impl,
     record_run_history_transcript as record_run_history_transcript_impl,
@@ -587,7 +592,7 @@ def decide_next_action(
         or bool((getattr(agent, "_last_snapshot_evidence", {}) or {}).get("auth_prompt_visible"))
         or _has_auth_surface(agent, dom_elements or [])
     )
-    prompt_test_data = goal.test_data if auth_phase_active and isinstance(goal.test_data, dict) else {}
+    prompt_test_data = participant_test_data_for_prompt(agent, goal) if auth_phase_active else {}
     auth_surface_summary = _build_auth_surface_summary(agent, dom_elements or [], prompt_test_data) if auth_phase_active else ""
     feedback_signal_summary = _build_feedback_signal_summary(agent, dom_elements or [])
     new_page_signal_summary = _build_new_page_signal_summary(agent)
@@ -621,6 +626,8 @@ def decide_next_action(
     )
     run_history_replay_packet = build_run_history_replay_packet_context_impl(agent, goal=goal)
     run_history_replay_block = run_history_replay_packet or "## 세션 continuity replay packet\n없음"
+    participant_skill_prompt = build_multi_user_interaction_skill_prompt()
+    participant_prompt_block = build_participant_prompt_block(agent)
     state_cache_title = "현재 wrapper 관찰값(약한 힌트)" if thin_wrapper_mode else "현재 상태 요약(약한 힌트)"
     pre_dom_wrapper_observation_block = ""
     post_dom_wrapper_observation_block = wrapper_observation_block
@@ -671,6 +678,8 @@ def decide_next_action(
 ## 최근 실행 피드백
 {chr(10).join(recent_action_feedback) if recent_action_feedback else '없음'}
 
+{participant_prompt_block}
+
 ## 최근 반복 클릭 element_id
 {recent_block_text}
 
@@ -686,6 +695,8 @@ def decide_next_action(
 - 로그인/인증/OTP/보안문자/정답 입력처럼 현재 화면에서 사용자의 실제 값이 필요하지만 `사용 가능한 테스트 데이터`에 그 값이 없으면 추측하지 마세요. 이때는 아래 human_answer skill을 호출하세요.
 - human_answer skill 사용법: `action`은 `wait`, `value`는 JSON 문자열/객체 `{{"skill":"human_answer","question":"사용자에게 물어볼 질문","fields":["필요한_key"],"reason_code":"human_answer_required"}}`로 응답합니다. 필요한 필드명은 현재 화면과 목표를 보고 직접 정하세요.
 - human_answer는 사용자에게 묻기 위한 skill입니다. 버튼 클릭/입력으로 해결 가능한 단계에는 쓰지 말고, 모델이 알 수 없는 실제 비밀값/정답/인증값이 필요할 때만 사용하세요.
+
+{participant_skill_prompt}
 
 {run_history_replay_block}
 
@@ -714,7 +725,34 @@ def decide_next_action(
     \"reasoning\": \"현재 화면 기준으로 이 행동이 왜 다음 단계인지\",
     \"confidence\": 0.0~1.0,
     \"is_goal_achieved\": true | false,
-    \"goal_achievement_reason\": \"목표 달성 판단 이유 (is_goal_achieved가 true인 경우)\"
+    \"goal_achievement_reason\": \"목표 달성 판단 이유 (is_goal_achieved가 true인 경우)\",
+    \"participant_id\": \"다중 참여자 모드에서 현재 액션을 수행할 participant id 또는 null\",
+    \"next_participant\": \"현재 액션 이후 우선 실행할 participant id 또는 null\",
+    \"turn_control\": {{
+        \"status\": \"continue\" | \"wait_for\" | \"done\",
+        \"wait_for\": [
+            {{\"kind\":\"blackboard_key\", \"blackboard_key\":\"message_sent\", \"note\":\"receiver는 sender가 메시지를 보낸 뒤 확인한다\"}},
+            {{\"kind\":\"timeout\", \"timeout_seconds\":10, \"note\":\"이벤트가 늦게 도착할 수 있어 짧게 재확인한다\"}}
+        ],
+        \"reason\": \"이 action 이후 같은 참여자를 계속 실행할지, 이벤트를 기다릴지, 종료할지\"
+    }} 또는 null,
+    \"participant_plan\": {{
+        \"skill\": \"multi_user_interaction\",
+        \"required\": true | false,
+        \"reason\": \"단일 세션으로 검증할 수 없는 이유\",
+        \"participants\": [
+            {{\"id\":\"sender\", \"role\":\"sender\", \"display_name\":\"Sender\", \"persona\":\"메시지를 보내는 사용자\"}},
+            {{\"id\":\"receiver\", \"role\":\"receiver\", \"display_name\":\"Receiver\", \"persona\":\"메시지를 받는 사용자\"}}
+        ],
+        \"credential_requests\": [
+            {{\"participant_id\":\"sender\", \"fields\":[\"username\",\"password\"], \"required\":true}},
+            {{\"participant_id\":\"receiver\", \"fields\":[\"username\",\"password\"], \"required\":true}}
+        ],
+        \"coordination_plan\": [\"sender가 메시지를 보낸다\", \"receiver가 수신 여부를 확인한다\"],
+        \"expected_events\": [\"message_sent\", \"message_received\", \"notification_visible\"]
+    }} 또는 null,
+    \"blackboard_event\": \"message_sent/message_received/notification_visible 같은 공유 관찰 key 또는 null\",
+    \"blackboard_payload\": {{}}
 }}
 
 JSON 응답:"""

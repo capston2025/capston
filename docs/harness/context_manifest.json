@@ -10,7 +10,10 @@
         "docs/harness/CONTEXT_MAP.md",
         "docs/harness/CHECKS.md",
         "docs/harness/GARBAGE_COLLECTION.md",
-        "gaia/docs/AGENT_HARNESS_PLAYBOOK.md"
+        "gaia/docs/AGENT_HARNESS_PLAYBOOK.md",
+        "docs/harness/DEVELOPMENT_HARNESS.md",
+        "docs/harness/development_harness_manifest.json",
+        "docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md"
       ],
       "files": [],
       "checks": [
@@ -23,7 +26,8 @@
       "docs": [
         "gaia/docs/AGENT_HARNESS_PLAYBOOK.md",
         "gaia/docs/KPI_BENCHMARK_PROTOCOL.md",
-        "gaia/tests/scenarios/README.md"
+        "gaia/tests/scenarios/README.md",
+        "docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md"
       ],
       "files": [
         "gaia/src/phase4/goal_driven/agent.py",
@@ -34,6 +38,28 @@
       "checks": [
         ".venv/bin/python -m pytest gaia/tests/unit/test_goal_achievement_runtime.py -q",
         ".venv/bin/python -m pytest gaia/tests/unit/test_goal_verification_helpers.py -q"
+      ]
+    },
+    "multi-user-interaction": {
+      "summary": "Multi-user interaction skill, isolated participant browser contexts, blackboard events, and event-driven turn scheduling.",
+      "docs": [
+        "docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md",
+        "gaia/docs/AGENT_HARNESS_PLAYBOOK.md"
+      ],
+      "files": [
+        "gaia/src/phase4/goal_driven/multi_user_interaction_runtime.py",
+        "gaia/src/phase4/goal_driven/llm_decision_runtime.py",
+        "gaia/src/phase4/goal_driven/decision_parsing_runtime.py",
+        "gaia/src/phase4/goal_driven/goal_achievement_runtime.py",
+        "gaia/src/phase4/participants/models.py",
+        "gaia/src/phase4/participants/registry.py",
+        "gaia/src/phase4/participants/blackboard.py",
+        "gaia/src/phase4/participants/turn_scheduler.py"
+      ],
+      "checks": [
+        ".venv/bin/python -m pytest gaia/tests/unit/test_multi_user_interaction_runtime.py -q",
+        ".venv/bin/python -m pytest gaia/tests/unit/test_participants_turn_scheduler.py -q",
+        ".venv/bin/python -m pytest gaia/tests/unit/test_participants_blackboard.py -q"
       ]
     },
     "gaia-openclaw": {
@@ -95,6 +121,26 @@
         "README.md"
       ],
       "checks": [
+        "python scripts/lint_harness_docs.py"
+      ]
+    },
+    "development-harness": {
+      "summary": "Codex-native development harness based on revfactory/harness phases: audit, team architecture, orchestration, validation, and evolution.",
+      "docs": [
+        "docs/harness/DEVELOPMENT_HARNESS.md",
+        "docs/harness/development_harness_manifest.json",
+        "docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md",
+        "gaia/docs/AGENT_HARNESS_PLAYBOOK.md"
+      ],
+      "files": [
+        "scripts/dev_harness.py",
+        "scripts/lint_harness_docs.py",
+        "docs/harness/context_manifest.json",
+        "docs/harness/development_harness_manifest.json"
+      ],
+      "checks": [
+        "python scripts/dev_harness.py audit",
+        "python scripts/dev_harness.py run --lane development-harness --tier smoke",
         "python scripts/lint_harness_docs.py"
       ]
     }

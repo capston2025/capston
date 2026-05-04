@@ -186,6 +186,13 @@ from .text_llm_runtime import call_llm_text_only as call_llm_text_only_impl
 from .captcha_observer_runtime import run_captcha_observer as run_captcha_observer_impl
 from .wrapper_trace_runtime import thin_wrapper_enabled
 from .human_answer_runtime import parse_human_answer_request, request_human_answer
+from .multi_user_interaction_runtime import (
+    activate_multi_user_interaction,
+    begin_participant_turn,
+    complete_participant_turn,
+    parse_multi_user_interaction_request,
+    participant_decision_session,
+)
 
 
 class GoalDrivenAgent:
@@ -209,6 +216,10 @@ class GoalDrivenAgent:
     ):
         self.mcp_host_url = mcp_host_url
         self.session_id = session_id
+        self._base_session_id = session_id
+        self._participant_registry = None
+        self._participant_plan = None
+        self._active_participant_id = ""
         self._log_callback = log_callback
         self._screenshot_callback = screenshot_callback
         self._intervention_callback = intervention_callback
@@ -1373,6 +1384,34 @@ class GoalDrivenAgent:
                 context_shift_cooldown -= 1
 
             self._log(f"\n--- Step {step_count}/{orchestrator.max_steps} ---")
+            active_participant_id = begin_participant_turn(self)
+            if active_participant_id:
+                self._log(f"👥 participant turn: {active_participant_id}")
+            participant_registry = getattr(self, "_participant_registry", None)
+            if (
+                not active_participant_id
+                and bool(getattr(participant_registry, "is_multi", lambda: False)())
+            ):
+                wait_decision = ActionDecision(
+                    action=ActionType.WAIT,
+                    value='{"time_ms": 1000}',
+                    reasoning=(
+                        "multi_user_interaction: ready participant가 없습니다. "
+                        "명시적 next_participant 또는 wake condition을 기다립니다."
+                    ),
+                    confidence=1.0,
+                )
+                steps.append(
+                    StepResult(
+                        step_number=step_count,
+                        action=wait_decision,
+                        success=True,
+                        duration_ms=int((time.time() - step_start) * 1000),
+                        participant_id=getattr(self, "_active_participant_id", "") or None,
+                    )
+                )
+                time.sleep(1.0)
+                continue
 
             # 1. 현재 페이지 DOM 분석
             dom_elements = self._analyze_dom()
@@ -1642,6 +1681,61 @@ class GoalDrivenAgent:
                         f"♻️ 불일치 재수집 후 최종 결정: {decision.action.value} - {decision.reasoning}"
                     )
 
+            participant_plan = parse_multi_user_interaction_request(
+                decision.value if decision.action == ActionType.WAIT else None,
+                participant_plan=decision.participant_plan,
+            )
+            participant_registry = getattr(self, "_participant_registry", None)
+            participant_mode_active = bool(
+                getattr(participant_registry, "is_multi", lambda: False)()
+            )
+            if participant_plan and participant_plan.required and not participant_mode_active:
+                ok, participant_reason = activate_multi_user_interaction(
+                    self,
+                    goal,
+                    participant_plan,
+                )
+                steps.append(
+                    StepResult(
+                        step_number=step_count,
+                        action=decision,
+                        success=ok,
+                        error_message=None if ok else participant_reason,
+                        duration_ms=int((time.time() - step_start) * 1000),
+                        participant_id=(
+                            getattr(decision, "participant_id", None)
+                            or getattr(self, "_active_participant_id", "")
+                            or None
+                        ),
+                    )
+                )
+                if ok:
+                    self._log(f"👥 multi_user_interaction skill 완료: {participant_reason}")
+                    self._action_feedback.append(participant_reason)
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+                    continue
+                return self._build_failure_result(
+                    goal=goal,
+                    steps=steps,
+                    step_count=step_count,
+                    start_time=start_time,
+                    reason=participant_reason,
+                )
+            if participant_plan and participant_plan.required and participant_mode_active:
+                self._action_feedback.append(
+                    "multi_user_interaction은 이미 활성화되어 있습니다. "
+                    "현재 participant_id의 실제 다음 액션을 선택하세요."
+                )
+                if len(self._action_feedback) > 10:
+                    self._action_feedback = self._action_feedback[-10:]
+
+            active_participant_id = str(
+                getattr(self, "_active_participant_id", "") or active_participant_id or ""
+            ).strip()
+            if active_participant_id and not getattr(decision, "participant_id", None):
+                decision = decision.model_copy(update={"participant_id": active_participant_id})
+
             human_answer_request = (
                 parse_human_answer_request(decision.value)
                 if decision.action == ActionType.WAIT
@@ -1660,6 +1754,7 @@ class GoalDrivenAgent:
                         success=ok,
                         error_message=None if ok else answer_reason,
                         duration_ms=int((time.time() - step_start) * 1000),
+                        participant_id=getattr(decision, "participant_id", None),
                     )
                 )
                 if ok:
@@ -1743,15 +1838,12 @@ class GoalDrivenAgent:
                     dom_elements=dom_elements,
                 )
                 if wait_completion_reason:
-                    decision = ActionDecision(
-                        action=decision.action,
-                        ref_id=decision.ref_id,
-                        element_id=decision.element_id,
-                        value=decision.value,
-                        reasoning=decision.reasoning,
-                        confidence=max(float(decision.confidence or 0.0), 0.8),
-                        is_goal_achieved=True,
-                        goal_achievement_reason=wait_completion_reason,
+                    decision = decision.model_copy(
+                        update={
+                            "confidence": max(float(decision.confidence or 0.0), 0.8),
+                            "is_goal_achieved": True,
+                            "goal_achievement_reason": wait_completion_reason,
+                        }
                     )
             if bool(self._steering_infeasible_block):
                 self._steering_infeasible_block = False
@@ -1791,15 +1883,13 @@ class GoalDrivenAgent:
                 )
                 if not is_valid:
                     self._log(f"⚠️ 목표 달성 판정 보류: {invalid_reason}")
-                    decision = ActionDecision(
-                        action=decision.action,
-                        ref_id=decision.ref_id,
-                        element_id=decision.element_id,
-                        value=decision.value,
-                        reasoning=f"{decision.reasoning} | 보류 사유: {invalid_reason}",
-                        confidence=max(float(decision.confidence or 0.0) - 0.2, 0.0),
-                        is_goal_achieved=False,
-                        goal_achievement_reason=None,
+                    decision = decision.model_copy(
+                        update={
+                            "reasoning": f"{decision.reasoning} | 보류 사유: {invalid_reason}",
+                            "confidence": max(float(decision.confidence or 0.0) - 0.2, 0.0),
+                            "is_goal_achieved": False,
+                            "goal_achievement_reason": None,
+                        }
                     )
                 else:
                     self._log(f"✅ 목표 달성! 이유: {decision.goal_achievement_reason}")
@@ -1884,12 +1974,13 @@ class GoalDrivenAgent:
                 selected_element=selected_element,
             )
 
-            step_result, success, error = sub_agent.run_step(
-                step_number=step_count,
-                step_start=step_start,
-                decision=decision,
-                dom_elements=dom_elements,
-            )
+            with participant_decision_session(self, decision, restore=False):
+                step_result, success, error = sub_agent.run_step(
+                    step_number=step_count,
+                    step_start=step_start,
+                    decision=decision,
+                    dom_elements=dom_elements,
+                )
             steps.append(step_result)
 
             if success:
@@ -1948,6 +2039,13 @@ class GoalDrivenAgent:
             post_dom = post_action_result.get("post_dom") or []
             changed = bool(post_action_result.get("changed"))
             state_change = post_action_result.get("state_change")
+            complete_participant_turn(
+                self,
+                decision=decision,
+                success=success,
+                changed=changed,
+                step_count=step_count,
+            )
             if success and changed:
                 orchestrator.same_dom_count = 0
                 orchestrator.last_dom_signature = None

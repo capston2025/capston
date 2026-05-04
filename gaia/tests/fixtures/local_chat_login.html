@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GAIA Local Chat Login Fixture</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f7f7fb; color: #15151f; }
+    main { width: min(92vw, 34rem); padding: 1.5rem; border: 1px solid #d9d9e3; border-radius: 1rem; background: white; box-shadow: 0 1rem 3rem rgba(20, 20, 40, 0.08); }
+    label, input, button { display: block; width: 100%; box-sizing: border-box; }
+    label { margin-top: 0.85rem; font-weight: 650; }
+    input { margin-top: 0.25rem; padding: 0.7rem; border: 1px solid #b8b8c8; border-radius: 0.5rem; font-size: 1rem; }
+    button { margin-top: 1rem; padding: 0.75rem 1rem; border: 0; border-radius: 0.5rem; background: #264ee4; color: white; font-weight: 700; cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: 3px solid #7ba7ff; outline-offset: 2px; }
+    .hint { color: #505060; font-size: 0.95rem; }
+    .error { color: #a11a1a; min-height: 1.25rem; }
+    .chat { display: none; }
+    .chat[data-authenticated="true"] { display: block; }
+    .turn-count { margin-top: 0.85rem; font-weight: 700; }
+    .message-list { min-height: 5rem; padding: 0; list-style: none; }
+    .message-list li { margin-top: 0.5rem; padding: 0.65rem 0.75rem; border-radius: 0.65rem; background: #eef3ff; }
+    .message-list li[data-testid="reply-message"] { background: #f1f8ee; }
+  </style>
+</head>
+<body>
+  <main aria-labelledby="fixture-title">
+    <h1 id="fixture-title">GAIA local chat fixture</h1>
+    <p class="hint" data-testid="demo-credentials">Demo credentials: demo@example.test / gaia-demo-password</p>
+
+    <section id="login-panel" data-testid="login-panel" aria-label="Login panel">
+      <form id="login-form" data-testid="login-form">
+        <label for="email">Email</label>
+        <input id="email" data-testid="login-email" name="email" type="email" autocomplete="username" value="" required />
+
+        <label for="password">Password</label>
+        <input id="password" data-testid="login-password" name="password" type="password" autocomplete="current-password" required />
+
+        <button id="login-button" data-testid="login-button" type="submit">Log in</button>
+        <p id="login-error" class="error" data-testid="login-error" role="alert" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section id="chat-panel" class="chat" data-testid="chat-panel" data-authenticated="false" aria-label="Chat panel">
+      <p id="login-status" data-testid="login-status" role="status" aria-live="polite">Not logged in</p>
+      <form id="chat-form" data-testid="chat-form">
+        <label for="chat-message">Chat message</label>
+        <input id="chat-message" data-testid="chat-input" name="message" type="text" autocomplete="off" required />
+        <button id="send-button" data-testid="send-button" type="submit">Send message</button>
+      </form>
+      <p id="turn-count" class="turn-count" data-testid="turn-count" role="status" aria-live="polite" aria-label="Total chat turns">Total turns: 0</p>
+      <ul id="message-list" class="message-list" data-testid="message-list" aria-label="Chat transcript"></ul>
+    </section>
+  </main>
+
+  <script>
+    const DEMO_EMAIL = "demo@example.test";
+    const DEMO_PASSWORD = "gaia-demo-password";
+    const BOT_REPLY_PREFIX = "Assistant reply";
+
+    const loginPanel = document.querySelector("[data-testid='login-panel']");
+    const loginForm = document.querySelector("[data-testid='login-form']");
+    const emailInput = document.querySelector("[data-testid='login-email']");
+    const passwordInput = document.querySelector("[data-testid='login-password']");
+    const loginError = document.querySelector("[data-testid='login-error']");
+    const chatPanel = document.querySelector("[data-testid='chat-panel']");
+    const loginStatus = document.querySelector("[data-testid='login-status']");
+    const chatForm = document.querySelector("[data-testid='chat-form']");
+    const chatInput = document.querySelector("[data-testid='chat-input']");
+    const messageList = document.querySelector("[data-testid='message-list']");
+    const turnCount = document.querySelector("[data-testid='turn-count']");
+    let completedTurns = 0;
+
+    function showChat() {
+      loginPanel.hidden = true;
+      chatPanel.dataset.authenticated = "true";
+      loginStatus.textContent = "Logged in as " + DEMO_EMAIL;
+      chatInput.focus();
+    }
+
+    function appendMessage(kind, turn, text) {
+      const item = document.createElement("li");
+      item.dataset.testid = kind + "-message";
+      item.dataset.turn = String(turn);
+      item.setAttribute("aria-label", (kind === "sent" ? "Sent" : "Assistant reply") + " message turn " + turn);
+      item.textContent = text;
+      messageList.appendChild(item);
+    }
+
+    function appendTurn(text) {
+      const turn = completedTurns + 1;
+      appendMessage("sent", turn, "You sent: " + text);
+      appendMessage("reply", turn, BOT_REPLY_PREFIX + " " + turn + ": received " + text);
+      completedTurns = turn;
+      turnCount.textContent = "Total turns: " + completedTurns;
+      turnCount.setAttribute("aria-label", "Total chat turns: " + completedTurns);
+    }
+
+    loginForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const email = emailInput.value.trim();
+      const password = passwordInput.value;
+      if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+        loginError.textContent = "";
+        showChat();
+      } else {
+        loginError.textContent = "Invalid demo credentials";
+      }
+    });
+
+    chatForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const text = chatInput.value.trim();
+      if (!text) return;
+      appendTurn(text);
+      chatInput.value = "";
+    });
+  </script>
+</body>
+</html>

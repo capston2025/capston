@@ -10,6 +10,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 from enum import Enum
 
+from gaia.src.phase4.participants.models import (
+    ContextMode,
+    ParticipantPlan,
+    ParticipantSpec,
+    TurnControl,
+    TurnPolicySpec,
+)
+
 
 class ActionType(str, Enum):
     """가능한 액션 타입"""
@@ -72,6 +80,28 @@ class TestGoal(BaseModel):
 
     start_url: Optional[str] = Field(
         default=None, description="시작 URL (없으면 현재 페이지에서 시작)"
+    )
+
+    participants: List[ParticipantSpec] = Field(
+        default_factory=list,
+        description=(
+            "다중 참여자 정의. 비어있으면 단일 'default' 참여자 모드 (하위 호환)."
+        ),
+    )
+
+    turn_policy: Optional[TurnPolicySpec] = Field(
+        default=None,
+        description=(
+            "다중 참여자 모드의 턴 스케줄링 정책. None이면 EventDrivenScheduler 기본값."
+        ),
+    )
+
+    context_mode: ContextMode = Field(
+        default=ContextMode.ISOLATED,
+        description=(
+            "각 subagent의 LLM 컨텍스트 분리 정책 (isolated|shared_system). "
+            "단일 참여자 모드에서는 의미 없음."
+        ),
     )
 
 
@@ -147,6 +177,30 @@ class ActionDecision(BaseModel):
     goal_achievement_reason: Optional[str] = Field(
         default=None, description="목표 달성 판단 이유 (is_goal_achieved=True일 때)"
     )
+    participant_id: Optional[str] = Field(
+        default=None,
+        description="다중 참여자 모드에서 이 액션을 수행할 참여자 id",
+    )
+    next_participant: Optional[str] = Field(
+        default=None,
+        description="현재 액션 이후 우선 실행할 참여자 id",
+    )
+    participant_plan: Optional[ParticipantPlan] = Field(
+        default=None,
+        description="multi_user_interaction skill이 선언한 참여자 실행 계획",
+    )
+    blackboard_event: Optional[str] = Field(
+        default=None,
+        description="액션/관찰 후 Blackboard에 게시할 명시적 이벤트 key",
+    )
+    blackboard_payload: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="blackboard_event와 함께 게시할 JSON payload",
+    )
+    turn_control: Optional[TurnControl] = Field(
+        default=None,
+        description="다중 참여자 모드에서 액션 이후 participant lifecycle 제어",
+    )
 
 
 class StepResult(BaseModel):
@@ -159,6 +213,7 @@ class StepResult(BaseModel):
     screenshot_before: Optional[str] = None
     screenshot_after: Optional[str] = None
     duration_ms: int = 0
+    participant_id: Optional[str] = None
 
 
 class GoalResult(BaseModel):

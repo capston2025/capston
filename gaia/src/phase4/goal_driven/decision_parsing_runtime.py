@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Optional
 
+from gaia.src.phase4.participants.models import ParticipantPlan, TurnControl
+
 from .models import ActionDecision, ActionType
 
 
@@ -77,6 +79,24 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
         if final_ref_id is not None:
             final_ref_id = str(final_ref_id).strip() or None
         final_element_id = None if final_action in {ActionType.WAIT, ActionType.FOCUS} else data.get("element_id")
+        participant_plan = None
+        if isinstance(data.get("participant_plan"), dict):
+            try:
+                participant_plan = ParticipantPlan.model_validate(data.get("participant_plan"))
+            except Exception as exc:
+                try:
+                    agent._log(f"participant_plan 파싱 실패: {exc}")
+                except Exception:
+                    pass
+        turn_control = None
+        if isinstance(data.get("turn_control"), dict):
+            try:
+                turn_control = TurnControl.model_validate(data.get("turn_control"))
+            except Exception as exc:
+                try:
+                    agent._log(f"turn_control 파싱 실패: {exc}")
+                except Exception:
+                    pass
 
         return ActionDecision(
             action=final_action,
@@ -87,6 +107,12 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
             confidence=data.get("confidence", 0.5),
             is_goal_achieved=data.get("is_goal_achieved", False),
             goal_achievement_reason=data.get("goal_achievement_reason"),
+            participant_id=_clean_optional_str(data.get("participant_id") or data.get("participant")),
+            next_participant=_clean_optional_str(data.get("next_participant")),
+            participant_plan=participant_plan,
+            blackboard_event=_clean_optional_str(data.get("blackboard_event")),
+            blackboard_payload=data.get("blackboard_payload") if isinstance(data.get("blackboard_payload"), dict) else {},
+            turn_control=turn_control,
         )
 
     except (json.JSONDecodeError, ValueError) as exc:
@@ -106,3 +132,8 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
             is_goal_achieved=goal_achieved,
             goal_achievement_reason=goal_reason,
         )
+
+
+def _clean_optional_str(value: object) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None

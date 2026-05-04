@@ -55,6 +55,127 @@ def test_request_uses_default_timeout_tuple(monkeypatch) -> None:
     assert seen["timeout"] == (3.0, 12.0)
 
 
+def test_request_prefers_payload_profile_over_default_profile(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"ok": True}
+
+    def fake_request(*, method, url, params, json, headers, timeout):
+        seen["params"] = params
+        return _FakeResponse()
+
+    monkeypatch.setattr(requests, "request", fake_request)
+
+    runtime._request(
+        "POST",
+        base_url="http://127.0.0.1:18791",
+        path="/tabs/open",
+        payload={"url": "https://example.com", "profile": "gaia-test-sender"},
+    )
+
+    assert seen["params"]["profile"] == "gaia-test-sender"
+
+
+def test_ensure_openclaw_profile_creates_missing_profile_and_starts(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    calls: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if path == "/profiles":
+            return 200, {"profiles": [{"name": "openclaw"}]}, ""
+        if path == "/profiles/create":
+            return 200, {"ok": True, "profile": "gaia-test-sender"}, ""
+        if path == "/start":
+            return 200, {"ok": True, "profile": "gaia-test-sender"}, ""
+        raise AssertionError(path)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.ensure_openclaw_profile(
+        None,
+        profile="gaia-test-sender",
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["profile"] == "gaia-test-sender"
+    assert payload["created"] is True
+    assert calls == [
+        ("GET", "/profiles", {"profile": "gaia-test-sender"}, {}),
+        ("POST", "/profiles/create", {}, {"name": "gaia-test-sender", "profile": "gaia-test-sender"}),
+        ("POST", "/start", {"profile": "gaia-test-sender"}, {}),
+    ]
+
+
+def test_delete_openclaw_profile_stops_and_deletes_profile(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        calls.append((method, path, dict(params or {})))
+        if path == "/stop":
+            return 200, {"ok": True}, ""
+        if path == "/profiles/gaia-test-sender":
+            return 200, {"ok": True, "deleted": True}, ""
+        raise AssertionError(path)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.delete_openclaw_profile(
+        None,
+        profile="gaia-test-sender",
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["profile"] == "gaia-test-sender"
+    assert calls == [
+        ("POST", "/stop", {"profile": "gaia-test-sender"}),
+        ("DELETE", "/profiles/gaia-test-sender", {"profile": "gaia-test-sender"}),
+    ]
+
+
+def test_dispatch_openclaw_goto_uses_session_profile(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    runtime._clear_session_target("profile-s1")
+    calls: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if path == "/tabs/open":
+            return 200, {"targetId": "tab-1", "url": payload["url"]}, ""
+        raise AssertionError(path)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": "profile-s1",
+            "profile": "gaia-test-sender",
+            "action": "goto",
+            "url": "https://chat.example.test",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["profile"] == "gaia-test-sender"
+    assert calls[0][3]["profile"] == "gaia-test-sender"
+    assert runtime._session_state("profile-s1")["profile"] == "gaia-test-sender"
+
+
 def test_derive_state_change_from_snapshot_payloads_surfaces_new_page_evidence() -> None:
     before_payload = {
         "current_url": "https://cyber.inu.ac.kr/mod/page/view.php?id=123",

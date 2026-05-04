@@ -71,3 +71,29 @@ def test_goal_target_completion_skips_readonly_visibility_goal() -> None:
     reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
 
     assert reason is None
+
+
+def test_goal_target_completion_skips_multi_user_shortcut() -> None:
+    agent = _CompletionAgent()
+    agent._participant_registry = type("Registry", (), {"is_multi": lambda self: True})()
+    goal = TestGoal(
+        id="multi-user-1",
+        name="두 사용자가 채팅 왕복",
+        description="sender와 receiver가 같은 방에서 메시지를 주고받는지 확인",
+        success_criteria=["Apple", "Store"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="Apple Store",
+            context_text="채팅 transcript",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is None

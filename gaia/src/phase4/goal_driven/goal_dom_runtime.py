@@ -15,9 +15,10 @@ def analyze_dom(
 ) -> List[DOMElement]:
     """MCP Host를 통해 DOM 분석"""
     generation = int(getattr(self, "_dom_cache_generation", 0) or 0)
+    session_id = str(getattr(self, "session_id", "") or "default")
     requested_url = str(url or "").strip()
     requested_scope = str(scope_container_ref_id or "").strip()
-    cache_key = (generation, requested_url, requested_scope)
+    cache_key = (generation, session_id, requested_url, requested_scope)
     cache = getattr(self, "_dom_analyze_cache", None)
     if (
         isinstance(cache, dict)

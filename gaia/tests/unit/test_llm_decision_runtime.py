@@ -14,6 +14,9 @@ from gaia.src.phase4.goal_driven.llm_decision_runtime import (
     _build_target_destination_summary,
     _is_forbidden_global_control,
 )
+from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import (
+    build_multi_user_interaction_skill_prompt,
+)
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 
 
@@ -70,6 +73,21 @@ def test_build_goal_state_summary_keeps_membership_belief_in_classic_mode():
     assert parsed["membership_belief"] == "absent"
     assert parsed["subgoal"] is None
     assert meta["membership_hint_included"] is True
+
+
+def test_multi_user_interaction_skill_prompt_advertises_explicit_plan_contract():
+    prompt = build_multi_user_interaction_skill_prompt()
+
+    assert "participant_plan.required=true" in prompt
+    assert "participant_plan=null" in prompt
+    assert "credential_requests" in prompt
+    assert "human_answer" in prompt
+    assert "sender_username" in prompt
+    assert "blackboard_event" in prompt
+    assert "next_participant" in prompt
+    assert "turn_control" in prompt
+    assert "자동 실행하지 않습니다" in prompt
+    assert "round-robin" not in prompt
 
 
 def test_build_auth_surface_summary_describes_auth_controls_and_background_ctas():

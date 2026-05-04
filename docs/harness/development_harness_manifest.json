@@ -1,0 +1,518 @@
+{
+  "version": 1,
+  "default_lane": "repo-entry",
+  "workflow": [
+    "orient",
+    "define_eval",
+    "implement",
+    "verify",
+    "cleanup",
+    "report"
+  ],
+  "reference_model": [
+    {
+      "name": "ISTQB test harness glossary",
+      "url": "https://glossary.istqb.org/en_US/term/test-harness",
+      "applied_as": "Treat the dev harness as the driver, fixtures, test data, and oracle layer around project changes."
+    },
+    {
+      "name": "pytest fixtures",
+      "url": "https://pytest.org/en/6.2.x/fixture.html?highlight=conftest",
+      "applied_as": "Make setup explicit, modular, scoped, and reusable instead of hidden in ad-hoc scripts."
+    },
+    {
+      "name": "Google small/medium/large tests",
+      "url": "https://testing.googleblog.com/2011/03/how-google-tests-software-part-five.html",
+      "applied_as": "Classify checks by scope, not by vague unit/integration labels only."
+    },
+    {
+      "name": "OpenAI evals guide",
+      "url": "https://platform.openai.com/docs/guides/evals?api-mode=chat",
+      "applied_as": "Define expected behavior before implementation, then run deterministic and model-facing evals."
+    },
+    {
+      "name": "GitHub Actions CI",
+      "url": "https://docs.github.com/en/actions/get-started/continuous-integration",
+      "applied_as": "Keep the same checks runnable locally and in CI/PR review."
+    },
+    {
+      "name": "Playwright isolation",
+      "url": "https://playwright.dev/python/docs/browser-contexts",
+      "applied_as": "Use clean contexts/profiles for browser and multi-user verification."
+    }
+  ],
+  "tiers": {
+    "smoke": "Fast contract checks that should run while coding.",
+    "unit": "Lane-specific regression checks.",
+    "full": "Pre-push checks for broad regressions and formatting issues."
+  },
+  "lanes": {
+    "repo-entry": {
+      "summary": "Repository-wide docs, harness maps, and developer workflow entrypoints.",
+      "context_area": "repo-entry",
+      "owned_paths": [
+        "AGENTS.md",
+        "README.md",
+        "docs/harness/CONTEXT_MAP.md",
+        "docs/harness/CHECKS.md",
+        "docs/harness/GARBAGE_COLLECTION.md",
+        "docs/harness/context_manifest.json",
+        "docs/harness/development_harness_manifest.json",
+        "scripts/context_pack.py",
+        "scripts/lint_harness_docs.py",
+        "scripts/dev_harness.py",
+        "docs/harness/DEVELOPMENT_HARNESS.md",
+        "docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md"
+      ],
+      "eval_contract": [
+        "context packs render for touched areas",
+        "harness manifests point only to existing source paths",
+        "repo-wide docs lint passes"
+      ],
+      "risk_flags": [
+        "stale context pack points agents at the wrong layer",
+        "docs drift makes future agents over-read the repo"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area repo-entry",
+          "python scripts/lint_harness_docs.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_harness_context_scripts.py -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "supervisor + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier",
+        "cleanup"
+      ],
+      "path_prefixes": [
+        "AGENTS.md",
+        "README.md",
+        "docs/harness/CONTEXT_MAP.md",
+        "docs/harness/CHECKS.md",
+        "docs/harness/context_manifest.json",
+        "scripts/context_pack.py"
+      ]
+    },
+    "goal-driven": {
+      "summary": "Goal-driven agent loop, decision parsing, completion, achievement, and verification logic.",
+      "context_area": "gaia-goal-driven",
+      "owned_paths": [
+        "gaia/src/phase4/goal_driven/agent.py",
+        "gaia/src/phase4/goal_driven/decision_parsing_runtime.py",
+        "gaia/src/phase4/goal_driven/goal_achievement_runtime.py",
+        "gaia/src/phase4/goal_driven/goal_completion_helpers.py",
+        "gaia/src/phase4/goal_driven/goal_verification_helpers.py",
+        "gaia/src/phase4/goal_driven/models.py"
+      ],
+      "eval_contract": [
+        "decision schema changes parse into ActionDecision without dropping safety fields",
+        "WAIT completion requires evidence, not model assertion alone",
+        "goal achievement rejects premature completion when evidence is missing"
+      ],
+      "risk_flags": [
+        "new heuristic overrides OpenClaw/raw DOM evidence",
+        "single-screen completion shortcut masks multi-step business goals"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area gaia-goal-driven",
+          "PYTHONPATH=. .venv/bin/python -m py_compile gaia/src/phase4/goal_driven/agent.py gaia/src/phase4/goal_driven/decision_parsing_runtime.py gaia/src/phase4/goal_driven/goal_achievement_runtime.py gaia/src/phase4/goal_driven/goal_completion_helpers.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_decision_parsing_runtime.py gaia/tests/unit/test_goal_achievement_runtime.py gaia/tests/unit/test_goal_completion_helpers.py gaia/tests/unit/test_goal_verification_helpers.py -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "pipeline + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier"
+      ],
+      "path_prefixes": [
+        "gaia/src/phase4/goal_driven/",
+        "gaia/tests/unit/test_goal",
+        "gaia/tests/unit/test_decision_parsing_runtime.py",
+        "gaia/tests/unit/test_llm_decision_runtime.py"
+      ]
+    },
+    "multi-user-interaction": {
+      "summary": "Multi-user interaction skill, participant registry, blackboard events, and event-driven scheduler.",
+      "context_area": "multi-user-interaction",
+      "owned_paths": [
+        "docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md",
+        "gaia/src/phase4/goal_driven/multi_user_interaction_runtime.py",
+        "gaia/src/phase4/participants/models.py",
+        "gaia/src/phase4/participants/registry.py",
+        "gaia/src/phase4/participants/blackboard.py",
+        "gaia/src/phase4/participants/turn_scheduler.py"
+      ],
+      "eval_contract": [
+        "participant_plan.required=false preserves single-user path",
+        "participant_plan.required=true boots isolated participant sessions",
+        "blackboard events wake only participants whose wake conditions match",
+        "multi-user completion uses cross-participant evidence"
+      ],
+      "risk_flags": [
+        "round-robin fallback accidentally reintroduced",
+        "browser profile isolation weakened",
+        "credential values leak across participant prompts"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area multi-user-interaction",
+          "PYTHONPATH=. .venv/bin/python -m py_compile gaia/src/phase4/goal_driven/multi_user_interaction_runtime.py gaia/src/phase4/participants/models.py gaia/src/phase4/participants/registry.py gaia/src/phase4/participants/blackboard.py gaia/src/phase4/participants/turn_scheduler.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_multi_user_interaction_runtime.py gaia/tests/unit/test_participants_turn_scheduler.py gaia/tests/unit/test_participants_blackboard.py gaia/tests/unit/test_participants_registry.py -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "supervisor + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier",
+        "cleanup"
+      ],
+      "path_prefixes": [
+        "docs/harness/MULTI_USER_INTERACTION_ARCHITECTURE.md",
+        "gaia/src/phase4/goal_driven/multi_user_interaction_runtime.py",
+        "gaia/src/phase4/participants/",
+        "gaia/tests/unit/test_multi_user_interaction_runtime.py",
+        "gaia/tests/unit/test_participants"
+      ]
+    },
+    "openclaw-dispatch": {
+      "summary": "Embedded OpenClaw runtime, MCP local dispatch, profile/session routing, screenshots, and browser actions.",
+      "context_area": "gaia-openclaw",
+      "owned_paths": [
+        "gaia/src/phase4/embedded_openclaw_runtime.py",
+        "gaia/src/phase4/mcp_openclaw_dispatch_runtime.py",
+        "gaia/src/phase4/mcp_local_dispatch_runtime.py"
+      ],
+      "eval_contract": [
+        "session_id routes to the expected browser target",
+        "profile_name is preserved across browser actions",
+        "dispatch responses preserve action success/effective evidence"
+      ],
+      "risk_flags": [
+        "profile/session state leaks across tests",
+        "dispatch wrapper hides browser errors"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area gaia-openclaw",
+          "PYTHONPATH=. .venv/bin/python -m py_compile gaia/src/phase4/embedded_openclaw_runtime.py gaia/src/phase4/mcp_openclaw_dispatch_runtime.py gaia/src/phase4/mcp_local_dispatch_runtime.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_embedded_openclaw_runtime.py gaia/tests/unit/test_mcp_openclaw_dispatch_runtime.py gaia/tests/unit/test_mcp_local_dispatch_runtime.py -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "expert-pool + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier"
+      ],
+      "path_prefixes": [
+        "gaia/src/phase4/embedded_openclaw_runtime.py",
+        "gaia/src/phase4/mcp_openclaw_dispatch_runtime.py",
+        "gaia/src/phase4/mcp_local_dispatch_runtime.py",
+        "gaia/tests/unit/test_embedded_openclaw_runtime.py",
+        "gaia/tests/unit/test_mcp_openclaw_dispatch_runtime.py",
+        "gaia/tests/unit/test_mcp_local_dispatch_runtime.py"
+      ]
+    },
+    "benchmark-harness": {
+      "summary": "Benchmark runner, suite contracts, graders, KPI summary, and reproducible artifacts.",
+      "context_area": "benchmark-harness",
+      "owned_paths": [
+        "scripts/run_goal_benchmark.py",
+        "gaia/harness/runner.py",
+        "gaia/harness/graders/expected_signals.py",
+        "gaia/harness/graders/membership.py",
+        "gaia/tests/scenarios/README.md"
+      ],
+      "eval_contract": [
+        "suite JSON validates before execution",
+        "summary/results artifacts remain machine-readable",
+        "graders fail closed when expected evidence is missing"
+      ],
+      "risk_flags": [
+        "benchmark output schema drift",
+        "grader accepts weak evidence"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area benchmark-harness",
+          "PYTHONPATH=. .venv/bin/python -m py_compile scripts/run_goal_benchmark.py gaia/harness/runner.py gaia/harness/graders/expected_signals.py gaia/harness/graders/membership.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "pipeline + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier"
+      ],
+      "path_prefixes": [
+        "scripts/run_goal_benchmark.py",
+        "scripts/run_kpi_benchmark_pack.py",
+        "gaia/harness/",
+        "gaia/tests/scenarios/",
+        "gaia/tests/unit/test_run_goal_benchmark_script.py"
+      ]
+    },
+    "runtime-entrypoints": {
+      "summary": "CLI, terminal, chat hub, GUI worker, auth, and session cleanup entrypoints.",
+      "context_area": "runtime-entrypoints",
+      "owned_paths": [
+        "gaia/cli.py",
+        "gaia/terminal.py",
+        "gaia/chat_hub.py",
+        "gaia/auth.py",
+        "gaia/src/gui/goal_worker.py"
+      ],
+      "eval_contract": [
+        "entrypoints route to the same goal-driven runtime contract",
+        "cleanup hooks close temporary participant sessions",
+        "user-facing help text matches accepted command syntax"
+      ],
+      "risk_flags": [
+        "terminal/chat/gui diverge in runtime behavior",
+        "cleanup skipped on exceptions"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area runtime-entrypoints",
+          "PYTHONPATH=. .venv/bin/python -m py_compile gaia/cli.py gaia/terminal.py gaia/chat_hub.py gaia/auth.py gaia/src/gui/goal_worker.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "expert-pool + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier"
+      ],
+      "path_prefixes": [
+        "gaia/cli.py",
+        "gaia/terminal.py",
+        "gaia/chat_hub.py",
+        "gaia/auth.py",
+        "gaia/src/gui/goal_worker.py"
+      ]
+    },
+    "cleanup-gc": {
+      "summary": "Garbage collection, stale artifacts, dead fallback removal, and repo weight control.",
+      "context_area": "cleanup-gc",
+      "owned_paths": [
+        "docs/harness/GARBAGE_COLLECTION.md",
+        "docs/harness/CHECKS.md",
+        ".gitignore",
+        "scripts/lint_harness_docs.py"
+      ],
+      "eval_contract": [
+        "source-of-truth paths are not deleted",
+        "generated caches/artifacts remain outside committed source",
+        "cleanup rules are documented before destructive cleanup"
+      ],
+      "risk_flags": [
+        "destructive cleanup removes user WIP",
+        "large generated directories re-enter git status"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area cleanup-gc",
+          "python scripts/lint_harness_docs.py"
+        ],
+        "unit": [],
+        "full": [
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "supervisor",
+      "recommended_agents": [
+        "cleanup",
+        "verifier"
+      ],
+      "path_prefixes": [
+        ".gitignore",
+        "docs/harness/GARBAGE_COLLECTION.md",
+        "artifacts/",
+        "tmp/",
+        "output/"
+      ]
+    },
+    "development-harness": {
+      "summary": "Development harness lane metadata, RevFactory adaptation, lane detection, linting, and team/check orchestration.",
+      "context_area": "development-harness",
+      "owned_paths": [
+        "AGENTS.md",
+        "docs/harness/DEVELOPMENT_HARNESS.md",
+        "docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md",
+        "docs/harness/development_harness_manifest.json",
+        "docs/harness/CONTEXT_MAP.md",
+        "docs/harness/CHECKS.md",
+        "docs/harness/context_manifest.json",
+        "scripts/dev_harness.py",
+        "scripts/lint_harness_docs.py",
+        "gaia/tests/unit/test_harness_context_scripts.py"
+      ],
+      "path_prefixes": [
+        "docs/harness/DEVELOPMENT_HARNESS",
+        "docs/harness/development_harness_manifest.json",
+        "scripts/dev_harness.py",
+        "scripts/lint_harness_docs.py",
+        "gaia/tests/unit/test_harness_context_scripts.py"
+      ],
+      "eval_contract": [
+        "development-harness lane can be planned and detected directly",
+        "lane detection maps changed paths to the correct context/check lane",
+        "lint rejects drift between context manifest and development harness manifest",
+        "RevFactory phase/team metadata stays machine-readable"
+      ],
+      "risk_flags": [
+        "context area exists but no matching development lane can be selected",
+        "lane detection misses touched files and agents run the wrong checks",
+        "team_pattern or recommended_agents drift from the documented architecture"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area development-harness",
+          "python scripts/dev_harness.py audit",
+          "python scripts/dev_harness.py plan --lane development-harness",
+          "python scripts/dev_harness.py detect docs/harness/DEVELOPMENT_HARNESS.md scripts/dev_harness.py",
+          "python scripts/lint_harness_docs.py"
+        ],
+        "unit": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_harness_context_scripts.py -q"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "supervisor + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier",
+        "cleanup"
+      ]
+    }
+  },
+  "revfactory_mapping": {
+    "source_repo": "https://github.com/revfactory/harness",
+    "adaptation": "Codex-native development harness: context packs and scripts replace .claude agents/skills, while preserving audit, team architecture, orchestration, validation, and evolution phases.",
+    "phases": [
+      {
+        "phase": 0,
+        "name": "status_audit",
+        "local_mechanism": "python scripts/dev_harness.py audit"
+      },
+      {
+        "phase": 1,
+        "name": "domain_analysis",
+        "local_mechanism": "lane selection + context_pack"
+      },
+      {
+        "phase": 2,
+        "name": "team_architecture",
+        "local_mechanism": "lane team_pattern + recommended_agents"
+      },
+      {
+        "phase": 3,
+        "name": "agent_definition",
+        "local_mechanism": "AGENT_HARNESS_PLAYBOOK roles and Codex subagent roles when explicitly requested"
+      },
+      {
+        "phase": 4,
+        "name": "skill_definition",
+        "local_mechanism": "context packs, existing Codex skills, and lane-specific check commands"
+      },
+      {
+        "phase": 5,
+        "name": "orchestration",
+        "local_mechanism": "dev_harness plan/run and Planner-Developer-Verifier-Cleanup handoff"
+      },
+      {
+        "phase": 6,
+        "name": "validation",
+        "local_mechanism": "lint_harness_docs, lane tests, full unit suite, git diff --check"
+      },
+      {
+        "phase": 7,
+        "name": "evolution",
+        "local_mechanism": "docs/harness/DEVELOPMENT_HARNESS_CHANGELOG.md"
+      }
+    ]
+  },
+  "team_architecture": {
+    "default_pattern": "pipeline + producer-reviewer",
+    "patterns": {
+      "pipeline": "Planner -> Developer -> Verifier -> Cleanup for dependent changes.",
+      "fan-out/fan-in": "Parallel independent investigation, then one synthesis pass.",
+      "expert-pool": "Invoke only the specialist lane needed by the changed subsystem.",
+      "producer-reviewer": "Developer produces a patch; Verifier independently challenges evidence.",
+      "supervisor": "Main Codex agent tracks lane plan, risk flags, commands, and final report.",
+      "hierarchical-delegation": "Use only for large cross-lane changes; keep depth to two levels."
+    },
+    "agents": {
+      "planner": {
+        "role": "Scope the problem, non-goals, affected lane, eval contract, and risk flags.",
+        "codex_mapping": "local reasoning; spawn planner only when user explicitly asks for subagents."
+      },
+      "developer": {
+        "role": "Make the minimal code/docs change and preserve unrelated work.",
+        "codex_mapping": "main agent or executor subagent for disjoint write scopes when explicitly delegated."
+      },
+      "verifier": {
+        "role": "Independently rerun lane checks and challenge completion evidence.",
+        "codex_mapping": "verifier/code-reviewer subagent only when explicitly requested; otherwise run deterministic checks locally."
+      },
+      "cleanup": {
+        "role": "Remove stale artifacts, duplicate fallback, and cache output without touching user WIP.",
+        "codex_mapping": "local cleanup using GARBAGE_COLLECTION rules."
+      }
+    },
+    "data_protocol": [
+      "Planner brief is the input contract for Developer.",
+      "Developer output includes changed files, commands run, skipped checks, and residual risks.",
+      "Verifier consumes artifacts and commands before trusting Developer interpretation.",
+      "Cleanup records generated artifacts/caches removed and source-of-truth paths preserved."
+    ]
+  }
+}

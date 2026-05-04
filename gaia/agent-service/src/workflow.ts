@@ -729,7 +729,7 @@ async function augmentSpecWithRepoContext(specText: string): Promise<string> {
 
 // ===== AGENT DEFINITIONS =====
 
-const MODEL = "gpt-5";
+const MODEL = "gpt-5.5";
 
 // Agent 1: TC Simplifier (기획서에서 간결한 테스트 케이스 추출)
 const tcSimplifierAgent = new Agent({
