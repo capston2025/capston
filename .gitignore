@@ -67,6 +67,7 @@ gaia/.env.local
 /artifacts/gamegoo_check/
 /artifacts/plans/
 /artifacts/hardening/
+/artifacts/manual/
 /artifacts/reports/
 /artifacts/tmp/
 /artifacts/wrapper_trace/
