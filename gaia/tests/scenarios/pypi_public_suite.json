@@ -14,69 +14,69 @@
   },
   "scenarios": [
     {
+      "id": "PYPI_001_HOME_LANDMARK",
+      "name": "홈/핵심 랜드마크 확인",
+      "url": "https://pypi.org/",
+      "goal": "PyPI 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "PyPI 홈 화면에서 패키지 검색 입력창과 주요 내비게이션이 보이는지 확인해줘.",
-      "id": "PYPI_001_HOME_SEARCH",
-      "name": "홈 검색창 확인",
-      "time_budget_sec": 120,
-      "url": "https://pypi.org/"
+      "time_budget_sec": 600
     },
     {
+      "id": "PYPI_002_SEARCH_OR_NAVIGATION",
+      "name": "검색 또는 주요 내비게이션",
+      "url": "https://pypi.org/",
+      "goal": "PyPI에서 requests 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "PyPI 검색에서 requests를 찾아 검색 결과 목록이 보이는지 확인해줘.",
-      "id": "PYPI_002_SEARCH_REQUESTS",
-      "name": "requests 검색 결과 확인",
-      "time_budget_sec": 120,
-      "url": "https://pypi.org/"
+      "time_budget_sec": 600
     },
     {
+      "id": "PYPI_003_DETAIL_ENTRY",
+      "name": "상세 문서/항목 진입",
+      "url": "https://pypi.org/",
+      "goal": "PyPI에서 requests 패키지 상세 페이지로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "requests 패키지 상세 페이지에서 프로젝트 제목과 설치 명령 영역이 보이는지 확인해줘.",
-      "id": "PYPI_003_REQUESTS_DETAIL",
-      "name": "requests 상세 확인",
-      "time_budget_sec": 120,
-      "url": "https://pypi.org/project/requests/"
+      "time_budget_sec": 600
     },
     {
+      "id": "PYPI_004_CATEGORY_LIST_MOVE",
+      "name": "카테고리/목록/페이지 이동",
+      "url": "https://pypi.org/",
+      "goal": "PyPI에서 프로젝트 설명, release history, files 같은 공개 탭로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "PyPI classifiers 페이지에서 분류 목록이나 필터 가능한 항목들이 보이는지 확인해줘.",
-      "id": "PYPI_004_CLASSIFIERS_LIST",
-      "name": "classifiers 목록 확인",
-      "time_budget_sec": 120,
-      "url": "https://pypi.org/classifiers/"
+      "time_budget_sec": 600
     },
     {
+      "id": "PYPI_005_SAFE_INTERACTION",
+      "name": "비파괴적 상호작용 확인",
+      "url": "https://pypi.org/",
+      "goal": "PyPI에서 패키지 상세의 탭 또는 사이드바 링크를 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "PyPI 도움말 페이지에서 사용자 가이드나 FAQ 항목이 보이는지 확인해줘.",
-      "id": "PYPI_005_HELP_PAGE",
-      "name": "도움말 페이지 확인",
-      "time_budget_sec": 120,
-      "url": "https://pypi.org/help/"
+      "time_budget_sec": 600
     }
   ]
 }

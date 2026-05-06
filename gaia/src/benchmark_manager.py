@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,6 +106,139 @@ BENCHMARK_PRESETS: tuple[BenchmarkPreset, ...] = (
         default_url="https://www.dcinside.com/",
         suite_path="gaia/tests/scenarios/dcinside_public_suite.json",
         host_aliases=("dcinside.com", "www.dcinside.com"),
+    ),
+    BenchmarkPreset(
+        key="naver_search",
+        label="네이버",
+        default_url="https://www.naver.com/",
+        suite_path="gaia/tests/scenarios/naver_search_public_suite.json",
+        host_aliases=("naver.com", "www.naver.com"),
+    ),
+    BenchmarkPreset(
+        key="daum",
+        label="다음",
+        default_url="https://www.daum.net/",
+        suite_path="gaia/tests/scenarios/daum_public_suite.json",
+        host_aliases=("daum.net", "www.daum.net"),
+    ),
+    BenchmarkPreset(
+        key="naver_news",
+        label="네이버 뉴스",
+        default_url="https://news.naver.com/",
+        suite_path="gaia/tests/scenarios/naver_news_public_suite.json",
+        host_aliases=("news.naver.com",),
+    ),
+    BenchmarkPreset(
+        key="kakao_map",
+        label="카카오맵",
+        default_url="https://map.kakao.com/",
+        suite_path="gaia/tests/scenarios/kakao_map_public_suite.json",
+        host_aliases=("map.kakao.com",),
+    ),
+    BenchmarkPreset(
+        key="naver_shopping",
+        label="네이버 쇼핑",
+        default_url="https://shopping.naver.com/home",
+        suite_path="gaia/tests/scenarios/naver_shopping_public_suite.json",
+        host_aliases=("shopping.naver.com",),
+    ),
+    BenchmarkPreset(
+        key="coupang",
+        label="쿠팡",
+        default_url="https://www.coupang.com/",
+        suite_path="gaia/tests/scenarios/coupang_public_suite.json",
+        host_aliases=("coupang.com", "www.coupang.com"),
+    ),
+    BenchmarkPreset(
+        key="elevenst",
+        label="11번가",
+        default_url="https://www.11st.co.kr/",
+        suite_path="gaia/tests/scenarios/elevenst_public_suite.json",
+        host_aliases=("11st.co.kr", "www.11st.co.kr"),
+    ),
+    BenchmarkPreset(
+        key="gmarket",
+        label="G마켓",
+        default_url="https://www.gmarket.co.kr/",
+        suite_path="gaia/tests/scenarios/gmarket_public_suite.json",
+        host_aliases=("gmarket.co.kr", "www.gmarket.co.kr"),
+    ),
+    BenchmarkPreset(
+        key="musinsa",
+        label="무신사",
+        default_url="https://www.musinsa.com/",
+        suite_path="gaia/tests/scenarios/musinsa_public_suite.json",
+        host_aliases=("musinsa.com", "www.musinsa.com"),
+    ),
+    BenchmarkPreset(
+        key="oliveyoung",
+        label="올리브영",
+        default_url="https://www.oliveyoung.co.kr/store/main/main.do",
+        suite_path="gaia/tests/scenarios/oliveyoung_public_suite.json",
+        host_aliases=("oliveyoung.co.kr", "www.oliveyoung.co.kr"),
+    ),
+    BenchmarkPreset(
+        key="yes24",
+        label="YES24",
+        default_url="https://www.yes24.com/",
+        suite_path="gaia/tests/scenarios/yes24_public_suite.json",
+        host_aliases=("yes24.com", "www.yes24.com"),
+    ),
+    BenchmarkPreset(
+        key="kyobo",
+        label="교보문고",
+        default_url="https://www.kyobobook.co.kr/",
+        suite_path="gaia/tests/scenarios/kyobo_public_suite.json",
+        host_aliases=("kyobobook.co.kr", "www.kyobobook.co.kr"),
+    ),
+    BenchmarkPreset(
+        key="kma_weather",
+        label="기상청 날씨누리",
+        default_url="https://www.weather.go.kr/",
+        suite_path="gaia/tests/scenarios/kma_weather_public_suite.json",
+        host_aliases=("weather.go.kr", "www.weather.go.kr"),
+    ),
+    BenchmarkPreset(
+        key="seoul_open_data",
+        label="서울 열린데이터광장",
+        default_url="https://data.seoul.go.kr/",
+        suite_path="gaia/tests/scenarios/seoul_open_data_public_suite.json",
+        host_aliases=("data.seoul.go.kr",),
+    ),
+    BenchmarkPreset(
+        key="visit_korea",
+        label="대한민국 구석구석",
+        default_url="https://korean.visitkorea.or.kr/",
+        suite_path="gaia/tests/scenarios/visit_korea_public_suite.json",
+        host_aliases=("korean.visitkorea.or.kr", "visitkorea.or.kr"),
+    ),
+    BenchmarkPreset(
+        key="government24",
+        label="정부24",
+        default_url="https://www.gov.kr/portal/main",
+        suite_path="gaia/tests/scenarios/government24_public_suite.json",
+        host_aliases=("gov.kr", "www.gov.kr"),
+    ),
+    BenchmarkPreset(
+        key="law_go_kr",
+        label="국가법령정보센터",
+        default_url="https://www.law.go.kr/",
+        suite_path="gaia/tests/scenarios/law_go_kr_public_suite.json",
+        host_aliases=("law.go.kr", "www.law.go.kr"),
+    ),
+    BenchmarkPreset(
+        key="melon",
+        label="멜론",
+        default_url="https://www.melon.com/",
+        suite_path="gaia/tests/scenarios/melon_public_suite.json",
+        host_aliases=("melon.com", "www.melon.com"),
+    ),
+    BenchmarkPreset(
+        key="cgv",
+        label="CGV",
+        default_url="https://www.cgv.co.kr/",
+        suite_path="gaia/tests/scenarios/cgv_public_suite.json",
+        host_aliases=("cgv.co.kr", "www.cgv.co.kr"),
     ),
 )
 
@@ -626,6 +760,108 @@ def scan_benchmark_reports(
     return reports
 
 
+def benchmark_report_has_failures(report: Mapping[str, Any]) -> bool:
+    summary = report.get("summary") if isinstance(report.get("summary"), Mapping) else {}
+    status_counts = summary.get("status_counts") if isinstance(summary.get("status_counts"), Mapping) else {}
+    for status, count in status_counts.items():
+        normalized = str(status or "").strip().upper()
+        if normalized and normalized != "SUCCESS":
+            try:
+                if int(count or 0) > 0:
+                    return True
+            except Exception:
+                return True
+
+    results = report.get("results") if isinstance(report.get("results"), list) else []
+    for row in results:
+        if not isinstance(row, Mapping):
+            continue
+        normalized = str(row.get("status") or "").strip().upper()
+        if normalized and normalized != "SUCCESS":
+            return True
+    return False
+
+
+def prune_benchmark_reports(
+    *,
+    workspace_root: Path,
+    site_key: str,
+    selected_url: str = "",
+    limit: int = 200,
+    failed_only: bool = True,
+    dry_run: bool = False,
+    registry_payload: Mapping[str, Any] | None = None,
+    preset: BenchmarkPreset | None = None,
+) -> dict[str, Any]:
+    target_preset = preset or resolve_benchmark_site(registry_payload or {}, site_key) or find_preset(site_key)
+    if target_preset is None:
+        return {
+            "scanned": 0,
+            "matched": 0,
+            "deleted": 0,
+            "dry_run": bool(dry_run),
+            "deleted_dirs": [],
+            "skipped_success": 0,
+        }
+    root = (workspace_root / "artifacts" / "benchmarks").resolve()
+    reports: list[dict[str, Any]] = []
+    if root.exists():
+        for summary_path in sorted(root.glob("*/summary.json"), reverse=True):
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(summary, Mapping):
+                continue
+            if not _summary_matches_site(summary, target_preset, selected_url):
+                continue
+            result_path = summary_path.with_name("results.json")
+            results: list[dict[str, Any]] = []
+            if result_path.exists():
+                try:
+                    parsed = json.loads(result_path.read_text(encoding="utf-8"))
+                    if isinstance(parsed, list):
+                        results = [row for row in parsed if isinstance(row, dict)]
+                except Exception:
+                    results = []
+            reports.append(
+                {
+                    "artifact_dir": str(summary_path.parent),
+                    "summary_path": str(summary_path),
+                    "results_path": str(result_path),
+                    "summary": dict(summary),
+                    "results": results,
+                }
+            )
+            if len(reports) >= max(1, int(limit)):
+                break
+    deleted_dirs: list[str] = []
+    skipped_success = 0
+    for report in reports:
+        has_failures = benchmark_report_has_failures(report)
+        if failed_only and not has_failures:
+            skipped_success += 1
+            continue
+        artifact_dir = Path(str(report.get("artifact_dir") or "")).resolve()
+        try:
+            artifact_dir.relative_to(root)
+        except ValueError:
+            continue
+        if artifact_dir == root or not artifact_dir.exists():
+            continue
+        deleted_dirs.append(str(artifact_dir))
+        if not dry_run:
+            shutil.rmtree(artifact_dir)
+    return {
+        "scanned": len(reports),
+        "matched": len(reports),
+        "deleted": len(deleted_dirs),
+        "dry_run": bool(dry_run),
+        "deleted_dirs": deleted_dirs,
+        "skipped_success": skipped_success,
+    }
+
+
 def render_benchmark_reports_html(
     *,
     site_label: str,
@@ -927,6 +1163,7 @@ __all__ = [
     "BENCHMARK_PRESETS",
     "BenchmarkPreset",
     "append_scenario_to_suite",
+    "benchmark_report_has_failures",
     "benchmark_registry_path",
     "build_benchmark_catalog",
     "build_benchmark_site_catalog",
@@ -946,6 +1183,7 @@ __all__ = [
     "load_benchmark_registry",
     "load_suite_payload",
     "override_suite_urls",
+    "prune_benchmark_reports",
     "render_benchmark_reports_html",
     "replace_scenario_in_suite",
     "resolve_benchmark_site",

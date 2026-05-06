@@ -34,6 +34,7 @@ from gaia.src.benchmark_manager import (
     load_benchmark_registry,
     load_suite_payload,
     override_suite_urls,
+    prune_benchmark_reports,
     render_benchmark_reports_html,
     replace_scenario_in_suite,
     resolve_benchmark_site,
@@ -58,6 +59,7 @@ ProcessFactory = Callable[..., subprocess.Popen[str]]
 ReportOpener = Callable[[str], bool]
 GrafanaOpener = Callable[[str], bool]
 ScenarioFormOpener = Callable[..., Mapping[str, Any] | None]
+RecordPruner = Callable[..., Mapping[str, Any]]
 
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
@@ -69,6 +71,8 @@ CONNECT_MONITORING_OPTION = "지금 연결하기"
 SHOW_CONNECT_COMMAND_OPTION = "연결 명령 보기"
 GRAFANA_METRICS_OPTION = "Grafana 열기"
 LOCAL_REPORT_OPTION = "로컬 결과 보기"
+DELETE_FAILED_REPORTS_OPTION = "실패 기록 삭제"
+CONFIRM_DELETE_FAILED_REPORTS_OPTION = "삭제하기"
 METRICS_BACK_OPTION = "이전으로"
 SHARE_TESTS_OPTION = "팀 테스트 공유"
 UPLOAD_SHARED_TESTS_OPTION = "내 테스트 올리기"
@@ -843,6 +847,7 @@ def run_terminal_benchmark_mode(
     report_writer: Callable[..., Path] = write_benchmark_report_html,
     report_opener: Callable[[Path], bool] = open_benchmark_report,
     grafana_opener: GrafanaOpener = webbrowser.open_new_tab,
+    record_pruner: RecordPruner = prune_benchmark_reports,
     scenario_form_opener: ScenarioFormOpener = open_scenario_form_gui,
     push_metrics: bool = False,
     monitoring_config_path: Path | None = None,
@@ -930,6 +935,7 @@ def run_terminal_benchmark_mode(
                     report_writer=report_writer,
                     report_opener=report_opener,
                     grafana_opener=grafana_opener,
+                    record_pruner=record_pruner,
                     monitoring_config_path=monitoring_config_path,
                 )
                 continue
@@ -1226,11 +1232,12 @@ def _handle_metrics_view(
     report_writer: Callable[..., Path],
     report_opener: Callable[[Path], bool],
     grafana_opener: GrafanaOpener,
+    record_pruner: RecordPruner,
     monitoring_config_path: Path | None = None,
 ) -> None:
     selected = prompt_select(
         "지표 확인 위치를 선택하세요",
-        (GRAFANA_METRICS_OPTION, LOCAL_REPORT_OPTION, METRICS_BACK_OPTION),
+        (GRAFANA_METRICS_OPTION, LOCAL_REPORT_OPTION, DELETE_FAILED_REPORTS_OPTION, METRICS_BACK_OPTION),
         default=GRAFANA_METRICS_OPTION,
     )
     if selected == METRICS_BACK_OPTION:
@@ -1243,6 +1250,37 @@ def _handle_metrics_view(
         )
         report_opener(report_path)
         emit(f"📊 로컬 결과 보드 생성: {report_path}")
+        return
+    if selected == DELETE_FAILED_REPORTS_OPTION:
+        preview = record_pruner(
+            workspace_root=workspace_root,
+            site_key=preset.key,
+            selected_url=selected_url,
+            failed_only=True,
+            dry_run=True,
+            preset=preset,
+        )
+        delete_count = int(preview.get("deleted") or 0)
+        if delete_count <= 0:
+            emit("삭제할 실패 기록이 없습니다.")
+            return
+        confirm = prompt_select(
+            f"실패 기록 {delete_count}개를 삭제할까요?",
+            (CONFIRM_DELETE_FAILED_REPORTS_OPTION, METRICS_BACK_OPTION),
+            default=METRICS_BACK_OPTION,
+        )
+        if confirm != CONFIRM_DELETE_FAILED_REPORTS_OPTION:
+            emit("실패 기록 삭제를 취소했습니다.")
+            return
+        result = record_pruner(
+            workspace_root=workspace_root,
+            site_key=preset.key,
+            selected_url=selected_url,
+            failed_only=True,
+            dry_run=False,
+            preset=preset,
+        )
+        emit(f"🗑️ 실패 기록 삭제 완료: {int(result.get('deleted') or 0)}개")
         return
 
     if not _ensure_monitoring_connection(

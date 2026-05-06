@@ -14,82 +14,69 @@
   },
   "scenarios": [
     {
-      "id": "MONEYTORING_001_BENCHMARK",
-      "name": "종목 검색 후 진입",
+      "id": "MONEYTORING_001_HOME_LANDMARK",
+      "name": "홈/핵심 랜드마크 확인",
       "url": "https://www.moneytoring.ai/",
-      "goal": "선진뷰티사이언스 검색 후 종목 상세페이지로 진입해봐",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": false
-      },
-      "time_budget_sec": 300,
-      "expected_signals": []
-    },
-    {
-      "id": "MONEYTORING_002_BENCHMARK",
-      "name": "종목 검색 후 상세 탭 진입",
-      "url": "https://www.moneytoring.ai/",
-      "goal": "선진뷰티사이언스 검색 후 종목 상세페이지로 진입 후에 기업정보, 재무정보, 투자지표, 실적전망 탭에 순서대로 진입해봐",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": false
-      },
-      "time_budget_sec": 300,
-      "expected_signals": []
-    },
-    {
-      "id": "MONEYTORING_003_BENCHMARK",
-      "name": "커뮤니티 및 상세 탭 진입",
-      "url": "https://www.moneytoring.ai/",
-      "goal": "커뮤니티 메뉴 클릭 후 인기, 최신, 관심 순서대로 진입 하고 관심 페이지에서 최신순 or 인기순 정렬 버튼 테스트 해봐",
-      "constraints": {
-        "allow_navigation": true,
-        "require_ref_only": true,
-        "require_state_change": false
-      },
-      "time_budget_sec": 300,
-      "expected_signals": []
-    },
-    {
+      "goal": "머니터링 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "종목 발굴 메뉴 클릭 후 하단에 뜨는  테마찾기, 종목찾기 순서대로 진입 하고 관심 페이지에서 미국, 한국 버튼 순서대로 눌러서 테스트 해봐",
-      "id": "MONEYTORING_004_BENCHMARK",
-      "name": "종목 발굴 및 상세 탭 진입",
-      "time_budget_sec": 300,
-      "url": "https://www.moneytoring.ai/"
+      "time_budget_sec": 600
     },
     {
+      "id": "MONEYTORING_002_SEARCH_OR_NAVIGATION",
+      "name": "검색 또는 주요 내비게이션",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "머니터링에서 선진뷰티사이언스 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "마켓 정보 메뉴 클릭 후 경제캘린더, 마켓분석, 주요지수 순서대로 진입해봐",
-      "id": "MONEYTORING_005_BENCHMARK",
-      "name": "마켓 정보 및 상세 탭 진입",
-      "time_budget_sec": 300,
-      "url": "https://www.moneytoring.ai/"
+      "time_budget_sec": 600
     },
     {
+      "id": "MONEYTORING_003_DETAIL_ENTRY",
+      "name": "상세 문서/항목 진입",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "머니터링에서 종목 상세의 기업정보 또는 투자지표 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "우측 사이드바에 있는 3개 요소(우측 최상단 아이콘, 최근 본, 내 관심)를 모두 눌러보고 정상 작동되는 지 2번 씩 클릭해서 정상작동하는지 모두 테스트해줘",
-      "id": "MONEYTORING_006_BENCHMARK",
-      "name": "사이드 바 테스트",
-      "time_budget_sec": 300,
-      "url": "https://www.moneytoring.ai/"
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MONEYTORING_004_CATEGORY_LIST_MOVE",
+      "name": "카테고리/목록/페이지 이동",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "머니터링에서 마켓 정보, 종목 발굴, 커뮤니티 같은 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MONEYTORING_005_SAFE_INTERACTION",
+      "name": "비파괴적 상호작용 확인",
+      "url": "https://www.moneytoring.ai/",
+      "goal": "머니터링에서 경제캘린더, 주요지수, 정렬 탭 같은 공개 정보를 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
     }
   ]
 }

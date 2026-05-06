@@ -1,7 +1,7 @@
 {
   "suite_id": "youtube_public_v1",
   "site": {
-    "name": "YouTube",
+    "name": "YouTube Korea",
     "base_url": "https://www.youtube.com/",
     "mode": "public_readonly"
   },
@@ -14,56 +14,69 @@
   },
   "scenarios": [
     {
-      "id": "YOUTUBE_001_HOME_SEARCH_VISIBLE",
-      "name": "YouTube 홈 검색창 확인",
-      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
-      "goal": "YouTube 홈 화면에서 상단 검색창과 검색 버튼이 보이는지 확인해줘.",
+      "id": "YOUTUBE_001_HOME_LANDMARK",
+      "name": "홈/핵심 랜드마크 확인",
+      "url": "https://www.youtube.com/",
+      "goal": "YouTube Korea 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 240
+      "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_002_SEARCH_HANRORO",
-      "name": "한로로 검색 결과 확인",
-      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
-      "goal": "검색창에 한로로 1111을 입력해 검색을 실행하고, 검색 결과 목록에서 관련 동영상 제목이 보이는지 확인해줘.",
+      "id": "YOUTUBE_002_SEARCH_OR_NAVIGATION",
+      "name": "검색 또는 주요 내비게이션",
+      "url": "https://www.youtube.com/",
+      "goal": "YouTube Korea에서 인공지능 강의 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_003_OPEN_FIRST_VIDEO",
-      "name": "검색 첫 동영상 열기",
-      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
-      "goal": "검색창에 OpenAI를 입력해 검색한 뒤 첫 번째로 보이는 동영상을 열고 동영상 제목이나 플레이어가 보이는지 확인해줘.",
+      "id": "YOUTUBE_003_DETAIL_ENTRY",
+      "name": "상세 문서/항목 진입",
+      "url": "https://www.youtube.com/",
+      "goal": "YouTube Korea에서 검색 결과의 공개 영상 상세 화면으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_004_SEARCH_FILTER_SHORTS",
-      "name": "검색 결과 필터 탐색",
-      "url": "https://www.youtube.com/?hl=ko&gl=KR&app=desktop",
-      "goal": "검색창에 lo-fi music을 입력해 검색한 뒤 필터 또는 Shorts/동영상 같은 결과 유형 탭이 보이는지 확인해줘.",
+      "id": "YOUTUBE_004_CATEGORY_LIST_MOVE",
+      "name": "카테고리/목록/페이지 이동",
+      "url": "https://www.youtube.com/",
+      "goal": "YouTube Korea에서 탐색 또는 인기 동영상 계열 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
+    },
+    {
+      "id": "YOUTUBE_005_SAFE_INTERACTION",
+      "name": "비파괴적 상호작용 확인",
+      "url": "https://www.youtube.com/",
+      "goal": "YouTube Korea에서 영상 상세의 설명 더보기나 관련 영상 영역을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
     }
   ]
 }

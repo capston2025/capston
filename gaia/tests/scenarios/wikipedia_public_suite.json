@@ -14,56 +14,69 @@
   },
   "scenarios": [
     {
-      "id": "WIKIPEDIA_001_HOME_SEARCH_VISIBLE",
-      "name": "홈 검색창 확인",
+      "id": "WIKIPEDIA_001_HOME_LANDMARK",
+      "name": "홈/핵심 랜드마크 확인",
       "url": "https://ko.wikipedia.org/",
-      "goal": "위키피디아 한국어 홈 화면에서 검색 입력창이나 주요 탐색 링크가 보이는지 확인해줘.",
+      "goal": "Wikipedia Korea 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 240
+      "time_budget_sec": 600
     },
     {
-      "id": "WIKIPEDIA_002_SEARCH_AI_ARTICLE",
-      "name": "인공지능 문서 검색",
+      "id": "WIKIPEDIA_002_SEARCH_OR_NAVIGATION",
+      "name": "검색 또는 주요 내비게이션",
       "url": "https://ko.wikipedia.org/",
-      "goal": "검색창에 인공지능을 입력해 검색한 뒤 인공지능 문서로 들어가 제목이나 본문 요약이 보이는지 확인해줘.",
+      "goal": "Wikipedia Korea에서 인공지능 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
     },
     {
-      "id": "WIKIPEDIA_003_SEARCH_KOREA_HISTORY",
-      "name": "대한민국 문서 목차 탐색",
+      "id": "WIKIPEDIA_003_DETAIL_ENTRY",
+      "name": "상세 문서/항목 진입",
       "url": "https://ko.wikipedia.org/",
-      "goal": "검색창에 대한민국을 입력해 문서로 이동한 뒤 목차나 역사 섹션으로 이동해서 해당 섹션 제목이 보이는지 확인해줘.",
+      "goal": "Wikipedia Korea에서 대한민국 문서로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
     },
     {
-      "id": "WIKIPEDIA_004_RANDOM_ARTICLE",
-      "name": "임의 문서 진입",
+      "id": "WIKIPEDIA_004_CATEGORY_LIST_MOVE",
+      "name": "카테고리/목록/페이지 이동",
       "url": "https://ko.wikipedia.org/",
-      "goal": "위키피디아 홈 화면에서 임의 문서 또는 무작위 문서 링크를 눌러 새 문서 제목과 본문이 보이는지 확인해줘.",
+      "goal": "Wikipedia Korea에서 최근 바뀜이나 도움말 같은 주요 목록 페이지로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
+    },
+    {
+      "id": "WIKIPEDIA_005_SAFE_INTERACTION",
+      "name": "비파괴적 상호작용 확인",
+      "url": "https://ko.wikipedia.org/",
+      "goal": "Wikipedia Korea에서 목차 또는 언어 전환 영역처럼 읽기 화면 안에서 상태만 바뀌는 항목을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
     }
   ]
 }

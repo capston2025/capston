@@ -1,0 +1,249 @@
+{
+  "manifest_id": "external_public_korea_focused_v1",
+  "name": "Korea-focused external public benchmark",
+  "site_count": 30,
+  "scenario_count": 150,
+  "selection_note": "30 external public sites, mostly Korea-facing services familiar to the presentation audience.",
+  "suites": [
+    {
+      "site_key": "wikipedia",
+      "label": "Wikipedia Korea",
+      "category": "knowledge_reference",
+      "volatility": "stable",
+      "base_url": "https://ko.wikipedia.org/",
+      "suite_path": "gaia/tests/scenarios/wikipedia_public_suite.json"
+    },
+    {
+      "site_key": "github",
+      "label": "GitHub",
+      "category": "developer_tech",
+      "volatility": "stable",
+      "base_url": "https://github.com/",
+      "suite_path": "gaia/tests/scenarios/github_public_suite.json"
+    },
+    {
+      "site_key": "hacker_news",
+      "label": "Hacker News",
+      "category": "developer_tech",
+      "volatility": "high",
+      "base_url": "https://news.ycombinator.com/",
+      "suite_path": "gaia/tests/scenarios/hacker_news_public_suite.json"
+    },
+    {
+      "site_key": "pypi",
+      "label": "PyPI",
+      "category": "developer_tech",
+      "volatility": "stable",
+      "base_url": "https://pypi.org/",
+      "suite_path": "gaia/tests/scenarios/pypi_public_suite.json"
+    },
+    {
+      "site_key": "npm",
+      "label": "npm",
+      "category": "developer_tech",
+      "volatility": "stable",
+      "base_url": "https://www.npmjs.com/",
+      "suite_path": "gaia/tests/scenarios/npm_public_suite.json"
+    },
+    {
+      "site_key": "youtube",
+      "label": "YouTube Korea",
+      "category": "portal_news_community",
+      "volatility": "high",
+      "base_url": "https://www.youtube.com/",
+      "suite_path": "gaia/tests/scenarios/youtube_public_suite.json"
+    },
+    {
+      "site_key": "apple_store",
+      "label": "Apple Korea",
+      "category": "commerce_product",
+      "volatility": "medium",
+      "base_url": "https://www.apple.com/kr/",
+      "suite_path": "gaia/tests/scenarios/apple_store_public_suite.json"
+    },
+    {
+      "site_key": "fow_kr",
+      "label": "FOW.LOL",
+      "category": "finance_game",
+      "volatility": "high",
+      "base_url": "https://www.fow.lol/",
+      "suite_path": "gaia/tests/scenarios/fow_public_suite.json"
+    },
+    {
+      "site_key": "dcinside",
+      "label": "DCInside",
+      "category": "portal_news_community",
+      "volatility": "high",
+      "base_url": "https://www.dcinside.com/",
+      "suite_path": "gaia/tests/scenarios/dcinside_public_suite.json"
+    },
+    {
+      "site_key": "spell_checker",
+      "label": "Korean Spell Checker",
+      "category": "knowledge_reference",
+      "volatility": "medium",
+      "base_url": "https://nara-speller.co.kr/speller/",
+      "suite_path": "gaia/tests/scenarios/spell_checker_public_suite.json"
+    },
+    {
+      "site_key": "moneytoring",
+      "label": "머니터링",
+      "category": "finance_game",
+      "volatility": "medium",
+      "base_url": "https://www.moneytoring.ai/",
+      "suite_path": "gaia/tests/scenarios/moneytoring_public_suite.json"
+    },
+    {
+      "site_key": "naver_search",
+      "label": "Naver Search",
+      "category": "portal_news_community",
+      "volatility": "high",
+      "base_url": "https://www.naver.com/",
+      "suite_path": "gaia/tests/scenarios/naver_search_public_suite.json"
+    },
+    {
+      "site_key": "daum",
+      "label": "Daum",
+      "category": "portal_news_community",
+      "volatility": "high",
+      "base_url": "https://www.daum.net/",
+      "suite_path": "gaia/tests/scenarios/daum_public_suite.json"
+    },
+    {
+      "site_key": "naver_news",
+      "label": "Naver News",
+      "category": "portal_news_community",
+      "volatility": "high",
+      "base_url": "https://news.naver.com/",
+      "suite_path": "gaia/tests/scenarios/naver_news_public_suite.json"
+    },
+    {
+      "site_key": "kakao_map",
+      "label": "Kakao Map",
+      "category": "public_data_service",
+      "volatility": "medium",
+      "base_url": "https://map.kakao.com/",
+      "suite_path": "gaia/tests/scenarios/kakao_map_public_suite.json"
+    },
+    {
+      "site_key": "naver_shopping",
+      "label": "Naver Shopping",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://shopping.naver.com/home",
+      "suite_path": "gaia/tests/scenarios/naver_shopping_public_suite.json"
+    },
+    {
+      "site_key": "coupang",
+      "label": "Coupang",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://www.coupang.com/",
+      "suite_path": "gaia/tests/scenarios/coupang_public_suite.json"
+    },
+    {
+      "site_key": "elevenst",
+      "label": "11st",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://www.11st.co.kr/",
+      "suite_path": "gaia/tests/scenarios/elevenst_public_suite.json"
+    },
+    {
+      "site_key": "gmarket",
+      "label": "Gmarket",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://www.gmarket.co.kr/",
+      "suite_path": "gaia/tests/scenarios/gmarket_public_suite.json"
+    },
+    {
+      "site_key": "musinsa",
+      "label": "MUSINSA",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://www.musinsa.com/",
+      "suite_path": "gaia/tests/scenarios/musinsa_public_suite.json"
+    },
+    {
+      "site_key": "oliveyoung",
+      "label": "Olive Young",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://www.oliveyoung.co.kr/store/main/main.do",
+      "suite_path": "gaia/tests/scenarios/oliveyoung_public_suite.json"
+    },
+    {
+      "site_key": "yes24",
+      "label": "YES24",
+      "category": "commerce_product",
+      "volatility": "medium",
+      "base_url": "https://www.yes24.com/",
+      "suite_path": "gaia/tests/scenarios/yes24_public_suite.json"
+    },
+    {
+      "site_key": "kyobo",
+      "label": "Kyobo Book Centre",
+      "category": "commerce_product",
+      "volatility": "medium",
+      "base_url": "https://www.kyobobook.co.kr/",
+      "suite_path": "gaia/tests/scenarios/kyobo_public_suite.json"
+    },
+    {
+      "site_key": "kma_weather",
+      "label": "기상청 날씨누리",
+      "category": "public_data_service",
+      "volatility": "medium",
+      "base_url": "https://www.weather.go.kr/",
+      "suite_path": "gaia/tests/scenarios/kma_weather_public_suite.json"
+    },
+    {
+      "site_key": "seoul_open_data",
+      "label": "서울 열린데이터광장",
+      "category": "public_data_service",
+      "volatility": "medium",
+      "base_url": "https://data.seoul.go.kr/",
+      "suite_path": "gaia/tests/scenarios/seoul_open_data_public_suite.json"
+    },
+    {
+      "site_key": "visit_korea",
+      "label": "Visit Korea",
+      "category": "public_data_service",
+      "volatility": "medium",
+      "base_url": "https://korean.visitkorea.or.kr/",
+      "suite_path": "gaia/tests/scenarios/visit_korea_public_suite.json"
+    },
+    {
+      "site_key": "government24",
+      "label": "정부24",
+      "category": "public_data_service",
+      "volatility": "medium",
+      "base_url": "https://www.gov.kr/portal/main",
+      "suite_path": "gaia/tests/scenarios/government24_public_suite.json"
+    },
+    {
+      "site_key": "law_go_kr",
+      "label": "국가법령정보센터",
+      "category": "knowledge_reference",
+      "volatility": "stable",
+      "base_url": "https://www.law.go.kr/",
+      "suite_path": "gaia/tests/scenarios/law_go_kr_public_suite.json"
+    },
+    {
+      "site_key": "melon",
+      "label": "Melon",
+      "category": "portal_news_community",
+      "volatility": "high",
+      "base_url": "https://www.melon.com/",
+      "suite_path": "gaia/tests/scenarios/melon_public_suite.json"
+    },
+    {
+      "site_key": "cgv",
+      "label": "CGV",
+      "category": "portal_news_community",
+      "volatility": "medium",
+      "base_url": "https://www.cgv.co.kr/",
+      "suite_path": "gaia/tests/scenarios/cgv_public_suite.json"
+    }
+  ]
+}

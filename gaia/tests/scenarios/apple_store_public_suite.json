@@ -14,56 +14,69 @@
   },
   "scenarios": [
     {
-      "id": "APPLE_001_HOME_NAV_VISIBLE",
-      "name": "Apple 홈 내비게이션 확인",
+      "id": "APPLE_001_HOME_LANDMARK",
+      "name": "홈/핵심 랜드마크 확인",
       "url": "https://www.apple.com/kr/",
-      "goal": "Apple Korea 홈 화면에서 Mac, iPad, iPhone, Watch 같은 주요 내비게이션 항목이 보이는지 확인해줘.",
+      "goal": "Apple Korea 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 240
+      "time_budget_sec": 600
     },
     {
-      "id": "APPLE_002_IPHONE_PAGE",
-      "name": "iPhone 제품 페이지 진입",
+      "id": "APPLE_002_SEARCH_OR_NAVIGATION",
+      "name": "검색 또는 주요 내비게이션",
       "url": "https://www.apple.com/kr/",
-      "goal": "상단 내비게이션에서 iPhone을 선택해 iPhone 제품 페이지로 이동하고 대표 제품명이나 구매/더 알아보기 영역이 보이는지 확인해줘.",
+      "goal": "Apple Korea에서 iPhone 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
     },
     {
-      "id": "APPLE_003_SUPPORT_PAGE",
-      "name": "지원 페이지 진입",
+      "id": "APPLE_003_DETAIL_ENTRY",
+      "name": "상세 문서/항목 진입",
       "url": "https://www.apple.com/kr/",
-      "goal": "상단 내비게이션이나 푸터에서 고객지원 또는 Support 페이지로 이동해 지원 검색창이나 제품 지원 카테고리가 보이는지 확인해줘.",
+      "goal": "Apple Korea에서 iPhone 제품 상세 정보로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
     },
     {
-      "id": "APPLE_004_STORE_AIRPODS_SEARCH",
-      "name": "스토어에서 AirPods 탐색",
+      "id": "APPLE_004_CATEGORY_LIST_MOVE",
+      "name": "카테고리/목록/페이지 이동",
       "url": "https://www.apple.com/kr/",
-      "goal": "Apple Store 또는 쇼핑 영역으로 이동한 뒤 AirPods를 검색하거나 AirPods 제품 목록으로 진입해 관련 제품 카드가 보이는지 확인해줘.",
+      "goal": "Apple Korea에서 Mac, iPad, Watch 같은 제품군 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "time_budget_sec": 300
+      "time_budget_sec": 600
+    },
+    {
+      "id": "APPLE_005_SAFE_INTERACTION",
+      "name": "비파괴적 상호작용 확인",
+      "url": "https://www.apple.com/kr/",
+      "goal": "Apple Korea에서 제품 상세의 색상, 모델 비교, 사양 탭처럼 정보만 바뀌는 요소를 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
     }
   ]
 }

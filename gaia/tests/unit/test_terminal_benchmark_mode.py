@@ -1344,6 +1344,40 @@ def test_terminal_metrics_view_can_open_local_report(tmp_path: Path) -> None:
     assert any("로컬 결과 보드" in message for message in emitted)
 
 
+def test_terminal_metrics_view_can_delete_failed_records(tmp_path: Path) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "지표 확인",
+            "실패 기록 삭제",
+            "삭제하기",
+            "이전으로",
+            "종료",
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    emitted: list[str] = []
+
+    def fake_pruner(**kwargs):
+        calls.append(dict(kwargs))
+        return {"deleted": 2 if kwargs.get("dry_run") else 2, "deleted_dirs": ["/tmp/a", "/tmp/b"]}
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        record_pruner=fake_pruner,
+    )
+
+    assert [call["dry_run"] for call in calls] == [True, False]
+    assert all(call["failed_only"] is True for call in calls)
+    assert any("실패 기록 삭제 완료: 2개" in message for message in emitted)
+
+
 def test_terminal_metrics_view_can_open_grafana(tmp_path: Path) -> None:
     monitoring_config_path = tmp_path / "monitoring.json"
     monitoring_config_path.write_text(

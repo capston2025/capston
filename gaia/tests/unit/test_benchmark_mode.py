@@ -5,10 +5,12 @@ from pathlib import Path
 
 from gaia.src.gui.benchmark_mode import (
     BENCHMARK_PRESETS,
+    benchmark_report_has_failures,
     build_benchmark_catalog,
     build_benchmark_site_catalog,
     load_benchmark_registry,
     override_suite_urls,
+    prune_benchmark_reports,
     render_benchmark_reports_html,
     resolve_benchmark_site,
     save_benchmark_registry,
@@ -62,10 +64,13 @@ def test_build_benchmark_catalog_includes_requested_presets_and_saved_urls() -> 
     assert wiki["suite_available"] is True
 
 
-def test_benchmark_presets_include_moneytoring_and_exclude_mdn() -> None:
+def test_benchmark_presets_include_shared_public_sites_and_exclude_mdn() -> None:
     keys = {preset.key for preset in BENCHMARK_PRESETS}
 
     assert "moneytoring" in keys
+    assert "naver_search" in keys
+    assert "coupang" in keys
+    assert "government24" in keys
     assert "hacker_news" in keys
     assert "pypi" in keys
     assert "npm" in keys
@@ -162,6 +167,72 @@ def test_scan_benchmark_reports_filters_by_selected_url_host(tmp_path: Path) -> 
 
     assert len(reports) == 1
     assert reports[0]["summary"]["site"]["base_url"] == "https://inuu-timetable.vercel.app/"
+
+
+def test_benchmark_report_has_failures_checks_summary_and_results() -> None:
+    assert benchmark_report_has_failures({"summary": {"status_counts": {"SUCCESS": 1, "FAIL": 1}}}) is True
+    assert benchmark_report_has_failures({"results": [{"status": "SUCCESS"}, {"status": "FAIL"}]}) is True
+    assert benchmark_report_has_failures({"summary": {"status_counts": {"SUCCESS": 2}}}) is False
+
+
+def test_prune_benchmark_reports_deletes_only_failed_records(tmp_path: Path) -> None:
+    bench_root = tmp_path / "artifacts" / "benchmarks"
+    failed_dir = bench_root / "run_failed"
+    success_dir = bench_root / "run_success"
+    other_dir = bench_root / "run_other"
+    failed_dir.mkdir(parents=True)
+    success_dir.mkdir(parents=True)
+    other_dir.mkdir(parents=True)
+
+    for directory, base_url, status_counts, results in (
+        (
+            failed_dir,
+            "https://inuu-timetable.vercel.app/",
+            {"SUCCESS": 1, "FAIL": 1},
+            [{"scenario_id": "INUU_001", "status": "SUCCESS"}, {"scenario_id": "INUU_002", "status": "FAIL"}],
+        ),
+        (
+            success_dir,
+            "https://inuu-timetable.vercel.app/",
+            {"SUCCESS": 2, "FAIL": 0},
+            [{"scenario_id": "INUU_001", "status": "SUCCESS"}],
+        ),
+        (
+            other_dir,
+            "https://ko.wikipedia.org/",
+            {"SUCCESS": 0, "FAIL": 1},
+            [{"scenario_id": "WIKI_001", "status": "FAIL"}],
+        ),
+    ):
+        (directory / "summary.json").write_text(
+            json.dumps({"site": {"base_url": base_url}, "status_counts": status_counts}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (directory / "results.json").write_text(json.dumps(results, ensure_ascii=False), encoding="utf-8")
+
+    preview = prune_benchmark_reports(
+        workspace_root=tmp_path,
+        site_key="inu_timetable",
+        selected_url="https://inuu-timetable.vercel.app/",
+        failed_only=True,
+        dry_run=True,
+    )
+
+    assert preview["deleted"] == 1
+    assert failed_dir.exists()
+
+    result = prune_benchmark_reports(
+        workspace_root=tmp_path,
+        site_key="inu_timetable",
+        selected_url="https://inuu-timetable.vercel.app/",
+        failed_only=True,
+        dry_run=False,
+    )
+
+    assert result["deleted"] == 1
+    assert not failed_dir.exists()
+    assert success_dir.exists()
+    assert other_dir.exists()
 
 
 def test_render_benchmark_reports_html_groups_by_scenario_and_surfaces_quant_metrics() -> None:

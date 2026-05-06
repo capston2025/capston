@@ -11,7 +11,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,47 @@ MIN_BENCHMARK_TIMEOUT_SEC = 600
 
 def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _resolve_path(path_value: str, *, base_dir: Path | None = None) -> Path:
+    path = Path(str(path_value).strip())
+    if path.is_absolute():
+        return path.resolve()
+    root_path = (ROOT / path).resolve()
+    if root_path.exists() or path.parts[:1] in {("gaia",), ("scripts",), ("docs",), ("artifacts",)}:
+        return root_path
+    if base_dir is not None:
+        return (base_dir / path).resolve()
+    return root_path
+
+
+def _load_suite_manifest(path: Path) -> List[Path]:
+    manifest_path = _resolve_path(str(path))
+    payload = _load_json(manifest_path)
+    suites = payload.get("suites")
+    if not isinstance(suites, list):
+        raise ValueError(f"suite manifest must contain a suites array: {manifest_path}")
+
+    suite_paths: List[Path] = []
+    for idx, item in enumerate(suites, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"suite manifest entry #{idx} must be an object")
+        suite_path = str(item.get("suite_path") or "").strip()
+        if not suite_path:
+            raise ValueError(f"suite manifest entry #{idx} is missing suite_path")
+        suite_paths.append(_resolve_path(suite_path, base_dir=manifest_path.parent))
+    if not suite_paths:
+        raise ValueError(f"suite manifest contains no suites: {manifest_path}")
+    return suite_paths
+
+
+def _resolve_suite_paths(*, suite_args: Iterable[str] | None, suite_manifest: str | None) -> List[Path]:
+    paths = [_resolve_path(item) for item in (suite_args or [])]
+    if suite_manifest:
+        paths.extend(_load_suite_manifest(Path(suite_manifest)))
+    if not paths:
+        raise ValueError("at least one --suite or --suite-manifest is required")
+    return paths
 
 
 def _effective_timeout_cap(value: int) -> int:
@@ -158,22 +199,18 @@ def _run_suite(
     repeats: int,
     timeout_cap: int,
     session_prefix: str,
+    push_metrics: bool,
     env: Dict[str, str],
 ) -> Dict[str, Any]:
     started = time.time()
     before = time.time()
-    cmd = [
-        sys.executable,
-        str(RUN_SINGLE),
-        "--suite",
-        str(suite_path),
-        "--repeats",
-        str(repeats),
-        "--timeout-cap",
-        str(timeout_cap),
-        "--session-prefix",
-        session_prefix,
-    ]
+    cmd = _build_run_suite_command(
+        suite_path,
+        repeats=repeats,
+        timeout_cap=timeout_cap,
+        session_prefix=session_prefix,
+        push_metrics=push_metrics,
+    )
     proc = subprocess.run(
         cmd,
         cwd=str(ROOT),
@@ -201,6 +238,31 @@ def _run_suite(
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
+
+
+def _build_run_suite_command(
+    suite_path: Path,
+    *,
+    repeats: int,
+    timeout_cap: int,
+    session_prefix: str,
+    push_metrics: bool,
+) -> List[str]:
+    cmd = [
+        sys.executable,
+        str(RUN_SINGLE),
+        "--suite",
+        str(suite_path),
+        "--repeats",
+        str(repeats),
+        "--timeout-cap",
+        str(timeout_cap),
+        "--session-prefix",
+        session_prefix,
+    ]
+    if push_metrics:
+        cmd.append("--push-metrics")
+    return cmd
 
 
 def _run_harness(
@@ -311,10 +373,12 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run multiple GAIA benchmark suites and aggregate KPI metrics.")
-    parser.add_argument("--suite", action="append", required=True, help="Path to a suite JSON. Repeatable.")
+    parser.add_argument("--suite", action="append", default=[], help="Path to a suite JSON. Repeatable.")
+    parser.add_argument("--suite-manifest", help="Path to a manifest JSON with a suites array.")
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--timeout-cap", type=int, default=MIN_BENCHMARK_TIMEOUT_SEC)
     parser.add_argument("--session-prefix", default="kpi-pack")
+    parser.add_argument("--push-metrics", action="store_true", help="Forward metrics upload to each suite run.")
     parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
     parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
     parser.add_argument("--harness-tag", action="append", default=[], dest="harness_tags")
@@ -324,7 +388,10 @@ def main() -> None:
     args = parser.parse_args()
 
     env = os.environ.copy()
-    suite_paths = [Path(p).resolve() for p in args.suite]
+    try:
+        suite_paths = _resolve_suite_paths(suite_args=args.suite, suite_manifest=args.suite_manifest)
+    except ValueError as exc:
+        parser.error(str(exc))
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pack_id = f"kpi_pack_{timestamp}"
     out_dir = ARTIFACT_ROOT / pack_id
@@ -338,6 +405,7 @@ def main() -> None:
             repeats=max(1, int(args.repeats)),
             timeout_cap=_effective_timeout_cap(int(args.timeout_cap)),
             session_prefix=f"{args.session_prefix}-{idx}",
+            push_metrics=bool(args.push_metrics),
             env=env,
         )
         suite_reports.append(suite_report)
@@ -369,6 +437,7 @@ def main() -> None:
         "generated_at": timestamp,
         "repeats": max(1, int(args.repeats)),
         "timeout_cap": _effective_timeout_cap(int(args.timeout_cap)),
+        "push_metrics": bool(args.push_metrics),
         "suites": [
             {
                 "suite_id": suite["suite_id"],

@@ -14,69 +14,69 @@
   },
   "scenarios": [
     {
+      "id": "NPM_001_HOME_LANDMARK",
+      "name": "홈/핵심 랜드마크 확인",
+      "url": "https://www.npmjs.com/",
+      "goal": "npm 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "npm 홈 화면에서 패키지 검색 입력창과 주요 내비게이션이 보이는지 확인해줘.",
-      "id": "NPM_001_HOME_SEARCH",
-      "name": "홈 검색창 확인",
-      "time_budget_sec": 120,
-      "url": "https://www.npmjs.com/"
+      "time_budget_sec": 600
     },
     {
+      "id": "NPM_002_SEARCH_OR_NAVIGATION",
+      "name": "검색 또는 주요 내비게이션",
+      "url": "https://www.npmjs.com/",
+      "goal": "npm에서 react 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "npm 검색에서 react를 찾아 검색 결과 목록이 보이는지 확인해줘.",
-      "id": "NPM_002_SEARCH_REACT",
-      "name": "react 검색 결과 확인",
-      "time_budget_sec": 120,
-      "url": "https://www.npmjs.com/"
+      "time_budget_sec": 600
     },
     {
+      "id": "NPM_003_DETAIL_ENTRY",
+      "name": "상세 문서/항목 진입",
+      "url": "https://www.npmjs.com/",
+      "goal": "npm에서 react 패키지 상세 페이지로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "react 패키지 상세 페이지에서 패키지 이름과 README 또는 설치 명령 영역이 보이는지 확인해줘.",
-      "id": "NPM_003_REACT_DETAIL",
-      "name": "react 상세 확인",
-      "time_budget_sec": 120,
-      "url": "https://www.npmjs.com/package/react"
+      "time_budget_sec": 600
     },
     {
+      "id": "NPM_004_CATEGORY_LIST_MOVE",
+      "name": "카테고리/목록/페이지 이동",
+      "url": "https://www.npmjs.com/",
+      "goal": "npm에서 versions, dependents, readme 같은 공개 정보 영역으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "express 패키지 상세 페이지에서 패키지 이름과 README 또는 설치 명령 영역이 보이는지 확인해줘.",
-      "id": "NPM_004_EXPRESS_DETAIL",
-      "name": "express 상세 확인",
-      "time_budget_sec": 120,
-      "url": "https://www.npmjs.com/package/express"
+      "time_budget_sec": 600
     },
     {
+      "id": "NPM_005_SAFE_INTERACTION",
+      "name": "비파괴적 상호작용 확인",
+      "url": "https://www.npmjs.com/",
+      "goal": "npm에서 패키지 상세 탭 또는 검색 결과 정렬 영역을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
-      "goal": "npm depended 목록 페이지에서 패키지 랭킹이나 목록 항목들이 보이는지 확인해줘.",
-      "id": "NPM_005_DEPENDED_BROWSE",
-      "name": "depended 목록 확인",
-      "time_budget_sec": 120,
-      "url": "https://www.npmjs.com/browse/depended"
+      "time_budget_sec": 600
     }
   ]
 }
