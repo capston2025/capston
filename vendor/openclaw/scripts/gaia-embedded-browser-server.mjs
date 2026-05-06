@@ -37,4 +37,10 @@ process.on("unhandledRejection", (reason) => {
   void shutdown(1);
 });
 
-await new Promise(() => {});
+const keepAlive = setInterval(() => {}, 2 ** 31 - 1);
+await new Promise((resolve) => {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, resolve);
+  }
+});
+clearInterval(keepAlive);

@@ -6,21 +6,6 @@ from ..evidence_bundle import CloserResult
 from ..goal_kinds import GoalKind
 
 
-def filter_goal_requires_semantic_validation(ctx: Any) -> bool:
-    normalize = getattr(ctx, "_normalize_text", None)
-    if not callable(normalize):
-        normalize = lambda value: str(value or "").strip().lower()
-    goal_blob = normalize(str(getattr(ctx, "_active_goal_text", "") or ""))
-    semantic_tokens = (
-        "semantic",
-        "의미",
-        "맞게",
-        "일치",
-        "consisten",
-    )
-    return any(token in goal_blob for token in semantic_tokens)
-
-
 def openclaw_state_change_confirmed(
     ctx: Any,
     *,
@@ -56,32 +41,20 @@ class FilterPolicy:
         return current_phase
 
     def mandatory_validators(self, phase: str, ctx: Any, semantics: Any, evidence: Any) -> List[str]:
-        if not filter_goal_requires_semantic_validation(ctx):
-            return []
-        return ["filter_semantic_validator"]
+        return []
 
     def optional_validators(self, phase: str, ctx: Any, semantics: Any, evidence: Any) -> List[str]:
-        if not filter_goal_requires_semantic_validation(ctx):
-            return ["filter_semantic_validator"]
         return []
 
     def run_closer(self, phase: str, ctx: Any, semantics: Any, evidence: Any, validation_results: List[Any]) -> CloserResult:
-        mandatory_failed = any(bool(getattr(v, "mandatory", False)) and str(getattr(v, "status", "")) == "fail" for v in validation_results)
-        if not mandatory_failed and bool(evidence.derived.get("filter_validation_passed")):
-            return CloserResult(
-                status="success",
-                reason_code="filter_semantic_confirmed",
-                proof="필터 의미 검증 필수 항목이 모두 통과했습니다.",
-                proof_source="filter_semantic",
-            )
-        if not filter_goal_requires_semantic_validation(ctx) and openclaw_state_change_confirmed(ctx):
+        if openclaw_state_change_confirmed(ctx):
             return CloserResult(
                 status="success",
                 reason_code="filter_state_change_confirmed",
                 proof="OpenClaw post-action state change와 현재 화면 증거상 필터 변경이 실제 결과 목록에 반영된 것으로 확인했습니다.",
                 proof_source="openclaw_state_change",
             )
-        return CloserResult(status="continue", reason_code="filter_semantic_pending")
+        return CloserResult(status="continue", reason_code="filter_state_change_pending")
 
     def is_blocked(self, ctx: Any, semantics: Any, evidence: Any) -> bool:
         return False

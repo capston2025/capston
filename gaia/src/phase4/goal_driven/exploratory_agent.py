@@ -136,135 +136,6 @@ from .exploratory_models import (
 from .models import DOMElement
 
 
-class _ExploratoryFilterValidationAdapter:
-    """Filter validation adapter for ExploratoryAgent."""
-
-    def __init__(self, agent: "ExploratoryAgent"):
-        self.agent = agent
-
-    def analyze_dom(self) -> List[DOMElement]:
-        return self.agent._analyze_dom()
-
-    def apply_select(self, element_id: int, value: str) -> Dict[str, Any]:
-        selector = self.agent._element_full_selectors.get(element_id) or self.agent._element_selectors.get(element_id)
-        ref_id = self.agent._element_ref_ids.get(element_id)
-        success, error = self.agent._execute_action(
-            "select",
-            selector=selector or None,
-            ref_id=ref_id or None,
-            value=value,
-        )
-        meta = dict(self.agent._last_exec_meta or {})
-        return {
-            "success": bool(success),
-            "effective": bool(meta.get("effective", success)),
-            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
-            "reason": str(meta.get("reason") or error or ""),
-            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
-        }
-
-    def click_element(self, element_id: int) -> Dict[str, Any]:
-        selector = self.agent._element_full_selectors.get(element_id) or self.agent._element_selectors.get(element_id)
-        ref_id = self.agent._element_ref_ids.get(element_id)
-        before_url = self.current_url()
-        success, error = self.agent._execute_action(
-            "click",
-            selector=selector or None,
-            ref_id=ref_id or None,
-            value=None,
-        )
-        meta = dict(self.agent._last_exec_meta or {})
-        return {
-            "success": bool(success),
-            "effective": bool(meta.get("effective", success)),
-            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
-            "reason": str(meta.get("reason") or error or ""),
-            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
-            "before_url": before_url,
-            "after_url": self.current_url(),
-        }
-
-    def scroll_for_pagination(self, anchor_element_id: int) -> Dict[str, Any]:
-        selector = self.agent._element_full_selectors.get(anchor_element_id) or self.agent._element_selectors.get(anchor_element_id)
-        ref_id = self.agent._element_ref_ids.get(anchor_element_id)
-        success, error = self.agent._execute_action(
-            "scroll",
-            selector=selector or None,
-            ref_id=ref_id or None,
-            value="bottom",
-        )
-        meta = dict(self.agent._last_exec_meta or {})
-        return {
-            "success": bool(success),
-            "effective": bool(meta.get("effective", success)),
-            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
-            "reason": str(meta.get("reason") or error or ""),
-            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
-        }
-
-    def wait_for_pagination_probe(self, wait_ms: int = 900) -> Dict[str, Any]:
-        success, error = self.agent._execute_action(
-            "wait",
-            value={"timeMs": int(max(100, wait_ms))},
-        )
-        meta = dict(self.agent._last_exec_meta or {})
-        return {
-            "success": bool(success),
-            "effective": bool(meta.get("effective", success)),
-            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
-            "reason": str(meta.get("reason") or error or ""),
-            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
-        }
-
-    def reload_page(self, wait_ms: int = 900) -> Dict[str, Any]:
-        current_url = self.current_url()
-        success, error = self.agent._execute_action(
-            "goto",
-            url=current_url,
-        )
-        if wait_ms > 0:
-            try:
-                self.agent._execute_action("wait", value={"timeMs": int(max(100, wait_ms))})
-            except Exception:
-                pass
-        meta = dict(self.agent._last_exec_meta or {})
-        return {
-            "success": bool(success),
-            "effective": bool(meta.get("effective", success)),
-            "reason_code": str(meta.get("reason_code") or ("ok" if success else "failed")),
-            "reason": str(meta.get("reason") or error or ""),
-            "state_change": meta.get("state_change") if isinstance(meta.get("state_change"), dict) else {},
-        }
-
-    def resolve_ref(self, element_id: int) -> str:
-        return str(self.agent._element_ref_ids.get(element_id) or "")
-
-    def current_url(self) -> str:
-        return self.agent._get_current_url()
-
-    def record_reason(self, code: str) -> None:
-        key = str(code or "").strip()
-        if not key:
-            return
-        counts = self.agent._validation_reason_counts
-        counts[key] = int(counts.get(key, 0)) + 1
-        self.agent._validation_reason_counts = counts
-
-    def log(self, message: str) -> None:
-        self.agent._log(message)
-
-    def capture_case_attachment(self, label: str) -> Optional[Dict[str, Any]]:
-        shot = self.agent._capture_screenshot()
-        if not isinstance(shot, str) or not shot.strip():
-            return None
-        return {
-            "kind": "image_base64",
-            "mime": "image/png",
-            "data": shot,
-            "label": str(label or "").strip(),
-        }
-
-
 class ExploratoryAgent:
     """
     완전 자율 탐색 에이전트
@@ -1226,18 +1097,6 @@ class ExploratoryAgent:
                         self._active_scoped_container_ref = ""
 
             step_validation_checks: List[Dict[str, Any]] = []
-            if (
-                success
-                and decision.selected_action
-                and str(decision.selected_action.action_type or "").strip().lower() == "select"
-            ):
-                goal_text = (
-                    str(decision.selected_action.description or "").strip()
-                    or str(decision.reasoning or "").strip()
-                    or "filter validation"
-                )
-                report = self._run_filter_semantic_validation(goal_text)
-                step_validation_checks = self._append_validation_report(report, action_count)
 
             # 12-1. 기능 중심 설명 생성
             feature_info = self._generate_feature_description(
@@ -2439,27 +2298,6 @@ class ExploratoryAgent:
             before_select_state,
             before_toggle_state,
         )
-
-    def _run_filter_semantic_validation(self, goal_text: str) -> Dict[str, Any]:
-        try:
-            from .filter_validation_engine import build_filter_validation_config, run_filter_validation
-
-            adapter = _ExploratoryFilterValidationAdapter(self)
-            forced_selected = str((self._last_exec_meta or {}).get("selected_value") or "").strip()
-            report = run_filter_validation(
-                adapter=adapter,
-                goal_text=goal_text,
-                config=build_filter_validation_config(
-                    max_pages=2,
-                    max_cases=3,
-                    use_current_selection_only=False,
-                    forced_selected_value=forced_selected,
-                ),
-            )
-            return report if isinstance(report, dict) else {}
-        except Exception as exc:
-            self._log(f"⚠️ filter semantic validation 실패: {exc}")
-            return {}
 
     def _append_validation_report(self, report: Dict[str, Any], step_number: int) -> List[Dict[str, Any]]:
         return append_validation_report_impl(self, report, step_number)

@@ -370,11 +370,7 @@ def _persistent_control_assessment(agent: Any, dom_elements: List[DOMElement]) -
         except Exception:
             return str(value or "").strip().lower()
 
-    try:
-        from .filter_validation_engine import _collect_result_rows
-        row_texts = list(_collect_result_rows(dom_elements)[:24])
-    except Exception:
-        row_texts = []
+    row_texts = _generic_visible_item_texts(dom_elements)[:24]
 
     assessment = {
         "target_value_matches": False,
@@ -426,16 +422,46 @@ def _persistent_control_assessment(agent: Any, dom_elements: List[DOMElement]) -
     return assessment
 
 
-def _filter_result_consistency_verified(agent: Any) -> bool:
-    report = getattr(agent, "_last_filter_semantic_report", None)
-    if not isinstance(report, dict):
-        return False
-    if bool(report.get("success")):
-        return True
-    summary = report.get("summary")
-    if isinstance(summary, dict):
-        return bool(summary.get("goal_satisfied"))
-    return False
+def _generic_visible_item_texts(dom_elements: List[DOMElement]) -> List[str]:
+    rows: List[str] = []
+    seen: set[str] = set()
+    rowish_roles = {"row", "listitem", "option", "article", "gridcell", "cell"}
+    rowish_tags = {"li", "tr", "article"}
+    surface_tokens = ("result", "results", "list", "목록", "리스트", "결과", "검색 결과")
+    for el in list(dom_elements or []):
+        if not bool(getattr(el, "is_visible", True)):
+            continue
+        role = str(getattr(el, "role", "") or "").strip().lower()
+        tag = str(getattr(el, "tag", "") or "").strip().lower()
+        surface_blob = " ".join(
+            [
+                str(getattr(el, "container_name", None) or ""),
+                str(getattr(el, "context_text", None) or ""),
+            ]
+        ).strip().lower()
+        if (
+            role not in rowish_roles
+            and tag not in rowish_tags
+            and not any(token in surface_blob for token in surface_tokens)
+        ):
+            continue
+        parts = [
+            str(getattr(el, "text", "") or ""),
+            str(getattr(el, "aria_label", "") or ""),
+            str(getattr(el, "title", None) or ""),
+            str(getattr(el, "container_name", None) or ""),
+            str(getattr(el, "context_text", None) or ""),
+        ]
+        text = " ".join(part.strip() for part in parts if part and part.strip())
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(text)
+    return rows
 
 
 def _has_pagination_advance_signal(agent: Any, state_changes: List[Dict[str, Any]]) -> bool:
@@ -520,7 +546,7 @@ def derive_achieved_signals(
                 )
             )
         elif normalized == "result_consistency":
-            ok = _filter_result_consistency_verified(agent)
+            ok = False
         if ok and normalized not in achieved:
             achieved.append(normalized)
     return achieved

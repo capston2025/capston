@@ -8,6 +8,76 @@ from gaia.src.phase4 import mcp_openclaw_dispatch_runtime as runtime
 from gaia.src.phase4.browser_context_manager import choose_auto_follow_tab
 
 
+_DEFAULT_URL = "https://example.com/app"
+
+
+def _evidence(text: str, *, live_texts: list[str] | None = None, logout_visible: bool = False) -> dict[str, object]:
+    return {
+        "text_digest": text,
+        "live_texts": list(live_texts or [text]),
+        "list_count": 1,
+        "interactive_count": 1,
+        "modal_count": 0,
+        "backdrop_count": 0,
+        "dialog_count": 0,
+        "modal_open": False,
+        "auth_prompt_visible": False,
+        "login_visible": False,
+        "logout_visible": bool(logout_visible),
+    }
+
+
+def _seed_session(
+    session_id: str,
+    *,
+    target_id: str = "tab-1",
+    current_url: str = _DEFAULT_URL,
+    profile: str = "openclaw",
+    snapshot_counter: int = 0,
+    **extra: object,
+) -> dict[str, object]:
+    state = runtime._session_state(session_id)
+    state.clear()
+    state.update(
+        {
+            "target_id": target_id,
+            "current_url": current_url,
+            "profile": profile,
+            "snapshot_counter": snapshot_counter,
+            "last_snapshot_id": "",
+            "last_snapshot_payload": {},
+            "last_tabs_payload": {},
+            "last_tabs_target_id": "",
+            "last_tabs_profile": "",
+            "last_tabs_observed_at": 0.0,
+        }
+    )
+    state.update(extra)
+    return state
+
+
+def _build_cached_snapshot(
+    *,
+    session_id: str,
+    state: dict[str, object],
+    current_url: str = _DEFAULT_URL,
+    role: str = "textbox",
+    name: str = "검색어",
+    ref_id: str = "e1",
+) -> dict[str, object]:
+    return runtime._build_snapshot_payload(
+        session_id=session_id,
+        target_id="tab-1",
+        current_url=current_url,
+        requested_scope_ref_id="",
+        raw_snapshot={
+            "snapshot": f'- {role} "{name}" [ref={ref_id}]',
+            "refs": {ref_id: {"role": role, "name": name}},
+        },
+        state=state,
+    )
+
+
 def test_resolve_base_url_uses_embedded_runtime_when_unset(monkeypatch) -> None:
     monkeypatch.delenv("GAIA_OPENCLAW_BASE_URL", raising=False)
     monkeypatch.setattr(
@@ -176,38 +246,39 @@ def test_dispatch_openclaw_goto_uses_session_profile(monkeypatch) -> None:
     assert runtime._session_state("profile-s1")["profile"] == "gaia-test-sender"
 
 
+def test_session_profile_change_invalidates_cached_snapshot() -> None:
+    state = _seed_session(
+        "profile-cache-s1",
+        snapshot_counter=1,
+        last_snapshot_id="openclaw:profile-cache-s1:1",
+        last_snapshot_payload={"snapshot_id": "openclaw:profile-cache-s1:1"},
+        last_tabs_payload={"tabs": [{"cdp_target_id": "tab-1"}]},
+        last_tabs_target_id="tab-1",
+        last_tabs_profile="openclaw",
+        last_tabs_observed_at=1.0,
+    )
+
+    profile = runtime._session_profile("profile-cache-s1", "gaia-test-sender")
+
+    assert profile == "gaia-test-sender"
+    assert state["target_id"] == ""
+    assert state["current_url"] == ""
+    assert state["last_snapshot_id"] == ""
+    assert state["last_snapshot_payload"] == {}
+    assert state["last_tabs_payload"] == {}
+    assert state["last_tabs_target_id"] == ""
+    assert state["last_tabs_profile"] == ""
+    assert state["last_tabs_observed_at"] == 0.0
+
+
 def test_derive_state_change_from_snapshot_payloads_surfaces_new_page_evidence() -> None:
     before_payload = {
         "current_url": "https://cyber.inu.ac.kr/mod/page/view.php?id=123",
-        "evidence": {
-            "text_digest": "same",
-            "live_texts": ["동영상 보기"],
-            "list_count": 1,
-            "interactive_count": 1,
-            "modal_count": 0,
-            "backdrop_count": 0,
-            "dialog_count": 0,
-            "modal_open": False,
-            "auth_prompt_visible": False,
-            "login_visible": False,
-            "logout_visible": True,
-        },
+        "evidence": _evidence("same", live_texts=["동영상 보기"], logout_visible=True),
     }
     after_payload = {
         "current_url": "https://cyber.inu.ac.kr/mod/page/view.php?id=123",
-        "evidence": {
-            "text_digest": "same",
-            "live_texts": ["동영상 보기"],
-            "list_count": 1,
-            "interactive_count": 1,
-            "modal_count": 0,
-            "backdrop_count": 0,
-            "dialog_count": 0,
-            "modal_open": False,
-            "auth_prompt_visible": False,
-            "login_visible": False,
-            "logout_visible": True,
-        },
+        "evidence": _evidence("same", live_texts=["동영상 보기"], logout_visible=True),
     }
 
     state_change = runtime._derive_state_change_from_snapshot_payloads(
@@ -230,6 +301,217 @@ def test_derive_state_change_from_snapshot_payloads_surfaces_new_page_evidence()
     assert state_change["new_page_urls"] == ["https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"]
     assert state_change["backend_progress"] is True
     assert state_change["backend_effective_only"] is False
+
+
+def test_dispatch_openclaw_action_reuses_matching_snapshot_as_before_probe(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    session_id = "cache-s1"
+    current_url = _DEFAULT_URL
+    state = _seed_session(session_id, current_url=current_url)
+    cached_before = _build_cached_snapshot(session_id=session_id, state=state, current_url=current_url)
+    after_payload = {
+        "snapshot_id": "openclaw:cache-s1:2",
+        "current_url": current_url,
+        "url": current_url,
+        "evidence": _evidence("검색 완료"),
+    }
+    snapshot_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+
+    def fake_snapshot_payload_for_target(**kwargs):
+        snapshot_calls.append(dict(kwargs))
+        return after_payload
+
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", fake_snapshot_payload_for_target)
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/act"
+        assert payload["targetId"] == "tab-1"
+        assert payload["kind"] == "fill"
+        assert payload["fields"][0]["ref"] == "e1"
+        return 200, {"ok": True, "url": current_url, "targetId": "tab-1"}, ""
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": cached_before["snapshot_id"],
+            "action": "fill",
+            "ref_id": "e1",
+            "value": "capston",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert len(snapshot_calls) == 1
+    assert payload["backend_trace"]["snapshot_before_cache_hit"] is True
+    assert payload["backend_trace"]["snapshot_before_ms"] == 0
+    assert payload["state_change"]["snapshot_id_before"] == cached_before["snapshot_id"]
+
+
+def test_dispatch_openclaw_action_does_not_reuse_scoped_snapshot_as_before_probe(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    session_id = "scoped-cache-s1"
+    current_url = _DEFAULT_URL
+    state = _seed_session(
+        session_id,
+        current_url=current_url,
+        snapshot_counter=1,
+        last_snapshot_id="openclaw:scoped-cache-s1:1",
+        last_snapshot_payload={
+            "snapshot_id": "openclaw:scoped-cache-s1:1",
+            "targetId": "tab-1",
+            "scope_applied": True,
+            "current_url": current_url,
+            "evidence": {"text_digest": "scoped", "live_texts": ["scoped"]},
+        },
+    )
+    before_payload = {
+        "snapshot_id": "openclaw:scoped-cache-s1:2",
+        "current_url": current_url,
+        "url": current_url,
+        "evidence": _evidence("full before"),
+    }
+    after_payload = {
+        **before_payload,
+        "snapshot_id": "openclaw:scoped-cache-s1:3",
+        "evidence": _evidence("full after"),
+    }
+    snapshots = [before_payload, after_payload]
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", lambda **kwargs: snapshots.pop(0))
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda method, *, base_url, path, timeout=None, params=None, payload=None: (
+            200,
+            {"ok": True, "url": current_url, "targetId": "tab-1"},
+            "",
+        ),
+    )
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": "openclaw:scoped-cache-s1:1",
+            "action": "fill",
+            "ref_id": "e1",
+            "value": "capston",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["backend_trace"]["snapshot_before_cache_hit"] is False
+    assert payload["state_change"]["snapshot_id_before"] == "openclaw:scoped-cache-s1:2"
+    assert snapshots == []
+
+
+def test_cached_tabs_payload_expires(monkeypatch) -> None:
+    state: dict[str, object] = {}
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 10.0)
+    runtime._remember_tabs_payload(
+        state=state,
+        target_id="tab-1",
+        profile="openclaw",
+        payload={"tabs": [{"cdp_target_id": "tab-1"}]},
+    )
+
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 11.0)
+    assert runtime._cached_tabs_payload(state=state, target_id="tab-1", profile="openclaw") == {
+        "tabs": [{"cdp_target_id": "tab-1"}]
+    }
+
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 13.1)
+    assert runtime._cached_tabs_payload(state=state, target_id="tab-1", profile="openclaw") is None
+
+
+def test_dispatch_openclaw_action_reuses_recent_tabs_baseline(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    session_id = "tabs-cache-s1"
+    current_url = _DEFAULT_URL
+    state = _seed_session(session_id, current_url=current_url)
+    cached_before = _build_cached_snapshot(
+        session_id=session_id,
+        state=state,
+        current_url=current_url,
+        role="button",
+        name="열기",
+    )
+    state.update(
+        {
+            "last_tabs_payload": {
+                "current_tab_id": "1",
+                "cdp_target_id": "tab-1",
+                "tabs": [{"tab_id": "1", "cdp_target_id": "tab-1", "url": current_url}],
+            },
+            "last_tabs_target_id": "tab-1",
+            "last_tabs_profile": "openclaw",
+            "last_tabs_observed_at": 10.0,
+        }
+    )
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: 10.5)
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(
+        runtime,
+        "_snapshot_payload_for_target",
+        lambda **kwargs: {
+            "snapshot_id": "openclaw:tabs-cache-s1:2",
+            "current_url": current_url,
+            "url": current_url,
+            "evidence": _evidence("열림"),
+        },
+    )
+    tabs_calls: list[dict[str, object]] = []
+
+    def fake_tabs_payload_for_target(**kwargs):
+        tabs_calls.append(dict(kwargs))
+        return {
+            "current_tab_id": "1",
+            "cdp_target_id": "tab-1",
+            "tabs": [{"tab_id": "1", "cdp_target_id": "tab-1", "url": current_url}],
+        }
+
+    monkeypatch.setattr(runtime, "_tabs_payload_for_target", fake_tabs_payload_for_target)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda method, *, base_url, path, timeout=None, params=None, payload=None: (
+            200,
+            {"ok": True, "url": current_url, "targetId": "tab-1"},
+            "",
+        ),
+    )
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": cached_before["snapshot_id"],
+            "action": "click",
+            "ref_id": "e1",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["backend_trace"]["tabs_before_cache_hit"] is True
+    assert len(tabs_calls) == 1
 
 
 def test_choose_auto_follow_tab_prefers_viewer_and_ignores_ads() -> None:

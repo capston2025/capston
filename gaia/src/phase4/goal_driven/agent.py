@@ -49,10 +49,6 @@ from .goal_verification_helpers import (
     is_filter_style_goal as is_filter_style_goal_impl,
     is_verification_style_goal as is_verification_style_goal_impl,
 )
-from .filter_validation_runtime import (
-    build_filter_validation_contract as build_filter_validation_contract_impl,
-    run_filter_semantic_validation as run_filter_semantic_validation_impl,
-)
 from .deterministic_goal_preplan import build_deterministic_goal_preplan as build_deterministic_goal_preplan_impl
 from .dom_prompt_formatting import (
     context_match_tokens as context_match_tokens_impl,
@@ -1334,11 +1330,6 @@ class GoalDrivenAgent:
         start_time = time.time()
         steps: List[StepResult] = []
         runtime_state = initialize_goal_execution_state_impl(self, goal)
-        filter_goal_active = bool(runtime_state.get("filter_goal_active"))
-        filter_semantic_attempts = int(runtime_state.get("filter_semantic_attempts", 0) or 0)
-        filter_semantic_attempt_limit = int(runtime_state.get("filter_semantic_attempt_limit", 1) or 1)
-        filter_semantic_max_cases = int(runtime_state.get("filter_semantic_max_cases", 1) or 1)
-        filter_semantic_current_only = bool(runtime_state.get("filter_semantic_current_only"))
         log_goal_start_impl(self, goal, runtime_state)
 
         if not self._request_goal_clarification(goal):
@@ -2022,11 +2013,6 @@ class GoalDrivenAgent:
                 login_gate_visible=login_gate_visible,
                 has_login_test_data=has_login_test_data,
                 modal_open_hint=modal_open_hint,
-                filter_goal_active=filter_goal_active,
-                filter_semantic_attempts=filter_semantic_attempts,
-                filter_semantic_attempt_limit=filter_semantic_attempt_limit,
-                filter_semantic_max_cases=filter_semantic_max_cases,
-                filter_semantic_current_only=filter_semantic_current_only,
                 scroll_streak=scroll_streak,
                 ineffective_action_streak=ineffective_action_streak,
                 force_context_shift=force_context_shift,
@@ -2049,9 +2035,6 @@ class GoalDrivenAgent:
             if success and changed:
                 orchestrator.same_dom_count = 0
                 orchestrator.last_dom_signature = None
-            filter_semantic_attempts = int(
-                post_action_result.get("filter_semantic_attempts", filter_semantic_attempts)
-            )
             scroll_streak = int(post_action_result.get("scroll_streak", scroll_streak))
             ineffective_action_streak = int(
                 post_action_result.get("ineffective_action_streak", ineffective_action_streak)
@@ -2211,42 +2194,6 @@ class GoalDrivenAgent:
             f"LLM 재결정(visual-dom mismatch): {refreshed_decision.action.value} - {refreshed_decision.reasoning}"
         )
         return refreshed_decision, refreshed_dom, refreshed_screenshot, True
-
-    def run_filter_semantic_validation(
-        self,
-        goal_text: str,
-        *,
-        max_pages: int = 2,
-        max_cases: int = 3,
-        use_current_selection_only: bool = False,
-        forced_selected_value: Optional[str] = None,
-        validation_contract: Optional[Dict[str, Any]] = None,
-        preferred_control_hint: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        return run_filter_semantic_validation_impl(
-            self,
-            goal_text,
-            max_pages=max_pages,
-            max_cases=max_cases,
-            use_current_selection_only=use_current_selection_only,
-            forced_selected_value=forced_selected_value,
-            validation_contract=validation_contract,
-            preferred_control_hint=preferred_control_hint,
-        )
-
-    def _build_filter_validation_contract(
-        self,
-        *,
-        goal: TestGoal,
-        dom_elements: List[DOMElement],
-        preferred_control_hint: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        return build_filter_validation_contract_impl(
-            self,
-            goal=goal,
-            dom_elements=dom_elements,
-            preferred_control_hint=preferred_control_hint,
-        )
 
     def _decide_next_action(
         self,

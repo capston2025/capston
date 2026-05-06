@@ -301,7 +301,7 @@ def _ensure_browser_profile_started(base_url: str) -> None:
 
 def _browser_server_ready(base_url: str) -> bool:
     try:
-        response = requests.get(base_url, timeout=1.5)
+        response = requests.get(f"{base_url.rstrip('/')}/profiles", timeout=1.5)
     except Exception:
         return False
     if response.status_code >= 400:
@@ -310,7 +310,10 @@ def _browser_server_ready(base_url: str) -> bool:
         data = response.json()
     except Exception:
         return False
-    return isinstance(data, dict) and "enabled" in data and "profile" in data
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    if not isinstance(profiles, list):
+        return False
+    return any(isinstance(profile, dict) and profile.get("name") == "openclaw" for profile in profiles)
 
 
 def _probe_existing_browser_server() -> tuple[str, int, int, int] | None:

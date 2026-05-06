@@ -112,13 +112,6 @@ def _validate_aggregate_zero(ctx: Any, semantics: Any, evidence: EvidenceBundle,
     return _fail("aggregate_zero_validator", mandatory, "aggregate_not_zero", {"aggregate_metric": metric})
 
 
-def _validate_filter_semantic(ctx: Any, semantics: Any, evidence: EvidenceBundle, mandatory: bool) -> ValidatorResult:
-    ok = bool(evidence.derived.get("filter_validation_passed"))
-    if ok:
-        return _pass("filter_semantic_validator", mandatory)
-    return _fail("filter_semantic_validator", mandatory, "filter_semantic_failed")
-
-
 def _validate_auth_prompt_visible(ctx: Any, semantics: Any, evidence: EvidenceBundle, mandatory: bool) -> ValidatorResult:
     ok = bool(evidence.raw.get("auth_prompt_visible"))
     if ok:
@@ -136,7 +129,6 @@ VALIDATOR_REGISTRY: Dict[str, Callable[[Any, Any, EvidenceBundle, bool], Validat
     "target_absent_after_validator": _validate_target_absent_after,
     "empty_state_validator": _validate_empty_state,
     "aggregate_zero_validator": _validate_aggregate_zero,
-    "filter_semantic_validator": _validate_filter_semantic,
     "auth_prompt_visible_validator": _validate_auth_prompt_visible,
 }
 

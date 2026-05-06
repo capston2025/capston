@@ -26,7 +26,7 @@ class _FilterCtx:
         return default
 
 
-def test_filter_policy_uses_optional_validator_for_non_semantic_change_goal() -> None:
+def test_filter_policy_does_not_use_semantic_validator_for_filter_goals() -> None:
     policy = FilterPolicy()
     ctx = _FilterCtx("구분 또는 전공/교양 관련 필터를 바꿨을 때 결과 목록이 실제로 바뀌는지 검증해줘.")
 
@@ -34,7 +34,7 @@ def test_filter_policy_uses_optional_validator_for_non_semantic_change_goal() ->
     optional = policy.optional_validators("apply_filter", ctx, SimpleNamespace(), EvidenceBundle())
 
     assert mandatory == []
-    assert optional == ["filter_semantic_validator"]
+    assert optional == []
 
 
 def test_filter_policy_accepts_openclaw_state_change_for_non_semantic_goal() -> None:
@@ -43,7 +43,7 @@ def test_filter_policy_accepts_openclaw_state_change_for_non_semantic_goal() -> 
         "구분 또는 전공/교양 관련 필터를 바꿨을 때 결과 목록이 실제로 바뀌는지 검증해줘.",
         state_change={"text_digest_changed": True, "list_count_changed": True},
     )
-    evidence = EvidenceBundle(derived={"filter_validation_passed": False})
+    evidence = EvidenceBundle()
 
     result = policy.run_closer("apply_filter", ctx, SimpleNamespace(), evidence, [])
 
@@ -51,12 +51,18 @@ def test_filter_policy_accepts_openclaw_state_change_for_non_semantic_goal() -> 
     assert result.reason_code == "filter_state_change_confirmed"
 
 
-def test_filter_policy_keeps_semantic_validator_mandatory_for_generic_semantic_goal() -> None:
+def test_filter_policy_uses_state_change_even_when_goal_mentions_semantics() -> None:
     policy = FilterPolicy()
-    ctx = _FilterCtx("필터가 실제 결과 목록과 맞게 동작하는지 의미 검증해줘.")
+    ctx = _FilterCtx(
+        "필터가 실제 결과 목록과 일치하는지 검증해줘.",
+        state_change={"target_value_changed": True},
+    )
 
     mandatory = policy.mandatory_validators("apply_filter", ctx, SimpleNamespace(), EvidenceBundle())
     optional = policy.optional_validators("apply_filter", ctx, SimpleNamespace(), EvidenceBundle())
+    result = policy.run_closer("apply_filter", ctx, SimpleNamespace(), EvidenceBundle(), [])
 
-    assert mandatory == ["filter_semantic_validator"]
+    assert mandatory == []
     assert optional == []
+    assert result.status == "success"
+    assert result.reason_code == "filter_state_change_confirmed"

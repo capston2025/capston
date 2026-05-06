@@ -248,27 +248,31 @@
       "context_area": "benchmark-harness",
       "owned_paths": [
         "scripts/run_goal_benchmark.py",
+        "scripts/compare_benchmark_runs.py",
         "gaia/harness/runner.py",
         "gaia/harness/graders/expected_signals.py",
         "gaia/harness/graders/membership.py",
-        "gaia/tests/scenarios/README.md"
+        "gaia/tests/scenarios/README.md",
+        "gaia/tests/unit/test_compare_benchmark_runs_script.py"
       ],
       "eval_contract": [
         "suite JSON validates before execution",
         "summary/results artifacts remain machine-readable",
-        "graders fail closed when expected evidence is missing"
+        "graders fail closed when expected evidence is missing",
+        "baseline/candidate comparison reports gate status and deltas before performance claims"
       ],
       "risk_flags": [
         "benchmark output schema drift",
-        "grader accepts weak evidence"
+        "grader accepts weak evidence",
+        "comparison artifact is cited without matching baseline and candidate paths"
       ],
       "checks": {
         "smoke": [
           "python scripts/context_pack.py --area benchmark-harness",
-          "PYTHONPATH=. .venv/bin/python -m py_compile scripts/run_goal_benchmark.py gaia/harness/runner.py gaia/harness/graders/expected_signals.py gaia/harness/graders/membership.py"
+          "PYTHONPATH=. .venv/bin/python -m py_compile scripts/run_goal_benchmark.py scripts/compare_benchmark_runs.py gaia/harness/runner.py gaia/harness/graders/expected_signals.py gaia/harness/graders/membership.py"
         ],
         "unit": [
-          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py -q"
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py gaia/tests/unit/test_compare_benchmark_runs_script.py -q"
         ],
         "full": [
           "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
@@ -283,10 +287,53 @@
       ],
       "path_prefixes": [
         "scripts/run_goal_benchmark.py",
+        "scripts/compare_benchmark_runs.py",
         "scripts/run_kpi_benchmark_pack.py",
         "gaia/harness/",
         "gaia/tests/scenarios/",
-        "gaia/tests/unit/test_run_goal_benchmark_script.py"
+        "gaia/tests/unit/test_run_goal_benchmark_script.py",
+        "gaia/tests/unit/test_compare_benchmark_runs_script.py"
+      ]
+    },
+    "presentation-prep": {
+      "summary": "Presentation notes, demo evidence, KPI talking points, caveats, and artifact-backed update log.",
+      "context_area": "presentation-prep",
+      "owned_paths": [
+        "docs/harness/PRESENTATION_NOTES.md",
+        "gaia/docs/KPI_BENCHMARK_PROTOCOL.md"
+      ],
+      "eval_contract": [
+        "presentation claims cite artifact paths or source docs",
+        "performance claims include gate status, baseline, candidate, and caveat",
+        "notes preserve next-update items instead of scattering presentation state across chat"
+      ],
+      "risk_flags": [
+        "numbers copied without artifact provenance",
+        "demo story overstates small benchmark evidence",
+        "temporary artifacts are garbage-collected before notes capture the usable result"
+      ],
+      "checks": {
+        "smoke": [
+          "python scripts/context_pack.py --area presentation-prep",
+          "python scripts/lint_harness_docs.py"
+        ],
+        "unit": [
+          "python scripts/lint_harness_docs.py"
+        ],
+        "full": [
+          "PYTHONPATH=. .venv/bin/python -m pytest gaia/tests/unit -q",
+          "git diff --check"
+        ]
+      },
+      "team_pattern": "supervisor + producer-reviewer",
+      "recommended_agents": [
+        "planner",
+        "developer",
+        "verifier"
+      ],
+      "path_prefixes": [
+        "docs/harness/PRESENTATION_NOTES.md",
+        "gaia/docs/KPI_BENCHMARK_PROTOCOL.md"
       ]
     },
     "runtime-entrypoints": {

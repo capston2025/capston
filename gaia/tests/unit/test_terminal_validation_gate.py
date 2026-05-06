@@ -4,7 +4,6 @@ from gaia.terminal import (
     _apply_terminal_validation_outcome,
     _infer_goal_type,
     _should_preserve_runtime_success_from_validation,
-    _should_run_terminal_semantic_filter_validation,
 )
 
 
@@ -18,26 +17,6 @@ class _TerminalGateAgent:
         return str(value or "").strip().lower()
 
 
-def test_terminal_semantic_gate_skips_generic_filter_change_goal() -> None:
-    agent = _TerminalGateAgent(
-        "구분 또는 전공/교양 관련 필터를 바꿨을 때 결과 목록이 실제로 바뀌는지 검증해줘."
-    )
-
-    assert _should_run_terminal_semantic_filter_validation("filter_validation", agent) is False
-
-
-def test_terminal_semantic_gate_keeps_generic_semantic_filter_goal() -> None:
-    agent = _TerminalGateAgent("필터가 실제 결과 목록과 맞게 동작하는지 의미 검증해줘.")
-
-    assert _should_run_terminal_semantic_filter_validation("filter_validation", agent) is True
-
-
-def test_terminal_semantic_gate_ignores_non_filter_goal_type() -> None:
-    agent = _TerminalGateAgent("로그인이 되는지 검증해줘.")
-
-    assert _should_run_terminal_semantic_filter_validation("auth_validation", agent) is False
-
-
 def test_infer_goal_type_does_not_treat_zero_credit_zero_state_as_filter_validation() -> None:
     goal_type = _infer_goal_type("위시리스트를 전부 비우고 총 0개 과목 또는 0학점 상태를 확인해줘.")
 
@@ -49,7 +28,7 @@ def test_runtime_judge_success_is_preserved_against_terminal_validation_override
     result = SimpleNamespace(success=True)
     report = {
         "summary": {
-            "goal_type": "filter_validation_semantic",
+            "goal_type": "strict_validation",
             "strict_failed": True,
             "failed_mandatory_checks": 2,
             "goal_satisfied": False,

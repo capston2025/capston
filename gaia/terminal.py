@@ -22,7 +22,6 @@ from gaia.src.phase1.pdf_loader import PDFLoader
 from gaia.src.phase4.agent import AgentOrchestrator
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
 from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import close_participant_browser_contexts
-from gaia.src.phase4.goal_driven.policies.filter import filter_goal_requires_semantic_validation
 from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
 from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
 from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session, execute_mcp_action
@@ -510,10 +509,6 @@ def _infer_goal_type(query_text: str) -> str:
     return "goal_execution"
 
 
-def _should_run_terminal_semantic_filter_validation(goal_type: str, agent: Any) -> bool:
-    return str(goal_type or "").strip().lower() == "filter_validation" and filter_goal_requires_semantic_validation(agent)
-
-
 def _action_label(action_name: str, goal_type: str, reasoning: str) -> str:
     action = str(action_name or "").lower()
     reasoning_low = str(reasoning or "").lower()
@@ -544,12 +539,7 @@ def _action_label(action_name: str, goal_type: str, reasoning: str) -> str:
 def _build_validation_report(
     query_text: str,
     result: Any,
-    *,
-    semantic_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if isinstance(semantic_report, dict) and str(semantic_report.get("mode") or "").strip():
-        return semantic_report
-
     goal_type = _infer_goal_type(query_text)
     filter_mode = goal_type == "filter_validation"
     filter_tokens = ("필터", "filter", "category", "분류", "정렬", "sort")
@@ -652,17 +642,7 @@ def _is_strict_validation_failed(report: Dict[str, Any]) -> bool:
 
 
 def _is_goal_satisfaction_failed(report: Dict[str, Any]) -> bool:
-    if not isinstance(report, dict):
-        return False
-    summary = report.get("summary")
-    if not isinstance(summary, dict):
-        return False
-    goal_type = str(summary.get("goal_type") or "").strip().lower()
-    if goal_type != "filter_validation_semantic":
-        return False
-    if "goal_satisfied" not in summary:
-        return False
-    return not bool(summary.get("goal_satisfied"))
+    return False
 
 
 def _should_preserve_runtime_success_from_validation(agent: Any, result: Any) -> bool:
@@ -688,12 +668,12 @@ def _apply_terminal_validation_outcome(
     effective_success = bool(result_success) and not validation_failed and not goal_unsatisfied
     if validation_failed:
         effective_reason = (
-            "필터 의미 검증에서 필수 항목 실패가 발생했습니다. "
+            "검증 리포트에서 필수 항목 실패가 발생했습니다. "
             + (effective_reason or "검증 리포트를 확인하세요.")
         ).strip()
     elif goal_unsatisfied:
         effective_reason = (
-            "필터 의미 검증에서 목표 커버리지가 충족되지 않았습니다. "
+            "검증 리포트에서 목표 커버리지가 충족되지 않았습니다. "
             + (effective_reason or "검증 리포트를 확인하세요.")
         ).strip()
     return effective_success, effective_reason
@@ -1019,22 +999,9 @@ def _run_single_chat_goal(
     try:
         print(f"목표 실행: {goal.description}")
         result = agent.execute_goal(goal)
-        goal_type = _infer_goal_type(goal.description)
-        semantic_report: Optional[Dict[str, Any]] = None
-        if _should_run_terminal_semantic_filter_validation(goal_type, agent):
-            cached_report = getattr(agent, "_last_filter_semantic_report", None)
-            if isinstance(cached_report, dict) and cached_report.get("summary"):
-                semantic_report = cached_report
-            else:
-                semantic_report = agent.run_filter_semantic_validation(
-                    goal_text=goal.description,
-                    max_pages=2,
-                    max_cases=3,
-                )
         validation_report = _build_validation_report(
             goal.description,
             result,
-            semantic_report=semantic_report,
         )
         preserve_runtime_success = _should_preserve_runtime_success_from_validation(agent, result)
         effective_success, effective_reason = _apply_terminal_validation_outcome(
@@ -1396,7 +1363,7 @@ def _run_ai_terminal_impl(
         reason = completion_reason
         if strict_failed:
             reason = (
-                "필터 의미 검증 필수 항목 실패가 감지되었습니다. "
+                "탐색 검증 필수 항목 실패가 감지되었습니다. "
                 + (completion_reason or "")
             ).strip()
         summary = {

@@ -86,12 +86,27 @@
       ],
       "files": [
         "scripts/run_goal_benchmark.py",
+        "scripts/compare_benchmark_runs.py",
         "gaia/harness/runner.py",
         "gaia/harness/graders/expected_signals.py",
         "gaia/harness/graders/membership.py"
       ],
       "checks": [
-        ".venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py -q"
+        ".venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py -q",
+        ".venv/bin/python -m pytest gaia/tests/unit/test_compare_benchmark_runs_script.py -q"
+      ]
+    },
+    "presentation-prep": {
+      "summary": "Presentation narrative, demo evidence, KPI talking points, and update log.",
+      "docs": [
+        "docs/harness/PRESENTATION_NOTES.md",
+        "gaia/docs/KPI_BENCHMARK_PROTOCOL.md",
+        "docs/harness/CHECKS.md"
+      ],
+      "files": [],
+      "checks": [
+        "python scripts/lint_harness_docs.py",
+        "python scripts/context_pack.py --area presentation-prep"
       ]
     },
     "runtime-entrypoints": {

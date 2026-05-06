@@ -13,7 +13,6 @@ class _FakeAgent:
         self._recent_signal_history = []
         self._last_exec_result = None
         self._consecutive_wait_count = 2
-        self._last_filter_semantic_report = None
         self._goal_state_cache = {}
         self._auth_completed_fields = set()
         self._judge_response = ""
