@@ -241,7 +241,7 @@ def _append_validation_report(self, report: Dict[str, Any], step_number: int) ->
     summary = report.get("summary")
     if isinstance(summary, dict):
         self._verification_report = {
-            "mode": str(report.get("mode") or "filter_semantic_v2"),
+            "mode": str(report.get("mode") or "exploration_validation"),
             "summary": dict(summary),
             "rules_used": list(report.get("rules_used") or []),
             "pages_checked": int(report.get("pages_checked") or 1),
@@ -278,7 +278,7 @@ def _aggregate_validation_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 skipped_mandatory += 1
     success_rate = round((passed / total) * 100, 1) if total > 0 else 0.0
     return {
-        "goal_type": "filter_validation_semantic",
+        "goal_type": "exploration_validation",
         "total_checks": total,
         "passed_checks": passed,
         "failed_checks": failed,

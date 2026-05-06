@@ -24,6 +24,7 @@ _SESSION_LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _BASE_URL_CACHE: Dict[str, str] = {}
 _DEFAULT_OPENCLAW_REQUEST_TIMEOUT_S = 12.0
+_TABS_CACHE_MAX_AGE_S = 2.0
 
 _INTERACTIVE_ROLES = {
     "button",
@@ -229,7 +230,8 @@ def _session_profile(session_id: str, explicit_profile: Any = None) -> str:
     if previous and previous != profile:
         state["target_id"] = ""
         state["current_url"] = ""
-        state["last_snapshot_id"] = ""
+        _clear_snapshot_cache(state)
+        _clear_tabs_cache(state)
     state["profile"] = profile
     return profile
 
@@ -302,14 +304,94 @@ def _session_state(session_id: str) -> Dict[str, Any]:
                 "profile": "",
                 "snapshot_counter": 0,
                 "last_snapshot_id": "",
+                "last_snapshot_payload": {},
+                "last_tabs_payload": {},
+                "last_tabs_target_id": "",
+                "last_tabs_profile": "",
+                "last_tabs_observed_at": 0.0,
             },
         )
+
+
+def _clear_snapshot_cache(state: Dict[str, Any]) -> None:
+    state["last_snapshot_id"] = ""
+    state["last_snapshot_payload"] = {}
+
+
+def _clear_tabs_cache(state: Dict[str, Any]) -> None:
+    state["last_tabs_payload"] = {}
+    state["last_tabs_target_id"] = ""
+    state["last_tabs_profile"] = ""
+    state["last_tabs_observed_at"] = 0.0
 
 
 def _clear_session_target(session_id: str) -> None:
     with _SESSION_LOCK:
         state = _SESSIONS.setdefault(session_id, {})
         state["target_id"] = ""
+        _clear_snapshot_cache(state)
+        _clear_tabs_cache(state)
+
+
+def _remember_tabs_payload(
+    *,
+    state: Dict[str, Any],
+    target_id: str,
+    profile: str,
+    payload: Optional[Dict[str, Any]],
+) -> None:
+    if not isinstance(payload, dict) or not payload:
+        return
+    state["last_tabs_payload"] = dict(payload)
+    state["last_tabs_target_id"] = str(target_id or "").strip()
+    state["last_tabs_profile"] = str(profile or "").strip()
+    state["last_tabs_observed_at"] = time.monotonic()
+
+
+def _cached_tabs_payload(
+    *,
+    state: Dict[str, Any],
+    target_id: str,
+    profile: str,
+) -> Optional[Dict[str, Any]]:
+    cached = state.get("last_tabs_payload")
+    if not isinstance(cached, dict) or not cached:
+        return None
+    if str(state.get("last_tabs_target_id") or "").strip() != str(target_id or "").strip():
+        return None
+    if str(state.get("last_tabs_profile") or "").strip() != str(profile or "").strip():
+        return None
+    try:
+        age_s = time.monotonic() - float(state.get("last_tabs_observed_at") or 0.0)
+    except Exception:
+        return None
+    if age_s < 0 or age_s > _TABS_CACHE_MAX_AGE_S:
+        return None
+    return dict(cached)
+
+
+def _cached_snapshot_payload(
+    *,
+    state: Dict[str, Any],
+    snapshot_id: str,
+    target_id: str,
+) -> Optional[Dict[str, Any]]:
+    requested_snapshot_id = str(snapshot_id or "").strip()
+    if not requested_snapshot_id:
+        return None
+    if requested_snapshot_id != str(state.get("last_snapshot_id") or "").strip():
+        return None
+    cached = state.get("last_snapshot_payload")
+    if not isinstance(cached, dict) or not cached:
+        return None
+    if requested_snapshot_id != str(cached.get("snapshot_id") or "").strip():
+        return None
+    cached_target_id = str(cached.get("targetId") or cached.get("tab_id") or "").strip()
+    if cached_target_id and cached_target_id != str(target_id or "").strip():
+        return None
+    if bool(cached.get("scope_applied")):
+        return None
+    return dict(cached)
 
 
 def _target_missing(status_code: int, data: Dict[str, Any], text: str) -> bool:
@@ -357,6 +439,8 @@ def _ensure_target(
             raise RuntimeError("openclaw tabs/open did not return targetId")
         state["target_id"] = target_id
         state["current_url"] = _normalize_url(data.get("url") or open_url)
+        _clear_snapshot_cache(state)
+        _clear_tabs_cache(state)
         current_url = str(state.get("current_url") or "")
 
     if normalized_requested and normalized_requested != current_url:
@@ -380,6 +464,8 @@ def _ensure_target(
         target_id = str(data.get("targetId") or target_id).strip() or target_id
         state["target_id"] = target_id
         state["current_url"] = _normalize_url(data.get("url") or normalized_requested)
+        _clear_snapshot_cache(state)
+        _clear_tabs_cache(state)
 
     return state
 
@@ -1520,7 +1606,7 @@ def _build_snapshot_payload(
         for item in scoped_elements
         if str(item.get("ref_id") or "").strip()
     }
-    return {
+    payload = {
         "success": True,
         "ok": True,
         "reason_code": "ok",
@@ -1544,6 +1630,8 @@ def _build_snapshot_payload(
         "role_snapshot": effective_role_snapshot,
         "evidence": evidence,
     }
+    state["last_snapshot_payload"] = payload
+    return payload
 
 
 def _snapshot_payload_for_target(
@@ -2316,6 +2404,8 @@ def dispatch_openclaw_action(
     before_payload: Optional[Dict[str, Any]] = None
     before_tabs_payload: Optional[Dict[str, Any]] = None
     snapshot_before_ms = 0
+    snapshot_before_cache_hit = False
+    tabs_before_cache_hit = False
     post_act_probe_ms = 0
     post_act_probe_rounds = 0
     second_probe_ms = 0
@@ -2323,28 +2413,48 @@ def dispatch_openclaw_action(
     ref_refresh_count = 0
     target_reopen_count = 0
     if probe_post_action:
-        try:
-            snapshot_before_started = time.perf_counter()
-            before_payload = _snapshot_payload_for_target(
-                base_url=base_url,
-                session_id=session_id,
-                state=state,
-                target_id=target_id,
-                timeout=timeout,
-            )
-            snapshot_before_ms = int((time.perf_counter() - snapshot_before_started) * 1000)
-        except Exception:
-            before_payload = None
-        if probe_kind in {"click", "press"}:
+        before_payload = _cached_snapshot_payload(
+            state=state,
+            snapshot_id=str((effective_params or {}).get("snapshot_id") or (effective_params or {}).get("snapshotId") or ""),
+            target_id=target_id,
+        )
+        snapshot_before_cache_hit = before_payload is not None
+        if before_payload is None:
             try:
-                before_tabs_payload = _tabs_payload_for_target(
+                snapshot_before_started = time.perf_counter()
+                before_payload = _snapshot_payload_for_target(
                     base_url=base_url,
+                    session_id=session_id,
+                    state=state,
                     target_id=target_id,
-                    profile=profile_name,
                     timeout=timeout,
                 )
+                snapshot_before_ms = int((time.perf_counter() - snapshot_before_started) * 1000)
             except Exception:
-                before_tabs_payload = None
+                before_payload = None
+        if probe_kind in {"click", "press"}:
+            before_tabs_payload = _cached_tabs_payload(
+                state=state,
+                target_id=target_id,
+                profile=profile_name,
+            )
+            tabs_before_cache_hit = before_tabs_payload is not None
+            if before_tabs_payload is None:
+                try:
+                    before_tabs_payload = _tabs_payload_for_target(
+                        base_url=base_url,
+                        target_id=target_id,
+                        profile=profile_name,
+                        timeout=timeout,
+                    )
+                    _remember_tabs_payload(
+                        state=state,
+                        target_id=target_id,
+                        profile=profile_name,
+                        payload=before_tabs_payload,
+                    )
+                except Exception:
+                    before_tabs_payload = None
 
     act_started = time.perf_counter()
     status_code, data, text = _request(
@@ -2358,6 +2468,8 @@ def dispatch_openclaw_action(
     if status_code >= 400 and _target_missing(status_code, data, text):
         _clear_session_target(session_id)
         before_payload = None
+        snapshot_before_cache_hit = False
+        tabs_before_cache_hit = False
         before_tabs_payload = None
         target_reopen_count += 1
         state = _ensure_target(
@@ -2430,6 +2542,12 @@ def dispatch_openclaw_action(
                     profile=profile_name,
                     timeout=timeout,
                 )
+                _remember_tabs_payload(
+                    state=state,
+                    target_id=target_id,
+                    profile=profile_name,
+                    payload=after_tabs_payload,
+                )
             except Exception:
                 after_tabs_payload = None
             new_page_evidence = _derive_new_page_evidence_from_tabs(
@@ -2488,6 +2606,12 @@ def dispatch_openclaw_action(
                             profile=profile_name,
                             timeout=timeout,
                         )
+                        _remember_tabs_payload(
+                            state=state,
+                            target_id=target_id,
+                            profile=profile_name,
+                            payload=second_after_tabs_payload,
+                        )
                     except Exception:
                         second_after_tabs_payload = None
                     new_page_evidence = _derive_new_page_evidence_from_tabs(
@@ -2519,6 +2643,7 @@ def dispatch_openclaw_action(
                 follow_url = str(auto_follow_evidence.get("auto_follow_url") or "").strip()
                 if follow_target_id:
                     state["target_id"] = follow_target_id
+                    _clear_tabs_cache(state)
                 if follow_url:
                     state["current_url"] = follow_url
                     current_url = follow_url
@@ -2531,6 +2656,8 @@ def dispatch_openclaw_action(
         "name": "openclaw",
         "kind": probe_kind,
         "snapshot_before_ms": int(snapshot_before_ms),
+        "snapshot_before_cache_hit": bool(snapshot_before_cache_hit),
+        "tabs_before_cache_hit": bool(tabs_before_cache_hit),
         "act_ms": int(act_ms),
         "post_act_probe_ms": int(post_act_probe_ms),
         "post_act_probe_rounds": int(post_act_probe_rounds),

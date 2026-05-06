@@ -211,6 +211,7 @@ Development harness는 그 위에 올라가는 meta-harness다. 즉, runtime har
 - `multi-user-interaction`: participant plan, blackboard, event-driven scheduler, profile isolation 변경.
 - `openclaw-dispatch`: MCP/OpenClaw action routing, profile/session routing, screenshot 변경.
 - `benchmark-harness`: benchmark suite, grader, KPI summary, scenario contract 변경.
+- `presentation-prep`: 발표 노트, demo evidence, benchmark 비교 수치, caveat 업데이트.
 - `runtime-entrypoints`: terminal, chat hub, GUI worker, CLI entrypoint 변경.
 - `cleanup-gc`: stale artifacts, garbage collection, repo size control 변경.
 

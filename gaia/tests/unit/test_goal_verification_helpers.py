@@ -146,13 +146,12 @@ def test_visibility_signals_are_derived_from_visible_dom() -> None:
     assert achieved == ["text_visible", "cta_visible"]
 
 
-def test_result_consistency_signal_uses_filter_semantic_report() -> None:
+def test_result_consistency_signal_is_not_inferred_by_generic_runtime() -> None:
     agent = _VerificationAgent()
-    agent._last_filter_semantic_report = {"summary": {"goal_satisfied": True}}
     goal = GoalModel(
         id="G6",
-        name="학점 필터 의미 검증",
-        description="학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.",
+        name="학점 필터 결과 일치 요청",
+        description="학점 필터가 실제 결과 과목의 학점과 일치하는지 검증해줘.",
         expected_signals=["selection_reflected", "result_consistency"],
     )
     agent._persistent_state_memory = [
@@ -181,7 +180,7 @@ def test_result_consistency_signal_uses_filter_semantic_report() -> None:
         dom_elements=dom,
     )
 
-    assert achieved == ["selection_reflected", "result_consistency"]
+    assert achieved == ["selection_reflected"]
 
 
 def test_auth_completed_signal_is_derived_from_auth_state_transition() -> None:

@@ -365,14 +365,6 @@ def build_goal_policy_evidence_bundle(
     if isinstance(aggregate_metric, (int, float)) and isinstance(baseline_metric, (int, float)):
         aggregate_metric_delta = float(aggregate_metric) - float(baseline_metric)
 
-    filter_report = getattr(agent, "_last_filter_semantic_report", None)
-    filter_validation_passed = False
-    if isinstance(filter_report, dict):
-        summary = filter_report.get("summary") if isinstance(filter_report.get("summary"), dict) else {}
-        failed_mandatory = int(summary.get("failed_mandatory_checks", summary.get("failed_checks", 0)) or 0)
-        total_checks = int(summary.get("total_checks", 0) or 0)
-        filter_validation_passed = total_checks > 0 and failed_mandatory == 0
-
     return EvidenceBundle(
         raw={
             "snapshot_id": agent._active_snapshot_id,
@@ -390,7 +382,6 @@ def build_goal_policy_evidence_bundle(
             "already_satisfied_pre_action": already_satisfied_pre_action,
             "remediation_needed": remediation_needed,
             "already_satisfied": bool(target_in_destination and semantics.already_satisfied_ok and not semantics.mutate_required),
-            "filter_validation_passed": filter_validation_passed,
             "empty_state_visible": empty_state_visible,
             "target_seen_during_run": bool(getattr(agent, "_goal_policy_target_seen_in_destination", False)),
             "destination_anchor_seen_during_run": bool(getattr(agent, "_goal_policy_destination_anchor_seen", False)),

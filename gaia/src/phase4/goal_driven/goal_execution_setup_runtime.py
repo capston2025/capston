@@ -205,8 +205,6 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
         agent._goal_plan_remediation_completed = False
     agent._activate_steering_policy(goal)
     agent._goal_metric_value = None
-    agent._last_filter_semantic_report = None
-    agent._filter_validation_contract = None
     initialize_run_history_impl(agent, goal)
 
     collect_min = agent._goal_constraints.get("collect_min")
@@ -214,28 +212,6 @@ def initialize_goal_execution_state(agent: Any, goal: TestGoal) -> Dict[str, Any
     metric_label = str(agent._goal_constraints.get("metric_label") or "")
 
     return {
-        "filter_goal_active": agent._is_filter_style_goal(goal),
-        "filter_semantic_attempts": 0,
-        "filter_semantic_attempt_limit": agent._env_int(
-            "GAIA_FILTER_SEMANTIC_SELECT_LIMIT",
-            12,
-            low=3,
-            high=200,
-        ),
-        "filter_semantic_max_cases": agent._env_int(
-            "GAIA_FILTER_SEMANTIC_MAX_CASES",
-            20,
-            low=1,
-            high=50,
-        ),
-        "filter_semantic_current_only": bool(
-            agent._env_int(
-                "GAIA_FILTER_SEMANTIC_CURRENT_ONLY",
-                0,
-                low=0,
-                high=1,
-            )
-        ),
         "collect_min": collect_min,
         "apply_target": apply_target,
         "metric_label": metric_label,

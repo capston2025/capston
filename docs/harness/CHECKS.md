@@ -65,6 +65,7 @@ python scripts/lint_harness_docs.py
 다음 파일을 건드렸다면:
 
 - `scripts/run_goal_benchmark.py`
+- `scripts/compare_benchmark_runs.py`
 - `gaia/harness/**`
 - `gaia/tests/scenarios/**`
 
@@ -72,9 +73,11 @@ python scripts/lint_harness_docs.py
 
 ```bash
 .venv/bin/python -m pytest gaia/tests/unit/test_run_goal_benchmark_script.py -q
+.venv/bin/python -m pytest gaia/tests/unit/test_compare_benchmark_runs_script.py -q
 ```
 
 실제 계약 변경이면 benchmark 1개는 다시 태운다.
+성능 개선/회귀 판단이면 baseline과 candidate artifact를 비교한다.
 
 예시:
 
@@ -86,6 +89,31 @@ python scripts/run_goal_benchmark.py \
   --model gpt-5.5 \
   --timeout-cap 420
 ```
+
+```bash
+python scripts/compare_benchmark_runs.py \
+  --baseline artifacts/tmp/perf_hn_limit3 \
+  --candidate artifacts/tmp/perf_hn_limit3_postjudge \
+  --output-dir artifacts/tmp/compare_hn_postjudge \
+  --fail-on-regression
+```
+
+### presentation / 발표 기록
+
+다음 파일을 건드렸다면:
+
+- `docs/harness/PRESENTATION_NOTES.md`
+- 발표 근거로 쓰는 `artifacts/tmp/presentation_*`
+- 발표용 KPI/benchmark 설명 문서
+
+최소 체크:
+
+```bash
+python scripts/lint_harness_docs.py
+python scripts/context_pack.py --area presentation-prep
+```
+
+발표 자료에 수치를 넣을 때는 숫자만 복사하지 않고 artifact 경로, gate 결과, caveat를 같이 남긴다.
 
 ## 검증 원칙
 

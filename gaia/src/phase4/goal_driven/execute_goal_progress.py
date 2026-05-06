@@ -78,6 +78,89 @@ def _strong_evidence_progress(before_evidence: Optional[Dict[str, Any]], after_e
     return any(flags)
 
 
+def _container_source_summary(dom_elements: List[DOMElement]) -> Dict[str, int]:
+    summary: Dict[str, int] = {}
+    for item in dom_elements:
+        source = str(getattr(item, "container_source", None) or "").strip()
+        if not source:
+            continue
+        summary[source] = int(summary.get(source, 0)) + 1
+    return summary
+
+
+def _prime_dom_cache_from_backend_snapshot(
+    *,
+    agent: Any,
+    backend_snapshot: Dict[str, Any],
+    post_dom: List[DOMElement],
+) -> None:
+    if not isinstance(backend_snapshot, dict) or not post_dom:
+        return
+    if bool(backend_snapshot.get("scope_applied")):
+        return
+    try:
+        generation = int(getattr(agent, "_dom_cache_generation", 0) or 0)
+        session_id = str(getattr(agent, "session_id", "") or "default")
+        snapshot_id = str(backend_snapshot.get("snapshot_id") or "").strip()
+        dom_hash = str(backend_snapshot.get("dom_hash") or "").strip()
+        epoch = int(backend_snapshot.get("epoch") or 0)
+        active_url = str(
+            backend_snapshot.get("url")
+            or backend_snapshot.get("current_url")
+            or getattr(agent, "_active_url", "")
+            or ""
+        )
+        context_snapshot = (
+            backend_snapshot.get("context_snapshot")
+            if isinstance(backend_snapshot.get("context_snapshot"), dict)
+            else {}
+        )
+        role_snapshot = (
+            backend_snapshot.get("role_snapshot")
+            if isinstance(backend_snapshot.get("role_snapshot"), dict)
+            else {}
+        )
+        elements_by_ref = (
+            backend_snapshot.get("elements_by_ref")
+            if isinstance(backend_snapshot.get("elements_by_ref"), dict)
+            else {}
+        )
+        evidence = (
+            backend_snapshot.get("evidence")
+            if isinstance(backend_snapshot.get("evidence"), dict)
+            else {}
+        )
+        source_summary = _container_source_summary(post_dom)
+
+        if snapshot_id:
+            agent._active_snapshot_id = snapshot_id
+        agent._active_dom_hash = dom_hash or str(getattr(agent, "_active_dom_hash", "") or "")
+        agent._active_snapshot_epoch = epoch or int(getattr(agent, "_active_snapshot_epoch", 0) or 0)
+        agent._active_url = active_url
+        agent._active_scoped_container_ref = ""
+        agent._last_context_snapshot = dict(context_snapshot or {})
+        agent._last_role_snapshot = dict(role_snapshot or {})
+        agent._last_snapshot_elements_by_ref = dict(elements_by_ref or {})
+        agent._last_snapshot_evidence = dict(evidence or {})
+        agent._last_container_source_summary = dict(source_summary or {})
+        agent._dom_analyze_cache = {
+            "key": (generation, session_id, "", ""),
+            "elements": list(post_dom),
+            "snapshot_id": str(getattr(agent, "_active_snapshot_id", "") or ""),
+            "dom_hash": str(getattr(agent, "_active_dom_hash", "") or ""),
+            "epoch": int(getattr(agent, "_active_snapshot_epoch", 0) or 0),
+            "active_url": active_url,
+            "active_scope": "",
+            "context_snapshot": dict(context_snapshot or {}),
+            "role_snapshot": dict(role_snapshot or {}),
+            "elements_by_ref": dict(elements_by_ref or {}),
+            "evidence": dict(evidence or {}),
+            "container_source_summary": dict(source_summary or {}),
+        }
+    except Exception:
+        return
+
+
 def _is_weak_dom_only_change(
     *,
     before_count: int,
@@ -119,6 +202,164 @@ def _should_attempt_post_action_judge(
         or goal_kind in {"add_to_list", "remove_from_list", "clear_list", "apply_selection"}
         or mutate_required
         or has_destination_terms
+        or _is_readonly_navigation_post_action_judge_candidate(
+            agent=agent,
+            goal=goal,
+            decision=decision,
+            direction=direction,
+            mutate_required=mutate_required,
+        )
+        or _is_readonly_search_post_action_judge_candidate(
+            agent=agent,
+            goal=goal,
+            decision=decision,
+            direction=direction,
+            mutate_required=mutate_required,
+        )
+    )
+
+
+def _goal_text_for_post_action_judge(agent: Any, goal: TestGoal) -> str:
+    goal_text_blob = getattr(agent, "_goal_text_blob", None)
+    if callable(goal_text_blob):
+        try:
+            return str(goal_text_blob(goal) or "")
+        except Exception:
+            pass
+    fields: List[str] = [
+        str(getattr(goal, "name", "") or ""),
+        str(getattr(goal, "description", "") or ""),
+    ]
+    fields.extend(str(item or "") for item in list(getattr(goal, "success_criteria", []) or []))
+    return " ".join(item.strip() for item in fields if item.strip())
+
+
+def _is_readonly_navigation_post_action_judge_candidate(
+    *,
+    agent: Any,
+    goal: TestGoal,
+    decision: ActionDecision,
+    direction: str,
+    mutate_required: bool,
+) -> bool:
+    if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.NAVIGATE}:
+        return False
+    constraints = getattr(agent, "_goal_constraints", {}) if isinstance(getattr(agent, "_goal_constraints", {}), dict) else {}
+    if bool(constraints.get("require_no_navigation")):
+        return False
+    if direction in {"increase", "decrease", "clear"} or mutate_required:
+        return False
+
+    normalize = getattr(agent, "_normalize_text", None)
+    if callable(normalize):
+        goal_blob = str(normalize(_goal_text_for_post_action_judge(agent, goal)) or "")
+    else:
+        goal_blob = _goal_text_for_post_action_judge(agent, goal).strip().lower()
+    if not goal_blob:
+        return False
+
+    high_risk_tokens = (
+        "로그인",
+        "회원가입",
+        "인증",
+        "비밀번호",
+        "login",
+        "sign in",
+        "signup",
+        "password",
+        "결제",
+        "구매",
+        "checkout",
+        "payment",
+        "재생",
+        "시청",
+        "play",
+        "watch",
+        "listen",
+    )
+    if any(token in goal_blob for token in high_risk_tokens):
+        return False
+
+    navigation_tokens = (
+        "이동",
+        "진입",
+        "열고",
+        "열어",
+        "페이지로",
+        "페이지에서",
+        "navigate",
+        "navigation",
+        "go to",
+        "open ",
+        "visit",
+    )
+    observation_tokens = (
+        "확인",
+        "보이는지",
+        "보이고",
+        "보이며",
+        "표시",
+        "목록",
+        "리스트",
+        "list",
+        "visible",
+        "shown",
+        "present",
+    )
+    return bool(
+        any(token in goal_blob for token in navigation_tokens)
+        and any(token in goal_blob for token in observation_tokens)
+    )
+
+
+def _is_readonly_search_post_action_judge_candidate(
+    *,
+    agent: Any,
+    goal: TestGoal,
+    decision: ActionDecision,
+    direction: str,
+    mutate_required: bool,
+) -> bool:
+    if decision.action not in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}:
+        return False
+    constraints = getattr(agent, "_goal_constraints", {}) if isinstance(getattr(agent, "_goal_constraints", {}), dict) else {}
+    if direction in {"increase", "decrease", "clear"} or mutate_required:
+        return False
+    if bool(constraints.get("requires_test_credentials")):
+        return False
+
+    normalize = getattr(agent, "_normalize_text", None)
+    if callable(normalize):
+        goal_blob = str(normalize(_goal_text_for_post_action_judge(agent, goal)) or "")
+    else:
+        goal_blob = _goal_text_for_post_action_judge(agent, goal).strip().lower()
+    if not goal_blob:
+        return False
+
+    high_risk_tokens = (
+        "로그인",
+        "회원가입",
+        "인증",
+        "비밀번호",
+        "login",
+        "sign in",
+        "signup",
+        "password",
+        "결제",
+        "구매",
+        "checkout",
+        "payment",
+    )
+    if any(token in goal_blob for token in high_risk_tokens):
+        return False
+
+    search_tokens = ("검색", "필터", "search", "filter")
+    result_tokens = ("결과", "목록", "리스트", "result", "results", "list")
+    observation_tokens = ("확인", "보이는지", "표시", "보이고", "visible", "shown", "present")
+    return bool(
+        any(token in goal_blob for token in search_tokens)
+        and any(token in goal_blob for token in result_tokens)
+        and any(token in goal_blob for token in observation_tokens)
     )
 
 
@@ -211,8 +452,10 @@ def evaluate_post_action_progress(
             except Exception:
                 continue
     backend_after_evidence = backend_snapshot.get("evidence") if isinstance(backend_snapshot.get("evidence"), dict) else {}
+    post_dom_from_backend_snapshot = False
     if backend_post_dom:
         post_dom = backend_post_dom
+        post_dom_from_backend_snapshot = True
         after_evidence = dict(backend_after_evidence)
     else:
         post_dom = agent._analyze_dom()
@@ -314,9 +557,16 @@ def evaluate_post_action_progress(
                 after_modal_open = settled_modal_open
                 after_auth_prompt_visible = settled_auth_prompt_visible
                 after_signature = settled_signature
+                post_dom_from_backend_snapshot = False
                 modal_visibility_changed = before_modal_open != after_modal_open
                 auth_prompt_visibility_changed = before_auth_prompt_visible != after_auth_prompt_visible
                 changed = True
+    if post_dom_from_backend_snapshot and changed:
+        _prime_dom_cache_from_backend_snapshot(
+            agent=agent,
+            backend_snapshot=backend_snapshot,
+            post_dom=post_dom,
+        )
     if openclaw_backend_progress:
         _emit_reason(agent, "openclaw_backend_progress")
     elif openclaw_backend_provisional:

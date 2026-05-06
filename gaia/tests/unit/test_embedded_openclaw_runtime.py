@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import signal
+from pathlib import Path
 
 from gaia.src.phase4 import embedded_openclaw_runtime as runtime
 
@@ -19,6 +20,50 @@ def test_build_embedded_openclaw_config_defaults_to_local_unauthenticated_browse
     assert config["browser"]["defaultProfile"] == "openclaw"
     assert config["browser"]["profiles"]["openclaw"]["cdpPort"] == 18800
     assert config["browser"]["executablePath"].endswith("Google Chrome")
+
+
+def test_embedded_browser_server_entrypoint_uses_event_loop_keepalive() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    source = repo_root / "vendor" / "openclaw" / "scripts" / "gaia-embedded-browser-server.mjs"
+    bundle = repo_root / "vendor" / "openclaw-runtime" / "gaia-embedded-browser-server.bundle.mjs"
+
+    for path in (source, bundle):
+        text = path.read_text(encoding="utf-8")
+        assert "await new Promise(() =>" not in text
+        assert "setInterval" in text
+        assert "process.once(signal, resolve)" in text
+
+
+def test_browser_server_ready_uses_lightweight_profiles_route(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"profiles": [{"name": "openclaw"}]}
+
+    def _fake_get(url: str, **kwargs) -> _Response:
+        calls.append(url)
+        assert kwargs["timeout"] == 1.5
+        return _Response()
+
+    monkeypatch.setattr(runtime.requests, "get", _fake_get)
+
+    assert runtime._browser_server_ready("http://127.0.0.1:18791") is True
+    assert calls == ["http://127.0.0.1:18791/profiles"]
+
+
+def test_browser_server_ready_rejects_missing_openclaw_profile(monkeypatch) -> None:
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"profiles": [{"name": "user"}]}
+
+    monkeypatch.setattr(runtime.requests, "get", lambda *args, **kwargs: _Response())
+
+    assert runtime._browser_server_ready("http://127.0.0.1:18791") is False
 
 
 def test_build_embedded_openclaw_config_respects_headless_override(monkeypatch) -> None:

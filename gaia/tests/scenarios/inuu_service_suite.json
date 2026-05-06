@@ -46,9 +46,9 @@
       "time_budget_sec": 90
     },
     {
-      "id": "INUU_003_CREDIT_FILTER_SEMANTIC",
+      "id": "INUU_003_CREDIT_FILTER_STATE",
       "url": "https://inuu-timetable.vercel.app/",
-      "goal": "학점 필터가 실제 결과 과목의 학점과 맞게 동작하는지 의미 검증해줘.",
+      "goal": "학점 필터를 변경했을 때 선택 상태와 화면 상태 변화가 반영되는지 확인해줘.",
       "test_data": {
         "filter_control_hint": {
           "include_terms": [
@@ -69,7 +69,7 @@
       },
       "expected_signals": [
         "selection_reflected",
-        "result_consistency"
+        "dom_changed"
       ],
       "difficulty": "medium",
       "time_budget_sec": 120

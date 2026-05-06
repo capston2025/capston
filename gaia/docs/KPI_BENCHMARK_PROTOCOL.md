@@ -99,6 +99,18 @@ python /Users/coldmans/Documents/GitHub/capston/scripts/run_kpi_benchmark_pack.p
   --session-prefix gaia-kpi
 ```
 
+### 성능 개선 전후 비교
+
+`scripts/run_goal_benchmark.py`가 남긴 두 artifact directory를 비교해 성공률/평균 시간/진행 멈춤/step 수 회귀를 확인한다.
+
+```bash
+python /Users/coldmans/Documents/GitHub/capston/scripts/compare_benchmark_runs.py \
+  --baseline /Users/coldmans/Documents/GitHub/capston/artifacts/tmp/perf_hn_limit3 \
+  --candidate /Users/coldmans/Documents/GitHub/capston/artifacts/tmp/perf_hn_limit3_postjudge \
+  --output-dir /Users/coldmans/Documents/GitHub/capston/artifacts/tmp/compare_hn_postjudge \
+  --fail-on-regression
+```
+
 ## 해석 원칙
 
 1. 공개 읽기 벤치는 범용 baseline이다.
@@ -106,3 +118,4 @@ python /Users/coldmans/Documents/GitHub/capston/scripts/run_kpi_benchmark_pack.p
 3. 복구 스트레스 벤치는 `자가 복구율`을 보기 위한 별도 지표다.
 4. 발표에서는 3개를 따로 보여주고, 마지막에 통합 KPI를 제시한다.
 5. `자가 복구율`이 `null`이면 recovery event가 없는 데이터셋이므로, 실패가 아니라 “측정 불가”로 해석한다.
+6. 성능 개선 주장은 단일 성공 로그가 아니라 비교 artifact의 gate와 delta를 같이 제시한다.

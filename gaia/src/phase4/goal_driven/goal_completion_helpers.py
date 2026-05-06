@@ -589,7 +589,6 @@ def evaluate_explicit_reasoning_proof_completion(
             "정렬",
             "sort",
         )
-        semantic_filter_tokens = ("맞게", "의미", "semantic", "일치", "consisten")
         reasoning_change_tokens = (
             "변경",
             "변화",
@@ -607,8 +606,6 @@ def evaluate_explicit_reasoning_proof_completion(
             "검색 결과",
         )
         if not any(token in goal_blob for token in change_goal_tokens):
-            return None
-        if is_filter_style_goal(agent, goal) and any(token in goal_blob for token in semantic_filter_tokens):
             return None
         if not any(token in reasoning_blob for token in reasoning_change_tokens):
             return None

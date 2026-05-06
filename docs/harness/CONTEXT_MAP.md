@@ -17,11 +17,14 @@
 - CLI / terminal / chat hub entrypoints
 - benchmark runner / harness graders
 - artifacts / wrapper_trace / benchmark outputs
+- presentation notes / demo evidence / 발표 talking points
 
 ### 3. Checks
 
 - `gaia/tests/unit`
 - `scripts/run_goal_benchmark.py`
+- `scripts/compare_benchmark_runs.py`
+- `docs/harness/PRESENTATION_NOTES.md`
 - harness graders under `gaia/harness/graders`
 - [docs/harness/CHECKS.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/CHECKS.md)
 
@@ -102,9 +105,21 @@
   - [gaia/docs/KPI_BENCHMARK_PROTOCOL.md](/Users/coldmans/Documents/GitHub/capston/gaia/docs/KPI_BENCHMARK_PROTOCOL.md)
 - 핵심 코드:
   - [run_goal_benchmark.py](/Users/coldmans/Documents/GitHub/capston/scripts/run_goal_benchmark.py)
+  - [compare_benchmark_runs.py](/Users/coldmans/Documents/GitHub/capston/scripts/compare_benchmark_runs.py)
   - [runner.py](/Users/coldmans/Documents/GitHub/capston/gaia/harness/runner.py)
   - [expected_signals.py](/Users/coldmans/Documents/GitHub/capston/gaia/harness/graders/expected_signals.py)
   - [membership.py](/Users/coldmans/Documents/GitHub/capston/gaia/harness/graders/membership.py)
+
+### `presentation-prep`
+
+- 언제 쓰나:
+  - 발표 자료에 들어갈 기능 설명, KPI, benchmark 비교 결과, demo caveat를 계속 누적할 때
+- 핵심 문서:
+  - [docs/harness/PRESENTATION_NOTES.md](/Users/coldmans/Documents/GitHub/capston/docs/harness/PRESENTATION_NOTES.md)
+  - [gaia/docs/KPI_BENCHMARK_PROTOCOL.md](/Users/coldmans/Documents/GitHub/capston/gaia/docs/KPI_BENCHMARK_PROTOCOL.md)
+- 핵심 artifact:
+  - [HN postjudge comparison](/Users/coldmans/Documents/GitHub/capston/artifacts/tmp/presentation_compare_hn_postjudge_20260506/summary.md)
+  - [PyPI searchjudge comparison](/Users/coldmans/Documents/GitHub/capston/artifacts/tmp/presentation_compare_pypi_searchjudge_20260506/summary.md)
 
 ### `runtime-entrypoints`
 
