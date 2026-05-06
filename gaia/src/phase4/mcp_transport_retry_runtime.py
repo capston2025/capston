@@ -16,7 +16,6 @@ def execute_mcp_action_with_recovery(
     timeout: Any,
     attempts: int = 2,
     is_transport_error: Optional[Callable[[str], bool]] = None,
-    recover_host: Optional[Callable[..., bool]] = None,
     context: str = "",
 ) -> DispatchResult:
     last_exc: Optional[Exception] = None

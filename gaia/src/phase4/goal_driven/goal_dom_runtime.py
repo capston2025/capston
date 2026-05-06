@@ -4,7 +4,7 @@ import time
 from typing import List, Optional
 
 from .models import DOMElement
-from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
+from .exploration_ui_runtime import is_mcp_transport_error
 from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
 
 
@@ -75,7 +75,6 @@ def analyze_dom(
                 timeout=30,
                 attempts=2,
                 is_transport_error=is_mcp_transport_error,
-                recover_host=lambda *, context="": recover_mcp_host(self, context=context),
                 context="goal_dom_snapshot",
             )
             data = dispatch.payload or {"error": dispatch.text or "invalid_json_response"}

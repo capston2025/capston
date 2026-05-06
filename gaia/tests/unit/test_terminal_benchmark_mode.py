@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, run_launcher
+from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, main, run_launcher
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
     _main,
+    _grafana_url_from_monitoring_config,
     append_scenario_to_suite,
     build_single_scenario_suite_payload,
     build_terminal_benchmark_catalog,
@@ -22,6 +23,7 @@ from gaia.src.terminal_benchmark_mode import (
     open_benchmark_report,
     prompt_scenario_fields,
     replace_scenario_in_suite,
+    run_benchmark_suite,
     run_terminal_benchmark_mode,
     save_suite_payload,
     upsert_custom_benchmark_site,
@@ -90,8 +92,9 @@ def test_run_launcher_routes_terminal_benchmark_mode(monkeypatch) -> None:
     monkeypatch.setattr("gaia.cli.load_session_state", lambda session_key: None)
     monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
     monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "benchmark")
-    def _fake_benchmark_runner(*, workspace_root: Path) -> int:
+    def _fake_benchmark_runner(*, workspace_root: Path, push_metrics: bool = False) -> int:
         called["workspace_root"] = workspace_root
+        called["push_metrics"] = push_metrics
         return 37
 
     monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", _fake_benchmark_runner)
@@ -104,6 +107,84 @@ def test_run_launcher_routes_terminal_benchmark_mode(monkeypatch) -> None:
 
     assert result == 37
     assert called["workspace_root"] == _repo_root()
+    assert called["push_metrics"] is False
+
+
+def test_run_launcher_passes_terminal_benchmark_push_metrics_flag(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "gaia.cli._configure_session",
+        lambda parsed, require_url: (
+            "openai",
+            "gpt-5.4",
+            "reuse",
+            None,
+            "terminal",
+            "workspace",
+            "session-1",
+            False,
+        ),
+    )
+    monkeypatch.setattr("gaia.cli.load_session_state", lambda session_key: None)
+    monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
+    monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "benchmark")
+
+    def _fake_benchmark_runner(*, workspace_root: Path, push_metrics: bool = False) -> int:
+        called["workspace_root"] = workspace_root
+        called["push_metrics"] = push_metrics
+        return 0
+
+    monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", _fake_benchmark_runner)
+    monkeypatch.setattr(
+        "gaia.cli._resolve_control_channel",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("control prompt should be skipped")),
+    )
+
+    result = run_launcher(["--terminal", "--push-metrics"])
+
+    assert result == 0
+    assert called["workspace_root"] == _repo_root()
+    assert called["push_metrics"] is True
+
+
+def test_python_module_entry_routes_root_options_to_launcher(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "gaia.cli._configure_session",
+        lambda parsed, require_url: (
+            "openai",
+            "gpt-5.4",
+            "reuse",
+            None,
+            "terminal",
+            "workspace",
+            "session-1",
+            False,
+        ),
+    )
+    monkeypatch.setattr("gaia.cli.load_session_state", lambda session_key: None)
+    monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
+    monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "benchmark")
+
+    def _fake_benchmark_runner(*, workspace_root: Path, push_metrics: bool = False) -> int:
+        called["workspace_root"] = workspace_root
+        called["push_metrics"] = push_metrics
+        return 0
+
+    monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", _fake_benchmark_runner)
+    monkeypatch.setattr(
+        "gaia.cli._resolve_control_channel",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("control prompt should be skipped")),
+    )
+
+    result = main(["--terminal", "--push-metrics"])
+
+    assert result == 0
+    assert called["workspace_root"] == _repo_root()
+    assert called["push_metrics"] is True
+
 
 def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path) -> None:
     script = _PromptScript(selections=["종료"])
@@ -147,6 +228,7 @@ def test_run_terminal_benchmark_mode_dispatches_full_suite(tmp_path: Path) -> No
             "https://inuu-timetable.vercel.app/",
             "기존 테스트 실행",
             "기존 테스트 전체 실행",
+            "로컬만 저장",
             "이전으로",
             "종료",
         ]
@@ -170,7 +252,198 @@ def test_run_terminal_benchmark_mode_dispatches_full_suite(tmp_path: Path) -> No
     assert len(calls) == 1
     assert calls[0]["preset"].key == "inu_timetable"
     assert calls[0]["run_tag"] == "full_suite"
+    assert calls[0]["push_metrics"] is False
     assert len(list(calls[0]["suite_payload"]["scenarios"])) > 1
+
+
+def test_run_terminal_benchmark_mode_passes_push_metrics_opt_in(tmp_path: Path) -> None:
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text("{}", encoding="utf-8")
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "업로드하기",
+            "이전으로",
+            "종료",
+        ],
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run_suite_handler(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "summary": {}, "results": [], "output_dir": "/tmp/out"}
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=fake_run_suite_handler,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["push_metrics"] is True
+
+
+def test_run_terminal_benchmark_mode_shows_connection_menu_when_upload_without_config(tmp_path: Path) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "업로드하기",
+            "연결 명령 보기",
+            "이전으로",
+            "종료",
+        ],
+    )
+    calls: list[dict[str, object]] = []
+    emitted: list[str] = []
+
+    def fake_run_suite_handler(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "summary": {}, "results": [], "output_dir": "/tmp/out"}
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=fake_run_suite_handler,
+        monitoring_config_path=tmp_path / "missing-monitoring.json",
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["push_metrics"] is False
+    assert any("gaia_monitor_connect.py" in message for message in emitted)
+
+
+def test_run_terminal_benchmark_mode_can_connect_before_push_metrics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monitoring_config_path = tmp_path / "monitoring.json"
+    captured_cmd: list[str] = []
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "업로드하기",
+            "지금 연결하기",
+            "이전으로",
+            "종료",
+        ],
+        non_empty=["http://monitor.example:9091", "secret-token"],
+    )
+    calls: list[dict[str, object]] = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_connect_run(cmd, **kwargs):
+        del kwargs
+        captured_cmd[:] = list(cmd)
+        monitoring_config_path.write_text("{}", encoding="utf-8")
+        return _Result()
+
+    def fake_run_suite_handler(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "summary": {}, "results": [], "output_dir": "/tmp/out"}
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.subprocess.run", fake_connect_run)
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=fake_run_suite_handler,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    assert "scripts/gaia_monitor_connect.py" in captured_cmd[1]
+    assert captured_cmd[-2:] == ["--token", "secret-token"]
+    assert len(calls) == 1
+    assert calls[0]["push_metrics"] is True
+
+
+def test_grafana_url_is_derived_from_pushgateway_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "monitoring.json"
+    config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert _grafana_url_from_monitoring_config(config_path) == (
+        "http://monitor.example:3000/d/gaia-kpi-v1/gaia-benchmark-results"
+    )
+
+
+def test_run_benchmark_suite_appends_push_metrics_flag_when_enabled(tmp_path: Path) -> None:
+    preset = find_preset("inu_timetable")
+    assert preset is not None
+    captured_cmd: list[str] = []
+
+    class _FakeProcess:
+        def __init__(self, cmd, **kwargs):
+            del kwargs
+            captured_cmd[:] = list(cmd)
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1, "FAIL": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "INUU_001_HOME_LOGIN_VISIBLE", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def wait(self):
+            return 0
+
+    run_benchmark_suite(
+        workspace_root=tmp_path,
+        preset=preset,
+        target_url="https://inuu-timetable.vercel.app/",
+        suite_payload={
+            "suite_id": "inu_timetable_public_v1",
+            "site": {"name": "INU TIMETABLE", "base_url": "https://inuu-timetable.vercel.app/"},
+            "scenarios": [
+                {
+                    "id": "INUU_001_HOME_LOGIN_VISIBLE",
+                    "url": "https://inuu-timetable.vercel.app/",
+                    "goal": "홈 화면 확인",
+                }
+            ],
+        },
+        emit=lambda message: None,
+        run_tag="full_suite",
+        process_factory=_FakeProcess,
+        push_metrics=True,
+    )
+
+    assert "--push-metrics" in captured_cmd
 
 
 def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) -> None:
@@ -181,6 +454,7 @@ def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) 
             "기존 테스트 실행",
             "개별 실행",
             "INUU_001_HOME_LOGIN_VISIBLE | 현재 메인 화면에서 로그인 버튼 또는 로그아웃 버튼 중 하나가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+            "로컬만 저장",
             "이전으로",
             "종료",
         ]
@@ -204,6 +478,284 @@ def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) 
     assert len(calls) == 1
     assert calls[0]["run_tag"] == "INUU_001_HOME_LOGIN_VISIBLE"
     assert [row["id"] for row in calls[0]["suite_payload"]["scenarios"]] == ["INUU_001_HOME_LOGIN_VISIBLE"]
+
+
+def test_run_terminal_benchmark_mode_recovers_missing_custom_suite_before_run(tmp_path: Path) -> None:
+    registry_path = tmp_path / "benchmark_registry.json"
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_story_docs_suite.json"
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="story_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "기존 테스트 실행",
+            "이전으로",
+            "종료",
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    emitted: list[str] = []
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=registry_path,
+        run_suite_handler=lambda **kwargs: calls.append(kwargs) or {},
+    )
+
+    assert calls == []
+    assert suite_path.exists()
+    payload = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert payload["site"]["name"] == "Storybook Docs"
+    assert payload["site"]["base_url"] == "https://storybook.js.org/"
+    assert payload["scenarios"] == []
+    assert any("suite를 새로 만들었습니다" in message for message in emitted)
+    assert any("등록된 테스트가 없습니다" in message for message in emitted)
+
+
+def test_run_terminal_benchmark_mode_metrics_view_does_not_require_custom_suite(tmp_path: Path) -> None:
+    registry_path = tmp_path / "benchmark_registry.json"
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_story_docs_suite.json"
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="story_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path = tmp_path / "report.html"
+    opened: list[Path] = []
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "지표 확인",
+            "로컬 결과 보기",
+            "이전으로",
+            "종료",
+        ]
+    )
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=registry_path,
+        report_writer=lambda **kwargs: report_path,
+        report_opener=lambda path: opened.append(path) or True,
+    )
+
+    assert opened == [report_path]
+    assert not suite_path.exists()
+
+
+def test_run_terminal_benchmark_mode_can_pull_team_shared_tests(tmp_path: Path, monkeypatch) -> None:
+    registry_path = tmp_path / "benchmark_registry.json"
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091", "token": "team-token"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_story_docs_suite.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "scenarios": [{"id": "LOCAL_ONLY", "goal": "local"}],
+        },
+    )
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="story_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "팀 테스트 공유",
+            "팀 테스트 가져오기",
+            "이전으로",
+            "종료",
+        ]
+    )
+    emitted: list[str] = []
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.download_shared_suite",
+        lambda **kwargs: {
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "scenarios": [{"id": "REMOTE", "goal": "remote"}],
+        },
+    )
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=registry_path,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    payload = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert [row["id"] for row in payload["scenarios"]] == ["REMOTE", "LOCAL_ONLY"]
+    assert any("팀 테스트 가져오기 완료" in message for message in emitted)
+
+
+def test_run_terminal_benchmark_mode_auto_pulls_shared_tests_before_run(tmp_path: Path, monkeypatch) -> None:
+    registry_path = tmp_path / "benchmark_registry.json"
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091", "token": "team-token"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_story_docs_suite.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "scenarios": [{"id": "LOCAL_ONLY", "goal": "local"}],
+        },
+    )
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="story_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "로컬만 저장",
+            "이전으로",
+            "종료",
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    emitted: list[str] = []
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.download_shared_suite",
+        lambda **kwargs: {
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "scenarios": [{"id": "REMOTE", "goal": "remote"}],
+        },
+    )
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=registry_path,
+        run_suite_handler=lambda **kwargs: calls.append(kwargs) or {},
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    assert [row["id"] for row in calls[0]["suite_payload"]["scenarios"]] == ["REMOTE", "LOCAL_ONLY"]
+    assert any("자동 가져오기 완료" in message for message in emitted)
+
+
+def test_run_terminal_benchmark_mode_can_upload_team_shared_tests(tmp_path: Path, monkeypatch) -> None:
+    registry_path = tmp_path / "benchmark_registry.json"
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091", "token": "team-token"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    suite_path = tmp_path / "gaia/tests/scenarios/custom_story_docs_suite.json"
+    save_suite_payload(
+        suite_path,
+        {
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "scenarios": [{"id": "REMOTE", "goal": "remote"}],
+        },
+    )
+    registry = upsert_custom_benchmark_site(
+        {"sites": {}},
+        site_key="story_docs",
+        site_definition={
+            "label": "Storybook Docs",
+            "default_url": "https://storybook.js.org/",
+            "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+            "host_aliases": ["storybook.js.org"],
+        },
+    )
+    registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    script = _PromptScript(
+        selections=[
+            "Storybook Docs",
+            "https://storybook.js.org/",
+            "팀 테스트 공유",
+            "내 테스트 올리기",
+            "이전으로",
+            "종료",
+        ]
+    )
+    captured: dict[str, object] = {}
+
+    def fake_upload(**kwargs):
+        captured.update(kwargs)
+        return "http://monitor.example:9091/shared/suites/story_docs.json"
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.upload_shared_suite", fake_upload)
+
+    run_terminal_benchmark_mode(
+        workspace_root=tmp_path,
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=registry_path,
+        monitoring_config_path=monitoring_config_path,
+        auto_pull_shared_tests=False,
+    )
+
+    assert captured["server"] == "http://monitor.example:9091"
+    assert captured["token"] == "team-token"
+    assert captured["suite_key"] == "story_docs"
+    assert captured["suite_payload"]["scenarios"] == [{"id": "REMOTE", "goal": "remote"}]
 
 
 def test_run_terminal_benchmark_mode_add_flow_uses_gui_form_when_available(tmp_path: Path) -> None:
@@ -753,6 +1305,113 @@ def test_metrics_view_writes_html_board_and_opens_report(tmp_path: Path) -> None
     assert "INUU_001" in report_path.read_text(encoding="utf-8")
     assert opened_ok is True
     assert opened == [report_path.resolve().as_uri()]
+
+
+def test_terminal_metrics_view_can_open_local_report(tmp_path: Path) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "지표 확인",
+            "로컬 결과 보기",
+            "이전으로",
+            "종료",
+        ]
+    )
+    preset = find_preset("inu_timetable")
+    assert preset is not None
+    report_path = tmp_path / "report.html"
+    opened: list[Path] = []
+    emitted: list[str] = []
+
+    def fake_report_writer(**kwargs):
+        assert kwargs["preset"].key == preset.key
+        report_path.write_text("<html>ok</html>", encoding="utf-8")
+        return report_path
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        report_writer=fake_report_writer,
+        report_opener=lambda path: opened.append(path) or True,
+    )
+
+    assert opened == [report_path]
+    assert any("로컬 결과 보드" in message for message in emitted)
+
+
+def test_terminal_metrics_view_can_open_grafana(tmp_path: Path) -> None:
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "지표 확인",
+            "Grafana 열기",
+            "이전으로",
+            "종료",
+        ]
+    )
+    opened: list[str] = []
+    emitted: list[str] = []
+
+    def fail_report_writer(**kwargs):
+        del kwargs
+        raise AssertionError("local report should not be generated")
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        report_writer=fail_report_writer,
+        grafana_opener=lambda url: opened.append(url) or True,
+        monitoring_config_path=monitoring_config_path,
+        auto_pull_shared_tests=False,
+    )
+
+    assert opened == ["http://monitor.example:3000/d/gaia-kpi-v1/gaia-benchmark-results"]
+    assert any("Grafana 대시보드" in message for message in emitted)
+
+
+def test_terminal_metrics_view_shows_connect_menu_when_grafana_not_connected(tmp_path: Path) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "지표 확인",
+            "Grafana 열기",
+            "연결 명령 보기",
+            "이전으로",
+            "종료",
+        ]
+    )
+    opened: list[str] = []
+    emitted: list[str] = []
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        grafana_opener=lambda url: opened.append(url) or True,
+        monitoring_config_path=tmp_path / "missing-monitoring.json",
+    )
+
+    assert opened == []
+    assert any("gaia_monitor_connect.py" in message for message in emitted)
 
 
 def test_spell_checker_preset_stays_visible_even_without_existing_tests() -> None:

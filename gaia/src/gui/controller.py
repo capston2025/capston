@@ -1064,9 +1064,20 @@ class AppController(QObject):
         )
         self._window.append_log("💾 GUI 벤치 관리 변경사항을 반영했습니다.")
 
-    @Slot(str, str, str)
-    def _on_benchmark_manager_run_requested(self, site_key: str, url: str, scenario_id: str) -> None:
-        self._run_benchmark_request(site_key=site_key, url=url, scenario_id=scenario_id)
+    @Slot(str, str, str, bool)
+    def _on_benchmark_manager_run_requested(
+        self,
+        site_key: str,
+        url: str,
+        scenario_id: str,
+        push_metrics: bool = False,
+    ) -> None:
+        self._run_benchmark_request(
+            site_key=site_key,
+            url=url,
+            scenario_id=scenario_id,
+            push_metrics=push_metrics,
+        )
 
     @Slot(str, str)
     def _on_benchmark_save_requested(self, site_key: str, url: str) -> None:
@@ -1089,7 +1100,14 @@ class AppController(QObject):
     def _on_benchmark_run_requested(self, site_key: str, url: str) -> None:
         self._run_benchmark_request(site_key=site_key, url=url, scenario_id="")
 
-    def _run_benchmark_request(self, *, site_key: str, url: str, scenario_id: str = "") -> None:
+    def _run_benchmark_request(
+        self,
+        *,
+        site_key: str,
+        url: str,
+        scenario_id: str = "",
+        push_metrics: bool = False,
+    ) -> None:
         clean_site = str(site_key or "").strip()
         clean_url = str(url or "").strip()
         clean_scenario_id = str(scenario_id or "").strip()
@@ -1127,6 +1145,7 @@ class AppController(QObject):
             clean_url or preset.default_url,
             suite_payload=suite_payload,
             run_tag=run_tag,
+            push_metrics=push_metrics,
         )
 
     def _start_benchmark_worker(
@@ -1136,6 +1155,7 @@ class AppController(QObject):
         *,
         suite_payload: Mapping[str, Any] | None = None,
         run_tag: str = "full_suite",
+        push_metrics: bool = False,
     ) -> None:
         thread = QThread(self)
         worker = BenchmarkWorker(
@@ -1146,6 +1166,7 @@ class AppController(QObject):
             target_url=target_url,
             run_tag=run_tag,
             workspace_root=Path(__file__).resolve().parents[3],
+            push_metrics=push_metrics,
         )
         worker.moveToThread(thread)
 

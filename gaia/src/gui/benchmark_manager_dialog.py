@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -547,7 +548,7 @@ def _slugify_site_key(value: str) -> str:
 
 class BenchmarkManagerDialog(QDialog):
     catalogMutated = Signal(str, str)
-    runRequested = Signal(str, str, str)
+    runRequested = Signal(str, str, str, bool)
     viewRequested = Signal(str, str)
 
     def __init__(
@@ -708,6 +709,12 @@ class BenchmarkManagerDialog(QDialog):
         self._scenario_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._scenario_list.currentRowChanged.connect(self._refresh_scenario_item_selection)
         scenario_layout.addWidget(self._scenario_list, stretch=1)
+
+        self._push_metrics_checkbox = QCheckBox("모니터링 서버로 메트릭 업로드 (--push-metrics)", self)
+        self._push_metrics_checkbox.setToolTip(
+            "~/.gaia/monitoring.json 연결이 있을 때만 업로드됩니다. 꺼두면 결과는 로컬 artifacts에만 저장됩니다."
+        )
+        scenario_layout.addWidget(self._push_metrics_checkbox)
 
         self._scenario_empty_panel = QFrame(scenario_card)
         self._scenario_empty_panel.setObjectName("ScenarioEmptyPanel")
@@ -1164,14 +1171,18 @@ class BenchmarkManagerDialog(QDialog):
         site_key = self._current_site_key()
         if not site_key:
             return
-        self.runRequested.emit(site_key, self._current_target_url(), "")
+        self.runRequested.emit(site_key, self._current_target_url(), "", self._push_metrics_enabled())
 
     def _run_selected_scenario(self) -> None:
         site_key = self._current_site_key()
         scenario_id = self._current_scenario_id()
         if not site_key or not scenario_id:
             return
-        self.runRequested.emit(site_key, self._current_target_url(), scenario_id)
+        self.runRequested.emit(site_key, self._current_target_url(), scenario_id, self._push_metrics_enabled())
+
+    def _push_metrics_enabled(self) -> bool:
+        checkbox = getattr(self, "_push_metrics_checkbox", None)
+        return bool(checkbox is not None and checkbox.isChecked())
 
     def _view_reports(self) -> None:
         site_key = self._current_site_key()

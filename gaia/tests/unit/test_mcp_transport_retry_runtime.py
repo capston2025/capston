@@ -23,7 +23,6 @@ def test_execute_mcp_action_with_recovery_retries_transport_error_without_host_r
         timeout=10,
         attempts=2,
         is_transport_error=lambda text: "connection refused" in text,
-        recover_host=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("recover_host should not be called")),
         context="test",
     )
 
@@ -46,7 +45,6 @@ def test_execute_mcp_action_with_recovery_does_not_retry_non_transport_error(mon
             timeout=10,
             attempts=2,
             is_transport_error=lambda text: "connection refused" in text,
-            recover_host=lambda **_kwargs: True,
             context="test",
         )
     except RuntimeError as exc:

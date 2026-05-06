@@ -1162,7 +1162,7 @@ def _dispatch_plan(
     return run_gui(forwarded)
 
 
-def _run_terminal_benchmark_mode(*, workspace_root: Path) -> int:
+def _run_terminal_benchmark_mode(*, workspace_root: Path, push_metrics: bool = False) -> int:
     from gaia.src.terminal_benchmark_mode import run_terminal_benchmark_mode
 
     return run_terminal_benchmark_mode(
@@ -1171,6 +1171,7 @@ def _run_terminal_benchmark_mode(*, workspace_root: Path) -> int:
         prompt=_prompt,
         prompt_non_empty=_prompt_non_empty,
         emit=print,
+        push_metrics=push_metrics,
     )
 
 
@@ -1489,6 +1490,11 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tg-allowlist", help="Comma-separated telegram admin chat_id allowlist.")
     parser.add_argument("--tg-webhook-url")
     parser.add_argument("--tg-webhook-bind")
+    parser.add_argument(
+        "--push-metrics",
+        action="store_true",
+        help="Benchmark terminal mode only: upload metrics to the configured monitoring server.",
+    )
     args = parser.parse_args(list(argv or []))
 
     configured = _configure_session(args, require_url=False)
@@ -1510,7 +1516,10 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     profile = _load_profile()
     terminal_purpose = _resolve_terminal_launch_purpose(args, profile, runtime=runtime)
     if terminal_purpose == "benchmark":
-        return _run_terminal_benchmark_mode(workspace_root=Path(__file__).resolve().parent.parent)
+        return _run_terminal_benchmark_mode(
+            workspace_root=Path(__file__).resolve().parent.parent,
+            push_metrics=bool(getattr(args, "push_metrics", False)),
+        )
 
     url = _resolve_url(args, profile, required=True)
     if not url:
@@ -1997,6 +2006,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tg-webhook-url")
     parser.add_argument("--tg-webhook-bind")
     parser.add_argument("--time-budget-seconds", type=int)
+    parser.add_argument("--push-metrics", action="store_true")
     return parser
 
 
@@ -2117,6 +2127,8 @@ def run_start(argv: Sequence[str] | None = None) -> int:
         forwarded += ["--tg-webhook-url", parsed.tg_webhook_url]
     if parsed.tg_webhook_bind:
         forwarded += ["--tg-webhook-bind", parsed.tg_webhook_bind]
+    if parsed.push_metrics:
+        forwarded += ["--push-metrics"]
     return run_launcher(forwarded)
 
 
@@ -2155,6 +2167,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args[0] in {"-h", "--help", "help"}:
             _build_main_parser().print_help()
             return 0
+
+        if args[0].startswith("-"):
+            return run_launcher(args)
 
         if args[0] == "start":
             return run_start(args[1:])

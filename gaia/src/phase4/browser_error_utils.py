@@ -39,7 +39,7 @@ def add_no_retry_hint(reason: str) -> str:
             timeout_suffix = f" (timeout={raw_timeout}{unit})"
         transport_text = (
             "Can't reach the GAIA browser control service"
-            f"{timeout_suffix}. Restart the local MCP host if needed. "
+            f"{timeout_suffix}. Restart the OpenClaw browser runtime if needed. "
             f"{OPENCLAW_NO_RETRY_HINT}"
         )
         return transport_text

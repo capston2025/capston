@@ -39,7 +39,6 @@ def capture_screenshot(agent) -> Optional[str]:
             timeout=(connect_timeout, read_timeout),
             attempts=2,
             is_transport_error=agent._is_mcp_transport_error,
-            recover_host=agent._recover_mcp_host,
             context="capture_screenshot",
         )
         if hasattr(response, "json"):
@@ -71,7 +70,6 @@ def check_console_errors(agent) -> List[str]:
             timeout=(3, 10),
             attempts=2,
             is_transport_error=agent._is_mcp_transport_error,
-            recover_host=agent._recover_mcp_host,
             context="console_logs",
         )
         if hasattr(response, "json"):
@@ -110,7 +108,6 @@ def get_current_url(agent) -> str:
             timeout=(3, 10),
             attempts=2,
             is_transport_error=agent._is_mcp_transport_error,
-            recover_host=agent._recover_mcp_host,
             context="current_url",
         )
         if hasattr(response, "json"):

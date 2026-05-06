@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from scripts.run_goal_benchmark import (
     _build_child_code,
     _infer_provider_from_model,
@@ -5,6 +7,7 @@ from scripts.run_goal_benchmark import (
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
     _should_emit_live_trace_line,
+    _should_push_metrics,
 )
 
 
@@ -87,3 +90,9 @@ def test_should_emit_live_trace_line_filters_to_step_level_messages() -> None:
     assert _should_emit_live_trace_line("✅ 목표 달성! 이유: 확인됨")
     assert not _should_emit_live_trace_line("🧪 llm trace: {'used_llm': True}")
     assert not _should_emit_live_trace_line('{"schema_version":"gaia.benchmark.v1"}')
+
+
+def test_monitoring_push_is_explicit_opt_in() -> None:
+    assert _should_push_metrics(SimpleNamespace(push_metrics=False)) is False
+    assert _should_push_metrics(SimpleNamespace(push_metrics=True)) is True
+    assert _should_push_metrics(SimpleNamespace()) is False

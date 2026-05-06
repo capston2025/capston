@@ -8,7 +8,7 @@ from .goal_policy_phase_runtime import goal_phase_intent
 from .models import ActionDecision, ActionType, DOMElement
 from .parsing import parse_multi_values, parse_wait_payload
 from .runtime import ActionExecResult
-from .exploration_ui_runtime import is_mcp_transport_error, recover_mcp_host
+from .exploration_ui_runtime import is_mcp_transport_error
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 from gaia.src.phase4.mcp_page_evidence_runtime import resolve_stale_ref
 from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
@@ -1116,7 +1116,6 @@ def execute_action(
             timeout=request_timeout,
             attempts=2,
             is_transport_error=is_mcp_transport_error,
-            recover_host=lambda *, context="": recover_mcp_host(agent, context=context),
             context=f"action:{request_action}",
         )
         data = response.payload or {"error": response.text or "invalid_json_response"}

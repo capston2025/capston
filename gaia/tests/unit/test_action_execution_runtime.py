@@ -306,7 +306,7 @@ def test_execute_action_focus_dispatches_tabs_focus(monkeypatch) -> None:
         }
         text = ""
 
-    def fake_execute_mcp_action_with_recovery(*, raw_base_url, action, params, timeout, attempts, is_transport_error, recover_host, context):
+    def fake_execute_mcp_action_with_recovery(*, raw_base_url, action, params, timeout, attempts, is_transport_error, context):
         seen["action"] = action
         seen["params"] = dict(params)
         return _Response()

@@ -1,4 +1,4 @@
-"""Browser session and runtime helpers for the local MCP host."""
+"""Browser session helpers retained for ref-action execution."""
 
 from .session import BrowserSession, ensure_session
 

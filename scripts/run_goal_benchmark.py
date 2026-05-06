@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import io
 import json
 import os
@@ -402,6 +401,11 @@ def _infer_provider_from_model(model_name: str) -> str:
     return ""
 
 
+def _should_push_metrics(args: Any) -> bool:
+    """Benchmark metrics leave the machine only when explicitly requested."""
+    return bool(getattr(args, "push_metrics", False))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run GAIA benchmark suite from scenario JSON.")
     parser.add_argument("--suite", required=True, help="Path to suite JSON")
@@ -412,6 +416,11 @@ def main() -> int:
     parser.add_argument("--timeout-cap", type=int, default=600)
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")
+    parser.add_argument(
+        "--push-metrics",
+        action="store_true",
+        help="Upload benchmark metrics to the configured monitoring server after the run.",
+    )
     args = parser.parse_args()
 
     suite_path = Path(args.suite).expanduser().resolve()
@@ -512,7 +521,45 @@ def main() -> int:
     (output_dir / "summary.md").write_text(md.getvalue(), encoding="utf-8")
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if _should_push_metrics(args):
+        _try_push_metrics(output_dir, suite_path)
     return 0
+
+
+def _try_push_metrics(output_dir: Path, suite_path: Path | None = None) -> None:
+    """Push benchmark metrics when the caller explicitly opted in."""
+    monitoring_config = Path.home() / ".gaia" / "monitoring.json"
+    if not monitoring_config.exists():
+        print("\n  모니터링 서버 설정이 없어 업로드를 건너뜁니다.")
+        print("  연결: python scripts/gaia_monitor_connect.py <서버주소> --token <토큰>")
+        return
+
+    push_script = Path(__file__).parent / "push_metrics.py"
+    if not push_script.exists():
+        return
+
+    print("\n  📡 모니터링 서버로 결과 업로드 중...")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(push_script),
+            "--suite-dir",
+            str(output_dir),
+            *(["--suite-json", str(suite_path)] if suite_path is not None else []),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  업로드 완료 ✅")
+        if result.stdout.strip():
+            print(f"  {result.stdout.strip()}")
+    else:
+        print("  업로드 실패 (벤치마크 결과는 정상 저장됨)")
+        if result.stderr.strip():
+            print(f"  오류: {result.stderr.strip()}")
+        if result.stdout.strip():
+            print(f"  출력: {result.stdout.strip()}")
 
 
 if __name__ == "__main__":

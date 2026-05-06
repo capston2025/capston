@@ -9,8 +9,6 @@ __all__ = [
     "MainWindow",
     "SpecAnalyzer",
     "PDFLoader",
-    "AgentOrchestrator",
-    "MCPClient",
     "build_summary",
     "ChecklistTracker",
 ]
@@ -25,14 +23,6 @@ def __getattr__(name: str) -> Any:
         from gaia.src.phase1.pdf_loader import PDFLoader
 
         return PDFLoader
-    if name == "AgentOrchestrator":
-        from gaia.src.phase4.agent import AgentOrchestrator
-
-        return AgentOrchestrator
-    if name == "MCPClient":
-        from gaia.src.phase4.agent import MCPClient
-
-        return MCPClient
     if name == "build_summary":
         from gaia.src.phase5.report import build_summary
 

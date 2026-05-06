@@ -12,8 +12,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Protocol, TextIO
-from urllib import request as urllib_request
+from typing import Any, Callable, Dict, Optional, Protocol
 from urllib.parse import urlparse
 
 import requests

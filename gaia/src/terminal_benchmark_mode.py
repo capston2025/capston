@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -42,18 +43,36 @@ from gaia.src.benchmark_manager import (
     upsert_benchmark_site_url,
     upsert_custom_benchmark_site,
 )
+from gaia.src.benchmark_suite_sharing import (
+    SharedSuiteError,
+    SharedSuiteNotFound,
+    download_shared_suite,
+    merge_shared_suite_payload,
+    upload_shared_suite,
+)
 
 PromptSelectFn = Callable[[str, Sequence[str], str | None], str]
 PromptTextFn = Callable[[str, str | None], str]
 OutputFn = Callable[[str], None]
 ProcessFactory = Callable[..., subprocess.Popen[str]]
 ReportOpener = Callable[[str], bool]
+GrafanaOpener = Callable[[str], bool]
 ScenarioFormOpener = Callable[..., Mapping[str, Any] | None]
 
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
 SITE_DELETE_OPTION = "사이트 삭제"
 SITE_EXIT_OPTION = "종료"
+PUSH_METRICS_OPTION = "업로드하기"
+LOCAL_METRICS_OPTION = "로컬만 저장"
+CONNECT_MONITORING_OPTION = "지금 연결하기"
+SHOW_CONNECT_COMMAND_OPTION = "연결 명령 보기"
+GRAFANA_METRICS_OPTION = "Grafana 열기"
+LOCAL_REPORT_OPTION = "로컬 결과 보기"
+METRICS_BACK_OPTION = "이전으로"
+SHARE_TESTS_OPTION = "팀 테스트 공유"
+UPLOAD_SHARED_TESTS_OPTION = "내 테스트 올리기"
+PULL_SHARED_TESTS_OPTION = "팀 테스트 가져오기"
 
 
 def build_terminal_benchmark_catalog(
@@ -624,6 +643,7 @@ def run_benchmark_suite(
     run_tag: str,
     timeout_cap: int = 600,
     process_factory: ProcessFactory = subprocess.Popen,
+    push_metrics: bool = False,
 ) -> dict[str, Any]:
     scenarios = [dict(row) for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
     if not scenarios:
@@ -653,6 +673,8 @@ def run_benchmark_suite(
         "--output-dir",
         str(output_dir),
     ]
+    if push_metrics:
+        cmd.append("--push-metrics")
     env = os.environ.copy()
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
@@ -663,6 +685,8 @@ def run_benchmark_suite(
     emit(f"{preset.label} 벤치를 실행합니다.")
     emit(f"   - target: {target_url}")
     emit(f"   - suite: {tmp_suite_path}")
+    if push_metrics:
+        emit("   - metrics: upload enabled (--push-metrics)")
 
     process = process_factory(
         cmd,
@@ -818,9 +842,14 @@ def run_terminal_benchmark_mode(
     run_suite_handler: Callable[..., dict[str, Any]] = run_benchmark_suite,
     report_writer: Callable[..., Path] = write_benchmark_report_html,
     report_opener: Callable[[Path], bool] = open_benchmark_report,
+    grafana_opener: GrafanaOpener = webbrowser.open_new_tab,
     scenario_form_opener: ScenarioFormOpener = open_scenario_form_gui,
+    push_metrics: bool = False,
+    monitoring_config_path: Path | None = None,
+    auto_pull_shared_tests: bool = True,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
+    auto_pull_attempted: set[str] = set()
 
     while True:
         catalog, preset_map = build_terminal_benchmark_catalog(registry)
@@ -870,18 +899,64 @@ def run_terminal_benchmark_mode(
         if not selected_url:
             continue
         save_benchmark_registry(registry, registry_path)
+        if auto_pull_shared_tests and preset.key not in auto_pull_attempted:
+            auto_pull_attempted.add(preset.key)
+            _try_auto_pull_shared_suite(
+                workspace_root=workspace_root,
+                preset=preset,
+                selected_url=selected_url,
+                site_entry=site_entry,
+                emit=emit,
+                monitoring_config_path=monitoring_config_path,
+            )
 
         while True:
             action = prompt_select(
                 f"{preset.label} 작업을 선택하세요",
-                ("새로운 테스트 추가", "기존 테스트 실행", "테스트 편집", "지표 확인", "이전으로"),
+                ("새로운 테스트 추가", "기존 테스트 실행", "테스트 편집", SHARE_TESTS_OPTION, "지표 확인", "이전으로"),
                 default="기존 테스트 실행",
             )
             if action == "이전으로":
                 break
 
+            if action == "지표 확인":
+                _handle_metrics_view(
+                    workspace_root=workspace_root,
+                    preset=preset,
+                    selected_url=selected_url,
+                    prompt_select=prompt_select,
+                    prompt_non_empty=prompt_non_empty,
+                    emit=emit,
+                    report_writer=report_writer,
+                    report_opener=report_opener,
+                    grafana_opener=grafana_opener,
+                    monitoring_config_path=monitoring_config_path,
+                )
+                continue
+
             suite_path = (workspace_root / str(preset.suite_path or "")).resolve()
-            suite_payload = load_suite_payload(workspace_root, preset.suite_path or "")
+            suite_payload = _load_terminal_suite_payload(
+                workspace_root=workspace_root,
+                preset=preset,
+                selected_url=selected_url,
+                site_entry=site_entry,
+                emit=emit,
+            )
+            if suite_payload is None:
+                continue
+
+            if action == SHARE_TESTS_OPTION:
+                _handle_team_suite_sharing(
+                    workspace_root=workspace_root,
+                    preset=preset,
+                    suite_path=suite_path,
+                    suite_payload=suite_payload,
+                    prompt_select=prompt_select,
+                    prompt_non_empty=prompt_non_empty,
+                    emit=emit,
+                    monitoring_config_path=monitoring_config_path,
+                )
+                continue
 
             if action == "새로운 테스트 추가":
                 existing_ids = {
@@ -912,6 +987,9 @@ def run_terminal_benchmark_mode(
                 continue
 
             if action == "기존 테스트 실행":
+                if not _suite_has_scenarios(suite_payload):
+                    emit("등록된 테스트가 없습니다. 먼저 '새로운 테스트 추가'로 테스트를 추가해주세요.")
+                    continue
                 run_mode = prompt_select(
                     "실행 범위를 선택하세요",
                     ("기존 테스트 전체 실행", "개별 실행", "이전으로"),
@@ -920,6 +998,14 @@ def run_terminal_benchmark_mode(
                 if run_mode == "이전으로":
                     continue
                 if run_mode == "기존 테스트 전체 실행":
+                    push_metrics_for_run = _resolve_push_metrics_for_run(
+                        push_metrics=push_metrics,
+                        prompt_select=prompt_select,
+                        prompt_non_empty=prompt_non_empty,
+                        emit=emit,
+                        workspace_root=workspace_root,
+                        monitoring_config_path=monitoring_config_path,
+                    )
                     run_suite_handler(
                         workspace_root=workspace_root,
                         preset=preset,
@@ -927,6 +1013,7 @@ def run_terminal_benchmark_mode(
                         suite_payload=suite_payload,
                         emit=emit,
                         run_tag="full_suite",
+                        push_metrics=push_metrics_for_run,
                     )
                     continue
 
@@ -937,6 +1024,14 @@ def run_terminal_benchmark_mode(
                 )
                 if not scenario_id:
                     continue
+                push_metrics_for_run = _resolve_push_metrics_for_run(
+                    push_metrics=push_metrics,
+                    prompt_select=prompt_select,
+                    prompt_non_empty=prompt_non_empty,
+                    emit=emit,
+                    workspace_root=workspace_root,
+                    monitoring_config_path=monitoring_config_path,
+                )
                 single_payload = build_single_scenario_suite_payload(suite_payload, scenario_id)
                 run_suite_handler(
                     workspace_root=workspace_root,
@@ -945,6 +1040,7 @@ def run_terminal_benchmark_mode(
                     suite_payload=single_payload,
                     emit=emit,
                     run_tag=scenario_id,
+                    push_metrics=push_metrics_for_run,
                 )
                 continue
 
@@ -991,16 +1087,6 @@ def run_terminal_benchmark_mode(
                 emit(f"✏️ 테스트 수정 완료: {updated_scenario['id']}")
                 continue
 
-            if action == "지표 확인":
-                report_path = report_writer(
-                    workspace_root=workspace_root,
-                    preset=preset,
-                    selected_url=selected_url,
-                )
-                report_opener(report_path)
-                emit(f"📊 결과 보드 생성: {report_path}")
-                continue
-
 
 def _find_scenario(suite_payload: Mapping[str, Any], scenario_id: str) -> dict[str, Any] | None:
     target_id = str(scenario_id or "").strip()
@@ -1010,6 +1096,327 @@ def _find_scenario(suite_payload: Mapping[str, Any], scenario_id: str) -> dict[s
         if str(raw.get("id") or "").strip() == target_id:
             return dict(raw)
     return None
+
+
+def _suite_has_scenarios(suite_payload: Mapping[str, Any]) -> bool:
+    return any(isinstance(row, Mapping) for row in list(suite_payload.get("scenarios") or []))
+
+
+def _load_terminal_suite_payload(
+    *,
+    workspace_root: Path,
+    preset: BenchmarkPreset,
+    selected_url: str,
+    site_entry: Mapping[str, Any],
+    emit: OutputFn,
+) -> dict[str, Any] | None:
+    suite_path_text = str(preset.suite_path or "").strip()
+    if not suite_path_text:
+        emit("선택한 사이트에 benchmark suite가 등록되어 있지 않습니다.")
+        return None
+    suite_path = (workspace_root / suite_path_text).resolve()
+    try:
+        return load_suite_payload(workspace_root, suite_path_text)
+    except FileNotFoundError:
+        if not bool(site_entry.get("is_custom")):
+            emit(f"benchmark suite 파일을 찾지 못했습니다: {suite_path}")
+            return None
+        payload = create_custom_suite_payload(
+            site_key=preset.key,
+            label=preset.label,
+            default_url=selected_url or preset.default_url,
+        )
+        save_suite_payload(suite_path, payload)
+        emit(f"비어 있는 커스텀 테스트 suite를 새로 만들었습니다: {suite_path}")
+        return payload
+
+
+def _try_auto_pull_shared_suite(
+    *,
+    workspace_root: Path,
+    preset: BenchmarkPreset,
+    selected_url: str,
+    site_entry: Mapping[str, Any],
+    emit: OutputFn,
+    monitoring_config_path: Path | None = None,
+) -> None:
+    config = _load_monitoring_config(monitoring_config_path) or {}
+    server = str(config.get("server") or "").strip()
+    token = str(config.get("token") or "").strip() or None
+    if not server:
+        return
+    try:
+        remote_payload = download_shared_suite(server=server, token=token, suite_key=preset.key)
+    except SharedSuiteNotFound:
+        return
+    except SharedSuiteError as exc:
+        emit(f"팀 공유 테스트 자동 가져오기를 건너뜁니다: {exc}")
+        return
+
+    suite_path_text = str(preset.suite_path or "").strip()
+    if not suite_path_text:
+        return
+    suite_path = (workspace_root / suite_path_text).resolve()
+    try:
+        local_payload = load_suite_payload(workspace_root, suite_path_text)
+    except FileNotFoundError:
+        if not bool(site_entry.get("is_custom")):
+            return
+        local_payload = create_custom_suite_payload(
+            site_key=preset.key,
+            label=preset.label,
+            default_url=selected_url or preset.default_url,
+        )
+    except ValueError as exc:
+        emit(f"팀 공유 테스트 자동 가져오기를 건너뜁니다: {exc}")
+        return
+
+    merged, stats = merge_shared_suite_payload(local_payload, remote_payload)
+    if stats.added == 0 and stats.updated == 0:
+        return
+    save_suite_payload(suite_path, merged)
+    emit(f"팀 공유 테스트 자동 가져오기 완료: 추가 {stats.added}개, 업데이트 {stats.updated}개")
+
+
+def _monitoring_config_path(path: Path | None = None) -> Path:
+    return path if path is not None else Path.home() / ".gaia" / "monitoring.json"
+
+
+def _load_monitoring_config(path: Path | None = None) -> dict[str, Any] | None:
+    config_path = _monitoring_config_path(path)
+    if not config_path.exists():
+        return None
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _grafana_url_from_monitoring_config(path: Path | None = None) -> str:
+    payload = _load_monitoring_config(path)
+    if not payload:
+        return ""
+    server = str(payload.get("server") or "").strip()
+    if not server:
+        return ""
+    parsed = urllib.parse.urlsplit(server)
+    if not parsed.scheme or not parsed.hostname:
+        return ""
+    try:
+        configured_port = parsed.port
+    except ValueError:
+        return ""
+    port = 3000 if configured_port in {None, 9091} else configured_port
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = f"{hostname}:{port}"
+    return urllib.parse.urlunsplit((parsed.scheme, netloc, "/d/gaia-kpi-v1/gaia-benchmark-results", "", ""))
+
+
+def _handle_metrics_view(
+    *,
+    workspace_root: Path,
+    preset: BenchmarkPreset,
+    selected_url: str,
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    report_writer: Callable[..., Path],
+    report_opener: Callable[[Path], bool],
+    grafana_opener: GrafanaOpener,
+    monitoring_config_path: Path | None = None,
+) -> None:
+    selected = prompt_select(
+        "지표 확인 위치를 선택하세요",
+        (GRAFANA_METRICS_OPTION, LOCAL_REPORT_OPTION, METRICS_BACK_OPTION),
+        default=GRAFANA_METRICS_OPTION,
+    )
+    if selected == METRICS_BACK_OPTION:
+        return
+    if selected == LOCAL_REPORT_OPTION:
+        report_path = report_writer(
+            workspace_root=workspace_root,
+            preset=preset,
+            selected_url=selected_url,
+        )
+        report_opener(report_path)
+        emit(f"📊 로컬 결과 보드 생성: {report_path}")
+        return
+
+    if not _ensure_monitoring_connection(
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    ):
+        return
+    grafana_url = _grafana_url_from_monitoring_config(monitoring_config_path)
+    if not grafana_url:
+        emit("Grafana URL을 만들 수 없습니다. 모니터링 연결을 다시 설정해주세요.")
+        _emit_monitoring_connect_command(emit)
+        return
+    grafana_opener(grafana_url)
+    emit(f"📊 Grafana 대시보드 열기: {grafana_url}")
+
+
+def _handle_team_suite_sharing(
+    *,
+    workspace_root: Path,
+    preset: BenchmarkPreset,
+    suite_path: Path,
+    suite_payload: Mapping[str, Any],
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    monitoring_config_path: Path | None = None,
+) -> None:
+    selected = prompt_select(
+        "팀 테스트 공유 작업을 선택하세요",
+        (PULL_SHARED_TESTS_OPTION, UPLOAD_SHARED_TESTS_OPTION, "이전으로"),
+        default=PULL_SHARED_TESTS_OPTION,
+    )
+    if selected == "이전으로":
+        return
+    if not _ensure_monitoring_connection(
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    ):
+        return
+    config = _load_monitoring_config(monitoring_config_path) or {}
+    server = str(config.get("server") or "").strip()
+    token = str(config.get("token") or "").strip() or None
+    if not server:
+        emit("모니터링 서버 설정을 읽지 못했습니다. 연결을 다시 설정해주세요.")
+        _emit_monitoring_connect_command(emit)
+        return
+
+    if selected == UPLOAD_SHARED_TESTS_OPTION:
+        if not _suite_has_scenarios(suite_payload):
+            emit("공유할 테스트가 없습니다. 먼저 테스트를 추가해주세요.")
+            return
+        try:
+            upload_shared_suite(server=server, token=token, suite_key=preset.key, suite_payload=suite_payload)
+        except SharedSuiteError as exc:
+            emit(f"팀 테스트 공유 실패: {exc}")
+            return
+        emit(f"팀 테스트 공유 완료: {preset.label} ({_scenario_count(suite_payload)}개)")
+        return
+
+    try:
+        remote_payload = download_shared_suite(server=server, token=token, suite_key=preset.key)
+    except SharedSuiteNotFound:
+        emit("팀 서버에 공유된 테스트가 아직 없습니다. 먼저 누군가 '내 테스트 올리기'를 해야 합니다.")
+        return
+    except SharedSuiteError as exc:
+        emit(f"팀 테스트 가져오기 실패: {exc}")
+        return
+
+    merged, stats = merge_shared_suite_payload(suite_payload, remote_payload)
+    save_suite_payload(suite_path, merged)
+    emit(
+        "팀 테스트 가져오기 완료: "
+        f"추가 {stats.added}개, 업데이트 {stats.updated}개, 로컬 유지 {stats.local_only}개"
+    )
+
+
+def _resolve_push_metrics_for_run(
+    *,
+    push_metrics: bool,
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    workspace_root: Path,
+    monitoring_config_path: Path | None = None,
+) -> bool:
+    if push_metrics:
+        return _ensure_monitoring_connection(
+            prompt_select=prompt_select,
+            prompt_non_empty=prompt_non_empty,
+            emit=emit,
+            workspace_root=workspace_root,
+            monitoring_config_path=monitoring_config_path,
+        )
+    return _prompt_push_metrics(
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+
+def _prompt_push_metrics(
+    *,
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    workspace_root: Path,
+    monitoring_config_path: Path | None = None,
+) -> bool:
+    selected = prompt_select(
+        "모니터링 서버로 메트릭을 업로드할까요?",
+        (PUSH_METRICS_OPTION, LOCAL_METRICS_OPTION),
+        default=LOCAL_METRICS_OPTION,
+    )
+    if selected != PUSH_METRICS_OPTION:
+        return False
+    return _ensure_monitoring_connection(
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+
+def _ensure_monitoring_connection(
+    *,
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    workspace_root: Path,
+    monitoring_config_path: Path | None = None,
+) -> bool:
+    config_path = _monitoring_config_path(monitoring_config_path)
+    if config_path.exists():
+        return True
+
+    emit("모니터링 서버 연결이 없습니다.")
+    selected = prompt_select(
+        "모니터링 서버 연결",
+        (CONNECT_MONITORING_OPTION, SHOW_CONNECT_COMMAND_OPTION, LOCAL_METRICS_OPTION),
+        default=CONNECT_MONITORING_OPTION,
+    )
+    if selected == LOCAL_METRICS_OPTION:
+        return False
+    if selected == SHOW_CONNECT_COMMAND_OPTION:
+        _emit_monitoring_connect_command(emit)
+        return False
+
+    server = str(prompt_non_empty("모니터링 서버 주소", default=None)).strip()
+    token = str(prompt_non_empty("팀 공유 토큰", default=None)).strip()
+    connect_script = workspace_root / "scripts" / "gaia_monitor_connect.py"
+    result = subprocess.run(
+        [sys.executable, str(connect_script), server, "--token", token],
+        cwd=str(workspace_root),
+        check=False,
+    )
+    if result.returncode != 0:
+        emit("모니터링 서버 연결에 실패했습니다. 이번 실행은 로컬 artifact만 저장합니다.")
+        return False
+    return config_path.exists()
+
+
+def _emit_monitoring_connect_command(emit: OutputFn) -> None:
+    emit("다른 터미널에서 아래 명령으로 먼저 연결하세요.")
+    emit("python scripts/gaia_monitor_connect.py http://<server-ip>:9091 --token <team-token>")
+    emit("연결 후 벤치마크를 다시 실행하거나, 결과 artifact를 수동 업로드할 수 있습니다.")
 
 
 def _select_scenario_id(
@@ -1030,6 +1437,10 @@ def _select_scenario_id(
     if selection == "이전으로":
         return None
     return selection.split(" | ", 1)[0].strip()
+
+
+def _scenario_count(suite_payload: Mapping[str, Any]) -> int:
+    return sum(1 for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping))
 
 
 def _select_benchmark_url(
