@@ -1,5 +1,5 @@
 {
-  "suite_id": "musinsa_public_v1",
+  "suite_id": "musinsa_public_v2",
   "site": {
     "name": "MUSINSA",
     "base_url": "https://www.musinsa.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "MUSINSA_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "MUSINSA_001_HOME_STYLE",
+      "name": "패션 홈 주요 영역 확인",
       "url": "https://www.musinsa.com/",
-      "goal": "MUSINSA 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "무신사 홈에서 검색 입력, 랭킹, 카테고리 또는 브랜드 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MUSINSA_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.musinsa.com/",
-      "goal": "MUSINSA에서 반팔 티셔츠 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "MUSINSA_002_PRODUCT_SEARCH",
+      "name": "패션 상품 검색 확인",
+      "url": "https://www.musinsa.com/search/goods?keyword=%EC%8A%A4%EB%8B%88%EC%BB%A4%EC%A6%88",
+      "goal": "스니커즈 검색 결과에서 상품명, 브랜드, 가격 또는 할인 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MUSINSA_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.musinsa.com/",
-      "goal": "MUSINSA에서 상품 상세의 브랜드와 이미지 정보 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "MUSINSA_003_RANKING_DETAIL",
+      "name": "랭킹 상품 정보 확인",
+      "url": "https://www.musinsa.com/ranking/best",
+      "goal": "무신사 랭킹 화면에서 순위, 브랜드명, 상품명 또는 가격 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MUSINSA_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.musinsa.com/",
-      "goal": "MUSINSA에서 랭킹, 브랜드, 카테고리 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "MUSINSA_004_BRAND_CATEGORY",
+      "name": "브랜드와 카테고리 확인",
+      "url": "https://www.musinsa.com/search/goods?keyword=%ED%9B%84%EB%93%9C%ED%8B%B0",
+      "goal": "후드티 검색 화면에서 브랜드, 카테고리, 가격대 같은 필터 영역이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MUSINSA_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.musinsa.com/",
-      "goal": "MUSINSA에서 상품 이미지 썸네일이나 색상 정보를 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "MUSINSA_005_SORT_CHANGE",
+      "name": "정렬 변경 확인",
+      "url": "https://www.musinsa.com/search/goods?keyword=%EA%B0%80%EB%B0%A9",
+      "goal": "가방 검색 결과에서 정렬 기준 드롭다운이나 랭킹 기준 영역을 열어 현재 선택값과 선택 가능한 기준이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

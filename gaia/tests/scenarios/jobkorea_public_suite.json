@@ -1,0 +1,82 @@
+{
+  "suite_id": "jobkorea_public_v2",
+  "site": {
+    "name": "잡코리아",
+    "base_url": "https://www.jobkorea.co.kr/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "JOBKOREA_001_HOME_JOBS",
+      "name": "채용 플랫폼 홈 확인",
+      "url": "https://www.jobkorea.co.kr/",
+      "goal": "잡코리아 홈에서 채용 검색 입력, 직무 메뉴, 기업 추천 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "JOBKOREA_002_JOB_SEARCH",
+      "name": "채용 공고 검색 확인",
+      "url": "https://www.jobkorea.co.kr/Search/?stext=%EB%B0%B1%EC%97%94%EB%93%9C",
+      "goal": "백엔드 채용 검색 결과에서 공고명, 회사명, 근무지 또는 경력 조건 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "JOBKOREA_003_JOB_DETAIL",
+      "name": "채용 공고 상세 확인",
+      "url": "https://www.jobkorea.co.kr/Search/?stext=%EB%8D%B0%EC%9D%B4%ED%84%B0%20%EB%B6%84%EC%84%9D",
+      "goal": "데이터 분석 채용 검색 결과에서 공개 공고 하나를 열어 업무 내용, 자격 조건, 근무지 또는 회사 정보를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "JOBKOREA_004_REGION_FILTER",
+      "name": "근무 지역 필터 확인",
+      "url": "https://www.jobkorea.co.kr/recruit/joblist?menucode=local&localorder=1",
+      "goal": "지역별 채용 목록에서 지역 필터, 직무 조건, 공고 목록 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "JOBKOREA_005_COMPANY_INFO",
+      "name": "기업 정보 탐색 확인",
+      "url": "https://www.jobkorea.co.kr/Search/?stext=%EB%84%A4%EC%9D%B4%EB%B2%84",
+      "goal": "네이버 관련 검색 결과에서 회사명, 채용 공고, 기업 정보 링크 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    }
+  ]
+}

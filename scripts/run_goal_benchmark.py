@@ -18,6 +18,11 @@ WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
+from scripts.benchmark_blocking import (
+    is_blocked_user_action,
+    normalize_blocked_user_action_row,
+    summary_reason_code_summary,
+)
 from gaia.harness.benchmark_policy import apply_benchmark_success_policy
 
 _MIN_BENCHMARK_TIMEOUT_SEC = 600
@@ -194,7 +199,7 @@ def _run_scenario_once(
             proc.kill()
         except Exception:
             pass
-        return {
+        return normalize_blocked_user_action_row({
             "scenario_id": scenario.get("id"),
             "goal": scenario.get("goal"),
             "status": "FAIL",
@@ -203,7 +208,7 @@ def _run_scenario_once(
             "duration_seconds": round(time.monotonic() - started, 2),
             "summary": {},
             "captured_log": str(exc.stdout or "") + str(exc.stderr or ""),
-        }
+        })
 
     stdout = "\n".join(stdout_lines).strip()
     stderr = ""
@@ -225,7 +230,7 @@ def _run_scenario_once(
         reason=reason,
         summary=summary,
     )
-    return {
+    return normalize_blocked_user_action_row({
         "scenario_id": scenario.get("id"),
         "goal": scenario.get("goal"),
         "status": status,
@@ -235,7 +240,7 @@ def _run_scenario_once(
         "summary": summary,
         "captured_log": payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stderr,
         "benchmark_policy": benchmark_policy,
-    }
+    })
 
 
 def _compute_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]:
@@ -243,12 +248,18 @@ def _compute_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]
         return {
             "runs_total": 0,
             "success_rate": 0.0,
+            "primary_success_rate": 0.0,
+            "blocked_runs_total": 0,
+            "primary_runs_total": 0,
             "avg_time_seconds": 0.0,
             "reproducibility": 0.0,
             "flaky_rate": 0.0,
         }
     success_rows = [r for r in rows if str(r.get("status") or "") == "SUCCESS"]
+    blocked_rows = [r for r in rows if _is_blocked_user_action(r)]
+    primary_rows = [r for r in rows if not _is_blocked_user_action(r)]
     success_rate = round(len(success_rows) / len(rows), 4)
+    primary_success_rate = round(len(success_rows) / len(primary_rows), 4) if primary_rows else None
     avg_time = round(statistics.mean(float(r.get("duration_seconds") or 0.0) for r in rows), 2)
 
     per_case: Dict[str, List[str]] = defaultdict(list)
@@ -270,6 +281,9 @@ def _compute_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]
     return {
         "runs_total": len(rows),
         "success_rate": success_rate,
+        "primary_success_rate": primary_success_rate,
+        "blocked_runs_total": len(blocked_rows),
+        "primary_runs_total": len(primary_rows),
         "avg_time_seconds": avg_time,
         "reproducibility": round((reproducible / observed), 4) if observed and repeats > 1 else None,
         "flaky_rate": round((flaky / observed), 4) if observed and repeats > 1 else None,
@@ -277,19 +291,11 @@ def _compute_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]
 
 
 def _summary_reason_code_summary(row: Dict[str, Any]) -> Dict[str, Any]:
-    summary = row.get("summary")
-    if not isinstance(summary, dict):
-        return {}
-    data = summary.get("reason_code_summary")
-    return data if isinstance(data, dict) else {}
+    return summary_reason_code_summary(row)
 
 
 def _is_blocked_user_action(row: Dict[str, Any]) -> bool:
-    summary = row.get("summary")
-    if isinstance(summary, dict) and str(summary.get("final_status") or "").strip().upper() == "BLOCKED_USER_ACTION":
-        return True
-    reason = str(row.get("reason") or "")
-    return "사용자 개입" in reason or "captcha" in reason.lower() or "login required" in reason.lower()
+    return is_blocked_user_action(row)
 
 
 def _is_progress_stop_failure(row: Dict[str, Any]) -> bool:
@@ -346,6 +352,7 @@ def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, 
     total = max(1, len(rows))
     success_count = sum(1 for row in rows if str(row.get("status") or "").strip().upper() == "SUCCESS")
     blocked_count = sum(1 for row in rows if _is_blocked_user_action(row))
+    primary_total = max(0, len(rows) - blocked_count)
     stop_failure_count = sum(1 for row in rows if _is_progress_stop_failure(row))
     recovery_rows = [row for row in rows if _has_recovery_event(row)]
     recovery_success = sum(
@@ -369,6 +376,7 @@ def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, 
 
     return {
         "scenario_success_rate": round(success_count / total, 4),
+        "primary_success_rate": round(success_count / primary_total, 4) if primary_total else None,
         "reproducibility_rate": round((reproducible / observed), 4) if observed else None,
         "progress_stop_failure_rate": round(stop_failure_count / total, 4),
         "self_recovery_rate": round((recovery_success / len(recovery_rows)), 4) if recovery_rows else None,
@@ -376,6 +384,7 @@ def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, 
         "counts": {
             "success": success_count,
             "blocked": blocked_count,
+            "primary_runs": primary_total,
             "progress_stop_failures": stop_failure_count,
             "recovery_runs": len(recovery_rows),
             "recovery_success": recovery_success,
@@ -385,6 +394,7 @@ def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, 
             "progress_stop_failure_rate": 0.10,
             "self_recovery_rate": 0.60,
             "scenario_success_rate": 0.70,
+            "primary_success_rate": 0.70,
             "intervention_rate": 0.20,
         },
     }
@@ -473,6 +483,7 @@ def main() -> int:
     metrics = _compute_metrics(rows, repeats)
     kpi_metrics = _compute_kpi_metrics(rows, repeats)
     status_counts = Counter(str(r.get("status") or "UNKNOWN") for r in rows)
+    blocked_rows = [r for r in rows if _is_blocked_user_action(r)]
     summary = {
         "schema_version": "gaia.benchmark.v1",
         "suite_id": suite.get("suite_id") or suite_path.stem,
@@ -492,7 +503,17 @@ def main() -> int:
                 "reason": r.get("reason"),
             }
             for r in rows
-            if str(r.get("status") or "") != "SUCCESS"
+            if str(r.get("status") or "") != "SUCCESS" and not _is_blocked_user_action(r)
+        ][:20],
+        "blocked": [
+            {
+                "scenario_id": r.get("scenario_id"),
+                "status": r.get("status"),
+                "reason": r.get("reason"),
+                "blocked_reason_code": r.get("blocked_reason_code")
+                or (r.get("summary") if isinstance(r.get("summary"), dict) else {}).get("blocked_reason_code"),
+            }
+            for r in blocked_rows
         ][:20],
     }
 
@@ -507,8 +528,10 @@ def main() -> int:
     md.write(f"- provider: {provider or '-'}\n")
     md.write(f"- model: {args.model}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")
+    md.write(f"- primary_success_rate: {metrics['primary_success_rate']}\n")
     md.write(f"- avg_time_seconds: {metrics['avg_time_seconds']}\n")
     md.write(f"- KPI scenario_success_rate: {kpi_metrics['scenario_success_rate']}\n")
+    md.write(f"- KPI primary_success_rate: {kpi_metrics['primary_success_rate']}\n")
     md.write(f"- KPI reproducibility_rate: {kpi_metrics['reproducibility_rate']}\n")
     md.write(f"- KPI progress_stop_failure_rate: {kpi_metrics['progress_stop_failure_rate']}\n")
     md.write(f"- KPI self_recovery_rate: {kpi_metrics['self_recovery_rate']}\n")
@@ -518,6 +541,12 @@ def main() -> int:
         md.write("## Failures\n\n")
         for fail in summary["failures"]:
             md.write(f"- {fail['scenario_id']}: {fail['status']} / {fail['reason']}\n")
+    if summary["blocked"]:
+        md.write("\n## Blocked User Action\n\n")
+        for item in summary["blocked"]:
+            md.write(
+                f"- {item['scenario_id']}: {item['status']} / {item.get('blocked_reason_code')} / {item['reason']}\n"
+            )
     (output_dir / "summary.md").write_text(md.getvalue(), encoding="utf-8")
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))

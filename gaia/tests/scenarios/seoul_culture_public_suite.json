@@ -1,0 +1,82 @@
+{
+  "suite_id": "seoul_culture_public_v2",
+  "site": {
+    "name": "서울문화포털",
+    "base_url": "https://culture.seoul.go.kr/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "SEOULCULTURE_001_HOME_CULTURE",
+      "name": "문화 정보 홈 확인",
+      "url": "https://culture.seoul.go.kr/",
+      "goal": "서울문화포털 홈에서 공연 전시 정보, 문화행사 검색, 시설 안내 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SEOULCULTURE_002_EVENT_SEARCH",
+      "name": "문화 행사 검색 확인",
+      "url": "https://culture.seoul.go.kr/culture/culture/cultureEvent/list.do?searchKeyword=%EC%A0%84%EC%8B%9C",
+      "goal": "전시 검색 결과에서 행사명, 장소, 기간 또는 분류 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SEOULCULTURE_003_EVENT_DETAIL",
+      "name": "행사 상세 정보 확인",
+      "url": "https://culture.seoul.go.kr/culture/culture/cultureEvent/list.do?searchKeyword=%EA%B3%B5%EC%97%B0",
+      "goal": "공연 검색 결과에서 공개 행사 하나를 열어 장소, 기간, 관람 대상 또는 소개 정보를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SEOULCULTURE_004_FACILITY_LIST",
+      "name": "문화 시설 목록 확인",
+      "url": "https://culture.seoul.go.kr/night/sub/nightFac/list.do",
+      "goal": "서울문화포털 야간 운영시설 목록에서 시설명, 지역 주소, 총 건수 또는 페이지 이동 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SEOULCULTURE_005_CATEGORY_FILTER",
+      "name": "행사 조건 변경 확인",
+      "url": "https://culture.seoul.go.kr/culture/culture/cultureEvent/list.do",
+      "goal": "문화행사 목록에서 지역, 장르, 기간 같은 조건을 선택해 행사 목록 표시가 바뀌는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    }
+  ]
+}

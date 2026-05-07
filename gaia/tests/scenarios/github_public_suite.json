@@ -1,5 +1,5 @@
 {
-  "suite_id": "github_public_v1",
+  "suite_id": "github_public_v2",
   "site": {
     "name": "GitHub",
     "base_url": "https://github.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "GITHUB_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "GITHUB_001_HOME_NAV",
+      "name": "개발 플랫폼 주요 영역 확인",
       "url": "https://github.com/",
-      "goal": "GitHub 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "GitHub 공개 홈에서 저장소 탐색으로 이어지는 검색 입력, 제품 내비게이션, 공개 소개 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "GITHUB_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://github.com/",
-      "goal": "GitHub에서 python cpython 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "GITHUB_002_REPO_SEARCH",
+      "name": "저장소 검색 결과 확인",
+      "url": "https://github.com/search?q=python+cpython&type=repositories",
+      "goal": "GitHub 저장소 검색 결과에서 python cpython 관련 공개 저장소 목록과 정렬 또는 필터 영역을 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "GITHUB_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://github.com/",
-      "goal": "GitHub에서 python/cpython 저장소 README로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "GITHUB_003_REPO_OVERVIEW",
+      "name": "프로젝트 상세 확인",
+      "url": "https://github.com/python/cpython",
+      "goal": "python/cpython 저장소에서 파일 목록, README, 별표 수나 브랜치 표시처럼 프로젝트 현황 정보를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "GITHUB_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://github.com/",
-      "goal": "GitHub에서 Explore 또는 Trending 계열 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "GITHUB_004_ISSUE_TRIAGE",
+      "name": "이슈 목록 확인",
+      "url": "https://github.com/python/cpython/issues",
+      "goal": "python/cpython 이슈 목록에서 상태 필터, 이슈 제목 목록, 라벨 영역 중 확인 가능한 항목을 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "GITHUB_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://github.com/",
-      "goal": "GitHub에서 저장소 화면의 Code, Issues, Pull requests 같은 공개 탭을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "GITHUB_005_RELEASE_REVIEW",
+      "name": "릴리스 정보 확인",
+      "url": "https://github.com/python/cpython/releases",
+      "goal": "python/cpython 릴리스 화면에서 최신 릴리스 제목, 태그, 변경 요약 중 확인 가능한 정보를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

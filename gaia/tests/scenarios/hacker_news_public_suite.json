@@ -1,5 +1,5 @@
 {
-  "suite_id": "hacker_news_public_v1",
+  "suite_id": "hacker_news_public_v2",
   "site": {
     "name": "Hacker News",
     "base_url": "https://news.ycombinator.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "HN_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "HN_001_TOP_STORIES",
+      "name": "기술 뉴스 목록 확인",
       "url": "https://news.ycombinator.com/",
-      "goal": "Hacker News 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "Hacker News 첫 화면에서 이야기 제목 목록, 점수, 사용자 링크 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "HN_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://news.ycombinator.com/",
-      "goal": "Hacker News에서 new 또는 past 링크 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "HN_002_NEWEST_LIST",
+      "name": "최신 목록 확인",
+      "url": "https://news.ycombinator.com/newest",
+      "goal": "newest 목록에서 시간순 이야기 목록과 more 링크를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "HN_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://news.ycombinator.com/",
-      "goal": "Hacker News에서 첫 화면의 공개 글 상세 또는 comments 페이지로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "HN_003_ITEM_DISCUSSION",
+      "name": "이야기 상세 확인",
+      "url": "https://news.ycombinator.com/item?id=8863",
+      "goal": "선택한 이야기 상세 화면에서 제목, 점수, 토론 목록 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "HN_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://news.ycombinator.com/",
-      "goal": "Hacker News에서 new, past, ask, show 같은 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "HN_004_SHOW_LIST",
+      "name": "제품 소개 목록 확인",
+      "url": "https://news.ycombinator.com/show",
+      "goal": "Show HN 목록에서 제품 소개성 이야기 제목과 점수 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "HN_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://news.ycombinator.com/",
-      "goal": "Hacker News에서 More 링크를 통한 다음 목록 페이지를 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "HN_005_ASK_LIST",
+      "name": "질문 목록 확인",
+      "url": "https://news.ycombinator.com/ask",
+      "goal": "Ask HN 목록에서 질문형 이야기 제목과 more 링크가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

@@ -10,6 +10,45 @@ NormalizeTextFn = Callable[[Optional[str]], str]
 ContainsLoginHintFn = Callable[[Optional[str]], bool]
 
 
+def _compact_hint_text(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9가-힣×]+", "", text)
+
+
+_PUBLIC_NOTICE_DISMISS_HINTS = (
+    "오늘 하루 보지",
+    "하루 동안 보지",
+    "다시 보지",
+    "그만 보기",
+    "더 이상 보지",
+    "do not show",
+    "don't show",
+    "dont show",
+    "never show",
+    "not today",
+)
+_PUBLIC_NOTICE_DISMISS_COMPACT_HINTS = (
+    "오늘하루보지",
+    "하루동안보지",
+    "다시보지",
+    "그만보기",
+    "더이상보지",
+    "donotshow",
+    "dontshow",
+    "nevershow",
+    "nottoday",
+)
+
+
+def contains_public_notice_dismiss_hint(value: Optional[str], normalize_text: NormalizeTextFn) -> bool:
+    text = normalize_text(value)
+    if not text:
+        return False
+    compact_text = _compact_hint_text(text)
+    return any(h in text for h in _PUBLIC_NOTICE_DISMISS_HINTS) or any(
+        h in compact_text for h in _PUBLIC_NOTICE_DISMISS_COMPACT_HINTS
+    )
+
+
 def contains_login_hint(value: Optional[str], normalize_text: NormalizeTextFn) -> bool:
     text = normalize_text(value)
     if not text:
@@ -37,6 +76,8 @@ def contains_close_hint(value: Optional[str], normalize_text: NormalizeTextFn) -
         return False
     hints = ("닫", "close", "취소", "cancel", "dismiss")
     if any(h in text for h in hints):
+        return True
+    if contains_public_notice_dismiss_hint(value, normalize_text):
         return True
     tokens = [tok for tok in re.split(r"[^a-zA-Z0-9가-힣×]+", text) if tok]
     return any(tok in {"x", "×"} for tok in tokens)

@@ -1,5 +1,5 @@
 {
-  "suite_id": "kma_weather_public_v1",
+  "suite_id": "kma_weather_public_v2",
   "site": {
     "name": "기상청 날씨누리",
     "base_url": "https://www.weather.go.kr/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "KMA_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "KMA_001_HOME_WEATHER",
+      "name": "공공 날씨 홈 확인",
       "url": "https://www.weather.go.kr/",
-      "goal": "기상청 날씨누리 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "기상청 날씨누리 홈에서 현재 날씨, 예보 메뉴, 특보 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KMA_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.weather.go.kr/",
-      "goal": "기상청 날씨누리에서 서울 날씨 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "KMA_002_SHORT_FORECAST",
+      "name": "단기 예보 확인",
+      "url": "https://www.weather.go.kr/w/weather/forecast/short-term.do",
+      "goal": "단기 예보 화면에서 지역, 시간대, 기온 또는 강수 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KMA_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.weather.go.kr/",
-      "goal": "기상청 날씨누리에서 서울 지역 예보 상세 정보로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "KMA_003_WARNING_STATUS",
+      "name": "기상 특보 확인",
+      "url": "https://www.weather.go.kr/w/weather/warning/status.do",
+      "goal": "기상 특보 화면에서 특보 종류, 지역, 발표 시각 또는 지도 표시 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KMA_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.weather.go.kr/",
-      "goal": "기상청 날씨누리에서 전국, 특보, 영상 같은 날씨 정보 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "KMA_004_RADAR_IMAGE",
+      "name": "영상 관측 정보 확인",
+      "url": "https://www.weather.go.kr/w/image/radar.do",
+      "goal": "레이더 영상 화면에서 관측 이미지, 시간 선택, 재생 컨트롤 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KMA_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.weather.go.kr/",
-      "goal": "기상청 날씨누리에서 시간대, 지역, 지도 표시를 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "KMA_005_REGION_CHANGE",
+      "name": "지역 선택 확인",
+      "url": "https://www.weather.go.kr/w/weather/forecast/short-term.do",
+      "goal": "단기 예보 화면에서 지역 선택 요소를 열어 지역 목록이나 선택값이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

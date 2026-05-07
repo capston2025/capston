@@ -1,5 +1,5 @@
 {
-  "suite_id": "visit_korea_public_v1",
+  "suite_id": "visit_korea_public_v2",
   "site": {
     "name": "Visit Korea",
     "base_url": "https://korean.visitkorea.or.kr/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "VISITKOREA_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "VISITKOREA_001_HOME_TRAVEL",
+      "name": "관광 정보 홈 확인",
       "url": "https://korean.visitkorea.or.kr/",
-      "goal": "Visit Korea 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "대한민국 구석구석 홈에서 여행지 검색, 추천 여행, 지역 메뉴 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "VISITKOREA_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://korean.visitkorea.or.kr/",
-      "goal": "Visit Korea에서 경복궁 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "VISITKOREA_002_PLACE_SEARCH",
+      "name": "관광지 검색 결과 확인",
+      "url": "https://korean.visitkorea.or.kr/search/search_list.do?keyword=%EA%B2%BD%EB%B3%B5%EA%B6%81",
+      "goal": "경복궁 검색 결과에서 관광지명, 지역, 이미지 또는 요약 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "VISITKOREA_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://korean.visitkorea.or.kr/",
-      "goal": "Visit Korea에서 관광지 상세 정보와 위치 정보 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "VISITKOREA_003_PLACE_DETAIL",
+      "name": "관광지 상세 정보 확인",
+      "url": "https://korean.visitkorea.or.kr/search/search_list.do?keyword=%EB%B6%80%EC%82%B0%20%ED%95%B4%EC%9A%B4%EB%8C%80",
+      "goal": "부산 해운대 검색 결과에서 관광지 하나를 열어 주소, 소개, 이용 시간 또는 주변 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "VISITKOREA_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://korean.visitkorea.or.kr/",
-      "goal": "Visit Korea에서 지역, 여행코스, 축제 같은 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "VISITKOREA_004_REGION_BROWSE",
+      "name": "지역별 여행 정보 확인",
+      "url": "https://korean.visitkorea.or.kr/list/travelinfo.do",
+      "goal": "지역별 여행 정보 목록에서 지역 필터, 관광지 카드, 테마 분류 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "VISITKOREA_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://korean.visitkorea.or.kr/",
-      "goal": "Visit Korea에서 지역 필터나 지도/목록을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "VISITKOREA_005_FILTER_OR_THEME",
+      "name": "테마 조건 변경 확인",
+      "url": "https://korean.visitkorea.or.kr/search/search_list.do?keyword=%EC%A0%9C%EC%A3%BC",
+      "goal": "제주 여행 검색 결과에서 지역, 테마, 정렬 같은 조건을 선택해 목록 표시가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

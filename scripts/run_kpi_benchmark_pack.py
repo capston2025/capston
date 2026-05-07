@@ -18,6 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = ROOT / "artifacts" / "benchmarks"
 RUN_SINGLE = ROOT / "scripts" / "run_goal_benchmark.py"
 MIN_BENCHMARK_TIMEOUT_SEC = 600
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.benchmark_blocking import (
+    is_blocked_user_action,
+    normalize_blocked_user_action_row,
+    summary_reason_code_summary,
+)
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -80,19 +88,11 @@ def _latest_artifact_dir(after_ts: float) -> Path:
 
 
 def _summary_reason_code_summary(row: Dict[str, Any]) -> Dict[str, Any]:
-    summary = row.get("summary")
-    if not isinstance(summary, dict):
-        return {}
-    data = summary.get("reason_code_summary")
-    return data if isinstance(data, dict) else {}
+    return summary_reason_code_summary(row)
 
 
 def _is_blocked_user_action(row: Dict[str, Any]) -> bool:
-    summary = row.get("summary")
-    if isinstance(summary, dict) and str(summary.get("final_status") or "").strip().upper() == "BLOCKED_USER_ACTION":
-        return True
-    reason = str(row.get("reason") or "")
-    return "사용자 개입" in reason or "captcha" in reason.lower() or "login required" in reason.lower()
+    return is_blocked_user_action(row)
 
 
 def _is_progress_stop_failure(row: Dict[str, Any]) -> bool:
@@ -148,6 +148,7 @@ def _compute_pack_kpis(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, An
     total = max(1, len(rows))
     success_count = sum(1 for row in rows if str(row.get("status") or "").strip().upper() == "SUCCESS")
     blocked_count = sum(1 for row in rows if _is_blocked_user_action(row))
+    primary_total = max(0, len(rows) - blocked_count)
     stop_failure_count = sum(1 for row in rows if _is_progress_stop_failure(row))
     recovery_rows = [row for row in rows if _has_recovery_event(row)]
     recovery_success = sum(
@@ -176,6 +177,7 @@ def _compute_pack_kpis(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, An
     avg_time = round(statistics.mean(float(row.get("duration_seconds") or 0.0) for row in rows), 2)
     return {
         "scenario_success_rate": round(success_count / total, 4),
+        "primary_success_rate": round(success_count / primary_total, 4) if primary_total else None,
         "reproducibility_rate": round((reproducible / observed), 4) if observed else None,
         "progress_stop_failure_rate": round(stop_failure_count / total, 4),
         "self_recovery_rate": round((recovery_success / len(recovery_rows)), 4) if recovery_rows else None,
@@ -186,6 +188,7 @@ def _compute_pack_kpis(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, An
           "runs_total": len(rows),
           "success": success_count,
           "blocked": blocked_count,
+          "primary_runs": primary_total,
           "progress_stop_failures": stop_failure_count,
           "recovery_runs": len(recovery_rows),
           "recovery_success": recovery_success
@@ -225,8 +228,11 @@ def _run_suite(
     if not isinstance(rows, list):
         rows = []
     suite_id = str(summary.get("suite_id") or suite_path.stem)
+    normalized_rows: List[Dict[str, Any]] = []
     for row in rows:
         row["suite_id"] = suite_id
+        normalized_rows.append(normalize_blocked_user_action_row(row))
+    rows = normalized_rows
     return {
         "suite_id": suite_id,
         "suite_path": str(suite_path),
@@ -323,6 +329,7 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines.append("")
     overall = report["overall_kpis"]
     lines.append(f"- scenario_success_rate: {overall['scenario_success_rate']}")
+    lines.append(f"- primary_success_rate: {overall['primary_success_rate']}")
     lines.append(f"- reproducibility_rate: {overall['reproducibility_rate']}")
     lines.append(f"- progress_stop_failure_rate: {overall['progress_stop_failure_rate']}")
     lines.append(f"- self_recovery_rate: {overall['self_recovery_rate']}")
@@ -339,6 +346,7 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
         lines.append(f"- suite_path: {suite['suite_path']}")
         lines.append(f"- artifact_dir: {suite['artifact_dir']}")
         lines.append(f"- scenario_success_rate: {kpis.get('scenario_success_rate')}")
+        lines.append(f"- primary_success_rate: {kpis.get('primary_success_rate')}")
         lines.append(f"- reproducibility_rate: {kpis.get('reproducibility_rate')}")
         lines.append(f"- progress_stop_failure_rate: {kpis.get('progress_stop_failure_rate')}")
         lines.append(f"- self_recovery_rate: {kpis.get('self_recovery_rate')}")

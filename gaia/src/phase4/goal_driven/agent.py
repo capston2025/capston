@@ -2069,6 +2069,7 @@ class GoalDrivenAgent:
         self,
         url: Optional[str] = None,
         scope_container_ref_id: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> List[DOMElement]:
         trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
         started = time.perf_counter()
@@ -2077,9 +2078,15 @@ class GoalDrivenAgent:
                 "🧪 collect trace(start): "
                 f"phase={str(getattr(self, '_goal_policy_phase', '') or '')} "
                 f"intent={str(getattr(self, '_goal_phase_intent', '') or '')} "
-                f"scope={str(scope_container_ref_id or '') or '<default>'}"
+                f"scope={str(scope_container_ref_id or '') or '<default>'} "
+                f"force_refresh={bool(force_refresh)}"
             )
-        result = analyze_dom_impl(self, url=url, scope_container_ref_id=scope_container_ref_id)
+        result = analyze_dom_impl(
+            self,
+            url=url,
+            scope_container_ref_id=scope_container_ref_id,
+            force_refresh=force_refresh,
+        )
         if trace_enabled:
             self._log(
                 "🧪 collect trace(end): "
@@ -2089,6 +2096,18 @@ class GoalDrivenAgent:
                 f"url={str(getattr(self, '_current_url', '') or '')}"
             )
         return result
+
+    def _force_next_dom_resnapshot(self, *, reason: str = "") -> None:
+        try:
+            self._dom_cache_generation = int(getattr(self, "_dom_cache_generation", 0) or 0) + 1
+        except Exception:
+            self._dom_cache_generation = 1
+        self._dom_analyze_cache = {}
+        self._prev_raw_snapshot_text = ""
+        recorder = getattr(self, "_record_reason_code", None)
+        if callable(recorder):
+            suffix = str(reason or "manual").strip().lower().replace(" ", "_")
+            recorder(f"dom_force_resnapshot_{suffix}")
 
     def _capture_screenshot(self) -> Optional[str]:
         trace_enabled = str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw"
@@ -2143,6 +2162,52 @@ class GoalDrivenAgent:
             and has_visibility_signal
         )
 
+    @staticmethod
+    def _looks_like_stale_dom_wait_needing_resnapshot(reasoning: str) -> bool:
+        text = str(reasoning or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        has_stale_dom_signal = (
+            "DOM 변경 없음" in text
+            or ("dom" in lowered and "변경 없음" in text)
+            or ("dom" in lowered and "동일" in text)
+        )
+        has_dom_refresh_request = (
+            "dom" in lowered
+            and (
+                "갱신" in text
+                or "재수집" in text
+                or "다시 수집" in text
+                or "다시 확인" in text
+                or "refresh" in lowered
+                or "resnapshot" in lowered
+            )
+        )
+        has_missing_target_signal = (
+            "ref" in lowered
+            or "옵션" in text
+            or "드롭다운" in text
+            or "목록" in text
+            or "option" in lowered
+            or "dropdown" in lowered
+        )
+        has_wait_or_missing_signal = (
+            "기다" in text
+            or "다시 확인" in text
+            or "확인" in text
+            or "확인할 수 없" in text
+            or "보이지" in text
+            or "노출되지" in text
+            or "없" in text
+            or "missing" in lowered
+        )
+        return bool(
+            (has_stale_dom_signal or has_dom_refresh_request)
+            and has_missing_target_signal
+            and has_wait_or_missing_signal
+        )
+
     def _retry_decision_after_visual_dom_ref_mismatch(
         self,
         *,
@@ -2156,9 +2221,11 @@ class GoalDrivenAgent:
             return decision, dom_elements, screenshot, False
         if decision.is_goal_achieved:
             return decision, dom_elements, screenshot, False
-        if not screenshot:
+        visual_dom_mismatch = GoalDrivenAgent._looks_like_visual_dom_ref_mismatch(decision.reasoning)
+        stale_dom_wait = GoalDrivenAgent._looks_like_stale_dom_wait_needing_resnapshot(decision.reasoning)
+        if not visual_dom_mismatch and not stale_dom_wait:
             return decision, dom_elements, screenshot, False
-        if not self._looks_like_visual_dom_ref_mismatch(decision.reasoning):
+        if visual_dom_mismatch and not screenshot:
             return decision, dom_elements, screenshot, False
 
         delay_ms_raw = str(os.getenv("GAIA_VISUAL_DOM_MISMATCH_DELAY_MS", "350") or "350").strip()
@@ -2168,18 +2235,25 @@ class GoalDrivenAgent:
             delay_ms = 350
         delay_ms = max(300, min(delay_ms, 500))
 
-        self._log(
-            f"🕒 스크린샷/DOM 불일치 감지: {delay_ms}ms 대기 후 DOM을 한 번 더 수집합니다."
-        )
+        refresh_reason = "stale_dom_wait" if stale_dom_wait else "visual_dom_ref_mismatch"
+        if stale_dom_wait:
+            self._log(
+                f"🕒 stale DOM wait 감지: {delay_ms}ms 대기 후 DOM을 강제로 다시 수집합니다."
+            )
+        else:
+            self._log(
+                f"🕒 스크린샷/DOM 불일치 감지: {delay_ms}ms 대기 후 DOM을 강제로 다시 수집합니다."
+            )
         time.sleep(delay_ms / 1000.0)
 
-        refreshed_dom = self._analyze_dom()
+        GoalDrivenAgent._force_next_dom_resnapshot(self, reason=refresh_reason)
+        refreshed_dom = self._analyze_dom(force_refresh=True)
         if not refreshed_dom:
             return decision, dom_elements, screenshot, False
 
         refreshed_screenshot = self._capture_screenshot()
         self._action_feedback.append(
-            f"스크린샷에는 목표 CTA가 보이지만 DOM ref가 없어서 {delay_ms}ms 대기 후 DOM을 재수집했습니다."
+            f"DOM ref가 최신 화면과 맞지 않아 {delay_ms}ms 대기 후 DOM을 강제로 재수집했습니다."
         )
         if len(self._action_feedback) > 10:
             self._action_feedback = self._action_feedback[-10:]

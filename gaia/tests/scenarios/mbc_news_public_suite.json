@@ -1,0 +1,82 @@
+{
+  "suite_id": "mbc_news_public_v2",
+  "site": {
+    "name": "MBC News",
+    "base_url": "https://imnews.imbc.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "MBCNEWS_001_HOME_LANDMARK",
+      "name": "뉴스 홈 주요 영역 확인",
+      "url": "https://imnews.imbc.com/pc_main.html",
+      "goal": "MBC 뉴스 홈에서 주요 뉴스, 분야별 메뉴, 영상 뉴스 또는 최신 기사 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MBCNEWS_002_POLITICS_LIST",
+      "name": "정치 뉴스 목록 확인",
+      "url": "https://imnews.imbc.com/news/2026/politics/",
+      "goal": "MBC 정치 뉴스 목록에서 기사 제목, 썸네일, 입력 시간 또는 분야 표시 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MBCNEWS_003_ARTICLE_DETAIL",
+      "name": "뉴스 기사 상세 확인",
+      "url": "https://imnews.imbc.com/news/2026/sports/article/6819804_36946.html",
+      "goal": "MBC 뉴스 기사 상세에서 기사 제목, 본문, 입력 시간 또는 공유/관련 기사 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MBCNEWS_004_ECONOMY_LIST",
+      "name": "경제 뉴스 목록 확인",
+      "url": "https://imnews.imbc.com/news/2026/econo/",
+      "goal": "MBC 경제 뉴스 목록에서 기사 제목, 목록 항목, 분야 메뉴 또는 시간 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MBCNEWS_005_SPORTS_LIST",
+      "name": "스포츠 뉴스 목록 확인",
+      "url": "https://imnews.imbc.com/news/2026/sports/",
+      "goal": "MBC 스포츠 뉴스 목록에서 경기 기사 제목, 썸네일, 목록 항목 또는 분야 메뉴 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    }
+  ]
+}

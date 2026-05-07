@@ -69,11 +69,23 @@ def test_benchmark_presets_include_shared_public_sites_and_exclude_mdn() -> None
 
     assert "moneytoring" in keys
     assert "naver_search" in keys
-    assert "coupang" in keys
+    assert "kbs_news" in keys
+    assert "mbc_news" in keys
+    assert "sbs_news" in keys
+    assert "ytn_news" in keys
     assert "government24" in keys
     assert "hacker_news" in keys
     assert "pypi" in keys
-    assert "npm" in keys
+    assert "jobkorea" in keys
+    assert "seoul_culture" in keys
+    assert "national_museum" in keys
+    assert "naver_shopping" not in keys
+    assert "coupang" not in keys
+    assert "gmarket" not in keys
+    assert "oliveyoung" not in keys
+    assert "cgv" not in keys
+    assert "npm" not in keys
+    assert "spell_checker" not in keys
     assert "mdn" not in keys
 
 

@@ -1,0 +1,82 @@
+{
+  "suite_id": "sbs_news_public_v2",
+  "site": {
+    "name": "SBS News",
+    "base_url": "https://news.sbs.co.kr/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "SBSNEWS_001_HOME_LANDMARK",
+      "name": "뉴스 홈 주요 영역 확인",
+      "url": "https://news.sbs.co.kr/news/newsMain.do",
+      "goal": "SBS 뉴스 홈에서 주요 뉴스, 분야별 메뉴, 최신 기사 또는 영상 뉴스 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SBSNEWS_002_POLITICS_LIST",
+      "name": "정치 뉴스 목록 확인",
+      "url": "https://news.sbs.co.kr/news/newsSection.do?sectionType=01",
+      "goal": "SBS 정치 뉴스 목록에서 기사 제목, 썸네일, 시간 정보 또는 분야 메뉴 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SBSNEWS_003_ARTICLE_DETAIL",
+      "name": "뉴스 기사 상세 확인",
+      "url": "https://news.sbs.co.kr/news/endPage.do?news_id=N1008550785",
+      "goal": "SBS 뉴스 기사 상세에서 기사 제목, 본문, 입력 시간 또는 기자/출처 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SBSNEWS_004_ECONOMY_LIST",
+      "name": "경제 뉴스 목록 확인",
+      "url": "https://news.sbs.co.kr/news/newsSection.do?sectionType=02",
+      "goal": "SBS 경제 뉴스 목록에서 기사 제목, 목록 항목, 분야 탭 또는 시간 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "SBSNEWS_005_SOCIETY_LIST",
+      "name": "사회 뉴스 목록 확인",
+      "url": "https://news.sbs.co.kr/news/newsSection.do?sectionType=03",
+      "goal": "SBS 사회 뉴스 목록에서 기사 제목, 썸네일, 목록 항목 또는 분야 메뉴 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    }
+  ]
+}

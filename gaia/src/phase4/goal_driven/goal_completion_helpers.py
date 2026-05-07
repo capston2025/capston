@@ -551,6 +551,174 @@ def evaluate_explicit_reasoning_proof_completion(
         "기다려",
         "대기",
     )
+    if visible_blob:
+        goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+        route_goal_tokens = (
+            "길찾기",
+            "경로",
+            "출발",
+            "출발지",
+            "출발역",
+            "도착",
+            "도착지",
+            "도착역",
+            "route",
+            "directions",
+        )
+        route_completion_tokens = (
+            "보입니다",
+            "보인다",
+            "보이고",
+            "보이는",
+            "확인",
+            "표시",
+            "이미",
+            "현재 화면",
+            "현재",
+            "visible",
+            "present",
+            "already",
+        )
+        if (
+            any(token in goal_blob for token in route_goal_tokens)
+            and any(token in reasoning_blob for token in route_completion_tokens)
+            and not any(token in reasoning_blob for token in loading_reason_tokens)
+        ):
+            route_stop_tokens = {
+                "현재",
+                "화면",
+                "카카오맵",
+                "지도",
+                "패널",
+                "목표",
+                "요구한",
+                "조건",
+                "확인",
+                "충족",
+                "충족합니다",
+                "표시",
+                "표시되고",
+                "보입니다",
+                "보인다",
+                "보이고",
+                "이미",
+                "visible",
+                "present",
+                "already",
+            }
+            route_specific_tokens: List[str] = []
+            seen_route_tokens: set[str] = set()
+            for token in re.findall(r"[0-9A-Za-z가-힣+/#_.-]{2,}", reasoning_raw):
+                normalized = agent._normalize_text(token)
+                if not normalized or normalized in route_stop_tokens:
+                    continue
+                if normalized in seen_route_tokens:
+                    continue
+                seen_route_tokens.add(normalized)
+                if normalized in visible_blob:
+                    route_specific_tokens.append(normalized)
+            if len(route_specific_tokens) >= 2:
+                label = ", ".join(route_specific_tokens[:3])
+                return f"모델 판단과 현재 화면 증거상 지도 경로 정보({label})가 직접 보여 목표를 완료로 판정했습니다."
+
+        detail_goal_tokens = (
+            "상세",
+            "정보",
+            "제목",
+            "채널",
+            "조회",
+            "설명",
+            "본문",
+            "요약",
+            "가격",
+            "저자",
+            "출판사",
+            "회사",
+            "공고",
+            "근무지",
+            "주소",
+            "기간",
+            "등급",
+            "순위",
+            "랭킹",
+            "차트",
+            "지도",
+        )
+        detail_completion_tokens = (
+            "보입니다",
+            "보인다",
+            "보이고",
+            "보이는",
+            "확인",
+            "표시",
+            "이미",
+            "현재 화면",
+            "상단",
+            "진입",
+            "열어",
+            "visible",
+            "present",
+            "already",
+        )
+        detail_stop_tokens = {
+            "현재",
+            "화면",
+            "검색",
+            "결과",
+            "공개",
+            "영상",
+            "동영상",
+            "제목",
+            "채널",
+            "채널명",
+            "조회",
+            "조회수",
+            "정보",
+            "설명",
+            "일부",
+            "목표",
+            "확인",
+            "추가",
+            "조작",
+            "없이",
+            "완료",
+            "판단",
+            "상태",
+            "보입니다",
+            "보인다",
+            "보이고",
+            "표시",
+            "진입",
+            "열어",
+            "watch",
+            "page",
+            "youtube",
+            "current",
+            "screen",
+            "visible",
+            "present",
+            "already",
+        }
+        if (
+            any(token in goal_blob for token in detail_goal_tokens)
+            and any(token in reasoning_blob for token in detail_completion_tokens)
+            and not any(token in reasoning_blob for token in loading_reason_tokens)
+        ):
+            reasoning_specific_tokens: List[str] = []
+            seen_reasoning_tokens: set[str] = set()
+            for token in re.findall(r"[0-9A-Za-z가-힣+/#_.-]{3,}", reasoning_raw):
+                normalized = agent._normalize_text(token)
+                if not normalized or normalized in detail_stop_tokens:
+                    continue
+                if normalized in seen_reasoning_tokens:
+                    continue
+                seen_reasoning_tokens.add(normalized)
+                if normalized in visible_blob:
+                    reasoning_specific_tokens.append(normalized)
+            if reasoning_specific_tokens:
+                label = ", ".join(reasoning_specific_tokens[:3])
+                return f"모델 판단과 현재 화면 증거상 상세 정보({label})가 직접 보여 목표를 완료로 판정했습니다."
+
     quoted_reasoning_matches = [
         (phrase, agent._normalize_text(phrase))
         for phrase in re.findall(r"[\"']([^\"']{4,})[\"']", reasoning_raw)

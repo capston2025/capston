@@ -1,5 +1,5 @@
 {
-  "suite_id": "yes24_public_v1",
+  "suite_id": "yes24_public_v2",
   "site": {
     "name": "YES24",
     "base_url": "https://www.yes24.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "YES24_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "YES24_001_HOME_BOOKS",
+      "name": "도서몰 홈 주요 영역 확인",
       "url": "https://www.yes24.com/",
-      "goal": "YES24 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "YES24 홈에서 검색 입력, 베스트셀러, 분야별 도서 메뉴 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YES24_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.yes24.com/",
-      "goal": "YES24에서 파이썬 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "YES24_002_BOOK_SEARCH",
+      "name": "도서 검색 결과 확인",
+      "url": "https://www.yes24.com/Product/Search?query=%EC%9D%B8%EA%B3%B5%EC%A7%80%EB%8A%A5",
+      "goal": "인공지능 도서 검색 결과에서 책 제목, 저자, 가격 또는 출판사 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YES24_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.yes24.com/",
-      "goal": "YES24에서 도서 상세의 책 소개와 목차 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "YES24_003_BESTSELLER",
+      "name": "베스트셀러 목록 확인",
+      "url": "https://www.yes24.com/Product/Category/BestSeller",
+      "goal": "YES24 베스트셀러 화면에서 순위, 책 제목, 저자 또는 가격 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YES24_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.yes24.com/",
-      "goal": "YES24에서 베스트셀러, 국내도서, 외국도서 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "YES24_004_BOOK_DETAIL",
+      "name": "도서 상세 정보 확인",
+      "url": "https://www.yes24.com/Product/Search?query=%ED%8C%8C%EC%9D%B4%EC%8D%AC",
+      "goal": "파이썬 도서 검색 결과에서 공개 도서 하나를 열어 책 소개, 목차, 저자 또는 가격 정보를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YES24_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.yes24.com/",
-      "goal": "YES24에서 도서 상세 탭이나 리뷰 요약 영역을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "YES24_005_CATEGORY_FILTER",
+      "name": "분야와 정렬 확인",
+      "url": "https://www.yes24.com/Product/Search?query=%EA%B2%BD%EC%A0%9C",
+      "goal": "경제 도서 검색 결과에서 분야 필터나 정렬 옵션을 선택해 도서 목록 표시가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

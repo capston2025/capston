@@ -2,7 +2,36 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from .auth_hints import contains_public_notice_dismiss_hint
 from .models import DOMElement
+
+
+_SECURITY_GATE_HINTS = (
+    "access denied",
+    "access blocked",
+    "forbidden",
+    "captcha",
+    "recaptcha",
+    "비정상 접근",
+    "비정상적인 접근",
+    "접근이 제한",
+    "접속이 제한",
+    "접속 일시 제한",
+    "보안 확인",
+    "보안문자",
+    "자동화된 접근",
+    "서비스 이용이 제한",
+)
+
+
+def _contains_popup_dismiss_hint(normalized_text: str) -> bool:
+    return contains_public_notice_dismiss_hint(normalized_text, lambda value: value or "")
+
+
+def _contains_security_gate_hint(normalized_text: str) -> bool:
+    if not normalized_text:
+        return False
+    return any(h in normalized_text for h in _SECURITY_GATE_HINTS)
 
 
 def pick_login_modal_close_element(
@@ -54,7 +83,7 @@ def pick_modal_unblock_element(
     selector_map: Dict[int, str],
     modal_regions_hint: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[int]:
-    modal_regions: List[Dict[str, float]] = []
+    modal_regions: List[Dict[str, Any]] = []
     if isinstance(modal_regions_hint, list):
         for region in modal_regions_hint[:8]:
             if not isinstance(region, dict):
@@ -68,6 +97,12 @@ def pick_modal_unblock_element(
                 continue
             if rw < 80.0 or rh < 80.0:
                 continue
+            region_blob = cls._normalize_text(
+                " ".join(
+                    str(region.get(key) or "")
+                    for key in ("text", "name", "aria_label", "role", "class_name")
+                )
+            )
             modal_regions.append(
                 {
                     "x": rx,
@@ -76,6 +111,7 @@ def pick_modal_unblock_element(
                     "height": rh,
                     "right": rx + rw,
                     "bottom": ry + rh,
+                    "security_gate": _contains_security_gate_hint(region_blob),
                 }
             )
     for container in dom_elements:
@@ -93,6 +129,21 @@ def pick_modal_unblock_element(
         tag = cls._normalize_text(container.tag)
         class_name = cls._normalize_text(container.class_name)
         aria_modal = cls._normalize_text(container.aria_modal)
+        container_blob = cls._normalize_text(
+            " ".join(
+                str(value or "")
+                for value in (
+                    container.text,
+                    container.aria_label,
+                    getattr(container, "title", None),
+                    container.context_text,
+                    role,
+                    tag,
+                    class_name,
+                    aria_modal,
+                )
+            )
+        )
         if not (
             aria_modal == "true"
             or role in {"dialog", "alertdialog"}
@@ -108,6 +159,7 @@ def pick_modal_unblock_element(
                 "height": ch,
                 "right": cx + cw,
                 "bottom": cy + ch,
+                "security_gate": _contains_security_gate_hint(container_blob),
             }
         )
     modal_regions.sort(key=lambda region: region["width"] * region["height"], reverse=True)
@@ -121,6 +173,8 @@ def pick_modal_unblock_element(
         if compact_regions:
             modal_regions = compact_regions
     modal_regions = modal_regions[:4]
+    if any(region.get("security_gate") for region in modal_regions):
+        return None
 
     candidates: List[tuple[int, int]] = []
     for el in dom_elements:
@@ -136,14 +190,33 @@ def pick_modal_unblock_element(
             selector,
         ]
         normalized_blob = " ".join(cls._normalize_text(field) for field in text_fields if field)
+        if _contains_security_gate_hint(normalized_blob):
+            continue
         score = 0
         close_hint_signal = any(cls._contains_close_hint(field) for field in text_fields)
+        popup_dismiss_signal = _contains_popup_dismiss_hint(normalized_blob)
 
         if close_hint_signal:
             score += 5
+        if popup_dismiss_signal:
+            score += 4
         if any(
             token in normalized_blob
-            for token in ("확인", "ok", "okay", "dismiss", "취소", "cancel", "닫기", "close")
+            for token in (
+                "확인",
+                "ok",
+                "okay",
+                "dismiss",
+                "취소",
+                "cancel",
+                "닫기",
+                "close",
+                "오늘 하루",
+                "하루 동안",
+                "다시 보지",
+                "그만 보기",
+                "더 이상 보지",
+            )
         ):
             score += 4
         if any(
@@ -175,6 +248,10 @@ def pick_modal_unblock_element(
             for region in modal_regions:
                 if not (region["x"] <= ecx <= region["right"] and region["y"] <= ecy <= region["bottom"]):
                     continue
+                if region.get("security_gate"):
+                    inside_modal_region = True
+                    score = 0
+                    break
                 inside_modal_region = True
                 rel_x = (ecx - region["x"]) / max(region["width"], 1.0)
                 rel_y = (ecy - region["y"]) / max(region["height"], 1.0)

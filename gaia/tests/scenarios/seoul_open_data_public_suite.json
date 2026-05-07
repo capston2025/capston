@@ -1,5 +1,5 @@
 {
-  "suite_id": "seoul_open_data_public_v1",
+  "suite_id": "seoul_open_data_public_v2",
   "site": {
     "name": "서울 열린데이터광장",
     "base_url": "https://data.seoul.go.kr/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "SEOULDATA_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "SEOULDATA_001_HOME_DATA",
+      "name": "공공 데이터 홈 확인",
       "url": "https://data.seoul.go.kr/",
-      "goal": "서울 열린데이터광장 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "서울 열린데이터광장 홈에서 데이터 검색 입력, 인기 데이터, 분야별 메뉴 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "SEOULDATA_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://data.seoul.go.kr/",
-      "goal": "서울 열린데이터광장에서 따릉이 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "SEOULDATA_002_DATASET_SEARCH",
+      "name": "데이터셋 검색 확인",
+      "url": "https://data.seoul.go.kr/dataList/datasetList.do?searchText=%EB%94%B0%EB%A6%89%EC%9D%B4",
+      "goal": "따릉이 검색 결과에서 데이터셋 이름, 제공 형식, 갱신 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "SEOULDATA_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://data.seoul.go.kr/",
-      "goal": "서울 열린데이터광장에서 공개 데이터셋 상세 설명 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "SEOULDATA_003_DATASET_DETAIL",
+      "name": "데이터셋 상세 확인",
+      "url": "https://data.seoul.go.kr/dataList/datasetList.do?searchText=%EA%B3%B5%EA%B3%B5%EC%9E%90%EC%A0%84%EA%B1%B0",
+      "goal": "공공자전거 데이터 검색 결과 또는 상세 카드에서 공개 데이터 하나의 설명, 제공 기관, 파일 형식 또는 API 정보를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "SEOULDATA_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://data.seoul.go.kr/",
-      "goal": "서울 열린데이터광장에서 교통, 환경, 문화 같은 데이터 카테고리 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "SEOULDATA_004_CATEGORY_BROWSE",
+      "name": "분야별 데이터 탐색 확인",
+      "url": "https://data.seoul.go.kr/dataList/datasetList.do",
+      "goal": "데이터 목록 화면에서 교통, 환경, 복지 같은 분야 필터 영역이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "SEOULDATA_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://data.seoul.go.kr/",
-      "goal": "서울 열린데이터광장에서 검색 결과 정렬이나 페이지 이동을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "SEOULDATA_005_SORT_OR_FILTER",
+      "name": "정렬과 조건 확인",
+      "url": "https://data.seoul.go.kr/dataList/datasetList.do?searchText=%EB%B2%84%EC%8A%A4",
+      "goal": "버스 데이터 검색 결과에서 정렬 콤보박스, 조회 버튼, 제공 형식 또는 기간 조건 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

@@ -202,7 +202,8 @@ def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path)
     first_prompt = script.select_calls[0]
     assert "INU TIMETABLE" in first_prompt[1]
     assert "머니터링" in first_prompt[1]
-    assert "맞춤법 검사기" in first_prompt[1]
+    assert "잡코리아" in first_prompt[1]
+    assert "서울문화포털" in first_prompt[1]
     assert "디시인사이드" in first_prompt[1]
     assert "사이트 추가" in first_prompt[1]
     assert "사이트 수정" in first_prompt[1]
@@ -1448,12 +1449,12 @@ def test_terminal_metrics_view_shows_connect_menu_when_grafana_not_connected(tmp
     assert any("gaia_monitor_connect.py" in message for message in emitted)
 
 
-def test_spell_checker_preset_stays_visible_even_without_existing_tests() -> None:
-    preset = find_preset("spell_checker")
+def test_jobkorea_preset_stays_visible_even_without_existing_tests() -> None:
+    preset = find_preset("jobkorea")
 
     assert preset is not None
-    assert preset.label == "맞춤법 검사기"
-    assert preset.suite_path == "gaia/tests/scenarios/spell_checker_public_suite.json"
+    assert preset.label == "잡코리아"
+    assert preset.suite_path == "gaia/tests/scenarios/jobkorea_public_suite.json"
 
 
 def test_replace_scenario_in_suite_keeps_order_and_updates_selected_row() -> None:

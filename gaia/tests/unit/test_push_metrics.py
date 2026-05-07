@@ -60,6 +60,29 @@ def test_scenario_metrics_drop_sensitive_high_cardinality_labels() -> None:
     assert 'completion="auth_gate"' in metrics
 
 
+def test_suite_metrics_exports_primary_success_rate() -> None:
+    summary = {
+        "suite_id": "external_public",
+        "site": {"name": "External Public"},
+        "model": "gpt-5.5",
+        "provider": "openai",
+        "metrics": {"runs_total": 2, "success_rate": 0.5},
+        "kpi_metrics": {
+            "scenario_success_rate": 0.5,
+            "primary_success_rate": 1.0,
+            "targets": {"primary_success_rate": 0.7},
+            "counts": {"success": 1, "blocked": 1, "primary_runs": 1},
+        },
+        "status_counts": {"SUCCESS": 1, "BLOCKED_USER_ACTION": 1},
+    }
+
+    metrics = push_metrics.build_suite_metrics(summary)
+
+    assert "gaia_suite_primary_success_rate" in metrics
+    assert "gaia_target_primary_success_rate" in metrics
+    assert "gaia_count_primary_runs" in metrics
+
+
 def test_push_suite_dir_uses_stable_suite_instance(tmp_path, monkeypatch) -> None:
     suite_dir = tmp_path / "auth_suite_20260504_123456"
     suite_dir.mkdir()

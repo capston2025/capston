@@ -1,5 +1,5 @@
 {
-  "suite_id": "melon_public_v1",
+  "suite_id": "melon_public_v2",
   "site": {
     "name": "Melon",
     "base_url": "https://www.melon.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "MELON_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "MELON_001_HOME_MUSIC",
+      "name": "음악 서비스 홈 확인",
       "url": "https://www.melon.com/",
-      "goal": "Melon 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "멜론 홈에서 검색 입력, 차트, 최신 음악 또는 장르 메뉴 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MELON_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.melon.com/",
-      "goal": "Melon에서 아이유 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "MELON_002_CHART_LIST",
+      "name": "차트 목록 확인",
+      "url": "https://www.melon.com/chart/index.htm",
+      "goal": "멜론 차트 화면에서 순위, 곡명, 아티스트명 또는 앨범 이미지 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MELON_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.melon.com/",
-      "goal": "Melon에서 아티스트 또는 곡 상세의 공개 정보 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "MELON_003_SEARCH_RESULTS",
+      "name": "음악 검색 결과 확인",
+      "url": "https://www.melon.com/search/total/index.htm?q=%EC%95%84%EC%9D%B4%EC%9C%A0",
+      "goal": "아이유 검색 결과에서 곡, 앨범, 아티스트 결과 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MELON_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.melon.com/",
-      "goal": "Melon에서 차트, 장르, 최신 음악 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "MELON_004_GENRE_BROWSE",
+      "name": "장르 목록 확인",
+      "url": "https://www.melon.com/genre/song_list.htm?gnrCode=GN0100",
+      "goal": "장르 음악 목록에서 곡명, 아티스트명, 앨범 정보 또는 정렬 영역을 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MELON_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.melon.com/",
-      "goal": "Melon에서 차트 기간이나 장르 탭을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "MELON_005_CHART_TAB",
+      "name": "차트 탭 전환 확인",
+      "url": "https://www.melon.com/chart/index.htm",
+      "goal": "차트 화면에서 일간, 주간, 장르 같은 탭을 선택해 곡 목록 표시가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

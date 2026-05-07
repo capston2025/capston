@@ -1,5 +1,5 @@
 {
-  "suite_id": "kakao_map_public_v1",
+  "suite_id": "kakao_map_public_v2",
   "site": {
     "name": "Kakao Map",
     "base_url": "https://map.kakao.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "KAKAOMAP_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "KAKAOMAP_001_HOME_MAP",
+      "name": "지도 홈 주요 영역 확인",
       "url": "https://map.kakao.com/",
-      "goal": "Kakao Map 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "카카오맵 홈에서 지도 캔버스, 장소 검색 입력, 확대 축소 컨트롤 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KAKAOMAP_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://map.kakao.com/",
-      "goal": "Kakao Map에서 서울역 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "KAKAOMAP_002_PLACE_SEARCH",
+      "name": "장소 검색 결과 확인",
+      "url": "https://map.kakao.com/?q=%EC%84%9C%EC%9A%B8%EC%97%AD",
+      "goal": "서울역 검색 결과에서 장소명, 주소, 지도 마커 또는 주변 장소 목록 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KAKAOMAP_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://map.kakao.com/",
-      "goal": "Kakao Map에서 장소 상세 정보와 주변 정보 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "KAKAOMAP_003_CATEGORY_NEARBY",
+      "name": "주변 카테고리 확인",
+      "url": "https://map.kakao.com/?q=%EA%B0%95%EB%82%A8%EC%97%AD%20%EC%B9%B4%ED%8E%98",
+      "goal": "강남역 카페 검색 화면에서 장소 목록, 별점 또는 주소 정보가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KAKAOMAP_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://map.kakao.com/",
-      "goal": "Kakao Map에서 음식점, 카페, 지하철 같은 주변 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "KAKAOMAP_004_ROUTE_PANEL",
+      "name": "경로 탐색 패널 확인",
+      "url": "https://map.kakao.com/link/by/subway/seoul/서울역/경복궁",
+      "goal": "카카오맵 공식 길찾기 링크로 열린 서울역에서 경복궁까지의 경로 화면에서 출발역, 도착역, 대중교통 경로 또는 지도 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "KAKAOMAP_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://map.kakao.com/",
-      "goal": "Kakao Map에서 지도 확대, 축소 또는 목록/지도 보기를 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "KAKAOMAP_005_MAP_CONTROL",
+      "name": "지도 표시 조작 확인",
+      "url": "https://map.kakao.com/?q=%EA%B2%BD%EB%B3%B5%EA%B6%81",
+      "goal": "경복궁 지도 화면에서 확대 축소나 지도 유형 컨트롤을 선택해 지도 표시가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

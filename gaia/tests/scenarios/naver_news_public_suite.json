@@ -1,5 +1,5 @@
 {
-  "suite_id": "naver_news_public_v1",
+  "suite_id": "naver_news_public_v2",
   "site": {
     "name": "Naver News",
     "base_url": "https://news.naver.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "NAVERNEWS_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "NAVERNEWS_001_MAIN_HEADLINES",
+      "name": "뉴스 홈 주요 영역 확인",
       "url": "https://news.naver.com/",
-      "goal": "Naver News 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "네이버 뉴스 홈에서 주요 기사, 분야별 메뉴, 언론사 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVERNEWS_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://news.naver.com/",
-      "goal": "Naver News에서 인공지능 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "NAVERNEWS_002_IT_SECTION",
+      "name": "분야별 뉴스 확인",
+      "url": "https://news.naver.com/section/105",
+      "goal": "IT/과학 섹션에서 기사 제목 목록, 썸네일, 언론사명 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVERNEWS_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://news.naver.com/",
-      "goal": "Naver News에서 공개 기사 상세 화면으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "NAVERNEWS_003_POLITICS_SECTION",
+      "name": "정치 섹션 확인",
+      "url": "https://news.naver.com/section/100",
+      "goal": "정치 섹션에서 헤드라인, 기사 목록, 랭킹 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVERNEWS_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://news.naver.com/",
-      "goal": "Naver News에서 정치, 경제, 사회, IT 같은 섹션 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "NAVERNEWS_004_SEARCH_RESULTS",
+      "name": "뉴스 검색 확인",
+      "url": "https://search.naver.com/search.naver?where=news&query=%EC%A0%84%EA%B8%B0%EC%B0%A8",
+      "goal": "전기차 뉴스 검색 결과에서 기사 제목, 언론사명, 날짜 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVERNEWS_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://news.naver.com/",
-      "goal": "Naver News에서 섹션 탭 또는 언론사 목록을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "NAVERNEWS_005_RANKING",
+      "name": "랭킹 뉴스 확인",
+      "url": "https://news.naver.com/main/ranking/popularDay.naver",
+      "goal": "랭킹 뉴스 화면에서 순위, 기사 제목, 언론사 구분 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

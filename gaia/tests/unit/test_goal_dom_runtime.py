@@ -69,6 +69,55 @@ def test_analyze_dom_cache_hit_restores_ref_meta_index() -> None:
     assert agent._selector_to_ref_id["button[name='검색']"] == "e26"
 
 
+def test_analyze_dom_force_refresh_bypasses_cache(monkeypatch) -> None:
+    agent = _CachedDomAgent()
+    calls = []
+
+    class _Dispatch:
+        status_code = 200
+        text = ""
+        payload = {
+            "snapshot_id": "snap-force",
+            "dom_hash": "dom-force",
+            "epoch": 2,
+            "url": "https://example.com/fresh",
+            "elements": [
+                {
+                    "tag": "button",
+                    "text": "새 옵션",
+                    "selector": "button[name='새 옵션']",
+                    "full_selector": "main button[name='새 옵션']",
+                    "ref_id": "e88",
+                    "attributes": {},
+                    "is_visible": True,
+                }
+            ],
+            "elements_by_ref": {
+                "e88": {
+                    "ref": "e88",
+                    "selector": "button[name='새 옵션']",
+                    "full_selector": "main button[name='새 옵션']",
+                }
+            },
+        }
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return _Dispatch()
+
+    monkeypatch.setattr(
+        "gaia.src.phase4.goal_driven.goal_dom_runtime.execute_mcp_action_with_recovery",
+        fake_execute,
+    )
+
+    elements = analyze_dom(agent, force_refresh=True)
+
+    assert len(elements) == 1
+    assert elements[0].text == "새 옵션"
+    assert agent._active_snapshot_id == "snap-force"
+    assert calls[0]["params"]["force_refresh"] is True
+
+
 def test_analyze_dom_cache_key_is_scoped_by_session(monkeypatch) -> None:
     agent = _CachedDomAgent()
     agent.session_id = "receiver-session"

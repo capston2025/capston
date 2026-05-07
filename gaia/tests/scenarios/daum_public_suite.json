@@ -1,5 +1,5 @@
 {
-  "suite_id": "daum_public_v1",
+  "suite_id": "daum_public_v2",
   "site": {
     "name": "Daum",
     "base_url": "https://www.daum.net/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "DAUM_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "DAUM_001_HOME_PORTAL",
+      "name": "포털 홈 주요 영역 확인",
       "url": "https://www.daum.net/",
-      "goal": "Daum 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "Daum 홈에서 검색창, 뉴스 영역, 카페나 메일 같은 주요 서비스 링크 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DAUM_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.daum.net/",
-      "goal": "Daum에서 부산 날씨 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "DAUM_002_TOTAL_SEARCH",
+      "name": "통합 검색 결과 확인",
+      "url": "https://search.daum.net/search?w=tot&q=%EB%B6%80%EC%82%B0%20%EB%82%A0%EC%94%A8",
+      "goal": "Daum 검색 결과에서 부산 날씨 관련 현재 정보, 예보, 관련 링크 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DAUM_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.daum.net/",
-      "goal": "Daum에서 검색 결과의 날씨 또는 뉴스 정보 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "DAUM_003_NEWS_SEARCH",
+      "name": "뉴스 검색 결과 확인",
+      "url": "https://search.daum.net/search?w=news&q=%EC%9D%B8%EA%B3%B5%EC%A7%80%EB%8A%A5",
+      "goal": "Daum 뉴스 검색 화면에서 기사 제목 목록, 언론사명, 시간 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DAUM_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.daum.net/",
-      "goal": "Daum에서 뉴스, 카페, 이미지 같은 검색 결과 탭로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "DAUM_004_IMAGE_SEARCH",
+      "name": "이미지 검색 확인",
+      "url": "https://search.daum.net/search?w=img&q=%EC%A0%9C%EC%A3%BC%EB%8F%84",
+      "goal": "Daum 이미지 검색 화면에서 제주도 이미지 썸네일 목록과 관련 검색어 영역을 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DAUM_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.daum.net/",
-      "goal": "Daum에서 검색 결과 탭 전환이나 주요 메뉴 이동을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "DAUM_005_TOPIC_TAB",
+      "name": "검색 탭 전환 확인",
+      "url": "https://search.daum.net/search?w=tot&q=%ED%94%84%EB%A1%9C%EC%95%BC%EA%B5%AC",
+      "goal": "프로야구 검색 결과에서 뉴스, 이미지, 동영상 같은 결과 탭으로 이동해 표시 영역이 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

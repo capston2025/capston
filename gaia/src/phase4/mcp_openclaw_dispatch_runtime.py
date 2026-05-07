@@ -159,6 +159,38 @@ _MODAL_HINT_TOKENS = (
     "backdrop",
 )
 
+_CUSTOM_OPTION_DANGEROUS_TOKENS = (
+    "로그인",
+    "login",
+    "log in",
+    "sign in",
+    "signin",
+    "회원가입",
+    "signup",
+    "sign up",
+    "register",
+    "장바구니",
+    "cart",
+    "checkout",
+    "결제",
+    "구매",
+    "주문",
+    "buy",
+    "purchase",
+    "삭제",
+    "delete",
+    "제거",
+    "remove",
+    "저장",
+    "save",
+    "작성",
+    "등록",
+    "submit",
+    "예약",
+    "예매",
+    "신청",
+)
+
 
 def _resolve_base_url(raw_base_url: str | None) -> str:
     explicit_base_url = str(os.getenv("GAIA_OPENCLAW_BASE_URL", "") or "").strip()
@@ -866,6 +898,82 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
                 selected_value = option_value or option_text
         return options, selected_value
 
+    def _candidate_label_for_raw_ref(raw_ref_id: str) -> str:
+        node = tree_by_ref.get(raw_ref_id) or {}
+        meta = (refs.get(raw_ref_id) or {}) if isinstance(refs, dict) else {}
+        for value in [
+            meta.get("name"),
+            node.get("name"),
+            *(text_by_raw_ref.get(raw_ref_id) or [])[:2],
+        ]:
+            cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+            if cleaned:
+                return cleaned
+        return ""
+
+    def _is_safe_custom_option_label(label: str) -> bool:
+        cleaned = re.sub(r"\s+", " ", str(label or "").strip())
+        normalized = _normalize_hint_text(cleaned)
+        if not cleaned or not normalized:
+            return False
+        if len(cleaned) > 36 or len(normalized.split()) > 5:
+            return False
+        if _looks_like_structural_context_label(cleaned) or _looks_like_action_label(cleaned):
+            return False
+        if _contains_hint(cleaned, _LOGIN_HINT_TOKENS) or _contains_hint(cleaned, _LOGOUT_HINT_TOKENS):
+            return False
+        if _contains_hint(cleaned, _CUSTOM_OPTION_DANGEROUS_TOKENS):
+            return False
+        if re.search(r"https?://|www\.", normalized):
+            return False
+        return True
+
+    def _custom_dropdown_options_by_ref() -> Tuple[Dict[str, str], Dict[str, str]]:
+        labels_by_ref: Dict[str, str] = {}
+        parent_by_ref: Dict[str, str] = {}
+        allowed_parent_roles = {"", "generic", "group", "list", "menu", "region"}
+        allowed_child_roles = {"", "generic", "listitem", "menuitem", "option"}
+        for parent_ref, raw_child_refs in child_refs_by_parent.items():
+            parent_ref_id = str(parent_ref or "").strip()
+            parent_node = tree_by_ref.get(parent_ref_id) or {}
+            parent_meta = (refs.get(parent_ref_id) or {}) if isinstance(refs, dict) else {}
+            parent_role = str(parent_meta.get("role") or parent_node.get("role") or "").strip().lower()
+            if parent_role not in allowed_parent_roles:
+                continue
+            child_refs = [str(item or "").strip() for item in raw_child_refs if str(item or "").strip()]
+            if len(child_refs) < 3 or len(child_refs) > 20:
+                continue
+
+            candidates: List[Tuple[str, str]] = []
+            unsafe_seen = False
+            seen_labels: set[str] = set()
+            for child_ref in child_refs:
+                child_node = tree_by_ref.get(child_ref) or {}
+                child_meta = (refs.get(child_ref) or {}) if isinstance(refs, dict) else {}
+                child_role = str(child_meta.get("role") or child_node.get("role") or "").strip().lower()
+                if child_role not in allowed_child_roles:
+                    continue
+                label = _candidate_label_for_raw_ref(child_ref)
+                if not label:
+                    continue
+                if not _is_safe_custom_option_label(label):
+                    unsafe_seen = True
+                    continue
+                normalized_label = _normalize_hint_text(label)
+                if normalized_label in seen_labels:
+                    continue
+                seen_labels.add(normalized_label)
+                candidates.append((child_ref, label))
+
+            if unsafe_seen or len(candidates) < 3:
+                continue
+            for child_ref, label in candidates:
+                labels_by_ref[child_ref] = label
+                parent_by_ref[child_ref] = parent_ref_id
+        return labels_by_ref, parent_by_ref
+
+    custom_option_label_by_ref, custom_option_parent_by_ref = _custom_dropdown_options_by_ref()
+
     surfaced_raw_refs: set[str] = set()
     surfaced_meta_by_raw_ref: Dict[str, Dict[str, Any]] = {}
     candidate_raw_refs: List[str] = []
@@ -884,8 +992,10 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         ref_id = raw_ref_id
         node = tree_by_ref.get(raw_ref_id) or {}
         role = str(meta.get("role") or node.get("role") or "generic").strip().lower() or "generic"
+        source_role = role
         raw_text_hints = list(text_by_raw_ref.get(raw_ref_id) or [])
         nearby_text_hints = list(nearby_text_by_raw_ref.get(raw_ref_id) or [])
+        custom_option_label = str(custom_option_label_by_ref.get(raw_ref_id) or "").strip()
         parent_ref = str(node.get("parent_ref") or "").strip()
         ancestor_texts: List[str] = []
         walk_ref = parent_ref
@@ -901,10 +1011,13 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         name = str(meta.get("name") or node.get("name") or "").strip()
         if not name and raw_text_hints:
             name = str(raw_text_hints[0] or "").strip()
+        if custom_option_label:
+            role = "option"
+            name = custom_option_label
         nth = meta.get("nth")
         parent_node = tree_by_ref.get(parent_ref) if parent_ref else None
         ancestor_names = list(node.get("ancestor_names") or [])
-        interactive = role in _INTERACTIVE_ROLES or raw_ref_id in pointer_like_refs
+        interactive = bool(custom_option_label) or role in _INTERACTIVE_ROLES or raw_ref_id in pointer_like_refs
         if not _should_surface_role_node(role, name, interactive):
             continue
         surfaced_raw_refs.add(raw_ref_id)
@@ -914,6 +1027,8 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             "interactive": interactive,
             "parent_ref": parent_ref,
             "ancestor_names": ancestor_names,
+            "openclaw_source_role": source_role,
+            "custom_option": bool(custom_option_label),
         }
     container_raw_by_raw_ref: Dict[str, str] = {}
     descendant_count_by_raw_ref: Dict[str, int] = {}
@@ -1110,6 +1225,10 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         meta = (refs.get(raw_ref_id) or {}) if isinstance(refs, dict) else {}
         role = str(meta.get("role") or node.get("role") or "").strip().lower()
         name = str(meta.get("name") or node.get("name") or "").strip()
+        custom_option_label = str(custom_option_label_by_ref.get(raw_ref_id) or "").strip()
+        if custom_option_label:
+            role = "option"
+            name = custom_option_label
         bucket = container_texts_by_raw_ref.setdefault(container_raw_ref, [])
         for item in [name, *(text_by_raw_ref.get(raw_ref_id) or [])[:3]]:
             cleaned = str(item or "").strip()
@@ -1146,9 +1265,13 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         ref_id = raw_ref_id
         node = tree_by_ref.get(raw_ref_id) or {}
         role = str(meta.get("role") or node.get("role") or "generic").strip().lower() or "generic"
+        source_role = role
         raw_text_hints = list(text_by_raw_ref.get(raw_ref_id) or [])
         nearby_text_hints = list(nearby_text_by_raw_ref.get(raw_ref_id) or [])
+        custom_option_label = str(custom_option_label_by_ref.get(raw_ref_id) or "").strip()
         parent_ref = str(node.get("parent_ref") or "").strip()
+        if custom_option_label and custom_option_parent_by_ref.get(raw_ref_id):
+            parent_ref = str(custom_option_parent_by_ref.get(raw_ref_id) or parent_ref).strip()
         ancestor_texts: List[str] = []
         walk_ref = parent_ref
         visited: set[str] = set()
@@ -1163,10 +1286,13 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         name = str(meta.get("name") or node.get("name") or "").strip()
         if not name and raw_text_hints:
             name = str(raw_text_hints[0] or "").strip()
+        if custom_option_label:
+            role = "option"
+            name = custom_option_label
         nth = meta.get("nth")
         parent_node = tree_by_ref.get(parent_ref) if parent_ref else None
         ancestor_names = list(node.get("ancestor_names") or [])
-        interactive = role in _INTERACTIVE_ROLES or raw_ref_id in pointer_like_refs
+        interactive = bool(custom_option_label) or role in _INTERACTIVE_ROLES or raw_ref_id in pointer_like_refs
         if not _should_surface_role_node(role, name, interactive):
             continue
         container_dom_ref = f"ocdom:{parent_ref}" if parent_ref else ""
@@ -1278,6 +1404,10 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             "gaia-actionable": "true" if interactive else "false",
             "gaia-disabled": "false",
         }
+        if custom_option_label:
+            attrs["gaia-custom-option"] = "true"
+            attrs["custom_option_kind"] = "dropdown"
+            attrs["openclaw_source_role"] = source_role
         if select_options:
             attrs["options"] = select_options
         if selected_value:
@@ -1288,7 +1418,7 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         elements.append(
             {
                 "id": int(element_id_by_raw_ref.get(raw_ref_id) or (len(elements) + 1)),
-                "tag": ("button" if role == "generic" and interactive else _role_to_tag(role)),
+                "tag": ("button" if custom_option_label or (role == "generic" and interactive) else _role_to_tag(role)),
                 "ref_id": ref_id,
                 "selector": f"openclaw-ref:{ref_id}",
                 "full_selector": f"openclaw-ref:{ref_id}",
@@ -1301,7 +1431,7 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
                 "context_score_hint": context_score_hint,
                 "attributes": attrs,
                 "bounding_box": None,
-                "element_type": _element_type_for_role(role),
+                "element_type": "button" if custom_option_label else _element_type_for_role(role),
                 "is_visible": True,
             }
         )
@@ -2229,6 +2359,8 @@ def dispatch_openclaw_action(
             requested_url=requested_url,
             timeout=timeout,
         )
+        if bool((effective_params or {}).get("force_refresh")):
+            _clear_snapshot_cache(state)
         target_id = str(state.get("target_id") or "").strip()
         status_code, data, text = _request(
             "GET",

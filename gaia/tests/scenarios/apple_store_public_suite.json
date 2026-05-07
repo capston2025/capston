@@ -1,5 +1,5 @@
 {
-  "suite_id": "apple_store_public_v1",
+  "suite_id": "apple_store_public_v2",
   "site": {
     "name": "Apple Korea",
     "base_url": "https://www.apple.com/kr/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "APPLE_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "APPLE_001_HOME_PRODUCT_NAV",
+      "name": "브랜드 홈 주요 영역 확인",
       "url": "https://www.apple.com/kr/",
-      "goal": "Apple Korea 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "Apple Korea 홈에서 제품군 내비게이션, 프로모션 영역, 지원 링크 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "APPLE_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.apple.com/kr/",
-      "goal": "Apple Korea에서 iPhone 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "APPLE_002_IPHONE_LINEUP",
+      "name": "제품군 목록 확인",
+      "url": "https://www.apple.com/kr/iphone/",
+      "goal": "iPhone 제품군 화면에서 여러 모델 카드와 핵심 사양 또는 가격 안내가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "APPLE_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.apple.com/kr/",
-      "goal": "Apple Korea에서 iPhone 제품 상세 정보로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "APPLE_003_PRODUCT_COMPARE",
+      "name": "모델 비교 정보 확인",
+      "url": "https://www.apple.com/kr/iphone/compare/",
+      "goal": "iPhone 비교 화면에서 모델별 디스플레이, 칩, 카메라 같은 비교 표 항목을 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "APPLE_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.apple.com/kr/",
-      "goal": "Apple Korea에서 Mac, iPad, Watch 같은 제품군 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "APPLE_004_ACCESSORY_BROWSE",
+      "name": "액세서리 탐색 확인",
+      "url": "https://www.apple.com/kr/shop/accessories/all",
+      "goal": "Apple 액세서리 화면에서 제품 카테고리, 상품 카드, 가격 안내 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "APPLE_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.apple.com/kr/",
-      "goal": "Apple Korea에서 제품 상세의 색상, 모델 비교, 사양 탭처럼 정보만 바뀌는 요소를 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "APPLE_005_SUPPORT_LOOKUP",
+      "name": "지원 정보 탐색 확인",
+      "url": "https://support.apple.com/ko-kr",
+      "goal": "Apple 지원 화면에서 제품 선택 목록, 검색 입력, 도움말 주제 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

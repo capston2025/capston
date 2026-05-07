@@ -1,5 +1,5 @@
 {
-  "suite_id": "dcinside_public_v1",
+  "suite_id": "dcinside_public_v2",
   "site": {
     "name": "DCInside",
     "base_url": "https://www.dcinside.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "DCINSIDE_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "DCINSIDE_001_HOME_COMMUNITY",
+      "name": "커뮤니티 홈 확인",
       "url": "https://www.dcinside.com/",
-      "goal": "DCInside 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "DCInside 홈에서 갤러리 검색 입력, 실시간 이슈, 갤러리 목록 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DCINSIDE_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.dcinside.com/",
-      "goal": "DCInside에서 야구 갤러리 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "DCINSIDE_002_GALLERY_SEARCH",
+      "name": "갤러리 검색 결과 확인",
+      "url": "https://search.dcinside.com/combine/q/%EC%95%BC%EA%B5%AC",
+      "goal": "DCInside 검색 결과에서 야구 관련 갤러리나 공개 글 목록이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DCINSIDE_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.dcinside.com/",
-      "goal": "DCInside에서 공개 갤러리의 글 상세 화면으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "DCINSIDE_003_GALLERY_LIST",
+      "name": "갤러리 목록 확인",
+      "url": "https://gall.dcinside.com/board/lists/?id=baseball_new11",
+      "goal": "야구 갤러리 목록에서 글 제목, 작성 시각, 조회 수 같은 목록 정보를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DCINSIDE_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
+      "id": "DCINSIDE_004_HIT_GALL",
+      "name": "실시간 인기 목록 확인",
       "url": "https://www.dcinside.com/",
-      "goal": "DCInside에서 실시간 베스트나 갤러리 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "goal": "DCInside 홈에서 실시간 베스트나 인기 갤러리 영역으로 이동해 인기 항목 목록이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "DCINSIDE_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.dcinside.com/",
-      "goal": "DCInside에서 목록 페이지 이동이나 정렬 탭을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "DCINSIDE_005_LIST_PAGING",
+      "name": "목록 페이지 이동 확인",
+      "url": "https://gall.dcinside.com/board/lists/?id=baseball_new11",
+      "goal": "갤러리 목록 화면에서 다음 페이지나 정렬 요소를 선택해 목록 표시가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

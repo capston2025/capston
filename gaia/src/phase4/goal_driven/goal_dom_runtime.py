@@ -12,6 +12,7 @@ def analyze_dom(
     self,
     url: Optional[str] = None,
     scope_container_ref_id: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> List[DOMElement]:
     """MCP Host를 통해 DOM 분석"""
     generation = int(getattr(self, "_dom_cache_generation", 0) or 0)
@@ -21,7 +22,8 @@ def analyze_dom(
     cache_key = (generation, session_id, requested_url, requested_scope)
     cache = getattr(self, "_dom_analyze_cache", None)
     if (
-        isinstance(cache, dict)
+        not force_refresh
+        and isinstance(cache, dict)
         and tuple(cache.get("key") or ()) == cache_key
         and isinstance(cache.get("elements"), list)
     ):
@@ -71,6 +73,7 @@ def analyze_dom(
                     "session_id": self.session_id,
                     "url": url or "",
                     "scope_container_ref_id": str(scope_container_ref_id or "").strip(),
+                    "force_refresh": bool(force_refresh),
                 },
                 timeout=30,
                 attempts=2,

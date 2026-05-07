@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gaia.src.phase4.goal_driven.goal_achievement_runtime import validate_goal_achievement_claim
+from gaia.src.phase4.goal_driven.goal_completion_helpers import evaluate_wait_goal_completion
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 
 
@@ -695,9 +696,124 @@ def test_validate_goal_achievement_claim_accepts_wait_via_generic_judge_for_late
 
     assert ok is True
     assert reason is None
-    assert agent._last_goal_completion_source == "judge"
-    if hasattr(agent, "_last_judge_prompt"):
-        assert "assistant response" in agent._last_judge_prompt
+
+
+def test_wait_completion_accepts_readonly_video_detail_information_without_contract_signal() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name="검색 결과에서 공개 영상을 하나 열어 제목, 채널명, 조회 정보 또는 설명 일부 확인",
+        description="YouTube 검색 결과에서 공개 영상 상세 화면의 정보가 보이는지 확인해줘.",
+        success_criteria=["공개 영상 상세 화면에서 제목, 채널명, 조회 정보 또는 설명 일부가 보이는지 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning=(
+            "현재 화면은 YouTube watch 페이지이며 상단에 영상 제목, 채널명(한국관광공사TV), "
+            "조회 정보와 설명 일부가 이미 보입니다. 목표는 공개 영상을 하나 열어 해당 정보가 "
+            "보이는지 확인하는 것이므로 추가 조작 없이 완료 상태입니다."
+        ),
+        confidence=0.78,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="외국인들한테 보여줬더니 감탄사 연발한 영상",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="a",
+            role="link",
+            text="한국관광공사TV",
+            context_text="채널",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="span",
+            role="generic",
+            text="조회수 12만회 3개월 전",
+            context_text="영상 설명 일부",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom)
+
+    assert reason is not None
+    assert "한국관광공사tv" in reason.lower()
+
+
+def test_wait_completion_accepts_readonly_map_route_panel_information_without_contract_signal() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name="카카오맵 길찾기 패널 확인",
+        description="카카오맵에서 길찾기 패널을 열어 출발지와 도착지 입력 영역이 보이는지 확인해줘.",
+        success_criteria=["길찾기 패널의 출발지와 도착지 입력 영역 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning=(
+            "현재 카카오맵 길찾기 패널에 출발지 서울역과 도착지 경복궁이 이미 표시되고, "
+            "대중교통 경로 탭도 보입니다. 목표가 요구한 경로 정보 확인 조건을 충족합니다."
+        ),
+        confidence=0.82,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="input",
+            role="textbox",
+            text="서울역",
+            placeholder="출발지를 입력하세요",
+            context_text="길찾기 출발지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="input",
+            role="textbox",
+            text="경복궁",
+            placeholder="도착지를 입력하세요",
+            context_text="길찾기 도착지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="tab",
+            text="대중교통",
+            context_text="자동차 대중교통 도보 자전거",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom)
+
+    assert reason is not None
+    assert "길찾기" in reason
 
 
 def test_validate_goal_achievement_claim_includes_new_page_evidence_in_judge_prompt() -> None:

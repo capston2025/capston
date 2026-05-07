@@ -1,9 +1,9 @@
 {
-  "manifest_id": "external_public_korea_focused_v1",
+  "manifest_id": "external_public_korea_focused_v2",
   "name": "Korea-focused external public benchmark",
   "site_count": 30,
   "scenario_count": 150,
-  "selection_note": "30 external public sites, mostly Korea-facing services familiar to the presentation audience.",
+  "selection_note": "30 external public sites, mostly Korea-facing services familiar to the presentation audience. CAPTCHA-heavy or bot-wall-prone sites are excluded from the primary curated pack.",
   "suites": [
     {
       "site_key": "wikipedia",
@@ -38,14 +38,6 @@
       "suite_path": "gaia/tests/scenarios/pypi_public_suite.json"
     },
     {
-      "site_key": "npm",
-      "label": "npm",
-      "category": "developer_tech",
-      "volatility": "stable",
-      "base_url": "https://www.npmjs.com/",
-      "suite_path": "gaia/tests/scenarios/npm_public_suite.json"
-    },
-    {
       "site_key": "youtube",
       "label": "YouTube Korea",
       "category": "portal_news_community",
@@ -76,14 +68,6 @@
       "volatility": "high",
       "base_url": "https://www.dcinside.com/",
       "suite_path": "gaia/tests/scenarios/dcinside_public_suite.json"
-    },
-    {
-      "site_key": "spell_checker",
-      "label": "Korean Spell Checker",
-      "category": "knowledge_reference",
-      "volatility": "medium",
-      "base_url": "https://nara-speller.co.kr/speller/",
-      "suite_path": "gaia/tests/scenarios/spell_checker_public_suite.json"
     },
     {
       "site_key": "moneytoring",
@@ -126,20 +110,20 @@
       "suite_path": "gaia/tests/scenarios/kakao_map_public_suite.json"
     },
     {
-      "site_key": "naver_shopping",
-      "label": "Naver Shopping",
-      "category": "commerce_product",
+      "site_key": "mbc_news",
+      "label": "MBC News",
+      "category": "portal_news_community",
       "volatility": "high",
-      "base_url": "https://shopping.naver.com/home",
-      "suite_path": "gaia/tests/scenarios/naver_shopping_public_suite.json"
+      "base_url": "https://imnews.imbc.com/",
+      "suite_path": "gaia/tests/scenarios/mbc_news_public_suite.json"
     },
     {
-      "site_key": "coupang",
-      "label": "Coupang",
-      "category": "commerce_product",
+      "site_key": "sbs_news",
+      "label": "SBS News",
+      "category": "portal_news_community",
       "volatility": "high",
-      "base_url": "https://www.coupang.com/",
-      "suite_path": "gaia/tests/scenarios/coupang_public_suite.json"
+      "base_url": "https://news.sbs.co.kr/",
+      "suite_path": "gaia/tests/scenarios/sbs_news_public_suite.json"
     },
     {
       "site_key": "elevenst",
@@ -150,12 +134,12 @@
       "suite_path": "gaia/tests/scenarios/elevenst_public_suite.json"
     },
     {
-      "site_key": "gmarket",
-      "label": "Gmarket",
-      "category": "commerce_product",
+      "site_key": "ytn_news",
+      "label": "YTN",
+      "category": "portal_news_community",
       "volatility": "high",
-      "base_url": "https://www.gmarket.co.kr/",
-      "suite_path": "gaia/tests/scenarios/gmarket_public_suite.json"
+      "base_url": "https://www.ytn.co.kr/",
+      "suite_path": "gaia/tests/scenarios/ytn_news_public_suite.json"
     },
     {
       "site_key": "musinsa",
@@ -166,12 +150,12 @@
       "suite_path": "gaia/tests/scenarios/musinsa_public_suite.json"
     },
     {
-      "site_key": "oliveyoung",
-      "label": "Olive Young",
-      "category": "commerce_product",
+      "site_key": "kbs_news",
+      "label": "KBS News",
+      "category": "portal_news_community",
       "volatility": "high",
-      "base_url": "https://www.oliveyoung.co.kr/store/main/main.do",
-      "suite_path": "gaia/tests/scenarios/oliveyoung_public_suite.json"
+      "base_url": "https://news.kbs.co.kr/",
+      "suite_path": "gaia/tests/scenarios/kbs_news_public_suite.json"
     },
     {
       "site_key": "yes24",
@@ -224,8 +208,8 @@
     {
       "site_key": "law_go_kr",
       "label": "국가법령정보센터",
-      "category": "knowledge_reference",
-      "volatility": "stable",
+      "category": "public_data_service",
+      "volatility": "medium",
       "base_url": "https://www.law.go.kr/",
       "suite_path": "gaia/tests/scenarios/law_go_kr_public_suite.json"
     },
@@ -238,12 +222,28 @@
       "suite_path": "gaia/tests/scenarios/melon_public_suite.json"
     },
     {
-      "site_key": "cgv",
-      "label": "CGV",
-      "category": "portal_news_community",
+      "site_key": "national_museum",
+      "label": "국립중앙박물관",
+      "category": "culture_public",
       "volatility": "medium",
-      "base_url": "https://www.cgv.co.kr/",
-      "suite_path": "gaia/tests/scenarios/cgv_public_suite.json"
+      "base_url": "https://www.museum.go.kr/",
+      "suite_path": "gaia/tests/scenarios/national_museum_public_suite.json"
+    },
+    {
+      "site_key": "jobkorea",
+      "label": "잡코리아",
+      "category": "career_business",
+      "volatility": "medium",
+      "base_url": "https://www.jobkorea.co.kr/",
+      "suite_path": "gaia/tests/scenarios/jobkorea_public_suite.json"
+    },
+    {
+      "site_key": "seoul_culture",
+      "label": "서울문화포털",
+      "category": "culture_public",
+      "volatility": "medium",
+      "base_url": "https://culture.seoul.go.kr/",
+      "suite_path": "gaia/tests/scenarios/seoul_culture_public_suite.json"
     }
   ]
 }

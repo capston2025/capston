@@ -1,5 +1,5 @@
 {
-  "suite_id": "fow_public_v1",
+  "suite_id": "fow_kr_public_v2",
   "site": {
     "name": "FOW.LOL",
     "base_url": "https://www.fow.lol/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "FOW_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "FOW_001_HOME_STATS",
+      "name": "게임 데이터 홈 확인",
       "url": "https://www.fow.lol/",
-      "goal": "FOW.LOL 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "FOW.LOL 공개 홈에서 소환사 검색 입력, 랭킹 링크, 챔피언 통계 링크 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "FOW_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.fow.lol/",
-      "goal": "FOW.LOL에서 리그오브레전드 챔피언 또는 소환사 공개 검색 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "FOW_002_CHAMPION_STATS",
+      "name": "챔피언 통계 탐색",
+      "url": "https://www.fow.lol/stats",
+      "goal": "FOW.LOL 챔피언 분석 화면에서 챔피언 이름 목록, 승률, 픽률 또는 밴율 같은 게임 지표 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "FOW_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.fow.lol/",
-      "goal": "FOW.LOL에서 챔피언 통계 또는 전적 상세 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "FOW_003_RANKING_LIST",
+      "name": "랭킹 목록 확인",
+      "url": "https://www.fow.lol/ranking",
+      "goal": "FOW.LOL 랭킹 화면에서 순위, 플레이어 이름, 티어, LP 또는 승률 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "FOW_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.fow.lol/",
-      "goal": "FOW.LOL에서 랭킹, 챔피언, 통계 같은 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "FOW_004_REGION_QUEUE_FILTER",
+      "name": "챔피언 통계 필터 확인",
+      "url": "https://www.fow.lol/stats",
+      "goal": "FOW.LOL 챔피언 분석 화면에서 Tier, Region, Ver 필터와 챔피언별 승률, 픽률, 밴율 지표 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "FOW_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
+      "id": "FOW_005_SEARCH_SUGGESTION",
+      "name": "소환사 검색 보조 UI 확인",
       "url": "https://www.fow.lol/",
-      "goal": "FOW.LOL에서 지역, 시즌, 큐 타입 같은 공개 필터를 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "goal": "소환사 검색 입력에 공개 예시 이름을 넣어 검색 제안이나 결과 후보 영역이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

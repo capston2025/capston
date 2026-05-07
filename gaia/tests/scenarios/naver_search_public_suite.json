@@ -1,5 +1,5 @@
 {
-  "suite_id": "naver_search_public_v1",
+  "suite_id": "naver_search_public_v2",
   "site": {
     "name": "Naver Search",
     "base_url": "https://www.naver.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "NAVER_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "NAVER_001_HOME_PORTAL",
+      "name": "포털 홈 주요 영역 확인",
       "url": "https://www.naver.com/",
-      "goal": "Naver Search 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "네이버 홈에서 검색창, 뉴스 스탠드, 쇼핑이나 날씨 같은 포털 영역 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVER_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.naver.com/",
-      "goal": "Naver Search에서 오늘 날씨 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "NAVER_002_WEATHER_SEARCH",
+      "name": "생활 정보 검색 확인",
+      "url": "https://search.naver.com/search.naver?query=%EC%98%A4%EB%8A%98%20%EB%82%A0%EC%94%A8",
+      "goal": "네이버 검색 결과에서 오늘 날씨 관련 현재 기온, 예보, 지역 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVER_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.naver.com/",
-      "goal": "Naver Search에서 검색 결과의 날씨 또는 지식 정보 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "NAVER_003_KNOWLEDGE_RESULT",
+      "name": "지식 검색 결과 확인",
+      "url": "https://search.naver.com/search.naver?query=%EC%9D%B8%EA%B3%B5%EC%A7%80%EB%8A%A5",
+      "goal": "인공지능 검색 결과에서 지식백과, 뉴스, 웹문서 같은 결과 유형 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVER_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.naver.com/",
-      "goal": "Naver Search에서 뉴스, 이미지, 지식백과 같은 검색 결과 탭로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "NAVER_004_NEWS_TAB",
+      "name": "검색 결과 탭 이동 확인",
+      "url": "https://search.naver.com/search.naver?where=news&query=%EB%B0%98%EB%8F%84%EC%B2%B4",
+      "goal": "반도체 뉴스 검색 화면에서 기사 제목 목록, 언론사명, 시간 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "NAVER_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
-      "url": "https://www.naver.com/",
-      "goal": "Naver Search에서 검색 결과 탭 전환이나 자동완성 영역을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "id": "NAVER_005_IMAGE_TAB",
+      "name": "검색 결과 유형 전환 확인",
+      "url": "https://search.naver.com/search.naver?where=image&query=%EA%B2%BD%EB%B3%B5%EA%B6%81",
+      "goal": "경복궁 이미지 검색 화면에서 이미지 썸네일 목록과 관련 키워드 또는 필터 영역을 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

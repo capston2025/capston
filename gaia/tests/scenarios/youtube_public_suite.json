@@ -1,5 +1,5 @@
 {
-  "suite_id": "youtube_public_v1",
+  "suite_id": "youtube_public_v2",
   "site": {
     "name": "YouTube Korea",
     "base_url": "https://www.youtube.com/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "YOUTUBE_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "YOUTUBE_001_HOME_FEED",
+      "name": "동영상 플랫폼 주요 영역 확인",
       "url": "https://www.youtube.com/",
-      "goal": "YouTube Korea 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "YouTube 공개 홈에서 검색 입력, 탐색 내비게이션, 영상 썸네일 목록 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
-      "url": "https://www.youtube.com/",
-      "goal": "YouTube Korea에서 인공지능 강의 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "id": "YOUTUBE_002_SEARCH_RESULTS",
+      "name": "영상 검색 결과 확인",
+      "url": "https://www.youtube.com/results?search_query=%ED%95%9C%EA%B5%AD%20%EC%97%AC%ED%96%89",
+      "goal": "YouTube 검색 결과에서 한국 여행 관련 영상 제목, 채널명, 썸네일 목록 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
-      "url": "https://www.youtube.com/",
-      "goal": "YouTube Korea에서 검색 결과의 공개 영상 상세 화면으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "id": "YOUTUBE_003_VIDEO_ENTRY",
+      "name": "영상 상세 정보 확인",
+      "url": "https://www.youtube.com/results?search_query=%ED%95%9C%EA%B5%AD%EA%B4%80%EA%B4%91%EA%B3%B5%EC%82%AC%20%EC%84%9C%EC%9A%B8%20%EC%97%AC%ED%96%89",
+      "goal": "검색 결과에서 공개 영상을 하나 열어 제목, 채널명, 조회 정보 또는 설명 일부가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
-      "url": "https://www.youtube.com/",
-      "goal": "YouTube Korea에서 탐색 또는 인기 동영상 계열 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "id": "YOUTUBE_004_TOPIC_FILTER",
+      "name": "검색 결과 필터 확인",
+      "url": "https://www.youtube.com/results?search_query=%EC%84%9C%EC%9A%B8%20%EB%A7%9B%EC%A7%91",
+      "goal": "서울 맛집 검색 결과 화면에서 상단 필터나 주제 칩을 선택해 결과 목록이 달라지는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "YOUTUBE_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
+      "id": "YOUTUBE_005_AUTOCOMPLETE_OR_CHIP",
+      "name": "검색 보조 UI 확인",
       "url": "https://www.youtube.com/",
-      "goal": "YouTube Korea에서 영상 상세의 설명 더보기나 관련 영상 영역을 열거나 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "goal": "YouTube 검색 입력에 공개 키워드를 넣어 자동완성이나 검색 제안 영역이 나타나는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

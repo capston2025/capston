@@ -955,3 +955,80 @@ def test_pseudo_elements_from_role_snapshot_uses_selected_option_marker_for_comb
     assert target["text"] == "1학점"
     assert attrs["selected_value"] == "1학점"
     assert attrs["role_ref_name"] == "1학점"
+
+
+def test_pseudo_elements_from_role_snapshot_promotes_custom_dropdown_items() -> None:
+    snapshot = """
+- main [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - text: 무신사 추천순
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - text: 무신사 추천순
+      - generic [ref=e6]:
+        - text: 신상품(재입고)순
+      - generic [ref=e7]:
+        - text: 낮은 가격순
+      - generic [ref=e8]:
+        - text: 높은 가격순
+      - generic [ref=e9]:
+        - text: 할인율순
+      - generic [ref=e10]:
+        - text: 후기순
+""".strip()
+    refs = {
+        "e1": {"role": "main"},
+        "e2": {"role": "generic"},
+        "e3": {"role": "generic"},
+        "e4": {"role": "generic"},
+        "e5": {"role": "generic"},
+        "e6": {"role": "generic"},
+        "e7": {"role": "generic"},
+        "e8": {"role": "generic"},
+        "e9": {"role": "generic"},
+        "e10": {"role": "generic"},
+    }
+
+    elements, _ = runtime._pseudo_elements_from_role_snapshot(snapshot, refs)
+    elements_by_ref = {str(item.get("ref_id") or ""): item for item in elements}
+    low_price = elements_by_ref["e7"]
+    attrs = dict(low_price.get("attributes") or {})
+
+    assert low_price["tag"] == "button"
+    assert low_price["element_type"] == "button"
+    assert low_price["text"] == "낮은 가격순"
+    assert attrs["role"] == "option"
+    assert attrs["gaia-custom-option"] == "true"
+    assert attrs["gaia-actionable"] == "true"
+    assert attrs["openclaw_source_role"] == "generic"
+
+
+def test_pseudo_elements_from_role_snapshot_does_not_promote_dangerous_custom_dropdown_labels() -> None:
+    snapshot = """
+- main [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - text: 로그인
+    - generic [ref=e4]:
+      - text: 삭제
+    - generic [ref=e5]:
+      - text: 장바구니
+    - generic [ref=e6]:
+      - text: 낮은 가격순
+""".strip()
+    refs = {
+        "e1": {"role": "main"},
+        "e2": {"role": "generic"},
+        "e3": {"role": "generic"},
+        "e4": {"role": "generic"},
+        "e5": {"role": "generic"},
+        "e6": {"role": "generic"},
+    }
+
+    elements, _ = runtime._pseudo_elements_from_role_snapshot(snapshot, refs)
+    elements_by_ref = {str(item.get("ref_id") or ""): item for item in elements}
+
+    for ref_id in ("e3", "e4", "e5", "e6"):
+        attrs = dict(elements_by_ref[ref_id].get("attributes") or {})
+        assert attrs.get("gaia-custom-option") is None

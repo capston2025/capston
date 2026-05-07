@@ -1,0 +1,82 @@
+{
+  "suite_id": "kbs_news_public_v2",
+  "site": {
+    "name": "KBS News",
+    "base_url": "https://news.kbs.co.kr/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "KBSNEWS_001_HOME_LANDMARK",
+      "name": "뉴스 홈 주요 영역 확인",
+      "url": "https://news.kbs.co.kr/news/pc/main/main.html",
+      "goal": "KBS 뉴스 홈에서 주요 뉴스, 분야별 메뉴, 최신 뉴스 또는 영상 뉴스 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "KBSNEWS_002_BREAKING_LIST",
+      "name": "최신 뉴스 목록 확인",
+      "url": "https://news.kbs.co.kr/news/pc/breaking/breaking.html",
+      "goal": "KBS 최신 뉴스 화면에서 기사 제목 목록, 시간 정보, 썸네일 또는 분야 표시 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "KBSNEWS_003_ARTICLE_DETAIL",
+      "name": "뉴스 기사 상세 확인",
+      "url": "https://news.kbs.co.kr/news/pc/view/view.do?ncd=8555155",
+      "goal": "KBS 뉴스 기사 상세 화면에서 기사 제목, 본문, 입력 시간 또는 기자 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "KBSNEWS_004_CATEGORY_LIST",
+      "name": "분야별 뉴스 확인",
+      "url": "https://news.kbs.co.kr/news/pc/category/category.do?ctcd=0003",
+      "goal": "KBS 분야별 뉴스 화면에서 분야 탭, 기사 목록, 주요 뉴스 또는 더보기 영역 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "KBSNEWS_005_WEATHER_NEWS",
+      "name": "날씨 뉴스 목록 확인",
+      "url": "https://news.kbs.co.kr/news/pc/menu/listWeather.do?mcd=0048",
+      "goal": "KBS 날씨 뉴스 화면에서 날씨 기사 목록, 예보나 특보 문구, 기사 제목 또는 시간 정보 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    }
+  ]
+}

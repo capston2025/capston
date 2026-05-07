@@ -1,5 +1,5 @@
 {
-  "suite_id": "moneytoring_public_v1",
+  "suite_id": "moneytoring_public_v2",
   "site": {
     "name": "머니터링",
     "base_url": "https://www.moneytoring.ai/",
@@ -14,10 +14,10 @@
   },
   "scenarios": [
     {
-      "id": "MONEYTORING_001_HOME_LANDMARK",
-      "name": "홈/핵심 랜드마크 확인",
+      "id": "MONEYTORING_001_MARKET_HOME",
+      "name": "금융 데이터 홈 확인",
       "url": "https://www.moneytoring.ai/",
-      "goal": "머니터링 공개 홈 화면에서 검색창, 주요 메뉴, 핵심 콘텐츠 영역 중 최소 두 가지가 보이는지 확인해줘.",
+      "goal": "머니터링 홈에서 종목 검색 입력, 주요 지수, 시장 뉴스나 분석 카드 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -27,10 +27,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MONEYTORING_002_SEARCH_OR_NAVIGATION",
-      "name": "검색 또는 주요 내비게이션",
+      "id": "MONEYTORING_002_STOCK_SEARCH",
+      "name": "시장 종목 언급 확인",
       "url": "https://www.moneytoring.ai/",
-      "goal": "머니터링에서 선진뷰티사이언스 관련 공개 검색이나 주요 내비게이션을 수행하고 결과 목록 또는 이동한 화면이 보이는지 확인해줘.",
+      "goal": "머니터링 홈의 마켓보이스 또는 관심종목 영역에서 삼성전자 같은 공개 기업명, 종목 정보, 가격 또는 등락률 정보 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MONEYTORING_003_DETAIL_ENTRY",
-      "name": "상세 문서/항목 진입",
+      "id": "MONEYTORING_003_COMPANY_DETAIL",
+      "name": "종목 상세 정보 확인",
       "url": "https://www.moneytoring.ai/",
-      "goal": "머니터링에서 종목 상세의 기업정보 또는 투자지표 영역으로 진입해 제목, 이미지, 본문, 표 중 확인 가능한 상세 정보가 보이는지 확인해줘.",
+      "goal": "종목 상세 화면에서 현재가, 차트, 기업 개요 또는 투자 지표 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -53,10 +53,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MONEYTORING_004_CATEGORY_LIST_MOVE",
-      "name": "카테고리/목록/페이지 이동",
+      "id": "MONEYTORING_004_MARKET_SECTION",
+      "name": "시장 섹션 탐색 확인",
       "url": "https://www.moneytoring.ai/",
-      "goal": "머니터링에서 마켓 정보, 종목 발굴, 커뮤니티 같은 공개 목록으로 이동해 목록이나 카테고리 화면이 바뀌었는지 확인해줘.",
+      "goal": "시장 정보나 종목 발굴 섹션으로 이동해 목록형 금융 데이터가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -66,10 +66,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MONEYTORING_005_SAFE_INTERACTION",
-      "name": "비파괴적 상호작용 확인",
+      "id": "MONEYTORING_005_INDEX_OR_CALENDAR",
+      "name": "지수와 일정 정보 확인",
       "url": "https://www.moneytoring.ai/",
-      "goal": "머니터링에서 경제캘린더, 주요지수, 정렬 탭 같은 공개 정보를 전환해 공개 화면의 표시 상태가 바뀌는지 확인해줘.",
+      "goal": "주요 지수나 경제 일정 영역을 열어 날짜, 지수명, 변동 정보 같은 공개 데이터가 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

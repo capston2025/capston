@@ -6,7 +6,9 @@ from pathlib import Path
 from scripts.run_kpi_benchmark_pack import (
     MIN_BENCHMARK_TIMEOUT_SEC,
     _build_run_suite_command,
+    _compute_pack_kpis,
     _effective_timeout_cap,
+    _is_blocked_user_action,
     _load_suite_manifest,
     _resolve_suite_paths,
 )
@@ -67,3 +69,25 @@ def test_build_run_suite_command_forwards_push_metrics(tmp_path: Path) -> None:
 
     assert "--push-metrics" not in without_push
     assert with_push[-1] == "--push-metrics"
+
+
+def test_pack_kpis_isolate_korean_captcha_gate_from_primary_success_rate() -> None:
+    rows = [
+        {"suite_id": "ok_suite", "scenario_id": "OK_001", "status": "SUCCESS", "duration_seconds": 4.0},
+        {
+            "suite_id": "naver_shopping_public_v2",
+            "scenario_id": "NAVERSHOP_002_SEARCH_PRODUCT",
+            "status": "FAIL",
+            "reason": "NAVER 보안 확인 캡차 화면입니다. 보안문자 정답이 필요합니다.",
+            "duration_seconds": 9.0,
+            "summary": {"reason_code_summary": {"wait_repeated": 2}},
+        },
+    ]
+
+    assert _is_blocked_user_action(rows[1])
+    kpis = _compute_pack_kpis(rows, repeats=1)
+
+    assert kpis["scenario_success_rate"] == 0.5
+    assert kpis["primary_success_rate"] == 1.0
+    assert kpis["counts"]["blocked"] == 1
+    assert kpis["counts"]["primary_runs"] == 1

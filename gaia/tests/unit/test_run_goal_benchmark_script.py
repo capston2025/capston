@@ -2,12 +2,20 @@ from types import SimpleNamespace
 
 from scripts.run_goal_benchmark import (
     _build_child_code,
+    _compute_kpi_metrics,
+    _compute_metrics,
     _infer_provider_from_model,
     _prepare_scenario_env,
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
     _should_emit_live_trace_line,
     _should_push_metrics,
+)
+from scripts.benchmark_blocking import (
+    BLOCKED_CAPTCHA_REASON_CODE,
+    BLOCKED_USER_ACTION_STATUS,
+    is_blocked_user_action,
+    normalize_blocked_user_action_row,
 )
 
 
@@ -96,3 +104,54 @@ def test_monitoring_push_is_explicit_opt_in() -> None:
     assert _should_push_metrics(SimpleNamespace(push_metrics=False)) is False
     assert _should_push_metrics(SimpleNamespace(push_metrics=True)) is True
     assert _should_push_metrics(SimpleNamespace()) is False
+
+
+def test_korean_captcha_gate_is_normalized_to_blocked_user_action() -> None:
+    row = normalize_blocked_user_action_row(
+        {
+            "scenario_id": "NAVERSHOP_002_SEARCH_PRODUCT",
+            "status": "FAIL",
+            "reason": "현재 화면은 NAVER 보안 확인 캡차이며 보안문자 정답이 필요합니다.",
+            "summary": {"final_status": "FAIL", "reason_code_summary": {"wait_repeated": 2}},
+            "captured_log": "human_answer requested: 보안문자 입력 필요",
+        }
+    )
+
+    assert row["status"] == BLOCKED_USER_ACTION_STATUS
+    assert row["summary"]["final_status"] == BLOCKED_USER_ACTION_STATUS
+    assert row["summary"]["blocked_reason_code"] == BLOCKED_CAPTCHA_REASON_CODE
+    assert row["summary"]["reason_code_summary"][BLOCKED_CAPTCHA_REASON_CODE] == 1
+    assert is_blocked_user_action(row)
+
+
+def test_blocked_captcha_is_excluded_from_primary_success_rate() -> None:
+    rows = [
+        {"scenario_id": "OK_001", "status": "SUCCESS", "duration_seconds": 5.0, "summary": {}},
+        normalize_blocked_user_action_row(
+            {
+                "scenario_id": "NAVERSHOP_002_SEARCH_PRODUCT",
+                "status": "FAIL",
+                "reason": "NAVER 보안 확인 캡차로 보안문자 입력이 필요합니다.",
+                "duration_seconds": 10.0,
+                "summary": {"final_status": "FAIL", "reason_code_summary": {}},
+            }
+        ),
+        {
+            "scenario_id": "TIMEOUT_001",
+            "status": "FAIL",
+            "reason": "benchmark_timeout(600s)",
+            "duration_seconds": 600.0,
+            "summary": {},
+        },
+    ]
+
+    metrics = _compute_metrics(rows, repeats=1)
+    kpis = _compute_kpi_metrics(rows, repeats=1)
+
+    assert metrics["success_rate"] == 0.3333
+    assert metrics["primary_success_rate"] == 0.5
+    assert metrics["blocked_runs_total"] == 1
+    assert kpis["scenario_success_rate"] == 0.3333
+    assert kpis["primary_success_rate"] == 0.5
+    assert kpis["counts"]["blocked"] == 1
+    assert kpis["counts"]["primary_runs"] == 2

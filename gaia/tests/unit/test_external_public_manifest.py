@@ -37,6 +37,16 @@ INTERNAL_HOST_MARKERS = {
     "localhost",
     "127.0.0.1",
 }
+EXCLUDED_SITE_KEYS = {
+    "boj",
+    "cgv",
+    "coupang",
+    "gmarket",
+    "naver_shopping",
+    "npm",
+    "oliveyoung",
+    "spell_checker",
+}
 
 
 def _load_manifest() -> dict:
@@ -60,6 +70,9 @@ def test_external_public_manifest_has_30_sites_and_150_scenarios() -> None:
 
 def test_external_public_suites_exist_and_have_five_scenarios() -> None:
     manifest = _load_manifest()
+    site_keys = {str(item.get("site_key") or "") for item in manifest["suites"]}
+
+    assert not (site_keys & EXCLUDED_SITE_KEYS)
 
     for item in manifest["suites"]:
         suite_path = ROOT / item["suite_path"]
@@ -97,3 +110,62 @@ def test_external_public_manifest_excludes_internal_hosts_and_destructive_goals(
         for scenario in suite["scenarios"]:
             goal = str(scenario.get("goal") or "").lower()
             assert not any(keyword.lower() in goal for keyword in FORBIDDEN_GOAL_KEYWORDS), scenario["id"]
+
+
+def test_kakao_map_route_scenario_uses_public_route_deep_link() -> None:
+    suite = _load_suite("gaia/tests/scenarios/kakao_map_public_suite.json")
+    route = next(item for item in suite["scenarios"] if item["id"] == "KAKAOMAP_004_ROUTE_PANEL")
+
+    assert str(route["url"]).startswith("https://map.kakao.com/link/by/")
+    assert "서울역" in route["goal"]
+    assert "경복궁" in route["goal"]
+
+
+def test_failed_public_scenarios_use_playwright_verified_readonly_surfaces() -> None:
+    fow = _load_suite("gaia/tests/scenarios/fow_public_suite.json")
+    fow_by_id = {item["id"]: item for item in fow["scenarios"]}
+    assert fow_by_id["FOW_002_CHAMPION_STATS"]["url"] == "https://www.fow.lol/stats"
+    assert fow_by_id["FOW_003_RANKING_LIST"]["url"] == "https://www.fow.lol/ranking"
+    assert fow_by_id["FOW_004_REGION_QUEUE_FILTER"]["url"] == "https://www.fow.lol/stats"
+    assert "승률" in fow_by_id["FOW_004_REGION_QUEUE_FILTER"]["goal"]
+
+    moneytoring = _load_suite("gaia/tests/scenarios/moneytoring_public_suite.json")
+    moneytoring_002 = next(item for item in moneytoring["scenarios"] if item["id"] == "MONEYTORING_002_STOCK_SEARCH")
+    assert "삼성전자" in moneytoring_002["goal"]
+    assert "검색해" not in moneytoring_002["goal"]
+
+    elevenst = _load_suite("gaia/tests/scenarios/elevenst_public_suite.json")
+    elevenst_005 = next(item for item in elevenst["scenarios"] if item["id"] == "ELEVENST_005_SORT_CHANGE")
+    assert elevenst_005["url"].startswith("https://search.11st.co.kr/pc/total-search")
+    assert "선택해" not in elevenst_005["goal"]
+
+    government24 = _load_suite("gaia/tests/scenarios/government24_public_suite.json")
+    gov24_005 = next(item for item in government24["scenarios"] if item["id"] == "GOV24_005_RESULT_FILTER")
+    assert "검색필터" in gov24_005["goal"]
+    assert "선택해" not in gov24_005["goal"]
+
+    seoul_culture = _load_suite("gaia/tests/scenarios/seoul_culture_public_suite.json")
+    facility = next(item for item in seoul_culture["scenarios"] if item["id"] == "SEOULCULTURE_004_FACILITY_LIST")
+    assert facility["url"] == "https://culture.seoul.go.kr/night/sub/nightFac/list.do"
+    assert "야간 운영시설" in facility["goal"]
+
+    pypi = _load_suite("gaia/tests/scenarios/pypi_public_suite.json")
+    pypi_002 = next(item for item in pypi["scenarios"] if item["id"] == "PYPI_002_PACKAGE_SEARCH")
+    assert pypi_002["url"] == "https://pypi.org/project/requests/#files"
+    assert "/search/" not in pypi_002["url"]
+
+    musinsa = _load_suite("gaia/tests/scenarios/musinsa_public_suite.json")
+    musinsa_005 = next(item for item in musinsa["scenarios"] if item["id"] == "MUSINSA_005_SORT_CHANGE")
+    assert "목록 표시가 바뀌는지" not in musinsa_005["goal"]
+    assert "현재 선택값" in musinsa_005["goal"]
+
+    seoul_open_data = _load_suite("gaia/tests/scenarios/seoul_open_data_public_suite.json")
+    seoul_data_003 = next(item for item in seoul_open_data["scenarios"] if item["id"] == "SEOULDATA_003_DATASET_DETAIL")
+    seoul_data_005 = next(item for item in seoul_open_data["scenarios"] if item["id"] == "SEOULDATA_005_SORT_OR_FILTER")
+    assert "검색 결과 또는 상세 카드" in seoul_data_003["goal"]
+    assert "조회 버튼" in seoul_data_005["goal"]
+    assert "목록 표시가 바뀌는지" not in seoul_data_005["goal"]
+
+    museum = _load_suite("gaia/tests/scenarios/national_museum_public_suite.json")
+    assert museum["site"]["name"] == "국립중앙박물관"
+    assert len(museum["scenarios"]) == 5
