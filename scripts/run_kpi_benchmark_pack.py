@@ -17,6 +17,8 @@ from typing import Any, Dict, Iterable, List
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = ROOT / "artifacts" / "benchmarks"
 RUN_SINGLE = ROOT / "scripts" / "run_goal_benchmark.py"
+PUSH_METRICS = ROOT / "scripts" / "push_metrics.py"
+MONITORING_CONFIG = Path.home() / ".gaia" / "monitoring.json"
 MIN_BENCHMARK_TIMEOUT_SEC = 600
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -387,6 +389,41 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
+def _try_push_pack_metrics(out_dir: Path) -> None:
+    """Upload the final pack artifact when metrics upload was explicitly enabled."""
+    if not MONITORING_CONFIG.exists():
+        print("\n  모니터링 서버 설정이 없어 pack 통합 지표 업로드를 건너뜁니다.")
+        print("  연결: python scripts/gaia_monitor_connect.py <서버주소> --token <토큰>")
+        return
+    if not PUSH_METRICS.exists():
+        return
+
+    print("\n  📡 모니터링 서버로 pack 통합 지표 업로드 중...")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PUSH_METRICS),
+            "--suite-dir",
+            str(out_dir),
+            "--no-share-suite",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print("  pack 통합 지표 업로드 완료 ✅")
+        if result.stdout.strip():
+            print(f"  {result.stdout.strip()}")
+        return
+    print("  pack 통합 지표 업로드 실패 (벤치마크 결과는 정상 저장됨)")
+    if result.stderr.strip():
+        print(f"  오류: {result.stderr.strip()}")
+    if result.stdout.strip():
+        print(f"  출력: {result.stdout.strip()}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run multiple GAIA benchmark suites and aggregate KPI metrics.")
     parser.add_argument("--suite", action="append", default=[], help="Path to a suite JSON. Repeatable.")
@@ -478,6 +515,8 @@ def main() -> None:
     (out_dir / "summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out_dir / "results.json").write_text(json.dumps(all_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _write_markdown(out_dir / "summary.md", report)
+    if args.push_metrics:
+        _try_push_pack_metrics(out_dir)
     print(json.dumps({"artifact_dir": str(out_dir), "overall_kpis": overall_kpis}, ensure_ascii=False))
 
 

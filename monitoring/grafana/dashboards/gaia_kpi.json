@@ -2,7 +2,7 @@
   "title": "GAIA Benchmark Results",
   "uid": "gaia-kpi-v1",
   "schemaVersion": 38,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "time": {
     "from": "now-7d",
@@ -58,7 +58,7 @@
           "uid": "gaia-prometheus"
         },
         "query": {
-          "query": "label_values(gaia_scenario_runs_total{suite_id=\"$suite_id\"}, model)",
+          "query": "label_values({__name__=~\"gaia_scenario_runs_total|gaia_external_pack_success_rate\"}, model)",
           "refId": "A"
         },
         "refresh": 2,
@@ -71,12 +71,953 @@
   },
   "panels": [
     {
+      "id": 900,
+      "type": "row",
+      "title": "🌐 External Public 30-site Overview",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "id": 901,
+      "type": "stat",
+      "title": "사이트 수",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max(gaia_external_pack_site_count{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": null,
+          "max": null,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 902,
+      "type": "stat",
+      "title": "전체 실행 수",
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max(gaia_external_pack_runs_total{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": null,
+          "max": null,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 903,
+      "type": "stat",
+      "title": "전체 성공률",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max(gaia_external_pack_success_rate{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.7
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 904,
+      "type": "stat",
+      "title": "Primary 성공률",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max(gaia_external_pack_primary_success_rate{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.7
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 905,
+      "type": "stat",
+      "title": "평균 실행 시간",
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max(gaia_external_pack_avg_duration_seconds{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": null,
+          "max": null,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 906,
+      "type": "stat",
+      "title": "개입률",
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max(gaia_external_pack_intervention_rate{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "text": {
+          "titleSize": 12,
+          "valueSize": 30
+        }
+      }
+    },
+    {
+      "id": 907,
+      "type": "table",
+      "title": "사이트별 성공률 / 실행 시간 / 차단 수",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 11
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_success_rate{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_runs_total{model=~\"$model\"})",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_avg_duration_seconds{model=~\"$model\"})",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_blocked_count{model=~\"$model\"})",
+          "instant": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_latest_status{model=~\"$model\"})",
+          "instant": true,
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "wrap": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SUCCESS RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PRIMARY RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "AVG SEC"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "LATEST"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "SUCCESS",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "SUCCESS RATE",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "site_key",
+                "site",
+                "category",
+                "volatility",
+                "gaia_external_site_success_rate",
+                "gaia_external_site_runs_total",
+                "gaia_external_site_avg_duration_seconds",
+                "gaia_external_site_blocked_count",
+                "gaia_external_site_latest_status"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "site_key": "SITE KEY",
+              "site": "SITE",
+              "category": "CATEGORY",
+              "volatility": "VOLATILITY",
+              "gaia_external_site_success_rate": "SUCCESS RATE",
+              "gaia_external_site_runs_total": "RUNS",
+              "gaia_external_site_avg_duration_seconds": "AVG SEC",
+              "gaia_external_site_blocked_count": "BLOCKED",
+              "gaia_external_site_latest_status": "LATEST"
+            },
+            "indexByName": {
+              "site_key": 0,
+              "site": 1,
+              "category": 2,
+              "volatility": 3,
+              "gaia_external_site_success_rate": 4,
+              "gaia_external_site_runs_total": 5,
+              "gaia_external_site_avg_duration_seconds": 6,
+              "gaia_external_site_blocked_count": 7,
+              "gaia_external_site_latest_status": 8
+            },
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 908,
+      "type": "table",
+      "title": "카테고리별 성공률",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (category) (gaia_external_category_success_rate{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (category) (gaia_external_category_runs_total{model=~\"$model\"})",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "max by (category) (gaia_external_category_avg_duration_seconds{model=~\"$model\"})",
+          "instant": true,
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "wrap": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SUCCESS RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PRIMARY RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "AVG SEC"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "LATEST"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "SUCCESS",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "SUCCESS RATE",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "category",
+                "gaia_external_category_success_rate",
+                "gaia_external_category_runs_total",
+                "gaia_external_category_avg_duration_seconds"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "category": "CATEGORY",
+              "gaia_external_category_success_rate": "SUCCESS RATE",
+              "gaia_external_category_runs_total": "RUNS",
+              "gaia_external_category_avg_duration_seconds": "AVG SEC"
+            },
+            "indexByName": {
+              "category": 0,
+              "gaia_external_category_success_rate": 1,
+              "gaia_external_category_runs_total": 2,
+              "gaia_external_category_avg_duration_seconds": 3
+            },
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 909,
+      "type": "table",
+      "title": "실패 Reason Code 상위",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (reason_code, category) (gaia_external_reason_code_count{model=~\"$model\"})",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "wrap": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SUCCESS RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PRIMARY RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "AVG SEC"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "LATEST"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "SUCCESS",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "COUNT",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "reason_code",
+                "category",
+                "gaia_external_reason_code_count"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "reason_code": "REASON CODE",
+              "category": "CATEGORY",
+              "gaia_external_reason_code_count": "COUNT"
+            },
+            "indexByName": {
+              "reason_code": 0,
+              "category": 1,
+              "gaia_external_reason_code_count": 2
+            },
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": 100,
       "type": "row",
       "title": "📊 Suite Overview",
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 27,
         "w": 24,
         "h": 1
       },
@@ -88,7 +1029,7 @@
       "type": "stat",
       "gridPos": {
         "x": 0,
-        "y": 1,
+        "y": 28,
         "w": 12,
         "h": 6
       },
@@ -153,7 +1094,7 @@
       "type": "stat",
       "gridPos": {
         "x": 12,
-        "y": 1,
+        "y": 28,
         "w": 12,
         "h": 6
       },
@@ -216,7 +1157,7 @@
       "title": "🗂 Scenario Cards  (Suite: $suite_id)",
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 67,
         "w": 24,
         "h": 1
       },
@@ -229,7 +1170,7 @@
       "type": "stat",
       "gridPos": {
         "x": 0,
-        "y": 41,
+        "y": 68,
         "w": 3,
         "h": 3
       },
@@ -279,7 +1220,7 @@
       "title": "📋 Scenario Detail Table  (Suite: $suite_id)",
       "gridPos": {
         "x": 0,
-        "y": 15,
+        "y": 42,
         "w": 24,
         "h": 1
       },
@@ -292,7 +1233,7 @@
       "type": "table",
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 43,
         "w": 24,
         "h": 15
       },
@@ -487,7 +1428,7 @@
       "title": "📈 Trends",
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 58,
         "w": 24,
         "h": 1
       },
@@ -500,7 +1441,7 @@
       "type": "table",
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 34,
         "w": 24,
         "h": 8
       },
@@ -608,7 +1549,7 @@
       "type": "barchart",
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 59,
         "w": 12,
         "h": 8
       },
@@ -655,7 +1596,7 @@
       "type": "barchart",
       "gridPos": {
         "x": 12,
-        "y": 32,
+        "y": 59,
         "w": 12,
         "h": 8
       },

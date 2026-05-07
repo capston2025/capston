@@ -83,6 +83,76 @@ def test_suite_metrics_exports_primary_success_rate() -> None:
     assert "gaia_count_primary_runs" in metrics
 
 
+def test_suite_metrics_enrich_external_manifest_labels() -> None:
+    summary = {
+        "suite_id": "musinsa_public_v2",
+        "site": {"name": "MUSINSA"},
+        "model": "gpt-5.5",
+        "provider": "openai",
+        "metrics": {"runs_total": 5, "success_rate": 0.8},
+        "kpi_metrics": {
+            "scenario_success_rate": 0.8,
+            "primary_success_rate": 0.8,
+            "targets": {},
+            "counts": {"success": 4, "primary_runs": 5},
+        },
+    }
+
+    metrics = push_metrics.build_suite_metrics(summary)
+
+    assert 'site_key="musinsa"' in metrics
+    assert 'category="commerce_product"' in metrics
+    assert 'volatility="high"' in metrics
+
+
+def test_external_pack_metrics_roll_up_sites_categories_and_reason_codes() -> None:
+    summary = {
+        "pack_id": "kpi_pack_test",
+        "overall_kpis": {
+            "scenario_success_rate": 0.5,
+            "primary_success_rate": 0.5,
+            "progress_stop_failure_rate": 0.5,
+            "intervention_rate": 0.0,
+            "avg_time_seconds": 7.5,
+            "counts": {"runs_total": 2, "success": 1},
+        },
+        "suites": [
+            {"suite_id": "musinsa_public_v2"},
+            {"suite_id": "daum_public_v2"},
+        ],
+    }
+    results = [
+        {
+            "suite_id": "musinsa_public_v2",
+            "scenario_id": "MUSINSA_001",
+            "status": "SUCCESS",
+            "duration_seconds": 5.0,
+            "goal": "가방을 찾아줘",
+            "model": "gpt-5.5",
+            "provider": "openai",
+        },
+        {
+            "suite_id": "daum_public_v2",
+            "scenario_id": "DAUM_001",
+            "status": "FAIL",
+            "duration_seconds": 10.0,
+            "reason": "free-form failure text should stay out of labels",
+            "summary": {"reason_code_summary": {"option_ref_missing": 2}},
+            "model": "gpt-5.5",
+            "provider": "openai",
+        },
+    ]
+
+    metrics = push_metrics.build_external_pack_metrics(summary, results)
+
+    assert "gaia_external_pack_site_count" in metrics
+    assert 'site_key="musinsa"' in metrics
+    assert 'category="commerce_product"' in metrics
+    assert 'reason_code="option_ref_missing"' in metrics
+    assert "free-form failure text" not in metrics
+    assert "가방을 찾아줘" not in metrics
+
+
 def test_push_suite_dir_uses_stable_suite_instance(tmp_path, monkeypatch) -> None:
     suite_dir = tmp_path / "auth_suite_20260504_123456"
     suite_dir.mkdir()
@@ -114,6 +184,50 @@ def test_push_suite_dir_uses_stable_suite_instance(tmp_path, monkeypatch) -> Non
 
     assert push_metrics.push_suite_dir(suite_dir, "http://monitor.example", "secret") is True
     assert captured["instance"] == "auth_suite"
+
+
+def test_push_suite_dir_uses_pack_instance_and_external_rollups(tmp_path, monkeypatch) -> None:
+    suite_dir = tmp_path / "kpi_pack_20260508_120000"
+    suite_dir.mkdir()
+    (suite_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "kpi_pack_20260508_120000",
+                "overall_kpis": {
+                    "scenario_success_rate": 1.0,
+                    "primary_success_rate": 1.0,
+                    "counts": {"runs_total": 1, "success": 1},
+                },
+                "suites": [{"suite_id": "musinsa_public_v2"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (suite_dir / "results.json").write_text(
+        json.dumps(
+            [
+                {
+                    "suite_id": "musinsa_public_v2",
+                    "scenario_id": "MUSINSA_001",
+                    "status": "SUCCESS",
+                    "duration_seconds": 1.5,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_push(metrics_text: str, instance: str, gateway_url: str, token: str | None) -> bool:
+        captured["metrics_text"] = metrics_text
+        captured["instance"] = instance
+        return True
+
+    monkeypatch.setattr(push_metrics, "push_to_gateway", fake_push)
+
+    assert push_metrics.push_suite_dir(suite_dir, "http://monitor.example", "secret") is True
+    assert captured["instance"] == "kpi_pack_20260508_120000"
+    assert "gaia_external_pack_success_rate" in str(captured["metrics_text"])
 
 
 def test_push_suite_dir_can_share_suite_definition(tmp_path, monkeypatch) -> None:
