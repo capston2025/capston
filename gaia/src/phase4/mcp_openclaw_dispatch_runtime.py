@@ -1553,6 +1553,145 @@ def _extract_context_segments(item: Dict[str, Any]) -> List[str]:
     return segments
 
 
+def _browser_find_text_parts(item: Dict[str, Any]) -> List[Tuple[str, str]]:
+    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+    parts: List[Tuple[str, str]] = []
+
+    def add(field: str, value: Any) -> None:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            return
+        key = (field, cleaned)
+        if key not in parts:
+            parts.append(key)
+
+    add("text", item.get("text"))
+    add("aria_label", attrs.get("aria-label"))
+    add("title", attrs.get("title"))
+    add("placeholder", attrs.get("placeholder"))
+    add("role_ref_name", attrs.get("role_ref_name"))
+    add("selected_value", attrs.get("selected_value"))
+    add("container_name", item.get("container_name") or attrs.get("container_name"))
+    add("container_role", item.get("container_role") or attrs.get("container_role"))
+    add("context_text", item.get("context_text") or attrs.get("context_text"))
+    for segment in _extract_context_segments(item):
+        add("context_segment", segment)
+    group_action_labels = attrs.get("group_action_labels") or item.get("group_action_labels")
+    if isinstance(group_action_labels, list):
+        for label in group_action_labels:
+            add("group_action_label", label)
+    options = attrs.get("options")
+    if isinstance(options, list):
+        for option in options:
+            if isinstance(option, dict):
+                add("option_text", option.get("text"))
+                add("option_value", option.get("value"))
+            else:
+                add("option", option)
+    return parts
+
+
+def _browser_find_element_score(query: str, item: Dict[str, Any]) -> Tuple[int, List[str]]:
+    normalized_query = _normalize_hint_text(query)
+    if not normalized_query:
+        return 0, []
+    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+    role = _normalize_hint_text(attrs.get("role") or attrs.get("role_ref_role"))
+    tag = _normalize_hint_text(item.get("tag"))
+    actionable = str(attrs.get("gaia-actionable") or "").strip().lower() == "true"
+    interactive = actionable or role in _INTERACTIVE_ROLES or tag in {"button", "a", "input", "select", "textarea", "option"}
+    primary_fields = {"text", "aria_label", "title", "role_ref_name", "selected_value", "option_text", "option_value"}
+    context_fields = {"context_text", "context_segment", "container_name", "container_role"}
+    best_score = 0
+    matched_fields: List[str] = []
+    text_parts = _browser_find_text_parts(item)
+    normalized_parts = [(field, value, _normalize_hint_text(value)) for field, value in text_parts]
+
+    for field, _value, normalized_value in normalized_parts:
+        if not normalized_value:
+            continue
+        score = 0
+        if normalized_value == normalized_query:
+            score = 100 if field in primary_fields else 78
+        elif normalized_query in normalized_value:
+            score = 76 if field in primary_fields else 58
+        elif normalized_value in normalized_query and len(normalized_value) >= 2:
+            score = 66 if field in primary_fields else 48
+        if score <= 0:
+            continue
+        if field in context_fields:
+            score = min(score, 64)
+        if interactive:
+            score += 12
+        if role == "option":
+            score += 8
+        if bool(attrs.get("gaia-custom-option")):
+            score += 8
+        if not bool(item.get("is_visible", True)):
+            score -= 80
+        if str(attrs.get("gaia-disabled") or "").strip().lower() == "true":
+            score -= 20
+        if score > best_score:
+            best_score = score
+            matched_fields = [field]
+        elif score == best_score and score > 0 and field not in matched_fields:
+            matched_fields.append(field)
+
+    if best_score <= 0:
+        joined = _normalize_hint_text(" ".join(value for _field, value in text_parts))
+        tokens = [token for token in normalized_query.split(" ") if token]
+        if joined and tokens and all(token in joined for token in tokens):
+            best_score = 52 + (10 if interactive else 0)
+            matched_fields = ["token_match"]
+    return max(0, int(best_score)), matched_fields
+
+
+def _browser_find_matches(
+    *,
+    query: str,
+    elements: List[Dict[str, Any]],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    matches: List[Dict[str, Any]] = []
+    for index, item in enumerate(elements):
+        ref_id = str(item.get("ref_id") or "").strip()
+        if not ref_id:
+            continue
+        score, matched_fields = _browser_find_element_score(query, item)
+        if score < 50:
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        matches.append(
+            {
+                "ref_id": ref_id,
+                "score": score,
+                "matched_fields": matched_fields,
+                "text": str(item.get("text") or "").strip(),
+                "tag": str(item.get("tag") or "").strip(),
+                "role": str(attrs.get("role") or attrs.get("role_ref_role") or "").strip(),
+                "selector": str(item.get("selector") or "").strip(),
+                "container_ref_id": str(item.get("container_ref_id") or attrs.get("container_ref_id") or "").strip(),
+                "container_name": str(item.get("container_name") or attrs.get("container_name") or "").strip(),
+                "context_text": str(item.get("context_text") or attrs.get("context_text") or "").strip(),
+                "is_visible": bool(item.get("is_visible", True)),
+                "_order": index,
+            }
+        )
+    matches.sort(
+        key=lambda item: (
+            -int(item.get("score") or 0),
+            0 if str(item.get("role") or "").lower() in _INTERACTIVE_ROLES else 1,
+            int(item.get("_order") or 0),
+        )
+    )
+    trimmed: List[Dict[str, Any]] = []
+    for item in matches[: max(1, limit)]:
+        cleaned = dict(item)
+        cleaned.pop("_order", None)
+        trimmed.append(cleaned)
+    return trimmed
+
+
 def _synthesize_snapshot_evidence(elements: List[Dict[str, Any]]) -> Dict[str, Any]:
     interactive_count = 0
     list_count = 0
@@ -2407,6 +2546,84 @@ def dispatch_openclaw_action(
             state=state,
         )
         return 200, payload, ""
+
+    if action == "browser_find":
+        query = str(
+            (effective_params or {}).get("query")
+            or (effective_params or {}).get("text")
+            or (effective_params or {}).get("description")
+            or (effective_params or {}).get("value")
+            or ""
+        ).strip()
+        if not query:
+            return _normalize_failure(400, {"error": "query/text/description is required for browser_find"}, "")
+        try:
+            limit = int((effective_params or {}).get("limit") or 5)
+        except Exception:
+            limit = 5
+        limit = max(1, min(20, limit))
+        fallback_url = requested_url
+        state = _ensure_target(
+            base_url=base_url,
+            session_id=session_id,
+            requested_url=requested_url,
+            timeout=timeout,
+        )
+        if bool((effective_params or {}).get("force_refresh")):
+            _clear_snapshot_cache(state)
+        target_id = str(state.get("target_id") or "").strip()
+        snapshot_payload = _snapshot_payload_for_target(
+            base_url=base_url,
+            session_id=session_id,
+            state=state,
+            target_id=target_id,
+            timeout=timeout,
+            requested_scope_ref_id=str((effective_params or {}).get("scope_container_ref_id") or "").strip(),
+        )
+        if snapshot_payload is None:
+            fallback_url = str(state.get("current_url") or fallback_url or "")
+            _clear_session_target(session_id)
+            state = _ensure_target(
+                base_url=base_url,
+                session_id=session_id,
+                requested_url=fallback_url,
+                timeout=timeout,
+            )
+            target_id = str(state.get("target_id") or "").strip()
+            snapshot_payload = _snapshot_payload_for_target(
+                base_url=base_url,
+                session_id=session_id,
+                state=state,
+                target_id=target_id,
+                timeout=timeout,
+                requested_scope_ref_id=str((effective_params or {}).get("scope_container_ref_id") or "").strip(),
+            )
+        if snapshot_payload is None:
+            return _normalize_failure(502, {"error": "snapshot unavailable for browser_find"}, "")
+        elements = list(snapshot_payload.get("elements") or [])
+        matches = _browser_find_matches(query=query, elements=elements, limit=limit)
+        best_match = matches[0] if matches else {}
+        found = bool(best_match)
+        return (
+            200,
+            {
+                "success": True,
+                "ok": True,
+                "found": found,
+                "reason_code": "ok" if found else "not_found",
+                "query": query,
+                "ref_id": str(best_match.get("ref_id") or "") if found else "",
+                "match": best_match,
+                "matches": matches,
+                "snapshot_id": str(snapshot_payload.get("snapshot_id") or ""),
+                "current_url": str(snapshot_payload.get("current_url") or snapshot_payload.get("url") or ""),
+                "url": str(snapshot_payload.get("current_url") or snapshot_payload.get("url") or ""),
+                "session_id": session_id,
+                "profile": profile_name,
+                "targetId": target_id,
+            },
+            "",
+        )
 
     if action in {"capture_screenshot", "browser_screenshot"}:
         fallback_url = requested_url

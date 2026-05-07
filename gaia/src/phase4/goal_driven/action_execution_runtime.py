@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,64 @@ from .exploration_ui_runtime import is_mcp_transport_error
 from gaia.src.phase4.browser_error_utils import add_no_retry_hint, extract_reason_fields
 from gaia.src.phase4.mcp_page_evidence_runtime import resolve_stale_ref
 from gaia.src.phase4.mcp_transport_retry_runtime import execute_mcp_action_with_recovery
+
+
+_VISUAL_FIND_DANGEROUS_TOKENS = (
+    "login",
+    "log in",
+    "sign in",
+    "signin",
+    "signup",
+    "sign up",
+    "register",
+    "logout",
+    "log out",
+    "purchase",
+    "checkout",
+    "cart",
+    "submit",
+    "delete",
+    "remove",
+    "save",
+    "write",
+    "reserve",
+    "booking",
+    "captcha",
+    "security",
+    "로그인",
+    "회원가입",
+    "로그아웃",
+    "장바구니",
+    "구매",
+    "주문",
+    "결제",
+    "삭제",
+    "제거",
+    "저장",
+    "작성",
+    "등록",
+    "예약",
+    "예매",
+    "신청",
+    "보안",
+    "캡챠",
+    "captcha",
+)
+
+_VISUAL_FIND_INTERACTIVE_ROLES = {
+    "button",
+    "link",
+    "option",
+    "menuitem",
+    "menuitemradio",
+    "menuitemcheckbox",
+    "tab",
+    "checkbox",
+    "radio",
+    "switch",
+}
+
+_VISUAL_FIND_INTERACTIVE_TAGS = {"button", "a", "input", "select", "textarea"}
 
 
 def _is_placeholder_wait_text(value: object) -> bool:
@@ -68,6 +127,144 @@ def _normalized_binding_text(agent, value: object) -> str:
         return agent._normalize_text(value)
     except Exception:
         return str(value or "").strip().lower()
+
+
+def _is_visual_coordinate_fallback_enabled() -> bool:
+    raw = str(os.getenv("GAIA_VISUAL_COORDINATE_FALLBACK", "1") or "1").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _visual_coordinate_confidence_threshold() -> float:
+    raw = str(os.getenv("GAIA_VISUAL_COORDINATE_CONFIDENCE", "0.86") or "0.86").strip()
+    try:
+        value = float(raw)
+    except Exception:
+        value = 0.86
+    return max(0.5, min(value, 0.99))
+
+
+def _visual_find_label_candidates(
+    agent,
+    decision: ActionDecision,
+    selected_element: Optional[DOMElement],
+) -> List[str]:
+    candidates: List[str] = []
+
+    def add(value: object) -> None:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        if not text or len(text) > 80:
+            return
+        normalized = _normalized_binding_text(agent, text)
+        if not normalized:
+            return
+        if normalized not in {_normalized_binding_text(agent, item) for item in candidates}:
+            candidates.append(text)
+
+    if selected_element is not None:
+        for value in (
+            getattr(selected_element, "text", ""),
+            getattr(selected_element, "aria_label", ""),
+            getattr(selected_element, "title", ""),
+            getattr(selected_element, "role_ref_name", ""),
+            getattr(selected_element, "selected_value", ""),
+        ):
+            add(value)
+    if decision.value and isinstance(decision.value, str):
+        add(decision.value)
+    reasoning = str(getattr(decision, "reasoning", "") or "")
+    for match in re.findall(r"['\"“”‘’]([^'\"“”‘’]{1,60})['\"“”‘’]", reasoning):
+        add(match)
+    return candidates[:6]
+
+
+def _visual_find_label_is_safe(agent, label: str) -> bool:
+    normalized = _normalized_binding_text(agent, label)
+    if not normalized or len(normalized) > 80:
+        return False
+    return not any(_normalized_binding_text(agent, token) in normalized for token in _VISUAL_FIND_DANGEROUS_TOKENS)
+
+
+def _element_visual_find_score(agent, label: str, element: DOMElement) -> float:
+    if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+        return -1.0
+    label_norm = _normalized_binding_text(agent, label)
+    if not label_norm:
+        return -1.0
+    fields = [
+        getattr(element, "text", ""),
+        getattr(element, "aria_label", ""),
+        getattr(element, "title", ""),
+        getattr(element, "role_ref_name", ""),
+        getattr(element, "selected_value", ""),
+    ]
+    field_norms = [_normalized_binding_text(agent, value) for value in fields if str(value or "").strip()]
+    if not field_norms:
+        return -1.0
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
+    interactive_bonus = 10.0 if role in _VISUAL_FIND_INTERACTIVE_ROLES or tag in _VISUAL_FIND_INTERACTIVE_TAGS else 0.0
+    best = -1.0
+    for field in field_norms:
+        score = -1.0
+        if field == label_norm:
+            score = 100.0
+        elif label_norm in field:
+            score = 82.0
+        elif field in label_norm and len(field) >= 2:
+            score = 70.0
+        if score > best:
+            best = score
+    return best + interactive_bonus if best >= 0 else -1.0
+
+
+def _find_visible_text_ref_candidate(
+    agent,
+    labels: List[str],
+    dom_elements: List[DOMElement],
+) -> Optional[DOMElement]:
+    best_score = -1.0
+    best_element: Optional[DOMElement] = None
+    for label in labels:
+        if not _visual_find_label_is_safe(agent, label):
+            continue
+        for element in dom_elements:
+            if not str(getattr(element, "ref_id", "") or "").strip():
+                continue
+            score = _element_visual_find_score(agent, label, element)
+            if score > best_score:
+                best_score = score
+                best_element = element
+    if best_score < 80.0:
+        return None
+    return best_element
+
+
+def _force_analyze_dom_for_visual_find(agent) -> List[DOMElement]:
+    try:
+        return list(agent._analyze_dom(force_refresh=True) or [])
+    except TypeError:
+        return list(agent._analyze_dom() or [])
+    except Exception:
+        return []
+
+
+def _coordinate_click_script(x: int, y: int) -> str:
+    return (
+        "() => {"
+        f" const x = {int(x)}; const y = {int(y)};"
+        " const el = document.elementFromPoint(x, y);"
+        " if (!el) return { clicked: false, reason: 'no_element', x, y };"
+        " const before = 0;"
+        " try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, clientX:x, clientY:y})); } catch (_) {}"
+        " try { el.click(); } catch (_) {"
+        "   el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, clientX:x, clientY:y}));"
+        "   el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, clientX:x, clientY:y}));"
+        "   el.dispatchEvent(new MouseEvent('click', {bubbles:true, clientX:x, clientY:y}));"
+        " }"
+        " return { clicked: true, before, after: 1, x, y,"
+        "   tag: el.tagName, text: (el.innerText || el.textContent || '').slice(0, 80) };"
+        "}"
+    )
 
 
 def _normalized_select_options(agent, element: Optional[DOMElement]) -> List[dict[str, str]]:
@@ -689,6 +886,15 @@ def execute_decision(
             )
             if repaired is not None:
                 rebound_element = repaired
+        if rebound_element is None and decision.action == ActionType.CLICK:
+            visual_labels = _visual_find_label_candidates(agent, decision, selected_element)
+            rebound_element = _find_visible_text_ref_candidate(agent, visual_labels, refreshed_dom)
+            if rebound_element is None and visual_labels:
+                force_refreshed_dom = _force_analyze_dom_for_visual_find(agent)
+                if force_refreshed_dom:
+                    rebound_element = _find_visible_text_ref_candidate(agent, visual_labels, force_refreshed_dom)
+                    if rebound_element is not None:
+                        refreshed_dom = force_refreshed_dom
         if rebound_element is not None and getattr(rebound_element, "id", None) is not None:
             bound_element_id = int(getattr(rebound_element, "id"))
             selected_element = rebound_element
@@ -753,6 +959,71 @@ def execute_decision(
                     agent._log("♻️ stale/ref 오류 복구: 최신 snapshot/ref 재매핑 후 재시도 성공")
         return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
 
+    def _execute_visual_coordinate_click_fallback() -> tuple[bool, Optional[str]]:
+        if not openclaw_agentic_mode or not _is_visual_coordinate_fallback_enabled():
+            return False, agent._last_exec_result.as_error_message() if agent._last_exec_result else None
+        labels = [
+            label
+            for label in _visual_find_label_candidates(agent, decision, selected_element)
+            if _visual_find_label_is_safe(agent, label)
+        ]
+        if not labels:
+            try:
+                agent._record_reason_code("visual_coordinate_fallback_blocked")
+            except Exception:
+                pass
+            return False, agent._last_exec_result.as_error_message() if agent._last_exec_result else None
+        label = labels[0]
+        capture = getattr(agent, "_capture_screenshot", None)
+        llm = getattr(agent, "llm", None)
+        coordinate_finder = getattr(llm, "find_element_coordinates", None)
+        if not callable(capture) or not callable(coordinate_finder):
+            return False, agent._last_exec_result.as_error_message() if agent._last_exec_result else None
+        screenshot = capture()
+        if not screenshot:
+            return False, agent._last_exec_result.as_error_message() if agent._last_exec_result else None
+        try:
+            located = coordinate_finder(screenshot, label)
+        except Exception as exc:
+            agent._last_exec_result = ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="visual_coordinate_error",
+                reason=str(exc),
+            )
+            return False, agent._last_exec_result.as_error_message()
+        confidence = float((located or {}).get("confidence") or 0.0) if isinstance(located, dict) else 0.0
+        if confidence < _visual_coordinate_confidence_threshold():
+            try:
+                agent._record_reason_code("visual_coordinate_low_confidence")
+            except Exception:
+                pass
+            return False, agent._last_exec_result.as_error_message() if agent._last_exec_result else None
+        try:
+            x = int(round(float((located or {}).get("x"))))
+            y = int(round(float((located or {}).get("y"))))
+        except Exception:
+            return False, agent._last_exec_result.as_error_message() if agent._last_exec_result else None
+        agent._last_exec_result = execute_action(
+            agent,
+            "evaluate",
+            value=_coordinate_click_script(x, y),
+        )
+        if agent._last_exec_result.success and agent._last_exec_result.effective:
+            state_change = dict(agent._last_exec_result.state_change or {})
+            state_change["visual_coordinate_fallback"] = True
+            state_change["visual_target_label"] = label
+            state_change["visual_confidence"] = confidence
+            agent._last_exec_result.state_change = state_change
+            try:
+                agent._record_reason_code("visual_coordinate_fallback")
+            except Exception:
+                pass
+            agent._log(
+                f"♻️ visual fallback 클릭: label={label!r} x={x} y={y} confidence={confidence:.2f}"
+            )
+        return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
+
     try:
         if decision.action in {
             ActionType.CLICK,
@@ -766,7 +1037,13 @@ def execute_decision(
                 reason_code="missing_element_id",
                 reason=f"{decision.action.value} 액션에는 ref_id 또는 element_id가 필요함",
             )
-            return False, f"{decision.action.value} 액션에는 ref_id 또는 element_id가 필요함"
+            if decision.action == ActionType.CLICK:
+                ok, err = _execute_visual_coordinate_click_fallback()
+                if ok:
+                    _remember_recent_signal_event()
+                    _remember_blockable_intent()
+                    return True, None
+            return False, agent._last_exec_result.as_error_message()
         if decision.action == ActionType.CLICK and selected_element is not None and not agent._goal_allows_logout():
             logout_fields = [
                 selected_element.text,
@@ -806,6 +1083,8 @@ def execute_decision(
             if any(token in reasoning_norm for token in ("닫", "close", "dismiss", "x 버튼", "우상단 x")):
                 click_value = "__close_intent__"
             ok, err = _execute_with_ref_recovery("click", action_value=click_value)
+            if not ok:
+                ok, err = _execute_visual_coordinate_click_fallback()
             if ok:
                 _remember_recent_signal_event()
                 _remember_auth_submit()

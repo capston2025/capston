@@ -17,6 +17,7 @@ from gaia.src.phase4.mcp_openclaw_dispatch_runtime import (
 _OPENCLAW_BROWSER_ACTIONS = {
     "browser_tabs_focus",
     "browser_snapshot",
+    "browser_find",
     "browser_act",
     "browser_wait",
     "browser_screenshot",
