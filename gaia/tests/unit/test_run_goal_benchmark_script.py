@@ -1,4 +1,5 @@
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -96,11 +97,27 @@ def test_infer_provider_from_model_handles_openai_gemini_and_ollama() -> None:
     assert _infer_provider_from_model("unknown-model") == ""
 
 
-def test_provider_credential_error_fails_fast_for_missing_openai_key() -> None:
+def test_provider_credential_error_fails_fast_for_missing_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scripts.run_goal_benchmark._has_codex_cli_auth", lambda: False)
+
     assert "provider=openai" in _provider_credential_error("openai", {})
     assert _provider_credential_error("openai", {"OPENAI_API_KEY": "sk-test"}) == ""
     assert _provider_credential_error("openai", {"OPENAI_ADMIN_KEY": "sk-admin-test"}) == ""
     assert _provider_credential_error("ollama", {}) == ""
+
+
+def test_provider_credential_error_accepts_codex_cli_auth(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    auth_dir = tmp_path / ".codex"
+    auth_dir.mkdir()
+    (auth_dir / "auth.json").write_text(
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": "redacted"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("scripts.run_goal_benchmark.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("scripts.run_goal_benchmark.shutil.which", lambda name: "/opt/homebrew/bin/codex" if name == "codex" else None)
+
+    assert _provider_credential_error("openai", {}) == ""
 
 
 def test_should_emit_live_trace_line_filters_to_step_level_messages() -> None:

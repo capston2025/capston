@@ -64,6 +64,19 @@ class LLMVisionClient:
         return None
 
     @staticmethod
+    def _has_codex_cli_auth() -> bool:
+        if shutil.which("codex") is None:
+            return False
+        auth_path = Path.home() / ".codex" / "auth.json"
+        try:
+            raw = json.loads(auth_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if not isinstance(raw, dict):
+            return False
+        return any(str(raw.get(key) or "").strip() for key in ("OPENAI_API_KEY", "auth_mode")) or bool(raw.get("tokens"))
+
+    @staticmethod
     def _read_local_env_file_assignments() -> dict[str, str]:
         env_file = Path(__file__).parent.parent.parent.parent / ".env"
         if not env_file.exists():
@@ -118,10 +131,6 @@ class LLMVisionClient:
             if base_url:
                 os.environ[base_url_env] = base_url
 
-        client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": 60.0}
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        self.client = openai.OpenAI(**client_kwargs)  # 60 second timeout
         configured_model = (
             os.getenv("GAIA_LLM_MODEL")
             or os.getenv("VISION_MODEL")
@@ -136,11 +145,16 @@ class LLMVisionClient:
         self.model = configured_model
         self._auth_source = self._load_auth_source(self.provider)
         model_prefers_codex = "codex" in self.model.lower()
+        codex_cli_auth_available = self._has_codex_cli_auth()
         self._prefer_codex_cli = (
             self.provider == "openai"
-            and (self._auth_source.startswith("oauth_codex_cli") or model_prefers_codex)
+            and (self._auth_source.startswith("oauth_codex_cli") or model_prefers_codex or (not api_key and codex_cli_auth_available))
             and shutil.which("codex") is not None
         )
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": 60.0}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = None if self._prefer_codex_cli and not api_key else openai.OpenAI(**client_kwargs)
         if self._prefer_codex_cli:
             print(
                 self._console_text(

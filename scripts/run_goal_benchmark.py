@@ -5,6 +5,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import statistics
 import subprocess
 import sys
@@ -461,6 +462,19 @@ def _load_gaia_profile_token(provider: str) -> str:
     return str(token or "").strip()
 
 
+def _has_codex_cli_auth() -> bool:
+    if shutil.which("codex") is None:
+        return False
+    auth_path = Path.home() / ".codex" / "auth.json"
+    try:
+        raw = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(raw, dict):
+        return False
+    return any(str(raw.get(key) or "").strip() for key in ("OPENAI_API_KEY", "auth_mode")) or bool(raw.get("tokens"))
+
+
 def _populate_provider_credentials(env: Dict[str, str], provider: str) -> None:
     normalized = str(provider or "").strip().lower()
     dotenv = _read_workspace_env_file_assignments()
@@ -480,9 +494,12 @@ def _populate_provider_credentials(env: Dict[str, str], provider: str) -> None:
 def _provider_credential_error(provider: str, env: Dict[str, str]) -> str:
     normalized = str(provider or "").strip().lower()
     if normalized == "openai" and not str(env.get("OPENAI_API_KEY") or env.get("OPENAI_ADMIN_KEY") or "").strip():
+        if _has_codex_cli_auth():
+            return ""
         return (
             "missing_provider_credentials: provider=openai requires OPENAI_API_KEY or OPENAI_ADMIN_KEY. "
-            "Set it in the shell environment, repo .env, or ~/.gaia/auth/profiles.json before running benchmarks."
+            "Set it in the shell environment, repo .env, ~/.gaia/auth/profiles.json, or run `codex login` "
+            "on this machine before running benchmarks."
         )
     if normalized == "gemini" and not str(env.get("GEMINI_API_KEY") or "").strip():
         return "missing_provider_credentials: provider=gemini requires GEMINI_API_KEY."

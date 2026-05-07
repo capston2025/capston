@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from gaia.src.phase4.llm_vision_client import LLMVisionClient, get_vision_client
 
 
@@ -39,3 +41,30 @@ def test_get_vision_client_returns_openai_compatible_client_for_ollama(monkeypat
 
     assert isinstance(client, LLMVisionClient)
     assert client.provider == "ollama"
+
+
+def test_openai_client_uses_codex_cli_auth_without_api_key(monkeypatch, tmp_path) -> None:
+    auth_dir = tmp_path / ".codex"
+    auth_dir.mkdir()
+    (auth_dir / "auth.json").write_text(
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": "redacted"}}),
+        encoding="utf-8",
+    )
+
+    def fail_openai_init(**_kwargs):
+        raise AssertionError("OpenAI client should not be initialized for Codex CLI auth")
+
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.shutil.which", lambda name: "/opt/homebrew/bin/codex" if name == "codex" else None)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.openai.OpenAI", fail_openai_init)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.LLMVisionClient._read_local_env_file_assignments", staticmethod(lambda: {}))
+    monkeypatch.setenv("GAIA_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("GAIA_LLM_MODEL", "gpt-5.5")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+
+    client = LLMVisionClient(provider="openai")
+
+    assert client.provider == "openai"
+    assert client._prefer_codex_cli is True
+    assert client.client is None
