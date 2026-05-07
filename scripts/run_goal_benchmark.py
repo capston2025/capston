@@ -95,6 +95,14 @@ def _should_emit_live_trace_line(line: str) -> bool:
     return False
 
 
+def _tail_text(text: str, *, max_lines: int = 20, max_chars: int = 4000) -> str:
+    lines = str(text or "").splitlines()
+    tail = "\n".join(lines[-max(1, int(max_lines)):]).strip()
+    if len(tail) > max_chars:
+        tail = tail[-max_chars:]
+    return tail
+
+
 def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
     payload = json.dumps({"scenario": scenario, "session_id": session_id}, ensure_ascii=False)
     return f"""
@@ -213,18 +221,29 @@ def _run_scenario_once(
     stdout = "\n".join(stdout_lines).strip()
     stderr = ""
     payload: Dict[str, Any] = {}
+    parse_error = ""
     if stdout:
         last_line = stdout.splitlines()[-1]
         try:
             parsed = json.loads(last_line)
             if isinstance(parsed, dict):
                 payload = parsed
-        except Exception:
+        except Exception as exc:
+            parse_error = str(exc)
             payload = {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else return_code)
     status = _normalize_status(summary, exit_code)
+    child_log = payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stdout
     reason = str(summary.get("reason") or stderr or "")
+    if not reason and exit_code != 0:
+        tail = _tail_text(child_log)
+        if tail:
+            reason = f"child_process_failed(exit_code={exit_code}): {tail}"
+        else:
+            reason = f"child_process_failed(exit_code={exit_code})"
+        if parse_error:
+            reason = f"{reason} [json_parse_error={parse_error}]"
     status, reason, benchmark_policy = apply_benchmark_success_policy(
         status=status,
         reason=reason,
@@ -238,7 +257,7 @@ def _run_scenario_once(
         "exit_code": exit_code,
         "duration_seconds": duration,
         "summary": summary,
-        "captured_log": payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stderr,
+        "captured_log": child_log,
         "benchmark_policy": benchmark_policy,
     })
 
@@ -411,6 +430,65 @@ def _infer_provider_from_model(model_name: str) -> str:
     return ""
 
 
+def _read_workspace_env_file_assignments() -> Dict[str, str]:
+    env_path = WORKSPACE_ROOT / ".env"
+    if not env_path.exists():
+        return {}
+    assignments: Dict[str, str] = {}
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            assignments[key.strip()] = value
+    except Exception:
+        return {}
+    return assignments
+
+
+def _load_gaia_profile_token(provider: str) -> str:
+    profile_path = Path.home() / ".gaia" / "auth" / "profiles.json"
+    try:
+        raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    profile = raw.get(provider, {}) if isinstance(raw, dict) else {}
+    token = profile.get("token") if isinstance(profile, dict) else ""
+    return str(token or "").strip()
+
+
+def _populate_provider_credentials(env: Dict[str, str], provider: str) -> None:
+    normalized = str(provider or "").strip().lower()
+    dotenv = _read_workspace_env_file_assignments()
+    if normalized == "openai":
+        for key in ("OPENAI_API_KEY", "OPENAI_ADMIN_KEY"):
+            if not str(env.get(key) or "").strip() and str(dotenv.get(key) or "").strip():
+                env[key] = str(dotenv[key]).strip()
+        if not str(env.get("OPENAI_API_KEY") or env.get("OPENAI_ADMIN_KEY") or "").strip():
+            token = _load_gaia_profile_token("openai")
+            if token:
+                env["OPENAI_API_KEY"] = token
+    elif normalized == "gemini":
+        if not str(env.get("GEMINI_API_KEY") or "").strip() and str(dotenv.get("GEMINI_API_KEY") or "").strip():
+            env["GEMINI_API_KEY"] = str(dotenv["GEMINI_API_KEY"]).strip()
+
+
+def _provider_credential_error(provider: str, env: Dict[str, str]) -> str:
+    normalized = str(provider or "").strip().lower()
+    if normalized == "openai" and not str(env.get("OPENAI_API_KEY") or env.get("OPENAI_ADMIN_KEY") or "").strip():
+        return (
+            "missing_provider_credentials: provider=openai requires OPENAI_API_KEY or OPENAI_ADMIN_KEY. "
+            "Set it in the shell environment, repo .env, or ~/.gaia/auth/profiles.json before running benchmarks."
+        )
+    if normalized == "gemini" and not str(env.get("GEMINI_API_KEY") or "").strip():
+        return "missing_provider_credentials: provider=gemini requires GEMINI_API_KEY."
+    return ""
+
+
 def _should_push_metrics(args: Any) -> bool:
     """Benchmark metrics leave the machine only when explicitly requested."""
     return bool(getattr(args, "push_metrics", False))
@@ -454,6 +532,41 @@ def main() -> int:
         env.setdefault("GAIA_LLM_PROVIDER", provider)
     env.setdefault("GAIA_LLM_MODEL", str(args.model))
     env.setdefault("GAIA_RAIL_ENABLED", "0")
+    _populate_provider_credentials(env, provider)
+    credential_error = _provider_credential_error(provider, env)
+    if credential_error:
+        empty_metrics = _compute_metrics([], repeats)
+        empty_kpis = _compute_kpi_metrics([], repeats)
+        summary = {
+            "schema_version": "gaia.benchmark.v1",
+            "suite_id": suite.get("suite_id") or suite_path.stem,
+            "site": suite.get("site") or {},
+            "started_at": started_at.isoformat(),
+            "repeats": repeats,
+            "scenario_count": len(scenarios),
+            "provider": provider,
+            "model": args.model,
+            "metrics": empty_metrics,
+            "kpi_metrics": empty_kpis,
+            "status_counts": {},
+            "failures": [],
+            "blocked": [],
+            "fatal_error": credential_error,
+        }
+        (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        (output_dir / "results.json").write_text("[]", encoding="utf-8")
+        (output_dir / "summary.md").write_text(
+            "# Benchmark Summary\n\n"
+            f"- suite: {summary['suite_id']}\n"
+            f"- scenarios: {summary['scenario_count']}\n"
+            f"- provider: {provider or '-'}\n"
+            f"- model: {args.model}\n"
+            f"- fatal_error: {credential_error}\n",
+            encoding="utf-8",
+        )
+        print(credential_error, file=sys.stderr, flush=True)
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 2
 
     rows: List[Dict[str, Any]] = []
     for repeat_idx in range(1, repeats + 1):

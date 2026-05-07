@@ -214,14 +214,22 @@ def _run_suite(
         session_prefix=session_prefix,
         push_metrics=push_metrics,
     )
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         cwd=str(ROOT),
         env=env,
-        capture_output=True,
         text=True,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
     )
+    stdout_lines: List[str] = []
+    assert proc.stdout is not None
+    for raw_line in proc.stdout:
+        line = str(raw_line or "").rstrip("\n")
+        stdout_lines.append(line)
+        print(line, flush=True)
+    return_code = proc.wait()
     artifact_dir = _latest_artifact_dir(before)
     summary = _load_json(artifact_dir / "summary.json")
     rows = json.loads((artifact_dir / "results.json").read_text(encoding="utf-8"))
@@ -238,11 +246,11 @@ def _run_suite(
         "suite_path": str(suite_path),
         "artifact_dir": str(artifact_dir),
         "duration_seconds": round(time.time() - started, 2),
-        "exit_code": int(proc.returncode),
+        "exit_code": int(return_code),
         "summary": summary,
         "rows": rows,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        "stdout": "\n".join(stdout_lines).strip(),
+        "stderr": "",
     }
 
 
@@ -418,6 +426,14 @@ def main() -> None:
         )
         suite_reports.append(suite_report)
         all_rows.extend(suite_report["rows"])
+        if int(suite_report.get("exit_code") or 0) != 0:
+            detail = str(suite_report.get("stderr") or suite_report.get("stdout") or "").strip()
+            tail = "\n".join(detail.splitlines()[-20:]).strip()
+            raise RuntimeError(
+                f"suite run failed before a valid benchmark completed: {suite_report['suite_path']} "
+                f"(exit_code={suite_report['exit_code']})"
+                + (f"\n{tail}" if tail else "")
+            )
 
     overall_kpis = _compute_pack_kpis(all_rows, max(1, int(args.repeats)))
     harness_report: Dict[str, Any] | None = None
