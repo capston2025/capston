@@ -66,6 +66,23 @@
         "includeAll": true,
         "allValue": ".*",
         "label": "Model"
+      },
+      {
+        "name": "runner_id",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "gaia-prometheus"
+        },
+        "query": {
+          "query": "label_values({__name__=~\"gaia_scenario_runs_total|gaia_external_pack_success_rate\"}, runner_id)",
+          "refId": "A"
+        },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Runner"
       }
     ]
   },
@@ -99,7 +116,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max(gaia_external_pack_site_count{model=~\"$model\"})",
+          "expr": "max(gaia_external_pack_site_count{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }
@@ -157,7 +174,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max(gaia_external_pack_runs_total{model=~\"$model\"})",
+          "expr": "max(gaia_external_pack_runs_total{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }
@@ -215,7 +232,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max(gaia_external_pack_success_rate{model=~\"$model\"})",
+          "expr": "max(gaia_external_pack_success_rate{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }
@@ -281,7 +298,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max(gaia_external_pack_primary_success_rate{model=~\"$model\"})",
+          "expr": "max(gaia_external_pack_primary_success_rate{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }
@@ -347,7 +364,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max(gaia_external_pack_avg_duration_seconds{model=~\"$model\"})",
+          "expr": "max(gaia_external_pack_avg_duration_seconds{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }
@@ -413,7 +430,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max(gaia_external_pack_intervention_rate{model=~\"$model\"})",
+          "expr": "max(gaia_external_pack_intervention_rate{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }
@@ -479,7 +496,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_success_rate{model=~\"$model\"})",
+          "expr": "max by (runner_id, site_key, site, category, volatility) (gaia_external_site_success_rate{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         },
@@ -488,7 +505,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_runs_total{model=~\"$model\"})",
+          "expr": "max by (runner_id, site_key, site, category, volatility) (gaia_external_site_runs_total{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "B"
         },
@@ -497,7 +514,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_avg_duration_seconds{model=~\"$model\"})",
+          "expr": "max by (runner_id, site_key, site, category, volatility) (gaia_external_site_avg_duration_seconds{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "C"
         },
@@ -506,7 +523,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_blocked_count{model=~\"$model\"})",
+          "expr": "max by (runner_id, site_key, site, category, volatility) (gaia_external_site_blocked_count{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "D"
         },
@@ -515,7 +532,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (site_key, site, category, volatility) (gaia_external_site_latest_status{model=~\"$model\"})",
+          "expr": "max by (runner_id, site_key, site, category, volatility) (gaia_external_site_latest_status{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "E"
         }
@@ -631,6 +648,7 @@
               "names": [
                 "site_key",
                 "site",
+                "runner_id",
                 "category",
                 "volatility",
                 "gaia_external_site_success_rate",
@@ -648,6 +666,7 @@
             "renameByName": {
               "site_key": "SITE KEY",
               "site": "SITE",
+              "runner_id": "RUNNER",
               "category": "CATEGORY",
               "volatility": "VOLATILITY",
               "gaia_external_site_success_rate": "SUCCESS RATE",
@@ -659,13 +678,14 @@
             "indexByName": {
               "site_key": 0,
               "site": 1,
-              "category": 2,
-              "volatility": 3,
-              "gaia_external_site_success_rate": 4,
-              "gaia_external_site_runs_total": 5,
-              "gaia_external_site_avg_duration_seconds": 6,
-              "gaia_external_site_blocked_count": 7,
-              "gaia_external_site_latest_status": 8
+              "runner_id": 2,
+              "category": 3,
+              "volatility": 4,
+              "gaia_external_site_success_rate": 5,
+              "gaia_external_site_runs_total": 6,
+              "gaia_external_site_avg_duration_seconds": 7,
+              "gaia_external_site_blocked_count": 8,
+              "gaia_external_site_latest_status": 9
             },
             "excludeByName": {
               "Time": true
@@ -691,7 +711,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (category) (gaia_external_category_success_rate{model=~\"$model\"})",
+          "expr": "max by (runner_id, category) (gaia_external_category_success_rate{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         },
@@ -700,7 +720,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (category) (gaia_external_category_runs_total{model=~\"$model\"})",
+          "expr": "max by (runner_id, category) (gaia_external_category_runs_total{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "B"
         },
@@ -709,7 +729,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (category) (gaia_external_category_avg_duration_seconds{model=~\"$model\"})",
+          "expr": "max by (runner_id, category) (gaia_external_category_avg_duration_seconds{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "C"
         }
@@ -824,6 +844,7 @@
             "include": {
               "names": [
                 "category",
+                "runner_id",
                 "gaia_external_category_success_rate",
                 "gaia_external_category_runs_total",
                 "gaia_external_category_avg_duration_seconds"
@@ -836,15 +857,17 @@
           "options": {
             "renameByName": {
               "category": "CATEGORY",
+              "runner_id": "RUNNER",
               "gaia_external_category_success_rate": "SUCCESS RATE",
               "gaia_external_category_runs_total": "RUNS",
               "gaia_external_category_avg_duration_seconds": "AVG SEC"
             },
             "indexByName": {
               "category": 0,
-              "gaia_external_category_success_rate": 1,
-              "gaia_external_category_runs_total": 2,
-              "gaia_external_category_avg_duration_seconds": 3
+              "runner_id": 1,
+              "gaia_external_category_success_rate": 2,
+              "gaia_external_category_runs_total": 3,
+              "gaia_external_category_avg_duration_seconds": 4
             },
             "excludeByName": {
               "Time": true
@@ -870,7 +893,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (reason_code, category) (gaia_external_reason_code_count{model=~\"$model\"})",
+          "expr": "sum by (runner_id, reason_code, category) (gaia_external_reason_code_count{model=~\"$model\",runner_id=~\"$runner_id\"})",
           "instant": true,
           "refId": "A"
         }

@@ -17,6 +17,7 @@ from scripts.run_goal_benchmark import (
     _should_emit_live_trace_line,
     _should_push_metrics,
 )
+from scripts.runner_identity import resolve_runner_id, sanitize_runner_id
 from scripts.benchmark_blocking import (
     BLOCKED_CAPTCHA_REASON_CODE,
     BLOCKED_USER_ACTION_STATUS,
@@ -133,6 +134,12 @@ def test_monitoring_push_is_explicit_opt_in() -> None:
     assert _should_push_metrics(SimpleNamespace(push_metrics=False)) is False
     assert _should_push_metrics(SimpleNamespace(push_metrics=True)) is True
     assert _should_push_metrics(SimpleNamespace()) is False
+
+
+def test_runner_id_prefers_explicit_value_and_sanitizes_label() -> None:
+    assert sanitize_runner_id("맥미니 runner 01") == "맥미니-runner-01"
+    assert resolve_runner_id("team-a/mac mini", {"GAIA_RUNNER_ID": "ignored"}) == "team-a-mac-mini"
+    assert resolve_runner_id("", {"GAIA_RUNNER_ID": "minihost@desk"}) == "minihost@desk"
 
 
 def test_run_scenario_once_preserves_child_traceback_when_json_missing(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -225,6 +225,13 @@ def _single_or_mixed(values: set[str], default: str = "unknown") -> str:
     return "mixed"
 
 
+def _runner_id_from_rows(summary: dict, rows: list[dict] | None = None) -> str:
+    values = {str(summary.get("runner_id") or "").strip()}
+    for row in rows or []:
+        values.add(str(row.get("runner_id") or "").strip())
+    return _single_or_mixed(values)
+
+
 def build_suite_metrics(
     summary: dict,
     declared: set | None = None,
@@ -240,6 +247,7 @@ def build_suite_metrics(
         "suite_id": summary.get("suite_id", "unknown"),
         "model":    summary.get("model", "unknown"),
         "provider": summary.get("provider", "unknown"),
+        "runner_id": summary.get("runner_id", "unknown"),
     }
     base = _with_site_labels({**base, "site": metadata["site"]}, metadata)
     m   = summary.get("metrics", {})
@@ -329,6 +337,7 @@ def build_scenario_metrics(
         completion = last_run.get("summary", {}).get("goal_completion_source", "")
         model      = last_run.get("model", summary.get("model", "unknown"))
         provider   = last_run.get("provider", summary.get("provider", "unknown"))
+        runner_id  = last_run.get("runner_id", summary.get("runner_id", "unknown"))
         started_ts = _timestamp_seconds(last_run.get("started_at") or summary.get("started_at"))
         metadata = _site_metadata(summary, suite_json_path=suite_json_path, suite_id=suite_id)
 
@@ -338,6 +347,7 @@ def build_scenario_metrics(
             "site":        metadata["site"],
             "model":       model,
             "provider":    provider,
+            "runner_id":   runner_id,
         }
         base = _with_site_labels(base, metadata)
 
@@ -367,7 +377,12 @@ def build_scenario_metrics(
             "Scenario presence marker with low-cardinality labels",
             1,
             _with_site_labels(
-                {"suite_id": suite_id, "scenario_id": scenario_id, "site": metadata["site"]},
+                {
+                    "suite_id": suite_id,
+                    "scenario_id": scenario_id,
+                    "site": metadata["site"],
+                    "runner_id": runner_id,
+                },
                 metadata,
             ),
             declared,
@@ -423,7 +438,8 @@ def build_external_pack_metrics(summary: dict, results: list, declared: set | No
         {str(row.get("provider") or "").strip() for row in rows}
         | {str(summary.get("provider") or "").strip()},
     )
-    base = {"pack_id": pack_id, "model": model, "provider": provider}
+    runner_id = _runner_id_from_rows(summary, rows)
+    base = {"pack_id": pack_id, "model": model, "provider": provider, "runner_id": runner_id}
 
     suite_ids = {
         str(item.get("suite_id") or "").strip()
@@ -473,6 +489,7 @@ def build_external_pack_metrics(summary: dict, results: list, declared: set | No
                 "site": metadata["site"],
                 "model": model,
                 "provider": provider,
+                "runner_id": runner_id,
             },
             metadata,
         )
@@ -510,6 +527,7 @@ def build_external_pack_metrics(summary: dict, results: list, declared: set | No
             "category": category,
             "model": model,
             "provider": provider,
+            "runner_id": runner_id,
         }
         for args in [
             ("gaia_external_category_runs_total", "External public category total runs", total),

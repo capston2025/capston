@@ -61,6 +61,7 @@ def test_build_run_suite_command_forwards_push_metrics(tmp_path: Path) -> None:
         timeout_cap=600,
         session_prefix="external-public",
         push_metrics=False,
+        runner_id="macmini",
     )
     with_push = _build_run_suite_command(
         suite_path,
@@ -68,8 +69,11 @@ def test_build_run_suite_command_forwards_push_metrics(tmp_path: Path) -> None:
         timeout_cap=600,
         session_prefix="external-public",
         push_metrics=True,
+        runner_id="macmini",
     )
 
+    assert "--runner-id" in without_push
+    assert "macmini" in without_push
     assert "--push-metrics" not in without_push
     assert with_push[-1] == "--push-metrics"
 

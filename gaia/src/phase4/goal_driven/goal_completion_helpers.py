@@ -68,6 +68,21 @@ _TRANSIENT_REASONING_WAIT_KEYWORDS = (
     "잠시만",
 )
 _TRANSIENT_REASONING_WAIT_PERCENT = re.compile(r"\b\d{1,3}\s*%")
+_SERVICE_UNAVAILABLE_KEYWORDS = (
+    "서비스 지연 안내",
+    "서비스 이용에 불편",
+    "정상적으로 제공할 수 없습니다",
+    "요청하신 페이지를 정상적으로 제공할 수 없습니다",
+    "현재 사용자가 많아",
+    "잠시 후 다시 접속",
+    "잠시 후 다시 시도",
+    "접속이 원활하지 않습니다",
+    "일시적으로 사용할 수 없습니다",
+    "access denied",
+    "service unavailable",
+    "temporarily unavailable",
+    "too many requests",
+)
 
 
 def _is_actionable_element(el: DOMElement) -> bool:
@@ -121,6 +136,30 @@ def _dom_has_reasoning_wait_transient_signals(agent, dom_elements: List[DOMEleme
         if role in {"progressbar", "status", "alert", "timer"} or tag == "progress":
             if any(token in blob for token in ("생각", "loading", "로딩", "progress", "진행", "generating", "processing")):
                 return True
+    return False
+
+
+def _text_has_service_unavailable_signal(agent, text: object) -> bool:
+    blob = agent._normalize_text(text)
+    return bool(blob and any(token in blob for token in _SERVICE_UNAVAILABLE_KEYWORDS))
+
+
+def _dom_has_service_unavailable_signal(agent, dom_elements: List[DOMElement]) -> bool:
+    for el in list(dom_elements or [])[:180]:
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "placeholder", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                ]
+            )
+        )
+        if _text_has_service_unavailable_signal(agent, blob):
+            return True
     return False
 
 
@@ -588,7 +627,11 @@ def _should_judge_reasoning_only_wait_completion(
         return False
     if not hasattr(agent, "_call_llm_text_only"):
         return False
-    if not dom_elements or _dom_has_reasoning_wait_transient_signals(agent, dom_elements):
+    if (
+        not dom_elements
+        or _dom_has_reasoning_wait_transient_signals(agent, dom_elements)
+        or _dom_has_service_unavailable_signal(agent, dom_elements)
+    ):
         return False
 
     direction = str(getattr(agent, "_goal_constraints", {}).get("mutation_direction") or "").strip().lower()
@@ -711,6 +754,8 @@ def evaluate_explicit_reasoning_proof_completion(
         )
     else:
         visible_blob = ""
+    if _text_has_service_unavailable_signal(agent, reasoning_blob) or _text_has_service_unavailable_signal(agent, visible_blob):
+        return None
 
     result_goal_tokens = ("응답", "결과", "결과물", "response", "result", "answer", "reply", "output", "출력")
     loading_reason_tokens = (

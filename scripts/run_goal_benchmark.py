@@ -24,6 +24,7 @@ from scripts.benchmark_blocking import (
     normalize_blocked_user_action_row,
     summary_reason_code_summary,
 )
+from scripts.runner_identity import resolve_runner_id
 from gaia.harness.benchmark_policy import apply_benchmark_success_policy
 
 _MIN_BENCHMARK_TIMEOUT_SEC = 600
@@ -518,6 +519,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--provider", default="")
     parser.add_argument("--model", default="gpt-5.5")
+    parser.add_argument(
+        "--runner-id",
+        default="",
+        help="Human/team runner identifier recorded in artifacts and metrics. Defaults to GAIA_RUNNER_ID or user@host.",
+    )
     parser.add_argument("--timeout-cap", type=int, default=600)
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")
@@ -542,6 +548,9 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
+    runner_id = resolve_runner_id(args.runner_id, env)
+    env["GAIA_RUNNER_ID"] = runner_id
+
     provider = str(args.provider or "").strip().lower()
     if not provider:
         provider = _infer_provider_from_model(str(args.model or ""))
@@ -563,6 +572,7 @@ def main() -> int:
             "scenario_count": len(scenarios),
             "provider": provider,
             "model": args.model,
+            "runner_id": runner_id,
             "metrics": empty_metrics,
             "kpi_metrics": empty_kpis,
             "status_counts": {},
@@ -578,6 +588,7 @@ def main() -> int:
             f"- scenarios: {summary['scenario_count']}\n"
             f"- provider: {provider or '-'}\n"
             f"- model: {args.model}\n"
+            f"- runner_id: {runner_id}\n"
             f"- fatal_error: {credential_error}\n",
             encoding="utf-8",
         )
@@ -606,6 +617,7 @@ def main() -> int:
             row["repeat"] = repeat_idx
             row["provider"] = provider
             row["model"] = str(args.model)
+            row["runner_id"] = runner_id
             row["constraints"] = scenario.get("constraints") if isinstance(scenario.get("constraints"), dict) else {}
             row["expected_signals"] = scenario.get("expected_signals") if isinstance(scenario.get("expected_signals"), list) else []
             rows.append(row)
@@ -623,6 +635,7 @@ def main() -> int:
         "scenario_count": len(scenarios),
         "provider": provider,
         "model": args.model,
+        "runner_id": runner_id,
         "metrics": metrics,
         "kpi_metrics": kpi_metrics,
         "status_counts": dict(status_counts),
@@ -657,6 +670,7 @@ def main() -> int:
     md.write(f"- repeats: {repeats}\n")
     md.write(f"- provider: {provider or '-'}\n")
     md.write(f"- model: {args.model}\n")
+    md.write(f"- runner_id: {runner_id}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")
     md.write(f"- primary_success_rate: {metrics['primary_success_rate']}\n")
     md.write(f"- avg_time_seconds: {metrics['avg_time_seconds']}\n")

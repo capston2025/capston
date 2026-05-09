@@ -66,6 +66,7 @@ def test_suite_metrics_exports_primary_success_rate() -> None:
         "site": {"name": "External Public"},
         "model": "gpt-5.5",
         "provider": "openai",
+        "runner_id": "macmini",
         "metrics": {"runs_total": 2, "success_rate": 0.5},
         "kpi_metrics": {
             "scenario_success_rate": 0.5,
@@ -81,6 +82,7 @@ def test_suite_metrics_exports_primary_success_rate() -> None:
     assert "gaia_suite_primary_success_rate" in metrics
     assert "gaia_target_primary_success_rate" in metrics
     assert "gaia_count_primary_runs" in metrics
+    assert 'runner_id="macmini"' in metrics
 
 
 def test_suite_metrics_enrich_external_manifest_labels() -> None:
@@ -116,6 +118,7 @@ def test_external_pack_metrics_roll_up_sites_categories_and_reason_codes() -> No
             "avg_time_seconds": 7.5,
             "counts": {"runs_total": 2, "success": 1},
         },
+        "runner_id": "macmini",
         "suites": [
             {"suite_id": "musinsa_public_v2"},
             {"suite_id": "daum_public_v2"},
@@ -130,6 +133,7 @@ def test_external_pack_metrics_roll_up_sites_categories_and_reason_codes() -> No
             "goal": "가방을 찾아줘",
             "model": "gpt-5.5",
             "provider": "openai",
+            "runner_id": "macmini",
         },
         {
             "suite_id": "daum_public_v2",
@@ -140,6 +144,7 @@ def test_external_pack_metrics_roll_up_sites_categories_and_reason_codes() -> No
             "summary": {"reason_code_summary": {"option_ref_missing": 2}},
             "model": "gpt-5.5",
             "provider": "openai",
+            "runner_id": "macmini",
         },
     ]
 
@@ -149,6 +154,7 @@ def test_external_pack_metrics_roll_up_sites_categories_and_reason_codes() -> No
     assert 'site_key="musinsa"' in metrics
     assert 'category="commerce_product"' in metrics
     assert 'reason_code="option_ref_missing"' in metrics
+    assert 'runner_id="macmini"' in metrics
     assert "free-form failure text" not in metrics
     assert "가방을 찾아줘" not in metrics
 

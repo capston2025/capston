@@ -104,6 +104,7 @@ python scripts/run_kpi_benchmark_pack.py \
   --repeats 1 \
   --timeout-cap 600 \
   --session-prefix external-public \
+  --runner-id macmini-team-a \
   --push-metrics
 
 # 터미널 벤치 모드
@@ -148,3 +149,4 @@ GUI 벤치 관리 화면에서는 `모니터링 서버로 메트릭 업로드 (-
 
 외부 공개 benchmark pack은 추가로 `gaia_external_pack_*`, `gaia_external_site_*`, `gaia_external_category_*`, `gaia_external_reason_code_count` 메트릭을 보냅니다.
 Grafana 상단 overview에서 전체 사이트 수, 총 실행 수, 전체/primary 성공률, 평균 실행 시간, 사이트별 성공률, 카테고리별 성공률, 실패 reason code를 한 화면에 확인할 수 있습니다.
+각 실행은 `runner_id` 라벨을 함께 보냅니다. 기본값은 `GAIA_RUNNER_ID` 환경변수이고, 없으면 `user@host` 형태로 기록됩니다. 명시하려면 `--runner-id macmini-team-a` 또는 `GAIA_RUNNER_ID=macmini-team-a`를 사용합니다.

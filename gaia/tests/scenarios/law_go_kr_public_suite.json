@@ -40,10 +40,10 @@
       "time_budget_sec": 600
     },
     {
-      "id": "LAWGO_003_LAW_DETAIL",
-      "name": "조문 상세 확인",
-      "url": "https://www.law.go.kr/LSW/lsInfoP.do?lsiSeq=266319&efYd=20250807#0000",
-      "goal": "개인정보 보호법 상세 화면에서 목적 조문, 장 제목, 시행일 정보 중 두 가지를 확인해줘.",
+      "id": "LAWGO_003_LAW_SEARCH_TABS",
+      "name": "법령 검색 탭 확인",
+      "url": "https://www.law.go.kr/LSW/lsSc.do?menuId=1&subMenuId=15&query=%EA%B7%BC%EB%A1%9C%EA%B8%B0%EC%A4%80%EB%B2%95",
+      "goal": "근로기준법 검색 화면에서 법령명, 현행 구분, 조문 목록 또는 관련 탭 중 두 가지를 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,

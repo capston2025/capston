@@ -28,6 +28,7 @@ from scripts.benchmark_blocking import (
     normalize_blocked_user_action_row,
     summary_reason_code_summary,
 )
+from scripts.runner_identity import resolve_runner_id
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -205,6 +206,7 @@ def _run_suite(
     timeout_cap: int,
     session_prefix: str,
     push_metrics: bool,
+    runner_id: str,
     env: Dict[str, str],
 ) -> Dict[str, Any]:
     started = time.time()
@@ -215,6 +217,7 @@ def _run_suite(
         timeout_cap=timeout_cap,
         session_prefix=session_prefix,
         push_metrics=push_metrics,
+        runner_id=runner_id,
     )
     proc = subprocess.Popen(
         cmd,
@@ -263,6 +266,7 @@ def _build_run_suite_command(
     timeout_cap: int,
     session_prefix: str,
     push_metrics: bool,
+    runner_id: str = "",
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -276,6 +280,8 @@ def _build_run_suite_command(
         "--session-prefix",
         session_prefix,
     ]
+    if str(runner_id or "").strip():
+        cmd.extend(["--runner-id", str(runner_id)])
     if push_metrics:
         cmd.append("--push-metrics")
     return cmd
@@ -334,6 +340,7 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines.append(f"- generated_at: {report['generated_at']}")
     lines.append(f"- repeats: {report['repeats']}")
     lines.append(f"- timeout_cap: {report['timeout_cap']}")
+    lines.append(f"- runner_id: {report.get('runner_id', 'unknown')}")
     lines.append("")
     lines.append("## Overall KPI")
     lines.append("")
@@ -431,6 +438,11 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--timeout-cap", type=int, default=MIN_BENCHMARK_TIMEOUT_SEC)
     parser.add_argument("--session-prefix", default="kpi-pack")
+    parser.add_argument(
+        "--runner-id",
+        default="",
+        help="Human/team runner identifier recorded in artifacts and metrics. Defaults to GAIA_RUNNER_ID or user@host.",
+    )
     parser.add_argument("--push-metrics", action="store_true", help="Forward metrics upload to each suite run.")
     parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
     parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
@@ -441,6 +453,8 @@ def main() -> None:
     args = parser.parse_args()
 
     env = os.environ.copy()
+    runner_id = resolve_runner_id(args.runner_id, env)
+    env["GAIA_RUNNER_ID"] = runner_id
     try:
         suite_paths = _resolve_suite_paths(suite_args=args.suite, suite_manifest=args.suite_manifest)
     except ValueError as exc:
@@ -459,6 +473,7 @@ def main() -> None:
             timeout_cap=_effective_timeout_cap(int(args.timeout_cap)),
             session_prefix=f"{args.session_prefix}-{idx}",
             push_metrics=bool(args.push_metrics),
+            runner_id=runner_id,
             env=env,
         )
         suite_reports.append(suite_report)
@@ -499,6 +514,7 @@ def main() -> None:
         "repeats": max(1, int(args.repeats)),
         "timeout_cap": _effective_timeout_cap(int(args.timeout_cap)),
         "push_metrics": bool(args.push_metrics),
+        "runner_id": runner_id,
         "suites": [
             {
                 "suite_id": suite["suite_id"],

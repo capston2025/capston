@@ -822,6 +822,90 @@ def test_reasoning_only_wait_completion_uses_judge_for_readonly_video_detail_cla
     assert "영상 제목, 채널명, 조회/업로드 정보" in agent._last_judge_prompt
 
 
+def test_wait_completion_rejects_service_unavailable_false_positive() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name="관광지 상세 정보 확인",
+        description="대한민국 구석구석에서 관광지 상세 화면의 주소와 설명 일부를 확인해줘.",
+        success_criteria=["상세 정보 화면에서 주소 또는 설명 일부 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="대한민국 구석구석 서비스 지연 안내가 보이고 서비스 정보가 표시되어 목표 조건을 충족합니다.",
+        confidence=0.8,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="대한민국 구석구석 서비스 지연 안내",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="p",
+            role="generic",
+            text="잠시 후 다시 접속해 주세요.",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
+
+
+def test_reasoning_only_wait_completion_skips_judge_on_service_unavailable_page() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = '{"success": true, "reason": "오판"}'
+    goal = SimpleNamespace(
+        name="법령 상세 정보 확인",
+        description="국가법령정보센터에서 법령 상세 화면의 시행일과 조문 일부를 확인해줘.",
+        success_criteria=["상세 정보 화면에서 시행일 또는 조문 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="상세 정보와 서비스 문구가 이미 보입니다. 목표 조건을 충족합니다.",
+        confidence=0.8,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="서비스 이용에 불편을 드려서 죄송합니다",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="p",
+            role="generic",
+            text="현재 사용자가 많아 요청하신 페이지를 정상적으로 제공할 수 없습니다.",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_reasoning_only_wait_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
+    assert not hasattr(agent, "_last_judge_prompt")
+
+
 def test_wait_completion_accepts_readonly_map_route_panel_information_without_contract_signal() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}

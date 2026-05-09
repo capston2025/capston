@@ -38,6 +38,7 @@
 - 특정 scenario URL에서만 CAPTCHA가 재현되면 같은 사이트의 안정적인 공개 read-only URL로 교체한다.
 - 실행 중 새로 CAPTCHA/보안문자/보안 확인 화면이 나오면 일반 실패가 아니라 `BLOCKED_USER_ACTION` + `blocked_captcha`로 분리하고 `primary_success_rate`에서 제외한다.
 - CAPTCHA 차단이 재현된 사이트는 다음 primary pack 개정에서 제거하고, 같은 규모를 유지하도록 안정적인 공개 read-only 사이트로 대체한다.
+- 서비스 지연 안내, 접속 폭주, 사이트 오류 화면이 반복되는 사이트도 primary curated pack에서 제거하거나 안정적인 공개 read-only URL로 대체한다.
 - 문장 기준: UI와 맞지 않는 일반 템플릿 문장 대신 사이트별 실제 공개 업무 흐름(검색 결과, 상세 정보, 가격/랭킹/지도/차트/필터 확인)을 사용한다.
 - 지도/경로 시나리오는 hidden tab 클릭보다 공개 deep link나 검색 결과 URL로 먼저 안정화하고, 경로 화면의 출발/도착/이동수단/지도 정보 확인을 read-only 목표로 둔다.
 - 실행 예:
@@ -49,5 +50,6 @@ python scripts/run_kpi_benchmark_pack.py \
   --repeats 1 \
   --timeout-cap 600 \
   --session-prefix external-public-20260507 \
+  --runner-id macmini-team-a \
   --push-metrics
 ```

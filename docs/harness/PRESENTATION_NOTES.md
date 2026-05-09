@@ -403,6 +403,7 @@ python scripts/run_kpi_benchmark_pack.py \
   --repeats 1 \
   --timeout-cap 600 \
   --session-prefix external-public-20260507 \
+  --runner-id macmini-team-a \
   --push-metrics
 ```
 
@@ -442,6 +443,9 @@ CAPTCHA 차단이 나온 경우:
 - 같은 strict scenario 재실행 결과 `MUSINSA_005_SORT_CHANGE`는 2 steps / 60.91s / SUCCESS로 통과했다. 강제 재수집 후 `낮은 가격순` ref `e1760`을 찾아 클릭했고, 최종 URL은 `sortCode=LOW_PRICE`로 확인됐다.
 - 발표 근거 artifact: `artifacts/benchmarks/musinsa_sort_strict_suite_20260508_011054/summary.md`, `results.json`.
 - Grafana dashboard 상단에 `External Public 30-site Overview`를 추가했다. `run_kpi_benchmark_pack.py --push-metrics`가 최종 pack artifact를 한 번 더 업로드해서 30개 사이트 전체 성공률, primary 성공률, 평균 시간, 사이트/카테고리별 성공률, 실패 reason code를 한 화면에 모은다.
+- VisitKorea는 `서비스 지연 안내`가 반복되어 primary external pack에서 제거하고 대한민국 정책브리핑으로 대체했다. 국가법령정보센터는 상세 iframe URL이 `서비스 이용에 불편` 오류를 반환해 `LAWGO_003`을 상세 진입 대신 법령 검색 탭/목록 확인 시나리오로 교체했다.
+- 서비스 지연/접속 폭주/일시 오류 화면은 목표 증거로 인정하지 않도록 WAIT 완료 판정을 보강했다. `서비스` 같은 일반 단어가 화면에 보인다는 이유로 false positive가 나는 케이스를 막는다.
+- 실행 artifact와 Grafana metrics에 `runner_id`를 추가했다. 기본값은 `GAIA_RUNNER_ID` 또는 `user@host`이고, 팀원이 맥미니/개인 노트북에서 올린 결과를 Grafana Runner 필터와 site/category table에서 구분할 수 있다.
 
 ### 2026-05-07
 
