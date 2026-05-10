@@ -1052,3 +1052,1198 @@ A. 그래서 raw success rate만 쓰지 않고 reason code, blocked count, progr
 4. `site_unavailable`/`service_delay`를 더 명시적인 reason code로 추가할지 검토.
 5. 보고서 최종 표에는 정리 전 artifact와 정리 후 artifact를 구분해서 넣기.
 6. 발표 직전 stable subset `repeats=2` 또는 `repeats=3`로 reproducibility 근거 확보.
+
+## Appendix A. 30개 외부 공개 사이트 / 150개 시나리오 전체 인벤토리
+
+이 섹션은 보고서에서 “외부 공개 사이트를 실제로 얼마나 다양하게 구성했는가”를 보여주기 위한 원천 자료다. 최종 보고서에는 전부 넣기보다 카테고리별 예시만 뽑아 쓰면 된다.
+
+### 01. Wikipedia Korea (`wikipedia`)
+
+- category: `knowledge_reference`
+- volatility: `stable`
+- base_url: `https://ko.wikipedia.org/`
+- suite: `gaia/tests/scenarios/wikipedia_public_suite.json`
+- suite_id: `wikipedia_public_v2`
+- scenarios:
+  - `WIKI_001_PORTAL_OVERVIEW`: 위키백과 대문에서 오늘의 알찬 글, 알고 계십니까, 참여 안내 같은 공개 지식 포털 영역 중 두 가지를 확인.
+  - `WIKI_002_SEARCH_AI`: 위키백과 검색 결과에서 인공지능 관련 문서 후보 목록과 문서로 이동할 수 있는 링크를 확인.
+  - `WIKI_003_ARTICLE_STRUCTURE`: 인공지능 문서에서 정의 요약, 목차, 정보상자 또는 참고 문헌 같은 문서 구조를 확인.
+  - `WIKI_004_CATEGORY_BROWSE`: 과학 분류 화면에서 하위 분류나 문서 목록처럼 지식 체계가 나뉘어 보이는지 확인.
+  - `WIKI_005_TOC_LANGUAGE_NAV`: 대한민국 문서에서 목차나 언어 링크처럼 화면 안에서 이동하는 탐색 요소를 선택해 관련 영역을 확인.
+- 보고서 활용 포인트: 전통적인 문서/백과 구조라 DOM이 비교적 안정적이고, read-only benchmark의 기준점으로 쓰기 좋다.
+
+### 02. GitHub (`github`)
+
+- category: `developer_tech`
+- volatility: `stable`
+- base_url: `https://github.com/`
+- suite: `gaia/tests/scenarios/github_public_suite.json`
+- suite_id: `github_public_v2`
+- scenarios:
+  - `GITHUB_001_HOME_NAV`: GitHub 공개 홈에서 검색 입력, 제품 내비게이션, 공개 소개 영역 확인.
+  - `GITHUB_002_REPO_SEARCH`: python cpython 관련 공개 저장소 목록과 정렬/필터 영역 확인.
+  - `GITHUB_003_REPO_OVERVIEW`: python/cpython 저장소에서 파일 목록, README, 별표 수나 브랜치 표시 확인.
+  - `GITHUB_004_ISSUE_TRIAGE`: python/cpython 이슈 목록에서 상태 필터, 이슈 제목 목록, 라벨 영역 확인.
+  - `GITHUB_005_RELEASE_REVIEW`: python/cpython 릴리스 화면에서 최신 릴리스 제목, 태그, 변경 요약 확인.
+- 보고서 활용 포인트: 개발자 사이트는 링크/목록/상세/필터 구조가 뚜렷하고 공개 데이터가 풍부하다.
+
+### 03. Hacker News (`hacker_news`)
+
+- category: `developer_tech`
+- volatility: `high`
+- base_url: `https://news.ycombinator.com/`
+- suite: `gaia/tests/scenarios/hacker_news_public_suite.json`
+- suite_id: `hacker_news_public_v2`
+- scenarios:
+  - `HN_001_TOP_STORIES`: 첫 화면에서 이야기 제목 목록, 점수, 사용자 링크 확인.
+  - `HN_002_NEWEST_LIST`: newest 목록에서 시간순 이야기 목록과 more 링크 확인.
+  - `HN_003_ITEM_DISCUSSION`: 이야기 상세 화면에서 제목, 점수, 토론 목록 확인.
+  - `HN_004_SHOW_LIST`: Show HN 목록에서 제품 소개성 이야기 제목과 점수 정보 확인.
+  - `HN_005_ASK_LIST`: Ask HN 목록에서 질문형 이야기 제목과 more 링크 확인.
+- 보고서 활용 포인트: UI는 단순하지만 콘텐츠 변동성이 높아 외부 사이트 변동성의 기본 샘플로 적합하다.
+
+### 04. PyPI (`pypi`)
+
+- category: `developer_tech`
+- volatility: `stable`
+- base_url: `https://pypi.org/`
+- suite: `gaia/tests/scenarios/pypi_public_suite.json`
+- suite_id: `pypi_public_v2`
+- scenarios:
+  - `PYPI_001_HOME_SEARCH`: 공개 홈에서 패키지 검색 입력과 프로젝트 통계 또는 주요 안내 영역 확인.
+  - `PYPI_002_PACKAGE_SEARCH`: requests 프로젝트의 파일 목록에서 wheel/source distribution/파일명/크기/등록 날짜 중 두 가지 확인.
+  - `PYPI_003_PACKAGE_DETAIL`: requests 프로젝트 화면에서 설치 명령, 최신 버전, 프로젝트 설명 또는 메타데이터 확인.
+  - `PYPI_004_RELEASE_HISTORY`: requests 프로젝트 release history에서 여러 버전 항목이나 릴리스 날짜 확인.
+  - `PYPI_005_PROJECT_LINKS`: Project links나 Meta 영역에서 홈페이지, 이슈, 라이선스 같은 보조 정보 확인.
+- 보고서 활용 포인트: 검색 URL은 CAPTCHA가 재현되어 제거했고, package files/detail 같은 안정적인 공개 surface로 대체한 사례다.
+
+### 05. YouTube Korea (`youtube`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://www.youtube.com/`
+- suite: `gaia/tests/scenarios/youtube_public_suite.json`
+- suite_id: `youtube_public_v2`
+- scenarios:
+  - `YOUTUBE_001_HOME_FEED`: 공개 홈에서 검색 입력, 탐색 내비게이션, 영상 썸네일 목록 확인.
+  - `YOUTUBE_002_SEARCH_RESULTS`: 한국 여행 검색 결과에서 영상 제목, 채널명, 썸네일 목록 확인.
+  - `YOUTUBE_003_VIDEO_ENTRY`: 공개 영상을 열어 제목, 채널명, 조회 정보 또는 설명 일부 확인.
+  - `YOUTUBE_004_TOPIC_FILTER`: 서울 맛집 검색 결과에서 상단 필터나 주제 칩을 선택해 결과 목록 변화 확인.
+  - `YOUTUBE_005_AUTOCOMPLETE_OR_CHIP`: 검색 입력에 키워드를 넣어 자동완성이나 검색 제안 영역 확인.
+- 보고서 활용 포인트: 동영상 플랫폼은 DOM과 렌더링 변동성이 높아 read-only WAIT judge 보강의 필요성을 보여준다.
+
+### 06. Apple Korea (`apple_store`)
+
+- category: `commerce_product`
+- volatility: `medium`
+- base_url: `https://www.apple.com/kr/`
+- suite: `gaia/tests/scenarios/apple_store_public_suite.json`
+- suite_id: `apple_store_public_v2`
+- scenarios:
+  - `APPLE_001_HOME_PRODUCT_NAV`: 제품군 내비게이션, 프로모션 영역, 지원 링크 확인.
+  - `APPLE_002_IPHONE_LINEUP`: iPhone 제품군 화면에서 모델 카드와 사양/가격 안내 확인.
+  - `APPLE_003_PRODUCT_COMPARE`: iPhone 비교 화면에서 모델별 디스플레이, 칩, 카메라 비교 표 확인.
+  - `APPLE_004_ACCESSORY_BROWSE`: 액세서리 화면에서 카테고리, 상품 카드, 가격 안내 확인.
+  - `APPLE_005_SUPPORT_LOOKUP`: 지원 화면에서 제품 선택 목록, 검색 입력, 도움말 주제 확인.
+- 보고서 활용 포인트: 제품 탐색형 commerce지만 구매/결제 없이 정보 확인만 수행한다.
+
+### 07. FOW.LOL (`fow_kr`)
+
+- category: `finance_game`
+- volatility: `high`
+- base_url: `https://www.fow.lol/`
+- suite: `gaia/tests/scenarios/fow_public_suite.json`
+- suite_id: `fow_kr_public_v2`
+- scenarios:
+  - `FOW_001_HOME_STATS`: 소환사 검색 입력, 랭킹 링크, 챔피언 통계 링크 확인.
+  - `FOW_002_CHAMPION_STATS`: 챔피언 이름 목록, 승률, 픽률 또는 밴율 확인.
+  - `FOW_003_RANKING_LIST`: 랭킹 화면에서 순위, 플레이어 이름, 티어, LP 또는 승률 확인.
+  - `FOW_004_REGION_QUEUE_FILTER`: Tier/Region/Ver 필터와 챔피언별 승률/픽률/밴율 확인.
+  - `FOW_005_SEARCH_SUGGESTION`: 소환사 검색 입력에 예시 이름을 넣어 검색 제안이나 결과 후보 확인.
+- 보고서 활용 포인트: 게임 통계 사이트는 표/랭킹/필터 조합이라 일반 뉴스/문서와 다른 DOM 구조를 제공한다.
+
+### 08. DCInside (`dcinside`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://www.dcinside.com/`
+- suite: `gaia/tests/scenarios/dcinside_public_suite.json`
+- suite_id: `dcinside_public_v2`
+- scenarios:
+  - `DCINSIDE_001_HOME_COMMUNITY`: 갤러리 검색 입력, 실시간 이슈, 갤러리 목록 확인.
+  - `DCINSIDE_002_GALLERY_SEARCH`: 야구 관련 갤러리나 공개 글 목록 확인.
+  - `DCINSIDE_003_GALLERY_LIST`: 야구 갤러리 목록에서 글 제목, 작성 시각, 조회 수 확인.
+  - `DCINSIDE_004_HIT_GALL`: 실시간 베스트나 인기 갤러리 영역에서 인기 항목 목록 확인.
+  - `DCINSIDE_005_LIST_PAGING`: 갤러리 목록에서 다음 페이지나 정렬 요소를 선택해 목록 변화 확인.
+- 보고서 활용 포인트: 커뮤니티 사이트는 동적 콘텐츠와 광고/모달 가능성이 있어 변동성 테스트에 적합하다.
+
+### 09. 머니터링 (`moneytoring`)
+
+- category: `finance_game`
+- volatility: `medium`
+- base_url: `https://www.moneytoring.ai/`
+- suite: `gaia/tests/scenarios/moneytoring_public_suite.json`
+- suite_id: `moneytoring_public_v2`
+- scenarios:
+  - `MONEYTORING_001_MARKET_HOME`: 종목 검색 입력, 주요 지수, 시장 뉴스/분석 카드 확인.
+  - `MONEYTORING_002_STOCK_SEARCH`: 삼성전자 같은 기업명, 종목 정보, 가격 또는 등락률 확인.
+  - `MONEYTORING_003_COMPANY_DETAIL`: 종목 상세에서 현재가, 차트, 기업 개요 또는 투자 지표 확인.
+  - `MONEYTORING_004_MARKET_SECTION`: 시장 정보나 종목 발굴 섹션에서 목록형 금융 데이터 확인.
+  - `MONEYTORING_005_INDEX_OR_CALENDAR`: 주요 지수나 경제 일정에서 날짜, 지수명, 변동 정보 확인.
+- 보고서 활용 포인트: 금융형 UI는 수치/차트/카드가 섞여 있어 정보 추출 테스트에 좋다.
+
+### 10. Naver Search (`naver_search`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://www.naver.com/`
+- suite: `gaia/tests/scenarios/naver_search_public_suite.json`
+- suite_id: `naver_search_public_v2`
+- scenarios:
+  - `NAVER_001_HOME_PORTAL`: 검색창, 뉴스 스탠드, 쇼핑이나 날씨 같은 포털 영역 확인.
+  - `NAVER_002_WEATHER_SEARCH`: 오늘 날씨 관련 현재 기온, 예보, 지역 정보 확인.
+  - `NAVER_003_KNOWLEDGE_RESULT`: 인공지능 검색 결과에서 지식백과, 뉴스, 웹문서 결과 유형 확인.
+  - `NAVER_004_NEWS_TAB`: 반도체 뉴스 검색 화면에서 기사 제목, 언론사명, 시간 정보 확인.
+  - `NAVER_005_IMAGE_TAB`: 경복궁 이미지 검색 화면에서 이미지 썸네일과 관련 키워드/필터 확인.
+- 보고서 활용 포인트: 국내 대표 포털로 발표 청중에게 설명하기 쉽고, 결과 유형 전환이 포함된다.
+
+### 11. Daum (`daum`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://www.daum.net/`
+- suite: `gaia/tests/scenarios/daum_public_suite.json`
+- suite_id: `daum_public_v2`
+- scenarios:
+  - `DAUM_001_HOME_PORTAL`: 검색창, 뉴스 영역, 카페/메일 같은 주요 서비스 링크 확인.
+  - `DAUM_002_TOTAL_SEARCH`: 부산 날씨 검색 결과에서 현재 정보, 예보, 관련 링크 확인.
+  - `DAUM_003_NEWS_SEARCH`: 뉴스 검색 화면에서 기사 제목 목록, 언론사명, 시간 정보 확인.
+  - `DAUM_004_IMAGE_SEARCH`: 제주도 이미지 검색 화면에서 썸네일 목록과 관련 검색어 확인.
+  - `DAUM_005_TOPIC_TAB`: 프로야구 검색 결과에서 뉴스/이미지/동영상 탭 이동 후 표시 영역 변화 확인.
+- 보고서 활용 포인트: 네이버와 유사하지만 다른 DOM/탭 구조를 제공한다.
+
+### 12. Naver News (`naver_news`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://news.naver.com/`
+- suite: `gaia/tests/scenarios/naver_news_public_suite.json`
+- suite_id: `naver_news_public_v2`
+- scenarios:
+  - `NAVERNEWS_001_MAIN_HEADLINES`: 주요 기사, 분야별 메뉴, 언론사 영역 확인.
+  - `NAVERNEWS_002_IT_SECTION`: IT/과학 섹션에서 기사 제목, 썸네일, 언론사명 확인.
+  - `NAVERNEWS_003_POLITICS_SECTION`: 정치 섹션에서 헤드라인, 기사 목록, 랭킹 영역 확인.
+  - `NAVERNEWS_004_SEARCH_RESULTS`: 전기차 뉴스 검색 결과에서 기사 제목, 언론사명, 날짜 정보 확인.
+  - `NAVERNEWS_005_RANKING`: 랭킹 뉴스 화면에서 순위, 기사 제목, 언론사 구분 확인.
+- 보고서 활용 포인트: 뉴스 전문 surface로 포털 검색과 다른 기사 목록/랭킹 구조를 테스트한다.
+
+### 13. Kakao Map (`kakao_map`)
+
+- category: `public_data_service`
+- volatility: `medium`
+- base_url: `https://map.kakao.com/`
+- suite: `gaia/tests/scenarios/kakao_map_public_suite.json`
+- suite_id: `kakao_map_public_v2`
+- scenarios:
+  - `KAKAOMAP_001_HOME_MAP`: 지도 캔버스, 장소 검색 입력, 확대/축소 컨트롤 확인.
+  - `KAKAOMAP_002_PLACE_SEARCH`: 서울역 검색 결과에서 장소명, 주소, 지도 마커 또는 주변 장소 목록 확인.
+  - `KAKAOMAP_003_CATEGORY_NEARBY`: 강남역 카페 검색 화면에서 장소 목록, 별점 또는 주소 정보 확인.
+  - `KAKAOMAP_004_ROUTE_PANEL`: 서울역에서 경복궁까지 공식 길찾기 링크로 출발역, 도착역, 대중교통 경로 또는 지도 영역 확인.
+  - `KAKAOMAP_005_MAP_CONTROL`: 경복궁 지도 화면에서 확대/축소나 지도 유형 컨트롤 선택 후 표시 변화 확인.
+- 보고서 활용 포인트: 지도는 DOM 기반 정보와 캔버스/visual 정보가 섞여 있어 일반 문서/목록 사이트와 다르다.
+
+### 14. MBC News (`mbc_news`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://imnews.imbc.com/`
+- suite: `gaia/tests/scenarios/mbc_news_public_suite.json`
+- suite_id: `mbc_news_public_v2`
+- scenarios:
+  - `MBCNEWS_001_HOME_LANDMARK`: 주요 뉴스, 분야별 메뉴, 영상 뉴스 또는 최신 기사 영역 확인.
+  - `MBCNEWS_002_POLITICS_LIST`: 정치 뉴스 목록에서 기사 제목, 썸네일, 입력 시간 또는 분야 표시 확인.
+  - `MBCNEWS_003_ARTICLE_DETAIL`: 기사 상세에서 제목, 본문, 입력 시간 또는 공유/관련 기사 영역 확인.
+  - `MBCNEWS_004_ECONOMY_LIST`: 경제 뉴스 목록에서 기사 제목, 목록 항목, 분야 메뉴 또는 시간 정보 확인.
+  - `MBCNEWS_005_SPORTS_LIST`: 스포츠 뉴스 목록에서 경기 기사 제목, 썸네일, 목록 항목 또는 분야 메뉴 확인.
+- 보고서 활용 포인트: 언론사별 DOM 차이를 포함하기 위해 MBC/SBS/KBS/YTN을 분산 배치했다.
+
+### 15. SBS News (`sbs_news`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://news.sbs.co.kr/`
+- suite: `gaia/tests/scenarios/sbs_news_public_suite.json`
+- suite_id: `sbs_news_public_v2`
+- scenarios:
+  - `SBSNEWS_001_HOME_LANDMARK`: 주요 뉴스, 분야별 메뉴, 최신 기사 또는 영상 뉴스 영역 확인.
+  - `SBSNEWS_002_POLITICS_LIST`: 정치 뉴스 목록에서 기사 제목, 썸네일, 시간 정보 또는 분야 메뉴 확인.
+  - `SBSNEWS_003_ARTICLE_DETAIL`: 기사 상세에서 제목, 본문, 입력 시간 또는 기자/출처 정보 확인.
+  - `SBSNEWS_004_ECONOMY_LIST`: 경제 뉴스 목록에서 기사 제목, 목록 항목, 분야 탭 또는 시간 정보 확인.
+  - `SBSNEWS_005_SOCIETY_LIST`: 사회 뉴스 목록에서 기사 제목, 썸네일, 목록 항목 또는 분야 메뉴 확인.
+
+### 16. 11st (`elevenst`)
+
+- category: `commerce_product`
+- volatility: `high`
+- base_url: `https://www.11st.co.kr/`
+- suite: `gaia/tests/scenarios/elevenst_public_suite.json`
+- suite_id: `elevenst_public_v2`
+- scenarios:
+  - `ELEVENST_001_HOME_COMMERCE`: 검색 입력, 카테고리 메뉴, 프로모션 상품 영역 확인.
+  - `ELEVENST_002_PRODUCT_SEARCH`: 노트북 검색 결과에서 상품명, 가격, 판매처 또는 혜택 정보 확인.
+  - `ELEVENST_003_DETAIL_ENTRY`: 보조배터리 검색 결과에서 공개 상품 하나를 열어 이미지, 가격, 상품 설명 또는 배송 안내 확인.
+  - `ELEVENST_004_FILTER_PANEL`: 운동화 검색 화면에서 카테고리, 브랜드, 가격대 필터 확인.
+  - `ELEVENST_005_SORT_CHANGE`: 커피 검색 결과에서 정렬 옵션, 상품명, 가격, 필터 영역 또는 검색 결과 건수 확인.
+- 보고서 활용 포인트: 결제/장바구니 없이 상품 검색/정렬/상세 정보 확인만 수행한다.
+
+### 17. YTN (`ytn_news`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://www.ytn.co.kr/`
+- suite: `gaia/tests/scenarios/ytn_news_public_suite.json`
+- suite_id: `ytn_news_public_v2`
+- scenarios:
+  - `YTNNEWS_001_HOME_LANDMARK`: 주요 뉴스, 분야별 메뉴, 최신 기사 또는 영상 뉴스 확인.
+  - `YTNNEWS_002_POLITICS_LIST`: 정치 뉴스 목록에서 기사 제목, 썸네일, 시간 정보 또는 분야 메뉴 확인.
+  - `YTNNEWS_003_ARTICLE_DETAIL`: 기사 상세에서 제목, 본문, 입력 시간 또는 영상/사진 영역 확인.
+  - `YTNNEWS_004_ECONOMY_LIST`: 경제 뉴스 목록에서 기사 제목, 목록 항목, 분야 메뉴 또는 시간 정보 확인.
+  - `YTNNEWS_005_LATEST_LIST`: 최신 뉴스 목록에서 기사 제목, 시간 정보, 분야 표시 또는 더보기 영역 확인.
+
+### 18. MUSINSA (`musinsa`)
+
+- category: `commerce_product`
+- volatility: `high`
+- base_url: `https://www.musinsa.com/`
+- suite: `gaia/tests/scenarios/musinsa_public_suite.json`
+- suite_id: `musinsa_public_v2`
+- scenarios:
+  - `MUSINSA_001_HOME_STYLE`: 검색 입력, 랭킹, 카테고리 또는 브랜드 영역 확인.
+  - `MUSINSA_002_PRODUCT_SEARCH`: 스니커즈 검색 결과에서 상품명, 브랜드, 가격 또는 할인 정보 확인.
+  - `MUSINSA_003_RANKING_DETAIL`: 랭킹 화면에서 순위, 브랜드명, 상품명 또는 가격 정보 확인.
+  - `MUSINSA_004_BRAND_CATEGORY`: 후드티 검색 화면에서 브랜드, 카테고리, 가격대 필터 확인.
+  - `MUSINSA_005_SORT_CHANGE`: 가방 검색 결과에서 정렬 기준 드롭다운이나 랭킹 기준 영역을 열어 현재 선택값과 선택 가능한 기준 확인.
+- 보고서 활용 포인트: stale option ref 문제가 재현된 핵심 사례다.
+
+### 19. KBS News (`kbs_news`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://news.kbs.co.kr/`
+- suite: `gaia/tests/scenarios/kbs_news_public_suite.json`
+- suite_id: `kbs_news_public_v2`
+- scenarios:
+  - `KBSNEWS_001_HOME_LANDMARK`: 주요 뉴스, 분야별 메뉴, 최신 뉴스 또는 영상 뉴스 확인.
+  - `KBSNEWS_002_BREAKING_LIST`: 최신 뉴스 화면에서 기사 제목 목록, 시간 정보, 썸네일 또는 분야 표시 확인.
+  - `KBSNEWS_003_ARTICLE_DETAIL`: 기사 상세에서 제목, 본문, 입력 시간 또는 기자 정보 확인.
+  - `KBSNEWS_004_CATEGORY_LIST`: 분야별 뉴스 화면에서 분야 탭, 기사 목록, 주요 뉴스 또는 더보기 영역 확인.
+  - `KBSNEWS_005_WEATHER_NEWS`: 날씨 뉴스 화면에서 날씨 기사 목록, 예보/특보 문구, 기사 제목 또는 시간 정보 확인.
+
+### 20. YES24 (`yes24`)
+
+- category: `commerce_product`
+- volatility: `medium`
+- base_url: `https://www.yes24.com/`
+- suite: `gaia/tests/scenarios/yes24_public_suite.json`
+- suite_id: `yes24_public_v2`
+- scenarios:
+  - `YES24_001_HOME_BOOKS`: 검색 입력, 베스트셀러, 분야별 도서 메뉴 확인.
+  - `YES24_002_BOOK_SEARCH`: 인공지능 도서 검색 결과에서 책 제목, 저자, 가격 또는 출판사 정보 확인.
+  - `YES24_003_BESTSELLER`: 베스트셀러 화면에서 순위, 책 제목, 저자 또는 가격 정보 확인.
+  - `YES24_004_BOOK_DETAIL`: 파이썬 도서 검색 결과에서 공개 도서 하나의 책 소개, 목차, 저자 또는 가격 정보 확인.
+  - `YES24_005_CATEGORY_FILTER`: 경제 도서 검색 결과에서 분야 필터나 정렬 옵션 선택 후 목록 변화 확인.
+
+### 21. Kyobo Book Centre (`kyobo`)
+
+- category: `commerce_product`
+- volatility: `medium`
+- base_url: `https://www.kyobobook.co.kr/`
+- suite: `gaia/tests/scenarios/kyobo_public_suite.json`
+- suite_id: `kyobo_public_v2`
+- scenarios:
+  - `KYOBO_001_HOME_BOOKS`: 검색 입력, 베스트셀러, 분야별 도서 메뉴 확인.
+  - `KYOBO_002_BOOK_SEARCH`: 인공지능 도서 검색 결과에서 책 제목, 저자, 가격 또는 출판사 정보 확인.
+  - `KYOBO_003_BESTSELLER`: 베스트셀러 화면에서 순위, 책 제목, 저자 또는 가격 정보 확인.
+  - `KYOBO_004_BOOK_DETAIL`: 데이터 분석 도서 검색 결과에서 공개 도서 하나의 소개, 목차, 저자 또는 가격 정보 확인.
+  - `KYOBO_005_CATEGORY_FILTER`: 경영 도서 검색 결과에서 분야 필터나 정렬 옵션 선택 후 목록 변화 확인.
+
+### 22. 기상청 날씨누리 (`kma_weather`)
+
+- category: `public_data_service`
+- volatility: `medium`
+- base_url: `https://www.weather.go.kr/`
+- suite: `gaia/tests/scenarios/kma_weather_public_suite.json`
+- suite_id: `kma_weather_public_v2`
+- scenarios:
+  - `KMA_001_HOME_WEATHER`: 현재 날씨, 예보 메뉴, 특보 영역 확인.
+  - `KMA_002_SHORT_FORECAST`: 단기 예보에서 지역, 시간대, 기온 또는 강수 정보 확인.
+  - `KMA_003_WARNING_STATUS`: 기상 특보 화면에서 특보 종류, 지역, 발표 시각 또는 지도 표시 확인.
+  - `KMA_004_RADAR_IMAGE`: 레이더 영상 화면에서 관측 이미지, 시간 선택, 재생 컨트롤 확인.
+  - `KMA_005_REGION_CHANGE`: 단기 예보 화면에서 지역 선택 요소를 열어 지역 목록이나 선택값 확인.
+
+### 23. 서울 열린데이터광장 (`seoul_open_data`)
+
+- category: `public_data_service`
+- volatility: `medium`
+- base_url: `https://data.seoul.go.kr/`
+- suite: `gaia/tests/scenarios/seoul_open_data_public_suite.json`
+- suite_id: `seoul_open_data_public_v2`
+- scenarios:
+  - `SEOULDATA_001_HOME_DATA`: 데이터 검색 입력, 인기 데이터, 분야별 메뉴 확인.
+  - `SEOULDATA_002_DATASET_SEARCH`: 따릉이 검색 결과에서 데이터셋 이름, 제공 형식, 갱신 정보 확인.
+  - `SEOULDATA_003_DATASET_DETAIL`: 공공자전거 데이터 검색 결과 또는 상세 카드에서 설명, 제공 기관, 파일 형식 또는 API 정보 확인.
+  - `SEOULDATA_004_CATEGORY_BROWSE`: 데이터 목록 화면에서 교통, 환경, 복지 같은 분야 필터 영역 확인.
+  - `SEOULDATA_005_SORT_OR_FILTER`: 버스 데이터 검색 결과에서 정렬 콤보박스, 조회 버튼, 제공 형식 또는 기간 조건 영역 확인.
+
+### 24. 대한민국 정책브리핑 (`policy_briefing`)
+
+- category: `public_data_service`
+- volatility: `medium`
+- base_url: `https://www.korea.kr/`
+- suite: `gaia/tests/scenarios/policy_briefing_public_suite.json`
+- suite_id: `policy_briefing_public_v2`
+- scenarios:
+  - `POLICYBRIEF_001_HOME_NAV`: 정책뉴스, 브리핑룸, 정책자료 중 두 가지 메뉴 확인.
+  - `POLICYBRIEF_002_POLICY_NEWS_LIST`: 정책뉴스 목록에서 기사 제목, 부처명, 등록일 확인.
+  - `POLICYBRIEF_003_PRESS_RELEASE_LIST`: 보도자료 목록에서 자료 제목, 담당 부처, 날짜 확인.
+  - `POLICYBRIEF_004_FACT_CHECK_LIST`: 사실은 이렇습니다 목록에서 항목 제목, 기관명, 날짜 확인.
+  - `POLICYBRIEF_005_VISUAL_NEWS_LIST`: 카드 한컷 목록에서 카드 제목, 분류, 목록 영역 확인.
+- 보고서 활용 포인트: VisitKorea 서비스 지연을 대체한 안정적인 정부/정책 정보 사이트다.
+
+### 25. 정부24 (`government24`)
+
+- category: `public_data_service`
+- volatility: `medium`
+- base_url: `https://www.gov.kr/portal/main`
+- suite: `gaia/tests/scenarios/government24_public_suite.json`
+- suite_id: `government24_public_v2`
+- scenarios:
+  - `GOV24_001_HOME_SERVICE`: 통합 검색, 자주 찾는 서비스, 분야별 서비스 메뉴 확인.
+  - `GOV24_002_SERVICE_SEARCH`: 주민등록등본 검색 결과에서 서비스명, 처리기관, 안내 문구 확인.
+  - `GOV24_003_SERVICE_DETAIL`: 전입신고 검색 결과에서 대상, 처리 절차, 필요 서류 같은 안내 정보 확인.
+  - `GOV24_004_CATEGORY_SERVICE`: 분야별 서비스 화면에서 생애주기, 분야, 기관 같은 분류 목록 확인.
+  - `GOV24_005_RESULT_FILTER`: 여권 검색 결과에서 검색필터의 민원서비스, 기관정보, 정책정보 항목이나 관련 검색어 확인.
+
+### 26. 국가법령정보센터 (`law_go_kr`)
+
+- category: `public_data_service`
+- volatility: `medium`
+- base_url: `https://www.law.go.kr/`
+- suite: `gaia/tests/scenarios/law_go_kr_public_suite.json`
+- suite_id: `law_go_kr_public_v2`
+- scenarios:
+  - `LAWGO_001_HOME_LAW`: 법령 검색 입력, 판례 메뉴, 행정규칙 메뉴 중 두 가지 확인.
+  - `LAWGO_002_LAW_SEARCH`: 개인정보 보호법 검색 결과에서 법령명, 현행 구분, 조문 목록 확인.
+  - `LAWGO_003_LAW_SEARCH_TABS`: 근로기준법 검색 화면에서 법령명, 현행 구분, 조문 목록 또는 관련 탭 확인.
+  - `LAWGO_004_PRECEDENT_SEARCH`: 손해배상 판례 검색 화면에서 사건명, 선고일, 법원명 같은 결과 정보 확인.
+  - `LAWGO_005_TABLE_OF_CONTENTS`: 근로기준법 화면에서 조문 목차나 장별 목록을 선택해 해당 조문 영역 확인.
+- 보고서 활용 포인트: 상세 iframe 오류를 피하고 검색/목록/탭 surface로 바꾸면서 headless 5/5 성공이 확인됐다.
+
+### 27. Melon (`melon`)
+
+- category: `portal_news_community`
+- volatility: `high`
+- base_url: `https://www.melon.com/`
+- suite: `gaia/tests/scenarios/melon_public_suite.json`
+- suite_id: `melon_public_v2`
+- scenarios:
+  - `MELON_001_HOME_MUSIC`: 검색 입력, 차트, 최신 음악 또는 장르 메뉴 확인.
+  - `MELON_002_CHART_LIST`: 차트 화면에서 순위, 곡명, 아티스트명 또는 앨범 이미지 확인.
+  - `MELON_003_SEARCH_RESULTS`: 아이유 검색 결과에서 곡, 앨범, 아티스트 결과 확인.
+  - `MELON_004_GENRE_BROWSE`: 장르 음악 목록에서 곡명, 아티스트명, 앨범 정보 또는 정렬 영역 확인.
+  - `MELON_005_CHART_TAB`: 차트 화면에서 일간/주간/장르 탭 선택 후 곡 목록 변화 확인.
+
+### 28. 국립중앙박물관 (`national_museum`)
+
+- category: `culture_public`
+- volatility: `medium`
+- base_url: `https://www.museum.go.kr/`
+- suite: `gaia/tests/scenarios/national_museum_public_suite.json`
+- suite_id: `national_museum_public_v2`
+- scenarios:
+  - `MUSEUM_001_HOME_EXHIBITIONS`: 전시 안내, 관람 정보, 교육 프로그램 영역 확인.
+  - `MUSEUM_002_CURRENT_EXHIBITIONS`: 현재 전시 목록에서 전시명, 전시 기간, 전시 장소 또는 카드 정보 확인.
+  - `MUSEUM_003_EXHIBITION_DETAIL`: 현재 전시 목록에서 공개 전시 하나를 열어 전시명, 기간, 장소 또는 소개 정보 확인.
+  - `MUSEUM_004_PERMANENT_EXHIBIT_FLOOR`: 상설전시실 층별 안내에서 층 정보, 전시실명, 전시 분야 또는 안내 지도 확인.
+  - `MUSEUM_005_EDUCATION_LIST`: 교육 프로그램 목록에서 프로그램명, 대상, 기간, 접수 상태 또는 분류 정보 확인.
+
+### 29. 잡코리아 (`jobkorea`)
+
+- category: `career_business`
+- volatility: `medium`
+- base_url: `https://www.jobkorea.co.kr/`
+- suite: `gaia/tests/scenarios/jobkorea_public_suite.json`
+- suite_id: `jobkorea_public_v2`
+- scenarios:
+  - `JOBKOREA_001_HOME_JOBS`: 채용 검색 입력, 직무 메뉴, 기업 추천 영역 확인.
+  - `JOBKOREA_002_JOB_SEARCH`: 백엔드 채용 검색 결과에서 공고명, 회사명, 근무지 또는 경력 조건 확인.
+  - `JOBKOREA_003_JOB_DETAIL`: 데이터 분석 채용 검색 결과에서 공개 공고 하나의 업무 내용, 자격 조건, 근무지 또는 회사 정보 확인.
+  - `JOBKOREA_004_REGION_FILTER`: 지역별 채용 목록에서 지역 필터, 직무 조건, 공고 목록 확인.
+  - `JOBKOREA_005_COMPANY_INFO`: 네이버 관련 검색 결과에서 회사명, 채용 공고, 기업 정보 링크 확인.
+
+### 30. 서울문화포털 (`seoul_culture`)
+
+- category: `culture_public`
+- volatility: `medium`
+- base_url: `https://culture.seoul.go.kr/`
+- suite: `gaia/tests/scenarios/seoul_culture_public_suite.json`
+- suite_id: `seoul_culture_public_v2`
+- scenarios:
+  - `SEOULCULTURE_001_HOME_CULTURE`: 공연 전시 정보, 문화행사 검색, 시설 안내 영역 확인.
+  - `SEOULCULTURE_002_EVENT_SEARCH`: 전시 검색 결과에서 행사명, 장소, 기간 또는 분류 정보 확인.
+  - `SEOULCULTURE_003_EVENT_DETAIL`: 공연 검색 결과에서 공개 행사 하나의 장소, 기간, 관람 대상 또는 소개 정보 확인.
+  - `SEOULCULTURE_004_FACILITY_LIST`: 야간 운영시설 목록에서 시설명, 지역 주소, 총 건수 또는 페이지 이동 정보 확인.
+  - `SEOULCULTURE_005_CATEGORY_FILTER`: 문화행사 목록에서 지역, 장르, 기간 조건 선택 후 행사 목록 변화 확인.
+
+## Appendix B. 커밋별 더 자세한 해설
+
+### `7453e16 feat: improve benchmark management and suites`
+
+- 성격: benchmark 기능의 기초 공사.
+- 변경 규모: 39개 파일, 대략 4,482 insertions / 1,185 deletions.
+- 주요 산출물:
+  - `gaia/src/benchmark_manager.py`
+  - `gaia/src/gui/benchmark_manager_dialog.py`
+  - `scripts/run_goal_benchmark.py`
+  - 초기 공개 suite JSON들
+  - benchmark GUI asset
+- 놓치기 쉬운 포인트:
+  - 이 커밋은 단순 UI 개선이 아니라 benchmark를 “관리 가능한 대상”으로 바꾼 변화다.
+  - 사이트 목록, suite payload, scenario id 생성, 결과 HTML rendering, report scan/prune 기반이 이때 생겼다.
+  - 보고서에서 “평가 자동화 하네스”의 출발점으로 설명하기 좋다.
+
+### `1cc6ff1 feat: auto-follow relevant browser tabs`
+
+- 성격: 실제 웹 브라우저의 새 탭/관련 탭 문제 대응.
+- 주요 산출물:
+  - `gaia/src/phase4/browser_context_manager.py`
+  - `gaia/src/phase4/mcp_openclaw_dispatch_runtime.py`
+  - `test_mcp_openclaw_dispatch_runtime.py`
+- 놓치기 쉬운 포인트:
+  - 외부 사이트는 상세보기, 로그인, 영상 viewer, 문서 링크가 새 탭으로 열릴 수 있다.
+  - 자동화가 계속 원래 탭만 보고 있으면 목표 달성 여부를 놓친다.
+  - tab-following은 외부 웹 일반성 측면에서 중요하다.
+
+### `ca4f13c feat: add structured human answer flow`
+
+- 성격: 자동화 불가능 또는 사용자 확인이 필요한 상황을 구조화.
+- 주요 산출물:
+  - `gaia/src/phase4/goal_driven/human_answer_runtime.py`
+  - intervention runtime 정리
+  - terminal/chat hub integration
+- 놓치기 쉬운 포인트:
+  - CAPTCHA, 로그인, 비밀번호, 보안문자 같은 건 자동화가 “잘 못해서 실패”한 것이 아니라 정책상 사용자의 명시적 개입이 필요한 상황이다.
+  - 이 흐름이 있어야 benchmark에서 intervention rate를 정직하게 분리할 수 있다.
+
+### `fe74566 feat: 멀티유저 상호작용 하네스 추가`
+
+- 성격: 단일 사용자 자동화에서 다중 참여자/상호작용 구조로 확장.
+- 주요 산출물:
+  - `gaia/src/phase4/participants/models.py`
+  - `registry.py`
+  - `blackboard.py`
+  - `turn_scheduler.py`
+  - `multi_user_interaction_runtime.py`
+  - local chat login fixture
+- 놓치기 쉬운 포인트:
+  - 중간보고서에서 이 부분을 크게 다루지 않더라도 “확장 가능한 agent architecture”로 언급할 가치가 있다.
+  - blackboard와 turn scheduler는 여러 agent/participant가 하나의 목표를 공유할 때 필요한 기반이다.
+
+### `7f77e16 docs: 개발 하네스 워크플로 추가`
+
+- 성격: agent가 이 큰 repo에서 길을 잃지 않도록 만든 개발 프로세스 하네스.
+- 주요 산출물:
+  - `AGENTS.md`
+  - `docs/harness/CONTEXT_MAP.md`
+  - `docs/harness/CHECKS.md`
+  - `docs/harness/DEVELOPMENT_HARNESS.md`
+  - `docs/harness/development_harness_manifest.json`
+  - `scripts/context_pack.py`
+  - `scripts/dev_harness.py`
+  - `scripts/lint_harness_docs.py`
+- 놓치기 쉬운 포인트:
+  - 기능 개발만큼 중요한 것은 “AI agent가 잘못된 레이어를 수정하지 않게 하는 운영 규칙”이다.
+  - 보고서에서는 개발 신뢰성/유지보수성 파트에 넣을 수 있다.
+
+### `7ea9a12 Remove filter semantic validator from generic runtime`
+
+- 성격: 성능 개선보다 더 중요한 정직성/범용성 개선.
+- 주요 산출물:
+  - `filter_validation_engine.py` 삭제
+  - `filter_validation_runtime.py` 삭제
+  - 관련 unit test 삭제
+  - `scripts/compare_benchmark_runs.py` 추가
+  - filter policy를 state-change evidence 중심으로 낮춤
+- 놓치기 쉬운 포인트:
+  - 삭제한 코드가 2,000줄 이상이어서 “많이 구현했다”보다 “위험한 것을 걷어냈다”는 메시지가 더 강하다.
+  - 특정 서비스 전용 semantic validator는 데모에서는 좋아 보일 수 있지만, 외부 공개 웹 평가에서는 휴리스틱 비판을 받을 수 있다.
+  - 이 커밋은 교수님 질문 방어에 핵심이다.
+
+### `2d62d08 Add benchmark monitoring and shared suites`
+
+- 성격: 개인 로컬 artifact에서 팀 공유 관측 체계로 이동.
+- 주요 산출물:
+  - `monitoring/docker-compose.yml`
+  - `monitoring/prometheus.yml`
+  - `monitoring/grafana/dashboards/gaia_kpi.json`
+  - `monitoring/nginx/nginx.conf`
+  - `scripts/gaia_monitor_setup.py`
+  - `scripts/gaia_monitor_connect.py`
+  - `scripts/push_metrics.py`
+  - `scripts/sync_shared_suites.py`
+  - `gaia/src/benchmark_suite_sharing.py`
+- 놓치기 쉬운 포인트:
+  - Grafana 자체가 source of truth는 아니다.
+  - shared suite JSON과 Prometheus metric은 역할이 다르다.
+  - metric upload는 `--push-metrics` opt-in이다.
+  - raw artifact 전체나 민감 정보는 업로드하지 않는 방향이다.
+
+### `1c95ebe Add external public benchmark pack`
+
+- 성격: 내부 서비스 중심 benchmark에서 외부 공개 웹 benchmark로 확장.
+- 주요 산출물:
+  - `external_public_manifest.json`
+  - 다수의 public suite JSON
+  - `run_kpi_benchmark_pack.py --suite-manifest`
+  - `scripts/prune_benchmark_records.py`
+  - terminal benchmark mode의 외부 suite 선택/실행 보강
+- 놓치기 쉬운 포인트:
+  - 초기에는 npm, spell checker, oliveyoung, naver_shopping, coupang, gmarket, cgv 같은 차단성 사이트가 포함되었고, 이후 실제 실행을 통해 제거됐다.
+  - 이 변화는 한 번에 완성된 게 아니라 측정-분석-대체 과정을 통해 정제됐다.
+
+### `bdf8850 Harden external benchmark recovery`
+
+- 성격: 실제 외부 웹에서 터진 문제를 대규모로 반영한 hardening.
+- 주요 산출물:
+  - `scripts/benchmark_blocking.py`
+  - blocked/captcha normalization
+  - modal dismiss 정책
+  - scenario 문장/URL 대규모 정리
+  - KakaoMap deep link
+  - public manifest에서 반복 차단 사이트 제거
+- 놓치기 쉬운 포인트:
+  - “실패율을 낮추려고 어려운 사이트를 숨겼다”가 아니라, 자동화가 우회하면 안 되는 차단과 측정 가능한 일반 실패를 분리한 것이다.
+  - primary success rate는 이 철학을 지표로 표현한 것이다.
+
+### `0b91fe2 Add ref-first visual find fallback`
+
+- 성격: 실제 browser-use 계열 자동화의 핵심 안정성 보강.
+- 주요 산출물:
+  - stale/ref recovery
+  - visual label candidate
+  - visual coordinate fallback reason code
+  - snapshot/ref 재매핑
+  - option ref missing 대응
+- 놓치기 쉬운 포인트:
+  - “이미지까지 쓰면 되지 않나?”라는 질문의 답이 여기에 있다.
+  - 이미지를 항상 쓰는 게 아니라 ref-first로 안정적으로 가고, ref가 실패할 때 visual fallback을 쓴다.
+  - 좌표 fallback은 마지막 수단이며 confidence threshold와 safe label 검사를 둔다.
+
+### `62d4e95 Harden benchmark preflight diagnostics`
+
+- 성격: benchmark 무효 실행을 빨리 감지하기 위한 진단 보강.
+- 주요 산출물:
+  - provider credential preflight
+  - child traceback preservation
+  - `fatal_error` summary
+  - timeout budget floor/cap 정리
+- 놓치기 쉬운 포인트:
+  - 150개가 0.29초씩 모두 실패한 사례는 엔진 실패가 아니라 `OPENAI_API_KEY`/Codex auth 부재였다.
+  - 이런 환경 실패를 성능 실패로 오해하지 않게 artifact에 남기는 것이 중요하다.
+
+### `e0e7af2 Support Codex CLI auth for benchmarks`
+
+- 성격: 맥미니/팀원 환경에서 API key 없이 benchmark를 실행하기 위한 인증 경로 보강.
+- 주요 산출물:
+  - `LLMVisionClient`가 Codex CLI auth를 인식.
+  - `run_goal_benchmark.py`가 `codex login` 안내를 포함.
+- 놓치기 쉬운 포인트:
+  - 팀원이 OpenAI API key를 직접 다루지 않아도 Codex 로그인 기반으로 benchmark 실행 가능.
+  - 단, 해당 머신에 `codex login`이 되어 있어야 한다.
+
+### `286e9ea Add external public Grafana rollups`
+
+- 성격: 30개 사이트 전체를 한눈에 보기 위한 metric 확장.
+- 주요 산출물:
+  - `gaia_external_pack_*`
+  - `gaia_external_site_*`
+  - `gaia_external_category_*`
+  - `gaia_external_reason_code_count`
+  - Grafana 상단 30-site overview
+- 놓치기 쉬운 포인트:
+  - suite별 metric만 있으면 30개 사이트를 한눈에 볼 수 없다.
+  - pack-level rollup이 있어야 보고서 표와 Grafana 대시보드가 일치한다.
+
+### `f8ebd9b Run judge for readonly wait completion claims`
+
+- 성격: read-only/detail 목표의 false negative 완화.
+- 주요 산출물:
+  - reasoning-only WAIT completion judge path.
+  - YouTube detail 정보처럼 목표 증거가 화면에 있는데 보수적 판정 때문에 실패하던 케이스 보강.
+- 놓치기 쉬운 포인트:
+  - judge를 “항상” 호출하지 않는다.
+  - mutating goal은 제외한다.
+  - DOM transient/loading이면 제외한다.
+  - 마지막 성공 판정은 별도 judge가 현재 화면과 목표를 같이 본다.
+
+### `bdbeb5f Refine external benchmarks and tag runners`
+
+- 성격: false positive 제거와 팀 실행자 식별.
+- 주요 산출물:
+  - VisitKorea 제거, Policy Briefing 추가.
+  - Law.go.kr 상세 URL 교체.
+  - service unavailable guard.
+  - `scripts/runner_identity.py`.
+  - Grafana Runner filter/column.
+- 놓치기 쉬운 포인트:
+  - “사이트를 뺐다”가 아니라 “측정 불가능하거나 오류 화면을 성공으로 오판할 수 있는 케이스를 대체했다”가 핵심이다.
+  - runner_id는 팀 공유 환경에서 결과 provenance를 남기기 위한 최소 식별자다.
+
+## Appendix C. 코드 경로 / 함수 단위 지도
+
+### Benchmark suite 관리
+
+| 파일 | 주요 함수/클래스 | 역할 |
+|---|---|---|
+| `gaia/src/benchmark_manager.py` | `BenchmarkPreset` | benchmark site/preset 구조 |
+| `gaia/src/benchmark_manager.py` | `load_benchmark_registry` | site registry 로드 |
+| `gaia/src/benchmark_manager.py` | `build_benchmark_site_catalog` | GUI/terminal에서 사용할 site catalog 생성 |
+| `gaia/src/benchmark_manager.py` | `load_suite_payload` | suite JSON 로드, missing suite error 발생 지점 |
+| `gaia/src/benchmark_manager.py` | `save_suite_payload` | suite JSON 저장 |
+| `gaia/src/benchmark_manager.py` | `append_scenario_to_suite` | 새 시나리오 추가 |
+| `gaia/src/benchmark_manager.py` | `replace_scenario_in_suite` | 시나리오 수정 |
+| `gaia/src/benchmark_manager.py` | `delete_scenario_from_suite` | 시나리오 삭제 |
+| `gaia/src/benchmark_manager.py` | `scan_benchmark_reports` | artifact report scan |
+| `gaia/src/benchmark_manager.py` | `prune_benchmark_reports` | 실패 포함 artifact 삭제 |
+| `gaia/src/benchmark_manager.py` | `render_benchmark_reports_html` | 로컬 HTML 결과 보드 생성 |
+
+### 단일 benchmark runner
+
+| 파일 | 주요 함수 | 역할 |
+|---|---|---|
+| `scripts/run_goal_benchmark.py` | `_load_suite` | scenario suite JSON 로드 |
+| `scripts/run_goal_benchmark.py` | `_resolve_scenario_timeout_budget` | scenario별 timeout floor/cap 계산 |
+| `scripts/run_goal_benchmark.py` | `_prepare_scenario_env` | child process 환경 구성 |
+| `scripts/run_goal_benchmark.py` | `_build_child_code` | goal benchmark child 실행 코드 생성 |
+| `scripts/run_goal_benchmark.py` | `_run_scenario_once` | 단일 scenario 실행, stdout/traceback capture |
+| `scripts/run_goal_benchmark.py` | `_compute_metrics` | raw success/avg time 계산 |
+| `scripts/run_goal_benchmark.py` | `_compute_kpi_metrics` | KPI success/intervention/progress-stop 계산 |
+| `scripts/run_goal_benchmark.py` | `_populate_provider_credentials` | env/profile/Codex auth credential 반영 |
+| `scripts/run_goal_benchmark.py` | `_provider_credential_error` | provider credential preflight |
+| `scripts/run_goal_benchmark.py` | `_try_push_metrics` | `--push-metrics` opt-in upload |
+
+### KPI pack runner
+
+| 파일 | 주요 함수 | 역할 |
+|---|---|---|
+| `scripts/run_kpi_benchmark_pack.py` | `_load_suite_manifest` | manifest의 suites 배열 로드 |
+| `scripts/run_kpi_benchmark_pack.py` | `_resolve_suite_paths` | `--suite`와 `--suite-manifest`를 함께 resolution |
+| `scripts/run_kpi_benchmark_pack.py` | `_run_suite` | child `run_goal_benchmark.py` 실행 |
+| `scripts/run_kpi_benchmark_pack.py` | `_build_run_suite_command` | child command 구성, `--runner-id`, `--push-metrics` 전달 |
+| `scripts/run_kpi_benchmark_pack.py` | `_compute_pack_kpis` | 30-site pack 전체 KPI 계산 |
+| `scripts/run_kpi_benchmark_pack.py` | `_write_markdown` | pack `summary.md` 생성 |
+| `scripts/run_kpi_benchmark_pack.py` | `_try_push_pack_metrics` | pack-level Grafana metrics push |
+
+### Grafana/Prometheus metrics
+
+| 파일 | 주요 함수 | 역할 |
+|---|---|---|
+| `scripts/push_metrics.py` | `build_suite_metrics` | suite-level KPI metric 생성 |
+| `scripts/push_metrics.py` | `build_scenario_metrics` | scenario-level metric 생성 |
+| `scripts/push_metrics.py` | `build_external_pack_metrics` | external 30-site pack rollup 생성 |
+| `scripts/push_metrics.py` | `_site_metadata` | manifest 기반 site/category/volatility label 부여 |
+| `scripts/push_metrics.py` | `_reason_code_counts` | 실패 reason code 집계 |
+| `scripts/push_metrics.py` | `_runner_id_from_rows` | summary/results의 runner_id를 label로 정리 |
+| `scripts/push_metrics.py` | `push_suite_dir` | artifact dir에서 metrics build + push |
+| `scripts/push_metrics.py` | `push_shared_suite_json` | sanitize된 suite JSON 공유 |
+
+### Blocked/CAPTCHA 분리
+
+| 파일 | 주요 함수/상수 | 역할 |
+|---|---|---|
+| `scripts/benchmark_blocking.py` | `BLOCKED_USER_ACTION_STATUS` | `BLOCKED_USER_ACTION` status |
+| `scripts/benchmark_blocking.py` | `BLOCKED_CAPTCHA_REASON_CODE` | `blocked_captcha` reason code |
+| `scripts/benchmark_blocking.py` | `is_blocked_user_action` | row가 blocked user action인지 판단 |
+| `scripts/benchmark_blocking.py` | `normalize_blocked_user_action_row` | CAPTCHA/보안문자/보안 확인을 blocked row로 normalize |
+| `scripts/benchmark_blocking.py` | `summary_reason_code_summary` | nested summary reason code 추출 |
+
+### Runner identity
+
+| 파일 | 주요 함수 | 역할 |
+|---|---|---|
+| `scripts/runner_identity.py` | `sanitize_runner_id` | Prometheus label에 넣을 수 있게 runner id 정리 |
+| `scripts/runner_identity.py` | `resolve_runner_id` | explicit value, `GAIA_RUNNER_ID`, `CODEX_RUNNER_ID`, `user@host` 순으로 runner id 결정 |
+
+### WAIT completion / judge
+
+| 파일 | 주요 함수/상수 | 역할 |
+|---|---|---|
+| `gaia/src/phase4/goal_driven/goal_completion_helpers.py` | `_TRANSIENT_REASONING_WAIT_KEYWORDS` | 로딩/처리 중 surface 감지 |
+| `goal_completion_helpers.py` | `_SERVICE_UNAVAILABLE_KEYWORDS` | 서비스 지연/오류 화면 감지 |
+| `goal_completion_helpers.py` | `_dom_has_service_unavailable_signal` | DOM에서 서비스 오류 화면 감지 |
+| `goal_completion_helpers.py` | `is_readonly_visibility_goal` | read-only visibility 목표 판단 |
+| `goal_completion_helpers.py` | `evaluate_reasoning_only_wait_completion` | reasoning-only WAIT claim을 judge로 넘길지 판단 |
+| `goal_completion_helpers.py` | `_should_judge_reasoning_only_wait_completion` | judge 호출 guard 조건 |
+| `goal_completion_helpers.py` | `evaluate_explicit_reasoning_proof_completion` | reasoning + current DOM proof로 완료 판정 |
+| `goal_completion_helpers.py` | `evaluate_goal_completion_judge` | 최종 성공 판정 judge prompt/response 처리 |
+| `goal_completion_helpers.py` | `evaluate_wait_goal_completion` | WAIT action의 완료 판정 entry |
+
+### Ref-first / visual fallback
+
+| 파일 | 주요 함수/marker | 역할 |
+|---|---|---|
+| `gaia/src/phase4/goal_driven/action_execution_runtime.py` | `execute_goal_action` | goal decision을 실제 action으로 실행 |
+| `action_execution_runtime.py` | `_refresh_ref_binding` | stale/ref missing 시 최신 DOM snapshot으로 ref 재매핑 |
+| `action_execution_runtime.py` | `_execute_with_ref_recovery` | ref action 실패 후 ref recovery 재시도 |
+| `action_execution_runtime.py` | `_execute_visual_coordinate_click_fallback` | ref 기반 클릭 실패 시 visual coordinate fallback |
+| `action_execution_runtime.py` | `visual_coordinate_fallback` | fallback reason code |
+| `action_execution_runtime.py` | `ref 재바인딩` | ref가 새 값으로 바뀐 로그 marker |
+| `action_execution_runtime.py` | `stale/ref 오류 복구` | 최신 snapshot/ref 재매핑 후 재시도 성공 marker |
+| `action_execution_runtime.py` | `visual fallback 클릭` | coordinate fallback 성공 marker |
+
+### Terminal benchmark mode
+
+| 파일 | 주요 함수/역할 | 설명 |
+|---|---|---|
+| `gaia/src/terminal_benchmark_mode.py` | benchmark site 선택 | `python -m gaia.cli` 경로에서 GUI 없이 benchmark 실행 |
+| `gaia/src/terminal_benchmark_mode.py` | metrics upload 선택 | 방향키로 업로드/로컬 저장 선택 |
+| `gaia/src/terminal_benchmark_mode.py` | monitoring 연결 메뉴 | 설정이 없으면 연결/명령 보기/로컬만 저장 선택 |
+| `gaia/src/terminal_benchmark_mode.py` | local report viewer | Grafana 없이 HTML report 확인 |
+| `gaia/src/terminal_benchmark_mode.py` | shared suite pull/push | 팀 테스트 정의 자동/수동 동기화 |
+
+## Appendix D. 실행 모드별 정리
+
+### GUI mode
+
+- 대상 사용자: GUI에서 benchmark site를 고르고 실행하려는 사용자.
+- 장점:
+  - site 목록/시나리오 목록을 눈으로 확인하기 쉽다.
+  - custom site/test 추가가 쉽다.
+  - `--push-metrics` 체크박스 흐름을 제공한다.
+- 한계:
+  - headless 서버나 맥미니에서 장시간 돌리기에는 terminal/CLI가 더 적합하다.
+
+### Terminal mode
+
+- 진입:
+
+```bash
+python -m gaia.cli
+python -m gaia.cli --terminal
+python -m gaia.cli --terminal --push-metrics
+```
+
+- 특징:
+  - 방향키 선택 UI.
+  - 기존 테스트 실행/테스트 편집/지표 확인/팀 테스트 공유.
+  - monitoring server 연결이 있으면 shared suite 자동 pull.
+  - Grafana와 로컬 결과 보드 중 선택 가능.
+
+### Direct CLI suite mode
+
+- 진입:
+
+```bash
+PYTHONPATH=. GAIA_OPENCLAW_HEADLESS=1 GAIA_LLM_MODEL=gpt-5.5 GAIA_RAIL_ENABLED=0 \
+python scripts/run_goal_benchmark.py \
+  --suite gaia/tests/scenarios/policy_briefing_public_suite.json \
+  --repeats 1 \
+  --timeout-cap 600 \
+  --session-prefix policy-briefing-headless-20260509 \
+  --runner-id codex-headless
+```
+
+- 특징:
+  - 단일 suite를 빠르게 검증하기 좋다.
+  - artifact는 `artifacts/benchmarks/<suite>_<timestamp>/`에 생성된다.
+  - summary/results/markdown이 같이 나온다.
+
+### Direct CLI pack mode
+
+- 진입:
+
+```bash
+PYTHONPATH=. GAIA_OPENCLAW_HEADLESS=1 GAIA_LLM_MODEL=gpt-5.5 GAIA_RAIL_ENABLED=0 \
+python scripts/run_kpi_benchmark_pack.py \
+  --suite-manifest gaia/tests/scenarios/external_public_manifest.json \
+  --repeats 1 \
+  --timeout-cap 600 \
+  --session-prefix external-public-final-20260510 \
+  --runner-id macmini-team-a \
+  --push-metrics
+```
+
+- 특징:
+  - 30개 suite/150개 scenario 전체를 실행한다.
+  - 각 suite artifact와 최종 pack artifact가 생성된다.
+  - `--push-metrics`가 있으면 suite metrics와 pack rollup이 Grafana로 올라간다.
+
+### Headless mode
+
+- 핵심 env:
+
+```bash
+GAIA_OPENCLAW_HEADLESS=1
+```
+
+- 의미:
+  - OpenClaw embedded browser config에서 headless browser로 실행.
+  - 사용자의 화면에 Chrome 창을 띄우지 않고 benchmark를 돌릴 수 있다.
+- 검증된 사례:
+  - 정책브리핑 5/5 성공.
+  - 국가법령정보센터 수정 suite 5/5 성공.
+
+### Visible/debug mode
+
+- 핵심 env:
+
+```bash
+GAIA_OPENCLAW_VISIBLE=1
+```
+
+- 의미:
+  - 브라우저가 실제로 어떻게 움직이는지 눈으로 확인할 때 사용.
+  - 디버깅에는 좋지만 사용자의 화면을 점유할 수 있어 장시간 전체 실행에는 headless가 적합하다.
+
+## Appendix E. 실패/차단/무효 실행 taxonomy
+
+### 1. 진짜 엔진 실패
+
+- 예:
+  - ref가 stale인데 재수집/재시도하지 못함.
+  - option ref가 snapshot에 없는데 같은 실패를 반복.
+  - 화면 증거는 있는데 WAIT completion이 지나치게 보수적이라 종료하지 못함.
+- 대응:
+  - ref-first recovery.
+  - force resnapshot.
+  - visual fallback.
+  - read-only WAIT judge.
+
+### 2. scenario 문장/UI 불일치
+
+- 예:
+  - “정렬을 선택해 목록이 바뀌는지 확인”이라고 했지만 실제 사이트는 선택 후 별도 조회 버튼이 필요.
+  - 상세 진입을 요구했지만 결과 카드 자체에 충분한 정보가 이미 있음.
+- 대응:
+  - 실제 UI surface 기준으로 목표 문장 수정.
+  - 상세 진입 필수 대신 카드 evidence 허용.
+  - 비파괴 확인 목표로 낮춤.
+
+### 3. site volatility
+
+- 예:
+  - 뉴스/커뮤니티/YouTube/commerce 사이트의 콘텐츠가 수시로 바뀜.
+  - 특정 버튼/칩/필터 위치가 자주 바뀜.
+- 대응:
+  - exact text보다 구조적 evidence 사용.
+  - category/list/detail signal 중심으로 goal 작성.
+  - 실패 reason code를 분석해 다음 manifest 개정에 반영.
+
+### 4. blocked user action
+
+- 예:
+  - CAPTCHA.
+  - 보안문자.
+  - 로그인 gate.
+  - 비밀번호/계정 정보 요청.
+- 대응:
+  - 자동 우회하지 않는다.
+  - `BLOCKED_USER_ACTION`으로 분리.
+  - `primary_success_rate` 계산에서 제외.
+
+### 5. site unavailable/service delay
+
+- 예:
+  - `서비스 지연 안내`.
+  - `서비스 이용에 불편을 드려서 죄송합니다`.
+  - `현재 사용자가 많아 요청하신 페이지를 정상적으로 제공할 수 없습니다`.
+  - `잠시 후 다시 접속`.
+- 대응:
+  - 성공 증거에서 제외.
+  - 반복되면 primary pack에서 제거하거나 안정 URL/site로 대체.
+
+### 6. environment/preflight failure
+
+- 예:
+  - OpenAI credential 없음.
+  - `.venv`에 pytest/Pillow 없음.
+  - 특정 머신 경로 hardcoding으로 unit test 실패.
+  - monitoring config 없음.
+- 대응:
+  - benchmark runner preflight.
+  - Codex CLI auth 지원.
+  - child traceback capture.
+  - fatal summary 기록.
+  - portability test는 `tmp_path` 기반으로 고침/격리.
+
+## Appendix F. 빠진 부정적 결과와 그 의미
+
+### 150개가 전부 0.29초 내외로 실패한 무효 실행
+
+- 현상:
+  - `runs_total: 150`
+  - `success: 0`
+  - `avg_time_seconds: 0.29`
+  - `reason`, `captured_log`가 비어 있던 artifact가 생김.
+- 실제 원인:
+  - `openai.OpenAIError: Missing credentials`
+  - child process가 GoalDrivenAgent/LLMVisionClient 초기화 단계에서 종료.
+- 교훈:
+  - 모든 실패가 엔진 성능 실패는 아니다.
+  - benchmark runner는 환경 실패를 빨리 감지하고 artifact에 명확히 남겨야 한다.
+- 반영:
+  - credential preflight.
+  - Codex CLI auth 지원.
+  - child traceback capture.
+
+### pytest/Pillow/path portability 문제
+
+- 맥미니/OpenClaw workspace에서 빠른 검증 중:
+  - `.venv`에 pytest 없음.
+  - 이후 Pillow 없음.
+  - 이후 `/Users/coldmans/Documents/GitHub/capston` hardcoded path 때문에 2개 test 실패.
+- 교훈:
+  - 팀원 머신에서 실행하려면 dependency와 path portability를 같이 봐야 한다.
+  - unit test가 특정 사용자 home path에 의존하면 외부 실행 환경에서 깨진다.
+- 보고서에 넣을 방식:
+  - 메인 성과보다는 “팀 실행 환경 검증 중 발견한 portability 이슈”로 짧게 언급.
+
+### VisitKorea false positive
+
+- 현상:
+  - 일부 scenario가 SUCCESS로 기록.
+  - 실제 화면은 `대한민국 구석구석 서비스 지연 안내`.
+  - generic token `대한민국`, `구석구석`, `서비스`가 상세 정보 evidence처럼 잡힘.
+- 교훈:
+  - 외부 웹은 HTTP 200이어도 실제 content가 서비스 지연일 수 있다.
+  - 일반 단어를 목표 증거로 쓰면 false positive가 난다.
+- 반영:
+  - VisitKorea primary pack 제거.
+  - 정책브리핑으로 대체.
+  - service unavailable guard 추가.
+
+### Law.go.kr detail false positive/false negative 혼합
+
+- 현상:
+  - 상세 iframe URL이 때때로 `서비스 이용에 불편` 오류 화면 반환.
+  - 어떤 rerun에서는 오류 화면 단어가 성공처럼 잡힐 수 있음.
+  - 어떤 rerun에서는 progress stop failure.
+- 교훈:
+  - 같은 사이트라도 homepage/search surface와 detail iframe surface 안정성이 다르다.
+  - site 전체 제거보다 특정 불안정 URL만 교체하는 게 더 낫다.
+- 반영:
+  - `LAWGO_003_LAW_DETAIL` 제거.
+  - `LAWGO_003_LAW_SEARCH_TABS` 추가.
+  - 수정 후 headless 5/5 성공.
+
+### Musinsa option ref missing
+
+- 현상:
+  - 화면에는 정렬 dropdown option이 보임.
+  - role snapshot에는 option ref가 늦게 반영.
+  - action executor가 `낮은 가격순` ref를 못 찾아 실패.
+- 교훈:
+  - visual availability와 accessibility snapshot availability는 다를 수 있다.
+  - action 직후 짧은 지연, 강제 snapshot, ref 재바인딩이 필요하다.
+- 반영:
+  - stale/ref recovery.
+  - force analyze DOM for visual find.
+  - visual coordinate fallback.
+
+## Appendix G. Grafana metric catalog
+
+### Suite-level metrics
+
+| metric | 의미 |
+|---|---|
+| `gaia_runs_total` | suite 전체 실행 수 |
+| `gaia_success_rate` | raw 성공률 |
+| `gaia_avg_time_seconds` | 평균 실행 시간 |
+| `gaia_suite_success_rate` | suite KPI 기준 scenario 성공률 |
+| `gaia_suite_primary_success_rate` | blocked user-action을 제외한 primary 성공률 |
+| `gaia_reproducibility_rate` | repeats > 1일 때 재현성 |
+| `gaia_progress_stop_failure_rate` | timeout/stuck/no progress 계열 실패율 |
+| `gaia_self_recovery_rate` | recovery event가 성공으로 이어진 비율 |
+| `gaia_intervention_rate` | blocked/user intervention 비율 |
+| `gaia_status_count` | SUCCESS/FAIL/BLOCKED_USER_ACTION count |
+| `gaia_suite_started_timestamp_seconds` | suite 시작 시각 |
+
+### Scenario-level metrics
+
+| metric | 의미 |
+|---|---|
+| `gaia_scenario_runs_total` | scenario별 실행 수 |
+| `gaia_scenario_success_count` | scenario별 성공 수 |
+| `gaia_scenario_fail_count` | scenario별 실패 수 |
+| `gaia_scenario_success_rate` | scenario별 성공률 |
+| `gaia_scenario_avg_duration_sec` | scenario 평균 실행 시간 |
+| `gaia_scenario_median_duration_sec` | scenario 중앙 실행 시간 |
+| `gaia_scenario_min_duration_sec` | scenario 최소 실행 시간 |
+| `gaia_scenario_max_duration_sec` | scenario 최대 실행 시간 |
+| `gaia_scenario_latest_duration_sec` | scenario 최신 실행 시간 |
+| `gaia_scenario_last_status` | 최신 실행 성공 여부 |
+| `gaia_scenario_info` | low-cardinality presence marker |
+| `gaia_scenario_last_run_timestamp_seconds` | 최신 실행 시각 |
+
+### External pack metrics
+
+| metric | 의미 |
+|---|---|
+| `gaia_external_pack_runs_total` | 30-site pack 전체 run 수 |
+| `gaia_external_pack_success_count` | pack 성공 수 |
+| `gaia_external_pack_site_count` | pack site 수 |
+| `gaia_external_pack_scenario_count` | pack scenario 수 |
+| `gaia_external_pack_success_rate` | pack raw scenario 성공률 |
+| `gaia_external_pack_primary_success_rate` | blocked 제외 primary 성공률 |
+| `gaia_external_pack_progress_stop_failure_rate` | pack progress-stop failure 비율 |
+| `gaia_external_pack_intervention_rate` | pack intervention 비율 |
+| `gaia_external_pack_avg_duration_seconds` | pack 평균 시간 |
+| `gaia_external_site_success_rate` | site별 성공률 |
+| `gaia_external_site_runs_total` | site별 run 수 |
+| `gaia_external_site_avg_duration_seconds` | site별 평균 시간 |
+| `gaia_external_site_blocked_count` | site별 blocked count |
+| `gaia_external_site_reason_code_count` | site별 reason code count |
+| `gaia_external_category_success_rate` | category별 성공률 |
+| `gaia_external_reason_code_count` | category별 reason code count |
+
+### 주요 labels
+
+| label | 의미 |
+|---|---|
+| `suite_id` | benchmark suite id |
+| `scenario_id` | scenario id |
+| `site_key` | manifest site key |
+| `site` | 사람이 읽는 site label |
+| `category` | 사이트 카테고리 |
+| `volatility` | 안정성 태그 |
+| `model` | LLM model |
+| `provider` | LLM provider |
+| `runner_id` | 실행자/머신 식별자 |
+| `reason_code` | 실패 reason code |
+
+## Appendix H. 보고서 작성 시 넣기 좋은 “정직성” 문장
+
+아래 문장들은 결과가 완벽하다고 포장하는 대신, 실제 외부 웹 평가에서 부딪힌 문제와 대응을 설명하기 위한 재료다.
+
+> 외부 공개 웹 benchmark에서 중요한 것은 단순히 성공률을 높이는 것이 아니라, 어떤 실패가 엔진의 한계이고 어떤 실패가 사이트 차단 또는 서비스 지연인지 구분하는 것이다.
+
+> CAPTCHA나 보안문자는 자동화가 우회할 대상이 아니므로, 이를 일반 실패로 섞으면 엔진 평가도 왜곡되고 윤리적 기준도 흐려진다.
+
+> HTTP 200 응답은 성공 증거가 아니다. 실제 렌더링된 DOM이 서비스 지연 안내인지, 목표 정보가 있는 페이지인지 구분해야 한다.
+
+> 특정 내부 서비스에 맞춘 semantic validator는 데모 성공률을 높일 수 있지만, 범용 웹 자동화 엔진에서는 위험한 휴리스틱이 될 수 있다.
+
+> 따라서 본 프로젝트는 일부 도메인 특화 검증 로직을 제거하고, 더 일반적인 state-change evidence, DOM evidence, benchmark artifact 기반의 판정으로 전환했다.
+
+> read-only 목표의 WAIT 판정은 모델의 자기 주장만으로 성공 처리하지 않고, 안정 DOM과 별도 judge를 통해 목표 충족 여부를 재확인한다.
+
+> 외부 웹의 동적 UI에서는 ref가 stale해지는 일이 흔하므로, ref-first 정책을 유지하되 snapshot 재수집과 visual fallback을 보완했다.
+
+> Grafana dashboard는 결과를 예쁘게 보여주는 도구가 아니라, 팀원이 각자 실행한 benchmark를 같은 기준으로 비교하기 위한 관측 장치다.
+
+> `runner_id`는 benchmark provenance를 남기기 위한 최소 정보다. 누가, 어느 환경에서 실행했는지 알 수 있어야 결과를 재현하거나 비교할 수 있다.
+
+## Appendix I. 중간보고서 목차 확장안
+
+### 1. 연구/개발 배경
+
+- 웹 자동화 agent의 목표 수행 능력 평가 필요.
+- 내부 서비스 기반 평가의 장점과 한계.
+- 외부 공개 웹으로 확장해야 하는 이유.
+- 실제 웹의 변동성, 차단, 동적 UI, 모달 문제.
+
+### 2. 시스템 구조
+
+- Goal-driven runtime.
+- OpenClaw browser control.
+- DOM/ref 기반 action execution.
+- visual fallback.
+- benchmark suite/manifest.
+- runner/pack runner.
+- artifact schema.
+- Grafana monitoring.
+
+### 3. Benchmark 설계
+
+- scenario JSON contract.
+- site manifest.
+- category/volatility.
+- 금지 범위.
+- 제외 기준.
+- 30 sites/150 scenarios 구성.
+
+### 4. 주요 구현
+
+- benchmark manager.
+- terminal/GUI/direct CLI mode.
+- shared suite sync.
+- metrics push.
+- external pack rollup.
+- runner_id.
+- service unavailable guard.
+- blocked/captcha normalization.
+- read-only WAIT judge.
+- ref-first visual fallback.
+
+### 5. 실험 결과
+
+- 내부 서비스 suite.
+- external initial pack.
+- 정리 후 headless spot checks.
+- Musinsa dropdown recovery.
+- VisitKorea/Lawgo false positive 분석.
+
+### 6. 실패 분석
+
+- 엔진 실패.
+- scenario 문장 불일치.
+- site volatility.
+- CAPTCHA/bot-wall.
+- service delay.
+- environment/preflight.
+
+### 7. 개선 과정
+
+- filter semantic validator 제거.
+- public suite 대체.
+- preflight diagnostics.
+- Codex CLI auth.
+- Grafana rollup.
+- runner identity.
+
+### 8. 한계와 향후 계획
+
+- repeats=1의 한계.
+- 외부 웹 변동성.
+- final 30/150 rerun 필요.
+- reason code taxonomy 추가.
+- stable subset reproducibility.
+
+## Appendix J. 발표용 1분/3분/5분 버전
+
+### 1분 버전
+
+이번 기간에는 GAIA 자동화 엔진을 내부 서비스 데모에서 외부 공개 웹 benchmark로 확장했습니다. 교수님이 지적하신 내부 사이트 휴리스틱 가능성을 줄이기 위해 30개 외부 사이트, 150개 시나리오를 구성했고, 한국 사용자가 익숙한 포털/뉴스/지도/커머스/공공 사이트를 중심으로 잡았습니다. 동시에 성공률을 부풀릴 수 있는 내부 서비스 특화 filter semantic validator를 제거했고, CAPTCHA나 서비스 지연처럼 자동화가 우회하면 안 되는 케이스는 별도로 분리했습니다. 실행 결과는 summary/results artifact로 남기고, `--push-metrics`를 붙이면 Grafana에서 팀원이 함께 볼 수 있게 했습니다.
+
+### 3분 버전
+
+지난 3주간의 핵심 변화는 세 가지입니다. 첫째, benchmark 범위를 확장했습니다. 기존 내부 서비스 중심 평가에서 외부 공개 사이트 30개/150개 시나리오로 늘렸고, 사이트별로 홈 확인, 검색/탐색, 상세 정보, 목록/필터, 비파괴 상호작용을 구성했습니다. 둘째, 범용성에 위험한 로직을 제거했습니다. 내부 서비스에는 맞지만 외부 웹에는 휴리스틱이 될 수 있는 filter semantic validator를 제거하고, OpenClaw state-change evidence와 DOM evidence 중심으로 낮췄습니다. 셋째, 실제 웹에서 발생한 문제를 반영했습니다. CAPTCHA는 `BLOCKED_USER_ACTION`으로 분리하고, 서비스 지연 안내는 성공 증거로 인정하지 않으며, stale ref나 dropdown option ref 문제는 snapshot 재수집과 visual fallback으로 회복하도록 했습니다. 결과는 artifact와 Grafana metric으로 남겨 팀원이 공유할 수 있게 했고, `runner_id`로 실행 환경도 구분합니다.
+
+### 5분 버전
+
+처음에는 내부 서비스 benchmark에서 10개 중 9개 성공이라는 결과를 얻었습니다. 하지만 실패 케이스를 분석해 보니 필터 semantic validator가 특정 서비스의 카드 구조와 필터 UI에 강하게 의존하고 있었습니다. 이 로직은 내부 서비스에는 맞을 수 있지만 범용 웹 자동화 엔진에는 위험한 휴리스틱이 될 수 있다고 판단해 제거했습니다. 이후 외부 공개 사이트 benchmark를 30개 사이트/150개 시나리오로 확장했습니다. 실제 실행 과정에서 npm, 올리브영, 네이버쇼핑, 쿠팡, G마켓, CGV처럼 CAPTCHA나 bot-wall이 반복되는 사이트는 primary pack에서 제거했고, VisitKorea처럼 서비스 지연 안내가 반복되는 사이트도 제거해 대한민국 정책브리핑으로 대체했습니다. Law.go.kr은 사이트 전체가 아니라 상세 iframe URL만 불안정했기 때문에 검색 탭/목록 확인 시나리오로 교체했습니다. 또한 Musinsa 정렬 dropdown처럼 사람에게는 쉬워도 자동화에서는 option ref가 늦게 반영되는 문제를 발견했고, ref-first 조작을 유지하면서 stale ref recovery와 visual fallback을 추가했습니다. 최종적으로 benchmark 결과는 summary/results/markdown artifact로 남기고, `--push-metrics`를 붙이면 Grafana에서 site/category/reason code별로 공유 지표를 볼 수 있습니다.
+
+## Appendix K. 놓치기 쉬운 작은 구현 디테일
+
+- `timeout-cap`은 너무 작게 줘도 내부적으로 최소 600초 floor를 둔다.
+- Codex child process timeout은 benchmark timeout의 절반 수준에서 180~300초 사이로 clamp된다.
+- `GAIA_CODEX_REASONING_EFFORT`는 benchmark에서 `low`로 내려 과도한 latency를 줄인다.
+- stdout live trace는 step-level marker만 흘려보내고 verbose JSON trace는 필터링한다.
+- child process가 JSON을 마지막 줄에 못 남겨도 tail traceback을 reason/captured_log에 보존한다.
+- `--push-metrics`가 없으면 metric upload는 하지 않는다.
+- monitoring config가 없으면 upload를 건너뛰고 연결 명령을 안내한다.
+- shared suite upload 시 `password`, `token`, `secret`, `api_key` 계열 key는 sanitize 대상이다.
+- external manifest는 unit test에서 30 site/150 scenario, unique scenario id, forbidden goal keyword, internal host exclusion을 검증한다.
+- `POLICYBRIEF_004_FACT_CHECK_LIST`는 처음에 “게시물”이라는 단어가 들어가 `게시` 금지 키워드에 걸렸고, “항목 제목”으로 바꿨다.
+- `artifacts/`는 source of truth가 아니며 git commit 대상이 아니다.
+- 중간보고서 최종 수치에는 최신 manifest 기준 전체 rerun artifact를 사용해야 한다.
