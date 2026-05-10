@@ -23,7 +23,7 @@
           "uid": "gaia-prometheus"
         },
         "query": {
-          "query": "label_values(gaia_scenario_runs_total, suite_id)",
+          "query": "label_values(gaia_scenario_runs_total{suite_id=~\".*_public_v2$\"}, suite_id)",
           "refId": "A"
         },
         "refresh": 2,
@@ -1050,7 +1050,7 @@
       "id": 911,
       "type": "table",
       "title": "전체 케이스 성공률 보드",
-      "description": "Full external pack uploads only (instance=kpi_pack_*). 여러 번 전체 실행하면 runner/suite/scenario 단위로 success_count/runs_total을 합산해 주식 종목판처럼 한 화면에 보여줍니다.",
+      "description": "Full external pack uploads only (instance=kpi_pack_*) and current public-v2 suites only. 여러 번 전체 실행하면 runner/suite/scenario 단위로 success_count/runs_total을 합산해 주식 종목판처럼 한 화면에 보여줍니다.",
       "gridPos": {
         "x": 0,
         "y": 28,
@@ -1064,7 +1064,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_success_count{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"}) / sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_success_count{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"}) / sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
           "instant": true,
           "legendFormat": "SUCCESS RATE",
           "refId": "A"
@@ -1074,7 +1074,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
           "instant": true,
           "legendFormat": "RUNS",
           "refId": "B"
@@ -1084,7 +1084,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_success_count{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_success_count{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
           "instant": true,
           "legendFormat": "SUCCESS",
           "refId": "C"
@@ -1094,7 +1094,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_fail_count{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_fail_count{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
           "instant": true,
           "legendFormat": "FAIL",
           "refId": "D"
@@ -1104,7 +1104,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_avg_duration_sec{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"} * gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"}) / sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_avg_duration_sec{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"} * gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"}) / sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
           "instant": true,
           "legendFormat": "AVG SEC",
           "refId": "E"
@@ -1114,7 +1114,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "1000 * max by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_last_run_timestamp_seconds{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "expr": "1000 * max by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_last_run_timestamp_seconds{suite_id=~\".*_public_v2$\",model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
           "instant": true,
           "legendFormat": "LAST SEEN",
           "refId": "F"
