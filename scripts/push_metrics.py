@@ -657,7 +657,7 @@ def push_suite_dir(
     pack_metrics = build_external_pack_metrics(summary, results or [], declared)
 
     full_metrics = suite_metrics + scenario_metrics + pack_metrics
-    instance = str(suite_id or suite_dir.name)
+    instance = suite_dir.name  # 타임스탬프 포함된 고유 이름으로 실행마다 별도 저장
 
     if push_to_gateway(full_metrics, instance, gateway_url, token):
         print(f"  [완료] {suite_id} ({len(results or [])}개 시나리오)")
