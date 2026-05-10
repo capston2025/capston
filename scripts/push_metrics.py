@@ -227,11 +227,12 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
             {**base, "completion": completion},
             declared,
         ))
+        goal = str(runs[0].get("goal") or "")[:200].replace("\n", " ")
         lines.extend(_gauge(
             "gaia_scenario_info",
-            "Scenario presence marker with low-cardinality labels",
+            "Scenario presence marker with description",
             1,
-            {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name},
+            {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name, "goal": goal},
             declared,
         ))
         lines.extend(_gauge(
