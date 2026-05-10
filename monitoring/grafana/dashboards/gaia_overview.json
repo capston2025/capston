@@ -1,0 +1,62 @@
+{
+  "title": "GAIA 전체 현황",
+  "uid": "gaia-overview-v1",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "browser",
+  "tags": ["gaia", "overview"],
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+        "query": { "query": "label_values(gaia_scenario_runs_total, model)", "refId": "A" },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Model"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "🗺 시나리오 Treemap",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "title": "시나리오별 성공률 (박스 크기 = 실행 횟수, 색상 = 성공률)",
+      "type": "ae3e-plotly-panel",
+      "gridPos": { "x": 0, "y": 1, "w": 24, "h": 22 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "script": "var suites = {};\nvar scenarioMap = {};\n\ndata.series.forEach(function(frame) {\n  var refId = frame.refId || 'A';\n  var valueField = null;\n  var suite_id = null;\n  var scenario_id = null;\n\n  frame.fields.forEach(function(field) {\n    if (field.labels) {\n      if (field.labels.suite_id) suite_id = field.labels.suite_id;\n      if (field.labels.scenario_id) scenario_id = field.labels.scenario_id;\n    }\n    if (field.type === 'number' && field.values && field.values.length > 0) {\n      valueField = field.values[field.values.length - 1];\n    }\n  });\n\n  if (!suite_id || !scenario_id || valueField == null) return;\n\n  var key = suite_id + '|' + scenario_id;\n  suites[suite_id] = true;\n  if (!scenarioMap[key]) {\n    scenarioMap[key] = { suite_id: suite_id, scenario_id: scenario_id };\n  }\n  if (refId === 'A') {\n    scenarioMap[key].success_rate = valueField;\n  } else {\n    scenarioMap[key].runs = valueField;\n  }\n});\n\nvar labels = ['전체'];\nvar parents = [''];\nvar values = [0];\nvar markerColors = ['rgba(0,0,0,0)'];\nvar texts = [''];\n\nObject.keys(suites).forEach(function(suite) {\n  labels.push(suite);\n  parents.push('전체');\n  values.push(0);\n  markerColors.push('rgba(100,100,200,0.3)');\n  texts.push(suite);\n});\n\nObject.keys(scenarioMap).forEach(function(key) {\n  var sc = scenarioMap[key];\n  var runs = sc.runs || 1;\n  var sr = sc.success_rate != null ? sc.success_rate : -1;\n  var color;\n  if (sr < 0) { color = 'grey'; }\n  else if (sr < 0.5) { color = '#F2495C'; }\n  else if (sr < 0.7) { color = '#FF9830'; }\n  else { color = '#73BF69'; }\n  labels.push(sc.scenario_id);\n  parents.push(sc.suite_id);\n  values.push(runs);\n  markerColors.push(color);\n  var srText = sr >= 0 ? (sr * 100).toFixed(0) + '%' : 'N/A';\n  texts.push(sc.scenario_id + '<br>실행: ' + runs + '회<br>성공률: ' + srText);\n});\n\nreturn {\n  data: [{\n    type: 'treemap',\n    labels: labels,\n    parents: parents,\n    values: values,\n    marker: { colors: markerColors },\n    text: texts,\n    hovertemplate: '%{text}<extra></extra>',\n    textinfo: 'label',\n    branchvalues: 'remainder'\n  }],\n  layout: {\n    paper_bgcolor: 'rgba(0,0,0,0)',\n    plot_bgcolor: 'rgba(0,0,0,0)',\n    font: { color: '#d8d9da', size: 11 },\n    margin: { t: 10, b: 10, l: 10, r: 10 }\n  },\n  config: { responsive: true }\n};",
+        "onclick": "",
+        "jsonData": ""
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "max by (suite_id, scenario_id) (gaia_scenario_success_rate{model=~\"$model\"})",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "sum by (suite_id, scenario_id) (gaia_scenario_runs_total{model=~\"$model\"})",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}
