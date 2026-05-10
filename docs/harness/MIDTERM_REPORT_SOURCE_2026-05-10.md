@@ -2332,3 +2332,55 @@ reason code 집계:
 발표용 주의 문장:
 
 > Grafana는 팀 공유와 추세 확인을 위한 관측 계층이며, 최종 근거 수치는 같은 시점의 `summary.json`, `results.json`, `summary.md`, 그리고 Grafana snapshot이 서로 일치하는 실행만 사용한다.
+
+## Appendix M. 보고서 그림/스크린샷 소스
+
+별도 source file:
+
+- `docs/harness/REPORT_FIGURE_SOURCES_2026-05-10.md`
+
+왜 추가해야 하는가:
+
+- 현재 중간보고서 소스는 텍스트, 수치, 커밋 내역, artifact 경로 중심이다.
+- 최종 보고서/발표자료에는 “실제로 무엇을 만들고 실행했는지”를 보여주는 스크린샷이 필요하다.
+- 특히 교수님 질문에 대응하려면 30개 외부 사이트 manifest, Grafana 통합 지표, 실패 분류, visual fallback 사례가 눈으로 보여야 한다.
+
+권장 이미지 8개:
+
+| Figure | 내용 | 핵심 증거 |
+|---|---|---|
+| Fig. 1 | 내부 서비스에서 외부 공개 웹 benchmark로 확장된 구조 | 범용성 전환 |
+| Fig. 2 | 30개 사이트/150개 시나리오 manifest 요약 | 내부 휴리스틱 우려 방어 |
+| Fig. 3 | terminal benchmark mode 메뉴 | GUI 없이 실행/지표 확인 가능 |
+| Fig. 4 | Grafana external 30-site overview | 팀 공유 지표 작동 |
+| Fig. 5 | site/category별 성공률 | 다양한 웹 유형별 결과 |
+| Fig. 6 | reason code breakdown | 실패 원인 분리 |
+| Fig. 7 | Musinsa visual fallback 사례 | ref-first + visual fallback 보강 |
+| Fig. 8 | failure taxonomy / 제외 기준 | CAPTCHA/서비스 지연을 정직하게 분리 |
+
+이미지 저장 위치:
+
+- `docs/harness/report_assets/2026-05-midterm/`
+
+중요 규칙:
+
+- `artifacts/` 원시 이미지는 source of truth가 아니므로 최종 보고서에 직접 연결하지 않는다.
+- 최종 보고서용 이미지는 선별, crop, redaction 후 `docs/harness/report_assets/2026-05-midterm/` 아래에 둔다.
+- Grafana 이미지는 반드시 같은 실행의 `pack_id`, push 시각, `summary.json`/`results.json`과 함께 기록한다.
+- CAPTCHA 원본 화면은 넣지 않는다. 대신 `BLOCKED_USER_ACTION`/`service_delay` 분류표를 넣는다.
+
+보고서에 넣을 예시:
+
+```markdown
+![Fig. 4. Grafana external 30-site overview](report_assets/2026-05-midterm/fig04_grafana_external_overview.png)
+
+그림 4. 맥미니에서 `--push-metrics`로 업로드한 external public benchmark의 Grafana overview. 이 화면은 `pack_id=<최신 pack id>`와 같은 실행의 `summary.json`/`results.json`에 대응한다.
+```
+
+맥미니 재실행 후 해야 할 일:
+
+1. 최신 브랜치에서 external pack 전체 실행.
+2. `--push-metrics` 성공 확인.
+3. Grafana `External Public 30-site Overview` 캡처.
+4. site/category 성공률과 reason code panel 캡처.
+5. 이 문서 Appendix L과 `REPORT_FIGURE_SOURCES_2026-05-10.md`의 최신 `pack_id`, 성공률, 이미지 파일명을 업데이트.
