@@ -51,6 +51,7 @@ from gaia.src.benchmark_suite_sharing import (
     merge_shared_suite_payload,
     upload_shared_suite,
 )
+from scripts.runner_identity import resolve_runner_id
 
 PromptSelectFn = Callable[[str, Sequence[str], str | None], str]
 PromptTextFn = Callable[[str, str | None], str]
@@ -61,6 +62,8 @@ GrafanaOpener = Callable[[str], bool]
 ScenarioFormOpener = Callable[..., Mapping[str, Any] | None]
 RecordPruner = Callable[..., Mapping[str, Any]]
 
+ALL_SITES_ALL_CASES_OPTION = "전체사이트 전체케이스 실행"
+EXTERNAL_PUBLIC_MANIFEST_PATH = Path("gaia/tests/scenarios/external_public_manifest.json")
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
 SITE_DELETE_OPTION = "사이트 삭제"
@@ -648,6 +651,7 @@ def run_benchmark_suite(
     timeout_cap: int = 600,
     process_factory: ProcessFactory = subprocess.Popen,
     push_metrics: bool = False,
+    runner_id: str = "",
 ) -> dict[str, Any]:
     scenarios = [dict(row) for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
     if not scenarios:
@@ -680,6 +684,9 @@ def run_benchmark_suite(
     if push_metrics:
         cmd.append("--push-metrics")
     env = os.environ.copy()
+    resolved_runner_id = resolve_runner_id(runner_id, env)
+    env["GAIA_RUNNER_ID"] = resolved_runner_id
+    cmd.extend(["--runner-id", resolved_runner_id])
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
     if os.name == "nt":
@@ -689,6 +696,7 @@ def run_benchmark_suite(
     emit(f"{preset.label} 벤치를 실행합니다.")
     emit(f"   - target: {target_url}")
     emit(f"   - suite: {tmp_suite_path}")
+    emit(f"   - runner_id: {resolved_runner_id}")
     if push_metrics:
         emit("   - metrics: upload enabled (--push-metrics)")
 
@@ -730,6 +738,107 @@ def run_benchmark_suite(
         "summary": summary_payload,
         "results": results_payload,
         "output_dir": str(output_dir),
+        "cmd": cmd,
+        "captured": captured,
+    }
+
+
+def run_external_public_benchmark_pack(
+    *,
+    workspace_root: Path,
+    emit: OutputFn,
+    manifest_path: Path | str = EXTERNAL_PUBLIC_MANIFEST_PATH,
+    repeats: int = 1,
+    timeout_cap: int = 600,
+    session_prefix: str = "terminal-external-public",
+    push_metrics: bool = True,
+    runner_id: str = "",
+    process_factory: ProcessFactory = subprocess.Popen,
+) -> dict[str, Any]:
+    resolved_manifest = (workspace_root / manifest_path).resolve()
+    if not resolved_manifest.exists():
+        emit(f"전체 benchmark manifest를 찾지 못했습니다: {resolved_manifest}")
+        return {"status": "missing_manifest", "summary": {}, "results": [], "output_dir": ""}
+
+    env = os.environ.copy()
+    resolved_runner_id = resolve_runner_id(runner_id, env)
+    env["GAIA_RUNNER_ID"] = resolved_runner_id
+    env.setdefault("GAIA_OPENCLAW_HEADLESS", "1")
+    env.setdefault("GAIA_RAIL_ENABLED", "0")
+    env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
+    if os.name == "nt":
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+
+    cmd = [
+        sys.executable,
+        "scripts/run_kpi_benchmark_pack.py",
+        "--suite-manifest",
+        str(resolved_manifest),
+        "--repeats",
+        str(max(1, int(repeats))),
+        "--timeout-cap",
+        str(max(600, int(timeout_cap))),
+        "--session-prefix",
+        str(session_prefix),
+        "--runner-id",
+        resolved_runner_id,
+    ]
+    if push_metrics:
+        cmd.append("--push-metrics")
+
+    emit("전체사이트 전체케이스 benchmark를 실행합니다.")
+    emit(f"   - manifest: {resolved_manifest}")
+    emit(f"   - runner_id: {resolved_runner_id}")
+    emit("   - headless: enabled")
+    if push_metrics:
+        emit("   - metrics: upload enabled (--push-metrics)")
+
+    process = process_factory(
+        cmd,
+        cwd=str(workspace_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        env=env,
+    )
+    captured: list[str] = []
+    if process.stdout is not None:
+        for raw_line in process.stdout:
+            line = str(raw_line or "").rstrip()
+            if not line:
+                continue
+            captured.append(line)
+            emit(line)
+    return_code = process.wait()
+
+    payload: dict[str, Any] = {}
+    for line in reversed(captured):
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            payload = parsed
+            break
+
+    output_dir = str(payload.get("artifact_dir") or "")
+    emit(
+        "전체 benchmark 실행 완료"
+        f" | status={'success' if return_code == 0 else 'failed'}"
+        + (f" | artifact={output_dir}" if output_dir else "")
+    )
+    return {
+        "status": "success" if return_code == 0 else "failed",
+        "summary": payload.get("overall_kpis") if isinstance(payload.get("overall_kpis"), Mapping) else {},
+        "results": [],
+        "output_dir": output_dir,
         "cmd": cmd,
         "captured": captured,
     }
@@ -844,6 +953,7 @@ def run_terminal_benchmark_mode(
     emit: OutputFn = print,
     registry_path: Path | None = None,
     run_suite_handler: Callable[..., dict[str, Any]] = run_benchmark_suite,
+    run_pack_handler: Callable[..., dict[str, Any]] = run_external_public_benchmark_pack,
     report_writer: Callable[..., Path] = write_benchmark_report_html,
     report_opener: Callable[[Path], bool] = open_benchmark_report,
     grafana_opener: GrafanaOpener = webbrowser.open_new_tab,
@@ -855,10 +965,11 @@ def run_terminal_benchmark_mode(
 ) -> int:
     registry = load_benchmark_registry(registry_path)
     auto_pull_attempted: set[str] = set()
+    runner_id = resolve_runner_id(env=os.environ)
 
     while True:
         catalog, preset_map = build_terminal_benchmark_catalog(registry)
-        site_options = tuple(item["label"] for item in catalog) + (
+        site_options = (ALL_SITES_ALL_CASES_OPTION,) + tuple(item["label"] for item in catalog) + (
             SITE_ADD_OPTION,
             SITE_EDIT_OPTION,
             SITE_DELETE_OPTION,
@@ -867,8 +978,19 @@ def run_terminal_benchmark_mode(
         selected_site = prompt_select(
             "벤치 사이트를 선택하세요",
             site_options,
-            default=catalog[0]["label"] if catalog else SITE_EXIT_OPTION,
+            default=ALL_SITES_ALL_CASES_OPTION,
         )
+        if selected_site == ALL_SITES_ALL_CASES_OPTION:
+            _handle_all_sites_all_cases_run(
+                workspace_root=workspace_root,
+                prompt_select=prompt_select,
+                prompt_non_empty=prompt_non_empty,
+                emit=emit,
+                run_pack_handler=run_pack_handler,
+                monitoring_config_path=monitoring_config_path,
+                runner_id=runner_id,
+            )
+            continue
         if selected_site == SITE_EXIT_OPTION:
             emit("벤치마킹 모드를 종료합니다.")
             return 0
@@ -1020,6 +1142,7 @@ def run_terminal_benchmark_mode(
                         emit=emit,
                         run_tag="full_suite",
                         push_metrics=push_metrics_for_run,
+                        runner_id=runner_id,
                     )
                     continue
 
@@ -1047,6 +1170,7 @@ def run_terminal_benchmark_mode(
                     emit=emit,
                     run_tag=scenario_id,
                     push_metrics=push_metrics_for_run,
+                    runner_id=runner_id,
                 )
                 continue
 
@@ -1092,6 +1216,38 @@ def run_terminal_benchmark_mode(
                 save_suite_payload(suite_path, updated_payload)
                 emit(f"✏️ 테스트 수정 완료: {updated_scenario['id']}")
                 continue
+
+
+def _handle_all_sites_all_cases_run(
+    *,
+    workspace_root: Path,
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    run_pack_handler: Callable[..., dict[str, Any]],
+    monitoring_config_path: Path | None = None,
+    runner_id: str = "",
+) -> None:
+    if not _ensure_monitoring_connection_required(
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    ):
+        emit("전체사이트 전체케이스 실행을 취소했습니다. Grafana 연결 후 다시 실행해주세요.")
+        return
+
+    run_pack_handler(
+        workspace_root=workspace_root,
+        emit=emit,
+        manifest_path=EXTERNAL_PUBLIC_MANIFEST_PATH,
+        repeats=1,
+        timeout_cap=600,
+        session_prefix="terminal-external-public",
+        push_metrics=True,
+        runner_id=runner_id,
+    )
 
 
 def _find_scenario(suite_payload: Mapping[str, Any], scenario_id: str) -> dict[str, Any] | None:
@@ -1447,6 +1603,44 @@ def _ensure_monitoring_connection(
     )
     if result.returncode != 0:
         emit("모니터링 서버 연결에 실패했습니다. 이번 실행은 로컬 artifact만 저장합니다.")
+        return False
+    return config_path.exists()
+
+
+def _ensure_monitoring_connection_required(
+    *,
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    workspace_root: Path,
+    monitoring_config_path: Path | None = None,
+) -> bool:
+    config_path = _monitoring_config_path(monitoring_config_path)
+    if config_path.exists():
+        return True
+
+    emit("전체사이트 전체케이스 실행은 Grafana 업로드가 기본입니다. 먼저 모니터링 서버에 연결합니다.")
+    selected = prompt_select(
+        "모니터링 서버 연결",
+        (CONNECT_MONITORING_OPTION, SHOW_CONNECT_COMMAND_OPTION, METRICS_BACK_OPTION),
+        default=CONNECT_MONITORING_OPTION,
+    )
+    if selected == SHOW_CONNECT_COMMAND_OPTION:
+        _emit_monitoring_connect_command(emit)
+        return False
+    if selected == METRICS_BACK_OPTION:
+        return False
+
+    server = str(prompt_non_empty("모니터링 서버 주소", default=None)).strip()
+    token = str(prompt_non_empty("팀 공유 토큰", default=None)).strip()
+    connect_script = workspace_root / "scripts" / "gaia_monitor_connect.py"
+    result = subprocess.run(
+        [sys.executable, str(connect_script), server, "--token", token],
+        cwd=str(workspace_root),
+        check=False,
+    )
+    if result.returncode != 0:
+        emit("모니터링 서버 연결에 실패했습니다. 전체 benchmark 실행을 시작하지 않습니다.")
         return False
     return config_path.exists()
 
