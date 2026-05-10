@@ -2247,3 +2247,88 @@ GAIA_OPENCLAW_VISIBLE=1
 - `POLICYBRIEF_004_FACT_CHECK_LIST`는 처음에 “게시물”이라는 단어가 들어가 `게시` 금지 키워드에 걸렸고, “항목 제목”으로 바꿨다.
 - `artifacts/`는 source of truth가 아니며 git commit 대상이 아니다.
 - 중간보고서 최종 수치에는 최신 manifest 기준 전체 rerun artifact를 사용해야 한다.
+
+## Appendix L. Grafana / Pushgateway 최신 스냅샷 확인
+
+이 섹션은 “Grafana에 실제 결과가 올라가 있는가”를 보고서 작성자가 판단할 수 있도록 남기는 live 확인 기록이다. 민감 정보인 token 값은 기록하지 않는다. 사용자가 말한 맥미니 5/9 실행은 로컬 artifact가 아니라 Pushgateway에 남은 metric snapshot을 기준으로 확인한다.
+
+확인 시점:
+
+- 2026-05-10, 로컬 `~/.gaia/monitoring.json` 기준 team monitoring server 연결 확인.
+- `python scripts/gaia_monitor_connect.py --status`로 연결된 Pushgateway endpoint 존재 확인.
+- Pushgateway `/metrics`에서 `gaia_external_*` metric이 조회되는지 확인.
+- `push_time_seconds{instance="kpi_pack_20260508_235814",job="gaia_benchmark"}` 기준 push 완료 시각은 2026-05-09 02:15:12 KST.
+- `runner_id` label은 이 snapshot에서는 비어 있었다. 따라서 “맥미니 실행”은 사용자의 실행 맥락과 push 시각으로 식별하며, metric label만으로 runner를 증명하지는 못한다.
+
+서버에 남아 있던 external pack:
+
+| 항목 | 값 |
+|---|---:|
+| pack_id | `kpi_pack_20260508_235814` |
+| pushed_at_kst | `2026-05-09 02:15:12` |
+| runner_id_label | 없음 |
+| site_count | 30 |
+| scenario_count | 150 |
+| runs_total | 150 |
+| success_count | 141 |
+| success_rate | 0.94 |
+| primary_success_rate | 0.94 |
+| avg_duration_seconds | 54.73 |
+| progress_stop_failure_rate | 0.06 |
+| intervention_rate | 0.0 |
+| self_recovery_rate | 1.0 |
+
+카테고리별 Grafana metric snapshot:
+
+| category | success_rate |
+|---|---:|
+| career_business | 1.0 |
+| commerce_product | 1.0 |
+| culture_public | 0.8 |
+| developer_tech | 1.0 |
+| finance_game | 1.0 |
+| knowledge_reference | 0.8 |
+| portal_news_community | 0.98 |
+| public_data_service | 0.8333 |
+
+성공률 1.0 미만 사이트:
+
+| site_key | site | category | success_rate |
+|---|---|---|---:|
+| `visit_korea` | Visit Korea | public_data_service | 0.2 |
+| `national_museum` | 국립중앙박물관 | culture_public | 0.8 |
+| `seoul_culture` | 서울문화포털 | culture_public | 0.8 |
+| `wikipedia` | Wikipedia Korea | knowledge_reference | 0.8 |
+| `youtube` | YouTube Korea | portal_news_community | 0.8 |
+| `law_go_kr` | 국가법령정보센터 | public_data_service | 0.8 |
+
+reason code 집계:
+
+| reason_code | count |
+|---|---:|
+| `ok` | 87 |
+| `weak_effective_ignored` | 51 |
+| `rail_skipped_disabled` | 9 |
+| `openclaw_backend_progress` | 3 |
+| `http_5xx` | 2 |
+| `missing_element_id` | 2 |
+| `visual_coordinate_fallback` | 1 |
+| `action_timeout` | 1 |
+| `dom_force_resnapshot_stale_dom_wait` | 1 |
+
+해석:
+
+- Grafana/Pushgateway에는 실제 external pack metric이 올라가 있었다.
+- 이 snapshot은 로컬 `artifacts/`가 아니라 team monitoring server에서 직접 조회한 값이다.
+- 다만 서버에 남아 있는 최신 external pack은 `kpi_pack_20260508_235814` 하나였고, 현재 manifest에서 제거한 `visit_korea`가 포함되어 있었다.
+- 반대로 현재 manifest에 들어간 `policy_briefing` metric은 Pushgateway snapshot에 없었다.
+- 따라서 이 snapshot은 “Grafana 공유 체계가 실제로 작동한다”는 근거로는 사용할 수 있지만, “최신 정리 완료 manifest의 최종 benchmark 수치”로 쓰면 안 된다.
+- 최종 중간보고서 수치는 현재 manifest 기준으로 전체 pack을 다시 실행하고 `--push-metrics`까지 성공한 artifact/Grafana snapshot을 별도로 확정해야 한다.
+
+보고서용 문장:
+
+> Grafana/Pushgateway에는 2026-05-09 02:15 KST에 `kpi_pack_20260508_235814` 기준 30개 사이트/150개 시나리오 metric이 실제 업로드되어 있었고, pack raw/primary success rate는 0.94였다. 다만 이 스냅샷은 VisitKorea 제거와 정책브리핑 대체가 반영되기 전 실행이므로, 최종 발표 수치에는 최신 manifest 재실행 결과를 사용한다.
+
+발표용 주의 문장:
+
+> Grafana는 팀 공유와 추세 확인을 위한 관측 계층이며, 최종 근거 수치는 같은 시점의 `summary.json`, `results.json`, `summary.md`, 그리고 Grafana snapshot이 서로 일치하는 실행만 사용한다.
