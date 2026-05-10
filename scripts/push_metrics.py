@@ -363,10 +363,59 @@ def push_suite_dir(
         return False
 
 
+def push_all_suite_info(gateway_url: str, token: str | None) -> None:
+    """gaia/tests/scenarios/ 의 suite JSON 파일을 읽어 gaia_scenario_info 메트릭을 push.
+    팀원 결과가 없어도 suite 정의만으로 시나리오 설명을 Grafana에 표시할 수 있음."""
+    suites_dir = WORKSPACE_ROOT / "gaia" / "tests" / "scenarios"
+    if not suites_dir.exists():
+        print(f"[오류] suite 디렉토리를 찾을 수 없습니다: {suites_dir}", file=sys.stderr)
+        return
+
+    suite_files = list(suites_dir.glob("*.json"))
+    ok = 0
+    for suite_file in sorted(suite_files):
+        suite_data = load_json(suite_file)
+        if not isinstance(suite_data, dict):
+            continue
+        suite_id = suite_data.get("suite_id")
+        site_name = suite_data.get("site", {}).get("name", "unknown")
+        scenarios = suite_data.get("scenarios", [])
+        if not suite_id or not scenarios:
+            continue
+
+        declared: set = set()
+        lines = []
+        for sc in scenarios:
+            scenario_id = sc.get("id", "")
+            goal = str(sc.get("goal") or "")[:200].replace("\n", " ")
+            if not scenario_id:
+                continue
+            lines.extend(_gauge(
+                "gaia_scenario_info",
+                "Scenario presence marker with description",
+                1,
+                {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name, "goal": goal},
+                declared,
+            ))
+
+        if not lines:
+            continue
+
+        metrics_text = "\n".join(lines) + "\n"
+        if push_to_gateway(metrics_text, f"suite_info_{suite_id}", gateway_url, token):
+            print(f"  [완료] {suite_id} ({len(scenarios)}개 시나리오)")
+            ok += 1
+        else:
+            print(f"  [실패] {suite_id}")
+
+    print(f"\n{ok}/{len(suite_files)}개 suite 정보 전송 완료")
+
+
 def main():
     parser = argparse.ArgumentParser(description="GAIA 벤치마크 메트릭을 팀 모니터링 서버로 전송")
     parser.add_argument("--suite-dir", type=Path, help="특정 벤치마크 디렉토리 경로")
     parser.add_argument("--all", action="store_true", help="모든 벤치마크 결과 전송")
+    parser.add_argument("--push-suite-info", action="store_true", help="suite JSON 파일에서 시나리오 설명을 직접 push")
     parser.add_argument("--gateway", help="Pushgateway URL 직접 지정")
     parser.add_argument("--token",   help="토큰 직접 지정")
     parser.add_argument("--suite-json", type=Path, help="metrics와 함께 공유할 원본 suite JSON")
@@ -386,6 +435,10 @@ def main():
             print("팀장에게 연결 명령어를 받아 실행하세요:")
             print("  python scripts/gaia_monitor_connect.py <서버주소> --token <토큰>")
             sys.exit(1)
+
+    if args.push_suite_info:
+        push_all_suite_info(gateway_url, token)
+        return
 
     if args.suite_dir:
         suite_dirs = [args.suite_dir]
