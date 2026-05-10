@@ -1035,12 +1035,291 @@
       ]
     },
     {
+      "id": 910,
+      "type": "row",
+      "title": "📈 All Case Board",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 911,
+      "type": "table",
+      "title": "전체 케이스 성공률 보드",
+      "description": "Full external pack uploads only (instance=kpi_pack_*). 여러 번 전체 실행하면 runner/suite/scenario 단위로 success_count/runs_total을 합산해 주식 종목판처럼 한 화면에 보여줍니다.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 18
+      },
+      "datasource": null,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_success_count{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"}) / sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "instant": true,
+          "legendFormat": "SUCCESS RATE",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "instant": true,
+          "legendFormat": "RUNS",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_success_count{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "instant": true,
+          "legendFormat": "SUCCESS",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_fail_count{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "instant": true,
+          "legendFormat": "FAIL",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_avg_duration_sec{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"} * gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"}) / sum by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_runs_total{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "instant": true,
+          "legendFormat": "AVG SEC",
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "1000 * max by (runner_id, suite_id, scenario_id, site, site_key, category, volatility) (gaia_scenario_last_run_timestamp_seconds{model=~\"$model\",runner_id=~\"$runner_id\",instance=~\"kpi_pack_.*\"})",
+          "instant": true,
+          "legendFormat": "LAST SEEN",
+          "refId": "F"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "wrap": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SUCCESS RATE"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 0.7
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.9
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "AVG SEC"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "LAST SEEN"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SCENARIO"
+            },
+            "properties": [
+              {
+                "id": "custom.minWidth",
+                "value": 240
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SITE"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [
+          {
+            "displayName": "SUCCESS RATE",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "site_key",
+                "site",
+                "runner_id",
+                "suite_id",
+                "scenario_id",
+                "category",
+                "volatility",
+                "Value",
+                "Value #A",
+                "Value #B",
+                "Value #C",
+                "Value #D",
+                "Value #E",
+                "Value #F",
+                "SUCCESS RATE",
+                "RUNS",
+                "SUCCESS",
+                "FAIL",
+                "AVG SEC",
+                "LAST SEEN"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "site_key": "SITE KEY",
+              "site": "SITE",
+              "runner_id": "RUNNER",
+              "suite_id": "SUITE",
+              "scenario_id": "SCENARIO",
+              "category": "CATEGORY",
+              "volatility": "VOLATILITY",
+              "Value": "SUCCESS RATE",
+              "Value #A": "SUCCESS RATE",
+              "Value #B": "RUNS",
+              "Value #C": "SUCCESS",
+              "Value #D": "FAIL",
+              "Value #E": "AVG SEC",
+              "Value #F": "LAST SEEN"
+            },
+            "indexByName": {
+              "site_key": 0,
+              "site": 1,
+              "runner_id": 2,
+              "suite_id": 3,
+              "scenario_id": 4,
+              "category": 5,
+              "volatility": 6,
+              "Value": 7,
+              "Value #A": 7,
+              "Value #B": 8,
+              "Value #C": 9,
+              "Value #D": 10,
+              "Value #E": 11,
+              "Value #F": 12
+            },
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": 100,
       "type": "row",
       "title": "📊 Suite Overview",
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 46,
         "w": 24,
         "h": 1
       },
@@ -1052,7 +1331,7 @@
       "type": "stat",
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 47,
         "w": 12,
         "h": 6
       },
@@ -1117,7 +1396,7 @@
       "type": "stat",
       "gridPos": {
         "x": 12,
-        "y": 28,
+        "y": 47,
         "w": 12,
         "h": 6
       },
@@ -1175,65 +1454,111 @@
       ]
     },
     {
-      "id": 200,
-      "type": "row",
-      "title": "🗂 Scenario Cards  (Suite: $suite_id)",
+      "id": 40,
+      "title": "시나리오 목록",
+      "description": "시나리오 ID와 사이트만 표시합니다. goal 원문은 민감할 수 있어 metric label로 업로드하지 않습니다.",
+      "type": "table",
       "gridPos": {
         "x": 0,
-        "y": 67,
+        "y": 53,
         "w": 24,
-        "h": 1
+        "h": 8
       },
-      "collapsed": false
-    },
-    {
-      "id": 10,
-      "title": "RUNS",
-      "description": "시나리오별 총 실행 횟수",
-      "type": "stat",
-      "gridPos": {
-        "x": 0,
-        "y": 68,
-        "w": 3,
-        "h": 3
-      },
-      "repeat": "scenario_id",
-      "repeatDirection": "h",
-      "maxPerRow": 8,
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "wrap": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SCENARIO"
+            },
+            "properties": [
               {
-                "color": "blue",
-                "value": null
+                "id": "custom.width",
+                "value": 280
               }
             ]
           },
-          "mappings": []
-        }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "DESCRIPTION"
+            },
+            "properties": [
+              {
+                "id": "custom.wrap",
+                "value": true
+              },
+              {
+                "id": "custom.minWidth",
+                "value": 400
+              }
+            ]
+          }
+        ]
       },
       "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value_and_name"
+        "sortBy": [
+          {
+            "displayName": "SCENARIO",
+            "desc": false
+          }
+        ]
       },
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns"
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": [
+                "scenario_id",
+                "site"
+              ]
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "scenario_id": "SCENARIO",
+              "site": "SITE"
+            },
+            "indexByName": {
+              "scenario_id": 0,
+              "site": 1
+            },
+            "excludeByName": {
+              "Time": true
+            }
+          }
+        }
+      ],
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (scenario_id) (gaia_scenario_runs_total{suite_id=\"$suite_id\",scenario_id=\"$scenario_id\",model=~\"$model\"})",
-          "legendFormat": "{{scenario_id}}",
-          "instant": true
+          "expr": "max by (scenario_id, site) (gaia_scenario_info{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\"})",
+          "instant": true,
+          "refId": "A"
         }
       ]
     },
@@ -1243,7 +1568,7 @@
       "title": "📋 Scenario Detail Table  (Suite: $suite_id)",
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 61,
         "w": 24,
         "h": 1
       },
@@ -1256,7 +1581,7 @@
       "type": "table",
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 62,
         "w": 24,
         "h": 15
       },
@@ -1451,120 +1776,11 @@
       "title": "📈 Trends",
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 77,
         "w": 24,
         "h": 1
       },
       "collapsed": false
-    },
-    {
-      "id": 40,
-      "title": "시나리오 목록",
-      "description": "시나리오 ID와 사이트만 표시합니다. goal 원문은 민감할 수 있어 metric label로 업로드하지 않습니다.",
-      "type": "table",
-      "gridPos": {
-        "x": 0,
-        "y": 34,
-        "w": 24,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto",
-            "wrap": true
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "SCENARIO"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 280
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "DESCRIPTION"
-            },
-            "properties": [
-              {
-                "id": "custom.wrap",
-                "value": true
-              },
-              {
-                "id": "custom.minWidth",
-                "value": 400
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "sortBy": [
-          {
-            "displayName": "SCENARIO",
-            "desc": false
-          }
-        ]
-      },
-      "transformations": [
-        {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns"
-          }
-        },
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "filterFieldsByName",
-          "options": {
-            "include": {
-              "names": [
-                "scenario_id",
-                "site"
-              ]
-            }
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "renameByName": {
-              "scenario_id": "SCENARIO",
-              "site": "SITE"
-            },
-            "indexByName": {
-              "scenario_id": 0,
-              "site": 1
-            },
-            "excludeByName": {
-              "Time": true
-            }
-          }
-        }
-      ],
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "gaia-prometheus"
-          },
-          "expr": "max by (scenario_id, site) (gaia_scenario_info{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\"})",
-          "instant": true,
-          "refId": "A"
-        }
-      ]
     },
     {
       "id": 41,
@@ -1572,7 +1788,7 @@
       "type": "barchart",
       "gridPos": {
         "x": 0,
-        "y": 59,
+        "y": 78,
         "w": 12,
         "h": 8
       },
@@ -1619,7 +1835,7 @@
       "type": "barchart",
       "gridPos": {
         "x": 12,
-        "y": 59,
+        "y": 78,
         "w": 12,
         "h": 8
       },
@@ -1657,6 +1873,69 @@
           "instant": true,
           "range": false,
           "refId": "MAX"
+        }
+      ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "🗂 Scenario Cards  (Suite: $suite_id)",
+      "gridPos": {
+        "x": 0,
+        "y": 86,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "id": 10,
+      "title": "RUNS",
+      "description": "시나리오별 총 실행 횟수",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 87,
+        "w": 3,
+        "h": 3
+      },
+      "repeat": "scenario_id",
+      "repeatDirection": "h",
+      "maxPerRow": 8,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "sum by (scenario_id) (gaia_scenario_runs_total{suite_id=\"$suite_id\",scenario_id=\"$scenario_id\",model=~\"$model\"})",
+          "legendFormat": "{{scenario_id}}",
+          "instant": true
         }
       ]
     }

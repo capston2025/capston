@@ -22,7 +22,7 @@
 | Fig. 2 | 벤치마크 설계 | 30개 사이트/150개 시나리오 manifest 요약 | `gaia/tests/scenarios/external_public_manifest.json` | `fig02_external_manifest_30_sites.png` | 생성 필요 |
 | Fig. 3 | 실행 흐름 | CLI/terminal에서 benchmark 선택, 지표 확인, Grafana/로컬 선택 메뉴 | `python -m gaia.cli` 또는 `python -m gaia.cli --terminal` 화면 | `fig03_terminal_benchmark_mode.png` | 캡처 필요 |
 | Fig. 4 | 팀 공유 | Grafana `External Public 30-site Overview` 상단 | `http://<monitoring-host>:3000/d/gaia-kpi-v1/gaia-benchmark-results` | `fig04_grafana_external_overview.png` | 맥미니 재실행 후 캡처 |
-| Fig. 5 | 결과 요약 | site/category별 성공률 테이블 또는 bar chart | Grafana panel 907/908 또는 report table | `fig05_site_category_success.png` | 맥미니 재실행 후 캡처 |
+| Fig. 5 | 결과 요약 | 모든 케이스 누적 성공률 보드 또는 site/category별 성공률 테이블 | Grafana panel 911 또는 907/908 | `fig05_all_case_success_board.png` | 맥미니 재실행 후 캡처 |
 | Fig. 6 | 실패 분석 | reason code 상위 테이블 | Grafana panel 909 또는 Pushgateway metric table | `fig06_reason_code_breakdown.png` | 맥미니 재실행 후 캡처 |
 | Fig. 7 | 엔진 보강 | Musinsa 정렬 dropdown의 ref-first/visual fallback 사례 | strict Musinsa rerun artifact 또는 새 headless/visible 캡처 | `fig07_musinsa_visual_fallback.png` | 캡처 필요 |
 | Fig. 8 | 정직한 제외 기준 | VisitKorea service delay, blocked commerce, Law.go.kr 상세 오류를 일반 실패와 분리한 표 | report taxonomy 표 또는 sanitized 실패 화면 | `fig08_failure_taxonomy.png` | 생성 필요 |
@@ -173,23 +173,29 @@ python scripts/run_kpi_benchmark_pack.py \
   --push-metrics
 ```
 
-### Fig. 5. Site/category success table
+### Fig. 5. All-case success board / site-category success table
 
 목적:
 
-- 전체 성공률만 제시하면 “어떤 사이트에서 잘 되고 안 되는지”가 묻히므로, 사이트/카테고리별 분포를 보여준다.
+- 전체 성공률만 제시하면 “어떤 케이스에서 잘 되고 안 되는지”가 묻히므로, 150개 케이스를 한 화면에서 보여준다.
+- 주식 종목판처럼 site, scenario, runner, success rate, runs, success/fail count, avg seconds를 한 번에 비교한다.
 
 source:
 
 - Grafana panel:
+  - `전체 케이스 성공률 보드`
   - `사이트별 성공률 / 실행 시간 / 차단 수`
   - `카테고리별 성공률`
 - Metric:
+  - `gaia_scenario_success_count`
+  - `gaia_scenario_runs_total`
   - `gaia_external_site_success_rate`
   - `gaia_external_category_success_rate`
 
 보고서에서 강조할 점:
 
+- `전체 케이스 성공률 보드`는 `instance=kpi_pack_*` full-pack upload만 합산하므로 개별 사이트 디버그 실행과 섞이지 않는다.
+- 여러 번 전체 실행하면 `success_count / runs_total`로 케이스별 누적 성공률이 계산된다.
 - 커머스, 포털/뉴스, 공공데이터, 개발자 문서, 문화/취업 등 서로 다른 구조의 웹에서 평가했다.
 - 실패 사이트를 숨긴 것이 아니라 category/site별로 분리해 기록했다.
 

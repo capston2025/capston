@@ -418,6 +418,7 @@ Grafana 공유 지표:
 - `--push-metrics`를 켜면 각 suite별 KPI에 더해 최종 pack artifact도 업로드한다.
 - Grafana 상단 `External Public 30-site Overview`에서 사이트 수, 전체 실행 수, raw/primary 성공률, 평균 실행 시간, 개입률을 한 번에 본다.
 - 같은 화면에서 사이트별 성공률/실행 시간/차단 수, 카테고리별 성공률, 실패 reason code 상위를 확인한다.
+- `전체 케이스 성공률 보드`에서 30개 사이트의 150개 시나리오를 runner/suite/scenario 단위로 한 번에 본다. full-pack을 여러 번 실행하면 `kpi_pack_*` instance만 합산해 케이스별 누적 성공률과 실행 수를 표시한다.
 - 발표에서는 이 통합 패널을 먼저 보여주고, 질문이 나오면 기존 suite/scenario 상세 패널로 내려가 개별 실패 근거를 설명한다.
 
 실행 후 채울 KPI 표:
