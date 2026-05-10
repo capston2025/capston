@@ -190,12 +190,12 @@
       "suite_path": "gaia/tests/scenarios/seoul_open_data_public_suite.json"
     },
     {
-      "site_key": "visit_korea",
-      "label": "Visit Korea",
+      "site_key": "policy_briefing",
+      "label": "대한민국 정책브리핑",
       "category": "public_data_service",
       "volatility": "medium",
-      "base_url": "https://korean.visitkorea.or.kr/",
-      "suite_path": "gaia/tests/scenarios/visit_korea_public_suite.json"
+      "base_url": "https://www.korea.kr/",
+      "suite_path": "gaia/tests/scenarios/policy_briefing_public_suite.json"
     },
     {
       "site_key": "government24",

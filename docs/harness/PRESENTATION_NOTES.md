@@ -403,6 +403,7 @@ python scripts/run_kpi_benchmark_pack.py \
   --repeats 1 \
   --timeout-cap 600 \
   --session-prefix external-public-20260507 \
+  --runner-id macmini-team-a \
   --push-metrics
 ```
 
@@ -411,6 +412,14 @@ python scripts/run_kpi_benchmark_pack.py \
 - `artifacts/benchmarks/kpi_pack_<timestamp>/summary.json`
 - `artifacts/benchmarks/kpi_pack_<timestamp>/results.json`
 - `artifacts/benchmarks/kpi_pack_<timestamp>/summary.md`
+
+Grafana 공유 지표:
+
+- `--push-metrics`를 켜면 각 suite별 KPI에 더해 최종 pack artifact도 업로드한다.
+- Grafana 상단 `External Public 30-site Overview`에서 사이트 수, 전체 실행 수, raw/primary 성공률, 평균 실행 시간, 개입률을 한 번에 본다.
+- 같은 화면에서 사이트별 성공률/실행 시간/차단 수, 카테고리별 성공률, 실패 reason code 상위를 확인한다.
+- `전체 케이스 성공률 보드`에서 30개 사이트의 150개 시나리오를 runner/suite/scenario 단위로 한 번에 본다. full-pack을 여러 번 실행하면 `kpi_pack_*` instance만 합산해 케이스별 누적 성공률과 실행 수를 표시한다.
+- 발표에서는 이 통합 패널을 먼저 보여주고, 질문이 나오면 기존 suite/scenario 상세 패널로 내려가 개별 실패 근거를 설명한다.
 
 실행 후 채울 KPI 표:
 
@@ -434,6 +443,10 @@ CAPTCHA 차단이 나온 경우:
 - 보강: LLM이 WAIT으로 "DOM/option/ref를 갱신해서 확인해야 한다"고 판단하면 goal-driven runtime이 DOM 분석 캐시와 raw role-tree delta를 무효화하고 OpenClaw snapshot을 강제로 재수집한다.
 - 같은 strict scenario 재실행 결과 `MUSINSA_005_SORT_CHANGE`는 2 steps / 60.91s / SUCCESS로 통과했다. 강제 재수집 후 `낮은 가격순` ref `e1760`을 찾아 클릭했고, 최종 URL은 `sortCode=LOW_PRICE`로 확인됐다.
 - 발표 근거 artifact: `artifacts/benchmarks/musinsa_sort_strict_suite_20260508_011054/summary.md`, `results.json`.
+- Grafana dashboard 상단에 `External Public 30-site Overview`를 추가했다. `run_kpi_benchmark_pack.py --push-metrics`가 최종 pack artifact를 한 번 더 업로드해서 30개 사이트 전체 성공률, primary 성공률, 평균 시간, 사이트/카테고리별 성공률, 실패 reason code를 한 화면에 모은다.
+- VisitKorea는 `서비스 지연 안내`가 반복되어 primary external pack에서 제거하고 대한민국 정책브리핑으로 대체했다. 국가법령정보센터는 상세 iframe URL이 `서비스 이용에 불편` 오류를 반환해 `LAWGO_003`을 상세 진입 대신 법령 검색 탭/목록 확인 시나리오로 교체했다.
+- 서비스 지연/접속 폭주/일시 오류 화면은 목표 증거로 인정하지 않도록 WAIT 완료 판정을 보강했다. `서비스` 같은 일반 단어가 화면에 보인다는 이유로 false positive가 나는 케이스를 막는다.
+- 실행 artifact와 Grafana metrics에 `runner_id`를 추가했다. 기본값은 `GAIA_RUNNER_ID` 또는 `user@host`이고, 팀원이 맥미니/개인 노트북에서 올린 결과를 Grafana Runner 필터와 site/category table에서 구분할 수 있다.
 
 ### 2026-05-07
 

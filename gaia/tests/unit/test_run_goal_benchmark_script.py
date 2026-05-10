@@ -1,4 +1,8 @@
+import io
+import json
 from types import SimpleNamespace
+
+import pytest
 
 from scripts.run_goal_benchmark import (
     _build_child_code,
@@ -6,11 +10,14 @@ from scripts.run_goal_benchmark import (
     _compute_metrics,
     _infer_provider_from_model,
     _prepare_scenario_env,
+    _provider_credential_error,
+    _run_scenario_once,
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
     _should_emit_live_trace_line,
     _should_push_metrics,
 )
+from scripts.runner_identity import resolve_runner_id, sanitize_runner_id
 from scripts.benchmark_blocking import (
     BLOCKED_CAPTCHA_REASON_CODE,
     BLOCKED_USER_ACTION_STATUS,
@@ -91,6 +98,29 @@ def test_infer_provider_from_model_handles_openai_gemini_and_ollama() -> None:
     assert _infer_provider_from_model("unknown-model") == ""
 
 
+def test_provider_credential_error_fails_fast_for_missing_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("scripts.run_goal_benchmark._has_codex_cli_auth", lambda: False)
+
+    assert "provider=openai" in _provider_credential_error("openai", {})
+    assert _provider_credential_error("openai", {"OPENAI_API_KEY": "sk-test"}) == ""
+    assert _provider_credential_error("openai", {"OPENAI_ADMIN_KEY": "sk-admin-test"}) == ""
+    assert _provider_credential_error("ollama", {}) == ""
+
+
+def test_provider_credential_error_accepts_codex_cli_auth(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    auth_dir = tmp_path / ".codex"
+    auth_dir.mkdir()
+    (auth_dir / "auth.json").write_text(
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": "redacted"}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("scripts.run_goal_benchmark.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("scripts.run_goal_benchmark.shutil.which", lambda name: "/opt/homebrew/bin/codex" if name == "codex" else None)
+
+    assert _provider_credential_error("openai", {}) == ""
+
+
 def test_should_emit_live_trace_line_filters_to_step_level_messages() -> None:
     assert _should_emit_live_trace_line("🎯 목표 시작: 테스트")
     assert _should_emit_live_trace_line("--- Step 2/40 ---")
@@ -104,6 +134,52 @@ def test_monitoring_push_is_explicit_opt_in() -> None:
     assert _should_push_metrics(SimpleNamespace(push_metrics=False)) is False
     assert _should_push_metrics(SimpleNamespace(push_metrics=True)) is True
     assert _should_push_metrics(SimpleNamespace()) is False
+
+
+def test_runner_id_prefers_explicit_value_and_sanitizes_label() -> None:
+    assert sanitize_runner_id("맥미니 runner 01") == "맥미니-runner-01"
+    assert resolve_runner_id("team-a/mac mini", {"GAIA_RUNNER_ID": "ignored"}) == "team-a-mac-mini"
+    assert resolve_runner_id("", {"GAIA_RUNNER_ID": "minihost@desk"}) == "minihost@desk"
+
+
+def test_run_scenario_once_preserves_child_traceback_when_json_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeStdout(io.StringIO):
+        def __init__(self) -> None:
+            self.text = "Traceback (most recent call last):\nModuleNotFoundError: No module named 'openai'\n"
+            super().__init__(self.text)
+
+    class _FakeProcess:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            self.stdout = _FakeStdout()
+            self._returncode: int | None = None
+
+        def poll(self) -> int | None:
+            if self.stdout.tell() >= len(self.stdout.text):
+                self._returncode = 1
+            return self._returncode
+
+        def wait(self, timeout: int | None = None) -> int:
+            self._returncode = 1
+            return 1
+
+        def kill(self) -> None:
+            self._returncode = -9
+
+    monkeypatch.setattr("scripts.run_goal_benchmark.subprocess.Popen", _FakeProcess)
+
+    row = _run_scenario_once(
+        {"id": "BROKEN_001", "url": "https://example.com", "goal": "check page"},
+        python_executable="python",
+        session_id="broken-session",
+        timeout_sec=600,
+        env={},
+    )
+
+    assert row["status"] == "FAIL"
+    assert row["exit_code"] == 1
+    assert "child_process_failed(exit_code=1)" in row["reason"]
+    assert "ModuleNotFoundError: No module named 'openai'" in row["reason"]
+    assert "ModuleNotFoundError: No module named 'openai'" in row["captured_log"]
 
 
 def test_korean_captcha_gate_is_normalized_to_blocked_user_action() -> None:

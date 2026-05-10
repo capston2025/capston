@@ -97,6 +97,16 @@ python scripts/gaia_monitor_connect.py \
 # KPI metrics와 sanitize된 suite JSON이 같이 공유됨
 python scripts/run_goal_benchmark.py --suite ... --push-metrics
 
+# 외부 공개 30개 사이트 pack 실행 + 통합 지표 push
+PYTHONPATH=. GAIA_LLM_MODEL=gpt-5.5 GAIA_RAIL_ENABLED=0 \
+python scripts/run_kpi_benchmark_pack.py \
+  --suite-manifest gaia/tests/scenarios/external_public_manifest.json \
+  --repeats 1 \
+  --timeout-cap 600 \
+  --session-prefix external-public \
+  --runner-id macmini-team-a \
+  --push-metrics
+
 # 터미널 벤치 모드
 python -m gaia.cli --terminal --push-metrics
 # 또는 실행 직전 방향키 메뉴에서 "업로드하기" 선택
@@ -120,6 +130,7 @@ python scripts/gaia_monitor_connect.py --status
 GUI 벤치 관리 화면에서는 `모니터링 서버로 메트릭 업로드 (--push-metrics)` 체크박스를 켠 실행만 업로드됩니다.
 
 `--push-metrics` 실행은 KPI metrics와 함께 원본 suite JSON을 sanitize해서 공유합니다.
+`run_kpi_benchmark_pack.py --push-metrics`는 각 suite 결과에 더해 최종 pack artifact도 한 번 더 업로드해서 Grafana 상단의 30-site 통합 패널을 채웁니다.
 터미널 벤치 모드에서는 모니터링 서버 연결이 이미 있으면 사이트 선택 직후 팀 공유 suite를 자동으로 한 번 가져와 로컬 suite와 병합합니다.
 수동으로 다시 맞추고 싶을 때는 `팀 테스트 공유` 메뉴로 현재 사이트의 suite JSON을 별도로 올리거나 가져올 수 있습니다.
 공유 시 `password`, `token`, `secret`, `api_key` 등 민감 key는 자동 제거됩니다.
@@ -135,3 +146,8 @@ GUI 벤치 관리 화면에서는 `모니터링 서버로 메트릭 업로드 (-
 | `progress_stop_failure_rate`  | ≤ 10% | timeout/stuck 비율 |
 | `self_recovery_rate`          | ≥ 60% | 자가 회복률 |
 | `intervention_rate`           | ≤ 20% | 인간 개입 필요율 |
+
+외부 공개 benchmark pack은 추가로 `gaia_external_pack_*`, `gaia_external_site_*`, `gaia_external_category_*`, `gaia_external_reason_code_count` 메트릭을 보냅니다.
+Grafana 상단 overview에서 전체 사이트 수, 총 실행 수, 전체/primary 성공률, 평균 실행 시간, 사이트별 성공률, 카테고리별 성공률, 실패 reason code를 한 화면에 확인할 수 있습니다.
+`전체 케이스 성공률 보드` 패널은 `instance=kpi_pack_*`로 올라간 full-pack 결과만 모아서 runner/suite/scenario별 누적 성공률을 보여줍니다. 여러 번 전체 실행하면 `success_count / runs_total` 기준으로 각 케이스의 누적 성공률, 실행 수, 성공/실패 수, 평균 시간을 한 화면에서 볼 수 있습니다.
+각 실행은 `runner_id` 라벨을 함께 보냅니다. 기본값은 `GAIA_RUNNER_ID` 환경변수이고, 없으면 `user@host` 형태로 기록됩니다. 명시하려면 `--runner-id macmini-team-a` 또는 `GAIA_RUNNER_ID=macmini-team-a`를 사용합니다.

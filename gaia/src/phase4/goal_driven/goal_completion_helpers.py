@@ -47,6 +47,42 @@ _READONLY_VISIBILITY_STOP_TOKENS = {
     "page",
     "button",
 }
+_TRANSIENT_REASONING_WAIT_KEYWORDS = (
+    "생각 중",
+    "로딩",
+    "loading",
+    "불러오는 중",
+    "처리 중",
+    "processing",
+    "generating",
+    "생성 중",
+    "saving",
+    "저장 중",
+    "applying",
+    "적용 중",
+    "updating",
+    "업데이트 중",
+    "progress",
+    "진행률",
+    "please wait",
+    "잠시만",
+)
+_TRANSIENT_REASONING_WAIT_PERCENT = re.compile(r"\b\d{1,3}\s*%")
+_SERVICE_UNAVAILABLE_KEYWORDS = (
+    "서비스 지연 안내",
+    "서비스 이용에 불편",
+    "정상적으로 제공할 수 없습니다",
+    "요청하신 페이지를 정상적으로 제공할 수 없습니다",
+    "현재 사용자가 많아",
+    "잠시 후 다시 접속",
+    "잠시 후 다시 시도",
+    "접속이 원활하지 않습니다",
+    "일시적으로 사용할 수 없습니다",
+    "access denied",
+    "service unavailable",
+    "temporarily unavailable",
+    "too many requests",
+)
 
 
 def _is_actionable_element(el: DOMElement) -> bool:
@@ -70,6 +106,61 @@ def _element_visibility_blob(agent, el: DOMElement) -> str:
             ]
         )
     )
+
+
+def _dom_has_reasoning_wait_transient_signals(agent, dom_elements: List[DOMElement]) -> bool:
+    for el in list(dom_elements or [])[:180]:
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "placeholder", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                    str(getattr(el, "class_name", "") or ""),
+                ]
+            )
+        )
+        if not blob:
+            continue
+        role = agent._normalize_text(getattr(el, "role", ""))
+        tag = agent._normalize_text(getattr(el, "tag", ""))
+        if any(token in blob for token in _TRANSIENT_REASONING_WAIT_KEYWORDS):
+            return True
+        if _TRANSIENT_REASONING_WAIT_PERCENT.search(blob) and any(
+            token in blob for token in ("진행", "progress", "로딩", "생성", "처리", "업데이트", "apply", "save")
+        ):
+            return True
+        if role in {"progressbar", "status", "alert", "timer"} or tag == "progress":
+            if any(token in blob for token in ("생각", "loading", "로딩", "progress", "진행", "generating", "processing")):
+                return True
+    return False
+
+
+def _text_has_service_unavailable_signal(agent, text: object) -> bool:
+    blob = agent._normalize_text(text)
+    return bool(blob and any(token in blob for token in _SERVICE_UNAVAILABLE_KEYWORDS))
+
+
+def _dom_has_service_unavailable_signal(agent, dom_elements: List[DOMElement]) -> bool:
+    for el in list(dom_elements or [])[:180]:
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "placeholder", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                ]
+            )
+        )
+        if _text_has_service_unavailable_signal(agent, blob):
+            return True
+    return False
 
 
 def _has_empty_state_signal(agent, text: str) -> bool:
@@ -499,7 +590,132 @@ def evaluate_reasoning_only_wait_completion(
         target_reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom_elements)
         if target_reason:
             return target_reason
+    if _should_judge_reasoning_only_wait_completion(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=list(dom_elements or []),
+    ):
+        synthetic_decision = decision.model_copy(
+            update={
+                "confidence": max(float(decision.confidence or 0.0), 0.75),
+                "is_goal_achieved": True,
+                "goal_achievement_reason": (
+                    str(decision.goal_achievement_reason or "").strip()
+                    or str(decision.reasoning or "").strip()
+                    or "WAIT reasoning이 현재 화면 기준 목표 완료를 주장했습니다."
+                ),
+            }
+        )
+        return evaluate_goal_completion_judge(
+            agent,
+            goal=goal,
+            decision=synthetic_decision,
+            dom_elements=list(dom_elements or []),
+        )
     return None
+
+
+def _should_judge_reasoning_only_wait_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    decision: ActionDecision,
+    dom_elements: List[DOMElement],
+) -> bool:
+    if bool(getattr(decision, "is_goal_achieved", False)):
+        return False
+    if not hasattr(agent, "_call_llm_text_only"):
+        return False
+    if (
+        not dom_elements
+        or _dom_has_reasoning_wait_transient_signals(agent, dom_elements)
+        or _dom_has_service_unavailable_signal(agent, dom_elements)
+    ):
+        return False
+
+    direction = str(getattr(agent, "_goal_constraints", {}).get("mutation_direction") or "").strip().lower()
+    if direction in {"increase", "decrease", "clear"}:
+        return False
+    semantics = getattr(agent, "_goal_semantics", None)
+    if bool(getattr(semantics, "mutate_required", False)):
+        return False
+
+    reasoning_blob = agent._normalize_text(str(getattr(decision, "reasoning", "") or ""))
+    if not reasoning_blob:
+        return False
+    completion_tokens = (
+        "충족",
+        "완료",
+        "이미",
+        "보입니다",
+        "보인다",
+        "보이고",
+        "보이는",
+        "확인",
+        "표시",
+        "visible",
+        "present",
+        "already",
+    )
+    loading_tokens = (
+        "생각 중",
+        "로딩",
+        "loading",
+        "spinner",
+        "generating",
+        "기다려",
+        "대기",
+    )
+    if not any(token in reasoning_blob for token in completion_tokens):
+        return False
+    if any(token in reasoning_blob for token in loading_tokens):
+        return False
+
+    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+    detail_tokens = (
+        "상세",
+        "정보",
+        "제목",
+        "채널",
+        "조회",
+        "설명",
+        "본문",
+        "요약",
+        "가격",
+        "저자",
+        "출판사",
+        "공고",
+        "근무지",
+        "주소",
+        "기간",
+        "등급",
+        "순위",
+        "랭킹",
+        "차트",
+        "지도",
+        "길찾기",
+        "경로",
+    )
+    if not is_readonly_visibility_goal(agent, goal) and not any(token in goal_blob for token in detail_tokens):
+        return False
+
+    visible_blob = agent._normalize_text(
+        " ".join(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+            for el in dom_elements
+            if bool(getattr(el, "is_visible", True))
+        )
+    )
+    return bool(visible_blob)
 
 
 def evaluate_explicit_reasoning_proof_completion(
@@ -538,6 +754,8 @@ def evaluate_explicit_reasoning_proof_completion(
         )
     else:
         visible_blob = ""
+    if _text_has_service_unavailable_signal(agent, reasoning_blob) or _text_has_service_unavailable_signal(agent, visible_blob):
+        return None
 
     result_goal_tokens = ("응답", "결과", "결과물", "response", "result", "answer", "reply", "output", "출력")
     loading_reason_tokens = (

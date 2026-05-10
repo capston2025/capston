@@ -46,6 +46,7 @@ EXCLUDED_SITE_KEYS = {
     "npm",
     "oliveyoung",
     "spell_checker",
+    "visit_korea",
 }
 
 
@@ -169,3 +170,12 @@ def test_failed_public_scenarios_use_playwright_verified_readonly_surfaces() -> 
     museum = _load_suite("gaia/tests/scenarios/national_museum_public_suite.json")
     assert museum["site"]["name"] == "국립중앙박물관"
     assert len(museum["scenarios"]) == 5
+
+    policy = _load_suite("gaia/tests/scenarios/policy_briefing_public_suite.json")
+    assert policy["site"]["name"] == "대한민국 정책브리핑"
+    assert len(policy["scenarios"]) == 5
+
+    law = _load_suite("gaia/tests/scenarios/law_go_kr_public_suite.json")
+    law_ids = {item["id"] for item in law["scenarios"]}
+    assert "LAWGO_003_LAW_DETAIL" not in law_ids
+    assert "LAWGO_003_LAW_SEARCH_TABS" in law_ids

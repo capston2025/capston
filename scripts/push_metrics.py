@@ -20,7 +20,9 @@ import json
 import re
 import statistics
 import sys
+from collections import defaultdict
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
@@ -31,9 +33,11 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from gaia.src.benchmark_suite_sharing import SharedSuiteError, upload_shared_suite
+from scripts.benchmark_blocking import is_blocked_user_action, summary_reason_code_summary
 
 ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts" / "benchmarks"
 MONITORING_CONFIG = Path.home() / ".gaia" / "monitoring.json"
+EXTERNAL_PUBLIC_MANIFEST = WORKSPACE_ROOT / "gaia" / "tests" / "scenarios" / "external_public_manifest.json"
 PUSH_USER = "gaia"
 
 
@@ -104,17 +108,148 @@ def _gauge(name: str, help_text: str, value, labels: dict,
     return lines
 
 
-def build_suite_metrics(summary: dict, declared: set | None = None) -> str:
+def _suite_key_from_suite_id(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"_public_v\d+$", "", text)
+    text = re.sub(r"_v\d+$", "", text)
+    return text.removesuffix("_suite")
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0:
+        return None
+    return round(float(numerator) / float(denominator), 4)
+
+
+@lru_cache(maxsize=4)
+def _load_external_public_manifest(path: Path = EXTERNAL_PUBLIC_MANIFEST) -> dict[str, dict]:
+    payload = load_json(path)
+    if not isinstance(payload, dict):
+        return {}
+    entries = payload.get("suites")
+    if not isinstance(entries, list):
+        return {}
+    mapping: dict[str, dict] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        metadata = {
+            "site_key": str(item.get("site_key") or "").strip() or "unknown",
+            "site": str(item.get("label") or item.get("site_key") or "").strip() or "unknown",
+            "category": str(item.get("category") or "unknown").strip() or "unknown",
+            "volatility": str(item.get("volatility") or "unknown").strip() or "unknown",
+        }
+        suite_path = str(item.get("suite_path") or "").strip()
+        if suite_path:
+            suite_file = (WORKSPACE_ROOT / suite_path).resolve()
+            mapping[str(suite_file)] = metadata
+            mapping[suite_file.name] = metadata
+            suite_payload = load_json(suite_file)
+            if isinstance(suite_payload, dict) and str(suite_payload.get("suite_id") or "").strip():
+                mapping[str(suite_payload["suite_id"]).strip()] = metadata
+                mapping[_suite_key_from_suite_id(str(suite_payload["suite_id"])).strip()] = metadata
+        if metadata["site_key"]:
+            mapping[metadata["site_key"]] = metadata
+    return mapping
+
+
+def _site_metadata(
+    summary: dict,
+    *,
+    suite_json_path: Path | None = None,
+    suite_id: str | None = None,
+) -> dict[str, str]:
+    manifest = _load_external_public_manifest()
+    candidates: list[str] = []
+    if suite_json_path is not None:
+        resolved = suite_json_path.expanduser().resolve()
+        candidates.extend([str(resolved), resolved.name])
+        suite_payload = load_json(resolved)
+        if isinstance(suite_payload, dict):
+            candidates.append(str(suite_payload.get("suite_id") or "").strip())
+    effective_suite_id = str(suite_id or summary.get("suite_id") or "").strip()
+    if effective_suite_id:
+        candidates.extend([effective_suite_id, _suite_key_from_suite_id(effective_suite_id)])
+
+    for candidate in candidates:
+        if candidate and candidate in manifest:
+            return dict(manifest[candidate])
+
+    site = summary.get("site") if isinstance(summary.get("site"), dict) else {}
+    site_name = str(site.get("name") or summary.get("site") or "unknown").strip() or "unknown"
+    site_key = _suite_key_from_suite_id(effective_suite_id) if effective_suite_id else "unknown"
+    return {
+        "site_key": site_key or "unknown",
+        "site": site_name,
+        "category": str(site.get("category") or "unknown").strip() or "unknown",
+        "volatility": str(site.get("volatility") or "unknown").strip() or "unknown",
+    }
+
+
+def _with_site_labels(base: dict, metadata: dict[str, str]) -> dict:
+    return {
+        **base,
+        "site_key": metadata.get("site_key", "unknown"),
+        "category": metadata.get("category", "unknown"),
+        "volatility": metadata.get("volatility", "unknown"),
+    }
+
+
+def _status_is_success(row: dict) -> bool:
+    return str(row.get("status") or "").strip().upper() == "SUCCESS"
+
+
+def _numeric_values(rows: list[dict], key: str) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        value = row.get(key)
+        if value is None:
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _mean_or_none(values: list[float]) -> float | None:
+    return round(statistics.mean(values), 4) if values else None
+
+
+def _single_or_mixed(values: set[str], default: str = "unknown") -> str:
+    cleaned = {value for value in values if value}
+    if not cleaned:
+        return default
+    if len(cleaned) == 1:
+        return next(iter(cleaned))
+    return "mixed"
+
+
+def _runner_id_from_rows(summary: dict, rows: list[dict] | None = None) -> str:
+    values = {str(summary.get("runner_id") or "").strip()}
+    for row in rows or []:
+        values.add(str(row.get("runner_id") or "").strip())
+    return _single_or_mixed(values)
+
+
+def build_suite_metrics(
+    summary: dict,
+    declared: set | None = None,
+    *,
+    suite_json_path: Path | None = None,
+) -> str:
     """suite 전체 KPI 메트릭 (summary.json 기반)."""
     if declared is None:
         declared = set()
     lines = []
+    metadata = _site_metadata(summary, suite_json_path=suite_json_path)
     base = {
         "suite_id": summary.get("suite_id", "unknown"),
-        "site":     summary.get("site", {}).get("name", "unknown"),
         "model":    summary.get("model", "unknown"),
         "provider": summary.get("provider", "unknown"),
+        "runner_id": summary.get("runner_id", "unknown"),
     }
+    base = _with_site_labels({**base, "site": metadata["site"]}, metadata)
     m   = summary.get("metrics", {})
     kpi = summary.get("kpi_metrics", {})
     tgt = kpi.get("targets", {})
@@ -162,24 +297,29 @@ def build_suite_metrics(summary: dict, declared: set | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_scenario_metrics(summary: dict, results: list, declared: set | None = None) -> str:
+def build_scenario_metrics(
+    summary: dict,
+    results: list,
+    declared: set | None = None,
+    *,
+    suite_json_path: Path | None = None,
+) -> str:
     """시나리오별 상세 메트릭 (results.json 기반)."""
     if declared is None:
         declared = set()
     lines = []
 
-    suite_id  = summary.get("suite_id", "unknown")
-    site_name = summary.get("site", {}).get("name", "unknown")
-    started_ts = _timestamp_seconds(summary.get("started_at"))
+    default_suite_id = str(summary.get("suite_id") or "unknown")
 
-    # scenario_id → 해당 실행 목록
-    from collections import defaultdict
-    scenario_runs: dict[str, list] = defaultdict(list)
+    # (suite_id, scenario_id) → 해당 실행 목록. pack 결과에서는 서로 다른 suite가
+    # 같은 scenario_id를 가질 수 있으므로 suite_id까지 묶는다.
+    scenario_runs: dict[tuple[str, str], list] = defaultdict(list)
     for row in results:
-        sid = row.get("scenario_id", "unknown")
-        scenario_runs[sid].append(row)
+        suite_id = str(row.get("suite_id") or default_suite_id or "unknown")
+        sid = str(row.get("scenario_id") or "unknown")
+        scenario_runs[(suite_id, sid)].append(row)
 
-    for scenario_id, runs in scenario_runs.items():
+    for (suite_id, scenario_id), runs in scenario_runs.items():
         durations   = [r["duration_seconds"] for r in runs if r.get("duration_seconds") is not None]
         statuses    = [str(r.get("status", "")).upper() for r in runs]
         success_cnt = statuses.count("SUCCESS")
@@ -197,14 +337,19 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
         completion = last_run.get("summary", {}).get("goal_completion_source", "")
         model      = last_run.get("model", summary.get("model", "unknown"))
         provider   = last_run.get("provider", summary.get("provider", "unknown"))
+        runner_id  = last_run.get("runner_id", summary.get("runner_id", "unknown"))
+        started_ts = _timestamp_seconds(last_run.get("started_at") or summary.get("started_at"))
+        metadata = _site_metadata(summary, suite_json_path=suite_json_path, suite_id=suite_id)
 
         base = {
             "suite_id":    suite_id,
             "scenario_id": scenario_id,
-            "site":        site_name,
+            "site":        metadata["site"],
             "model":       model,
             "provider":    provider,
+            "runner_id":   runner_id,
         }
+        base = _with_site_labels(base, metadata)
 
         for args in [
             ("gaia_scenario_runs_total",         "Total runs for this scenario",          total_cnt),
@@ -232,7 +377,16 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
             "gaia_scenario_info",
             "Scenario presence marker with description",
             1,
-            {"suite_id": suite_id, "scenario_id": scenario_id, "site": site_name, "goal": goal},
+            _with_site_labels(
+                {
+                    "suite_id": suite_id,
+                    "scenario_id": scenario_id,
+                    "site": metadata["site"],
+                    "runner_id": runner_id,
+                    "goal": goal,
+                },
+                metadata,
+            ),
             declared,
         ))
         lines.extend(_gauge(
@@ -244,6 +398,157 @@ def build_scenario_metrics(summary: dict, results: list, declared: set | None = 
         ))
 
     return "\n".join(lines) + "\n"
+
+
+def _reason_code_counts(rows: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if _status_is_success(row):
+            continue
+        rc_summary = summary_reason_code_summary(row)
+        if rc_summary:
+            for raw_code, raw_count in rc_summary.items():
+                code = str(raw_code or "").strip()
+                if not code:
+                    continue
+                try:
+                    count = int(raw_count)
+                except (TypeError, ValueError):
+                    count = 1
+                counts[code] += max(1, count)
+            continue
+        counts["unknown_failure"] += 1
+    return dict(counts)
+
+
+def build_external_pack_metrics(summary: dict, results: list, declared: set | None = None) -> str:
+    """30-site external public pack 전체를 한 화면에서 보기 위한 rollup metrics."""
+    if declared is None:
+        declared = set()
+    if not isinstance(summary.get("overall_kpis"), dict):
+        return ""
+
+    rows = [row for row in results if isinstance(row, dict)]
+    overall = summary.get("overall_kpis") or {}
+    counts = overall.get("counts") if isinstance(overall.get("counts"), dict) else {}
+    pack_id = str(summary.get("pack_id") or summary.get("suite_id") or "unknown")
+    model = _single_or_mixed(
+        {str(row.get("model") or "").strip() for row in rows}
+        | {str(summary.get("model") or "").strip()},
+    )
+    provider = _single_or_mixed(
+        {str(row.get("provider") or "").strip() for row in rows}
+        | {str(summary.get("provider") or "").strip()},
+    )
+    runner_id = _runner_id_from_rows(summary, rows)
+    base = {"pack_id": pack_id, "model": model, "provider": provider, "runner_id": runner_id}
+
+    suite_ids = {
+        str(item.get("suite_id") or "").strip()
+        for item in (summary.get("suites") if isinstance(summary.get("suites"), list) else [])
+        if isinstance(item, dict)
+    }
+    suite_ids.update(str(row.get("suite_id") or "").strip() for row in rows if row.get("suite_id"))
+    suite_ids.discard("")
+    scenario_keys = {
+        (str(row.get("suite_id") or "unknown"), str(row.get("scenario_id") or "unknown"))
+        for row in rows
+    }
+    success_count = int(counts.get("success") or sum(1 for row in rows if _status_is_success(row)))
+    runs_total = int(counts.get("runs_total") or len(rows))
+    avg_duration = overall.get("avg_time_seconds")
+    if avg_duration is None:
+        avg_duration = _mean_or_none(_numeric_values(rows, "duration_seconds"))
+
+    lines: list[str] = []
+    for args in [
+        ("gaia_external_pack_runs_total", "External public pack total runs", runs_total),
+        ("gaia_external_pack_success_count", "External public pack success count", success_count),
+        ("gaia_external_pack_site_count", "External public pack site count", len(suite_ids)),
+        ("gaia_external_pack_scenario_count", "External public pack scenario count", len(scenario_keys)),
+        ("gaia_external_pack_success_rate", "External public pack scenario success rate", overall.get("scenario_success_rate")),
+        ("gaia_external_pack_primary_success_rate", "External public pack primary success rate", overall.get("primary_success_rate")),
+        ("gaia_external_pack_reproducibility_rate", "External public pack reproducibility rate", overall.get("reproducibility_rate")),
+        ("gaia_external_pack_progress_stop_failure_rate", "External public pack progress stop failure rate", overall.get("progress_stop_failure_rate")),
+        ("gaia_external_pack_self_recovery_rate", "External public pack self recovery rate", overall.get("self_recovery_rate")),
+        ("gaia_external_pack_intervention_rate", "External public pack intervention rate", overall.get("intervention_rate")),
+        ("gaia_external_pack_flaky_rate", "External public pack flaky rate", overall.get("flaky_rate")),
+        ("gaia_external_pack_avg_duration_seconds", "External public pack average duration seconds", avg_duration),
+    ]:
+        lines.extend(_gauge(args[0], args[1], args[2], base, declared))
+
+    rows_by_suite: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        rows_by_suite[str(row.get("suite_id") or "unknown")].append(row)
+
+    rows_by_category: dict[str, list[dict]] = defaultdict(list)
+    for suite_id, suite_rows in sorted(rows_by_suite.items()):
+        metadata = _site_metadata({}, suite_id=suite_id)
+        site_base = _with_site_labels(
+            {
+                "pack_id": pack_id,
+                "suite_id": suite_id,
+                "site": metadata["site"],
+                "model": model,
+                "provider": provider,
+                "runner_id": runner_id,
+            },
+            metadata,
+        )
+        total = len(suite_rows)
+        site_success = sum(1 for row in suite_rows if _status_is_success(row))
+        durations = _numeric_values(suite_rows, "duration_seconds")
+        latest_ok = 1.0 if suite_rows and _status_is_success(suite_rows[-1]) else 0.0
+        blocked = sum(1 for row in suite_rows if is_blocked_user_action(row))
+        rows_by_category[metadata["category"]].extend(suite_rows)
+
+        for args in [
+            ("gaia_external_site_runs_total", "External public site total runs", total),
+            ("gaia_external_site_success_count", "External public site success count", site_success),
+            ("gaia_external_site_success_rate", "External public site success rate", _safe_ratio(site_success, total)),
+            ("gaia_external_site_avg_duration_seconds", "External public site average duration seconds", _mean_or_none(durations)),
+            ("gaia_external_site_latest_status", "External public site latest status (1=SUCCESS 0=not success)", latest_ok),
+            ("gaia_external_site_blocked_count", "External public site blocked user-action count", blocked),
+        ]:
+            lines.extend(_gauge(args[0], args[1], args[2], site_base, declared))
+
+        for code, count in _reason_code_counts(suite_rows).items():
+            lines.extend(_gauge(
+                "gaia_external_site_reason_code_count",
+                "External public site reason code count",
+                count,
+                {**site_base, "reason_code": code},
+                declared,
+            ))
+
+    for category, category_rows in sorted(rows_by_category.items()):
+        total = len(category_rows)
+        success = sum(1 for row in category_rows if _status_is_success(row))
+        category_base = {
+            "pack_id": pack_id,
+            "category": category,
+            "model": model,
+            "provider": provider,
+            "runner_id": runner_id,
+        }
+        for args in [
+            ("gaia_external_category_runs_total", "External public category total runs", total),
+            ("gaia_external_category_success_count", "External public category success count", success),
+            ("gaia_external_category_success_rate", "External public category success rate", _safe_ratio(success, total)),
+            ("gaia_external_category_avg_duration_seconds", "External public category average duration seconds", _mean_or_none(_numeric_values(category_rows, "duration_seconds"))),
+        ]:
+            lines.extend(_gauge(args[0], args[1], args[2], category_base, declared))
+
+        for code, count in _reason_code_counts(category_rows).items():
+            lines.extend(_gauge(
+                "gaia_external_reason_code_count",
+                "External public reason code count by category",
+                count,
+                {**category_base, "reason_code": code},
+                declared,
+            ))
+
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 # ── Pushgateway 전송 ───────────────────────────────────────────────────────
@@ -331,20 +636,27 @@ def push_suite_dir(
 ) -> bool:
     summary = load_json(suite_dir / "summary.json")
     results = load_json(suite_dir / "results.json")
+    if not isinstance(results, list):
+        results = []
 
     if not summary:
         print(f"  [건너뜀] summary.json 없음: {suite_dir.name}")
         return False
 
-    suite_id = summary.get("suite_id", suite_dir.name)
+    suite_id = summary.get("suite_id") or summary.get("pack_id") or suite_dir.name
     print(f"  push → {suite_dir.name}")
 
     # declared 집합을 공유해서 HELP/TYPE 중복 방지
     declared: set = set()
-    suite_metrics    = build_suite_metrics(summary, declared)
-    scenario_metrics = build_scenario_metrics(summary, results or [], declared) if results else ""
+    suite_metrics    = build_suite_metrics(summary, declared, suite_json_path=suite_json_path)
+    scenario_metrics = (
+        build_scenario_metrics(summary, results or [], declared, suite_json_path=suite_json_path)
+        if results
+        else ""
+    )
+    pack_metrics = build_external_pack_metrics(summary, results or [], declared)
 
-    full_metrics = suite_metrics + scenario_metrics
+    full_metrics = suite_metrics + scenario_metrics + pack_metrics
     instance = str(suite_id or suite_dir.name)
 
     if push_to_gateway(full_metrics, instance, gateway_url, token):

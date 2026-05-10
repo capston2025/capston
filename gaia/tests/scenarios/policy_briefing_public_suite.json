@@ -1,0 +1,82 @@
+{
+  "suite_id": "policy_briefing_public_v2",
+  "site": {
+    "name": "대한민국 정책브리핑",
+    "base_url": "https://www.korea.kr/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "POLICYBRIEF_001_HOME_NAV",
+      "name": "정책브리핑 홈 주요 메뉴 확인",
+      "url": "https://www.korea.kr/",
+      "goal": "대한민국 정책브리핑 홈에서 정책뉴스, 브리핑룸, 정책자료 중 두 가지 메뉴가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "POLICYBRIEF_002_POLICY_NEWS_LIST",
+      "name": "정책뉴스 목록 확인",
+      "url": "https://www.korea.kr/news/policyNewsList.do?srchKeyword=%EC%B2%AD%EB%85%84",
+      "goal": "정책뉴스 목록에서 기사 제목, 부처명, 등록일 중 두 가지 정보를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "POLICYBRIEF_003_PRESS_RELEASE_LIST",
+      "name": "보도자료 목록 확인",
+      "url": "https://www.korea.kr/briefing/pressReleaseList.do",
+      "goal": "보도자료 목록에서 자료 제목, 담당 부처, 날짜 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "POLICYBRIEF_004_FACT_CHECK_LIST",
+      "name": "사실은 이렇습니다 목록 확인",
+      "url": "https://www.korea.kr/briefing/actuallyList.do",
+      "goal": "사실은 이렇습니다 목록에서 항목 제목, 기관명, 날짜 중 두 가지를 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "POLICYBRIEF_005_VISUAL_NEWS_LIST",
+      "name": "카드 한컷 목록 확인",
+      "url": "https://www.korea.kr/news/visualNewsList.do",
+      "goal": "카드 한컷 목록에서 카드 제목, 분류, 목록 영역 중 두 가지가 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [],
+      "time_budget_sec": 600
+    }
+  ]
+}

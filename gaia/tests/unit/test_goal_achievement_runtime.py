@@ -3,7 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from gaia.src.phase4.goal_driven.goal_achievement_runtime import validate_goal_achievement_claim
-from gaia.src.phase4.goal_driven.goal_completion_helpers import evaluate_wait_goal_completion
+from gaia.src.phase4.goal_driven.goal_completion_helpers import (
+    evaluate_reasoning_only_wait_completion,
+    evaluate_wait_goal_completion,
+)
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 
 
@@ -754,6 +757,153 @@ def test_wait_completion_accepts_readonly_video_detail_information_without_contr
 
     assert reason is not None
     assert "한국관광공사tv" in reason.lower()
+
+
+def test_reasoning_only_wait_completion_uses_judge_for_readonly_video_detail_claim() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "현재 YouTube 영상 상세 화면에 제목, 채널명, 조회 정보가 직접 보입니다.",
+  "confidence": 0.91
+}
+""".strip()
+    goal = SimpleNamespace(
+        name="검색 결과에서 공개 영상을 하나 열어 제목, 채널명, 조회 정보 또는 설명 일부 확인",
+        description="YouTube 검색 결과에서 공개 영상 상세 화면의 정보가 보이는지 확인해줘.",
+        success_criteria=["공개 영상 상세 화면에서 제목, 채널명, 조회 정보 또는 설명 일부가 보이는지 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="영상 제목, 채널명, 조회/업로드 정보와 설명 일부가 이미 보입니다. 목표 조건을 충족합니다.",
+        confidence=0.78,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="서울 여행에서 꼭 가봐야 할 명소",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="a",
+            role="link",
+            text="한국관광공사TV",
+            context_text="채널",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="span",
+            role="generic",
+            text="조회수 12만회 3개월 전",
+            context_text="설명",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_reasoning_only_wait_completion(agent, goal=goal, decision=decision, dom_elements=dom)
+
+    assert reason == "현재 YouTube 영상 상세 화면에 제목, 채널명, 조회 정보가 직접 보입니다."
+    assert "WAIT reasoning이 현재 화면 기준 목표 완료를 주장했습니다." not in agent._last_judge_prompt
+    assert "영상 제목, 채널명, 조회/업로드 정보" in agent._last_judge_prompt
+
+
+def test_wait_completion_rejects_service_unavailable_false_positive() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    goal = SimpleNamespace(
+        name="관광지 상세 정보 확인",
+        description="대한민국 구석구석에서 관광지 상세 화면의 주소와 설명 일부를 확인해줘.",
+        success_criteria=["상세 정보 화면에서 주소 또는 설명 일부 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="대한민국 구석구석 서비스 지연 안내가 보이고 서비스 정보가 표시되어 목표 조건을 충족합니다.",
+        confidence=0.8,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="대한민국 구석구석 서비스 지연 안내",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="p",
+            role="generic",
+            text="잠시 후 다시 접속해 주세요.",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
+
+
+def test_reasoning_only_wait_completion_skips_judge_on_service_unavailable_page() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = '{"success": true, "reason": "오판"}'
+    goal = SimpleNamespace(
+        name="법령 상세 정보 확인",
+        description="국가법령정보센터에서 법령 상세 화면의 시행일과 조문 일부를 확인해줘.",
+        success_criteria=["상세 정보 화면에서 시행일 또는 조문 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="상세 정보와 서비스 문구가 이미 보입니다. 목표 조건을 충족합니다.",
+        confidence=0.8,
+        is_goal_achieved=False,
+        goal_achievement_reason=None,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="서비스 이용에 불편을 드려서 죄송합니다",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="p",
+            role="generic",
+            text="현재 사용자가 많아 요청하신 페이지를 정상적으로 제공할 수 없습니다.",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_reasoning_only_wait_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
+    assert not hasattr(agent, "_last_judge_prompt")
 
 
 def test_wait_completion_accepts_readonly_map_route_panel_information_without_contract_signal() -> None:

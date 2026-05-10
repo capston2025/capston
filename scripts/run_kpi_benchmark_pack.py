@@ -17,6 +17,8 @@ from typing import Any, Dict, Iterable, List
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = ROOT / "artifacts" / "benchmarks"
 RUN_SINGLE = ROOT / "scripts" / "run_goal_benchmark.py"
+PUSH_METRICS = ROOT / "scripts" / "push_metrics.py"
+MONITORING_CONFIG = Path.home() / ".gaia" / "monitoring.json"
 MIN_BENCHMARK_TIMEOUT_SEC = 600
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -26,6 +28,7 @@ from scripts.benchmark_blocking import (
     normalize_blocked_user_action_row,
     summary_reason_code_summary,
 )
+from scripts.runner_identity import resolve_runner_id
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -203,6 +206,7 @@ def _run_suite(
     timeout_cap: int,
     session_prefix: str,
     push_metrics: bool,
+    runner_id: str,
     env: Dict[str, str],
 ) -> Dict[str, Any]:
     started = time.time()
@@ -213,15 +217,24 @@ def _run_suite(
         timeout_cap=timeout_cap,
         session_prefix=session_prefix,
         push_metrics=push_metrics,
+        runner_id=runner_id,
     )
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         cwd=str(ROOT),
         env=env,
-        capture_output=True,
         text=True,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
     )
+    stdout_lines: List[str] = []
+    assert proc.stdout is not None
+    for raw_line in proc.stdout:
+        line = str(raw_line or "").rstrip("\n")
+        stdout_lines.append(line)
+        print(line, flush=True)
+    return_code = proc.wait()
     artifact_dir = _latest_artifact_dir(before)
     summary = _load_json(artifact_dir / "summary.json")
     rows = json.loads((artifact_dir / "results.json").read_text(encoding="utf-8"))
@@ -238,11 +251,11 @@ def _run_suite(
         "suite_path": str(suite_path),
         "artifact_dir": str(artifact_dir),
         "duration_seconds": round(time.time() - started, 2),
-        "exit_code": int(proc.returncode),
+        "exit_code": int(return_code),
         "summary": summary,
         "rows": rows,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        "stdout": "\n".join(stdout_lines).strip(),
+        "stderr": "",
     }
 
 
@@ -253,6 +266,7 @@ def _build_run_suite_command(
     timeout_cap: int,
     session_prefix: str,
     push_metrics: bool,
+    runner_id: str = "",
 ) -> List[str]:
     cmd = [
         sys.executable,
@@ -266,6 +280,8 @@ def _build_run_suite_command(
         "--session-prefix",
         session_prefix,
     ]
+    if str(runner_id or "").strip():
+        cmd.extend(["--runner-id", str(runner_id)])
     if push_metrics:
         cmd.append("--push-metrics")
     return cmd
@@ -324,6 +340,7 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines.append(f"- generated_at: {report['generated_at']}")
     lines.append(f"- repeats: {report['repeats']}")
     lines.append(f"- timeout_cap: {report['timeout_cap']}")
+    lines.append(f"- runner_id: {report.get('runner_id', 'unknown')}")
     lines.append("")
     lines.append("## Overall KPI")
     lines.append("")
@@ -379,6 +396,41 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
+def _try_push_pack_metrics(out_dir: Path) -> None:
+    """Upload the final pack artifact when metrics upload was explicitly enabled."""
+    if not MONITORING_CONFIG.exists():
+        print("\n  모니터링 서버 설정이 없어 pack 통합 지표 업로드를 건너뜁니다.")
+        print("  연결: python scripts/gaia_monitor_connect.py <서버주소> --token <토큰>")
+        return
+    if not PUSH_METRICS.exists():
+        return
+
+    print("\n  📡 모니터링 서버로 pack 통합 지표 업로드 중...")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PUSH_METRICS),
+            "--suite-dir",
+            str(out_dir),
+            "--no-share-suite",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        print("  pack 통합 지표 업로드 완료 ✅")
+        if result.stdout.strip():
+            print(f"  {result.stdout.strip()}")
+        return
+    print("  pack 통합 지표 업로드 실패 (벤치마크 결과는 정상 저장됨)")
+    if result.stderr.strip():
+        print(f"  오류: {result.stderr.strip()}")
+    if result.stdout.strip():
+        print(f"  출력: {result.stdout.strip()}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run multiple GAIA benchmark suites and aggregate KPI metrics.")
     parser.add_argument("--suite", action="append", default=[], help="Path to a suite JSON. Repeatable.")
@@ -386,6 +438,11 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--timeout-cap", type=int, default=MIN_BENCHMARK_TIMEOUT_SEC)
     parser.add_argument("--session-prefix", default="kpi-pack")
+    parser.add_argument(
+        "--runner-id",
+        default="",
+        help="Human/team runner identifier recorded in artifacts and metrics. Defaults to GAIA_RUNNER_ID or user@host.",
+    )
     parser.add_argument("--push-metrics", action="store_true", help="Forward metrics upload to each suite run.")
     parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
     parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
@@ -396,6 +453,8 @@ def main() -> None:
     args = parser.parse_args()
 
     env = os.environ.copy()
+    runner_id = resolve_runner_id(args.runner_id, env)
+    env["GAIA_RUNNER_ID"] = runner_id
     try:
         suite_paths = _resolve_suite_paths(suite_args=args.suite, suite_manifest=args.suite_manifest)
     except ValueError as exc:
@@ -414,10 +473,19 @@ def main() -> None:
             timeout_cap=_effective_timeout_cap(int(args.timeout_cap)),
             session_prefix=f"{args.session_prefix}-{idx}",
             push_metrics=bool(args.push_metrics),
+            runner_id=runner_id,
             env=env,
         )
         suite_reports.append(suite_report)
         all_rows.extend(suite_report["rows"])
+        if int(suite_report.get("exit_code") or 0) != 0:
+            detail = str(suite_report.get("stderr") or suite_report.get("stdout") or "").strip()
+            tail = "\n".join(detail.splitlines()[-20:]).strip()
+            raise RuntimeError(
+                f"suite run failed before a valid benchmark completed: {suite_report['suite_path']} "
+                f"(exit_code={suite_report['exit_code']})"
+                + (f"\n{tail}" if tail else "")
+            )
 
     overall_kpis = _compute_pack_kpis(all_rows, max(1, int(args.repeats)))
     harness_report: Dict[str, Any] | None = None
@@ -446,6 +514,7 @@ def main() -> None:
         "repeats": max(1, int(args.repeats)),
         "timeout_cap": _effective_timeout_cap(int(args.timeout_cap)),
         "push_metrics": bool(args.push_metrics),
+        "runner_id": runner_id,
         "suites": [
             {
                 "suite_id": suite["suite_id"],
@@ -462,6 +531,8 @@ def main() -> None:
     (out_dir / "summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (out_dir / "results.json").write_text(json.dumps(all_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _write_markdown(out_dir / "summary.md", report)
+    if args.push_metrics:
+        _try_push_pack_metrics(out_dir)
     print(json.dumps({"artifact_dir": str(out_dir), "overall_kpis": overall_kpis}, ensure_ascii=False))
 
 

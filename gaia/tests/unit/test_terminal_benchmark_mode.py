@@ -200,6 +200,8 @@ def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path)
 
     assert result == 0
     first_prompt = script.select_calls[0]
+    assert first_prompt[1][0] == "전체사이트 전체케이스 실행"
+    assert first_prompt[2] == "전체사이트 전체케이스 실행"
     assert "INU TIMETABLE" in first_prompt[1]
     assert "머니터링" in first_prompt[1]
     assert "잡코리아" in first_prompt[1]
@@ -208,6 +210,76 @@ def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path)
     assert "사이트 추가" in first_prompt[1]
     assert "사이트 수정" in first_prompt[1]
     assert "사이트 삭제" in first_prompt[1]
+
+
+def test_run_terminal_benchmark_mode_dispatches_all_sites_all_cases_with_grafana_config(tmp_path: Path) -> None:
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091", "token": "team-token"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    script = _PromptScript(selections=["전체사이트 전체케이스 실행", "종료"])
+    calls: list[dict[str, object]] = []
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_pack_handler=lambda **kwargs: calls.append(kwargs) or {},
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["manifest_path"] == Path("gaia/tests/scenarios/external_public_manifest.json")
+    assert calls[0]["push_metrics"] is True
+    assert calls[0]["runner_id"]
+    assert not any(call[0] == "모니터링 서버 연결" for call in script.select_calls)
+
+
+def test_run_terminal_benchmark_mode_connects_before_all_sites_all_cases(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monitoring_config_path = tmp_path / "monitoring.json"
+    captured_cmd: list[str] = []
+    script = _PromptScript(
+        selections=["전체사이트 전체케이스 실행", "지금 연결하기", "종료"],
+        non_empty=["http://monitor.example:9091", "secret-token"],
+    )
+    calls: list[dict[str, object]] = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_connect_run(cmd, **kwargs):
+        del kwargs
+        captured_cmd[:] = list(cmd)
+        monitoring_config_path.write_text(
+            json.dumps({"server": "http://monitor.example:9091", "token": "secret-token"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return _Result()
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.subprocess.run", fake_connect_run)
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_pack_handler=lambda **kwargs: calls.append(kwargs) or {},
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    assert "scripts/gaia_monitor_connect.py" in captured_cmd[1]
+    assert captured_cmd[-2:] == ["--token", "secret-token"]
+    assert len(calls) == 1
+    assert calls[0]["push_metrics"] is True
 
 
 def test_build_url_history_prioritizes_latest_default() -> None:

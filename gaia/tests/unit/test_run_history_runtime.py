@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, TestGoal
 from gaia.src.phase4.goal_driven.run_history_runtime import (
@@ -28,6 +29,9 @@ from gaia.src.phase4.goal_driven.run_history_runtime import (
     run_history_artifact_only_updater_pass,
     search_run_history_retrieval_index,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _HistoryAgent:
@@ -697,7 +701,7 @@ def test_run_history_background_updater_script_drains_pending_queue(monkeypatch,
             "--drain-reason",
             "script_test",
         ],
-        cwd="/Users/coldmans/Documents/GitHub/capston",
+        cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
         check=False,
@@ -827,7 +831,7 @@ def test_run_history_background_sweeper_script_skips_locked_run(monkeypatch, tmp
             "--drain-reason",
             "sweeper_test",
         ],
-        cwd="/Users/coldmans/Documents/GitHub/capston",
+        cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
         check=False,

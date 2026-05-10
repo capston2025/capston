@@ -1,5 +1,10 @@
 from gaia.src.phase4.goal_driven import action_execution_runtime as runtime
-from gaia.src.phase4.goal_driven.action_execution_runtime import _find_rebound_element, _is_stale_like_timeout
+from gaia.src.phase4.goal_driven.action_execution_runtime import (
+    _find_rebound_element,
+    _find_visible_text_ref_candidate,
+    _is_stale_like_timeout,
+    _visual_find_label_is_safe,
+)
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 from gaia.src.phase4.goal_driven.runtime import ActionExecResult
 
@@ -223,6 +228,26 @@ def test_execute_decision_retries_ref_stale_with_rebound_ref(monkeypatch) -> Non
     assert ok is True
     assert err is None
     assert calls == ["old-ref", "new-ref"]
+
+
+def test_find_visible_text_ref_candidate_prefers_safe_interactive_match() -> None:
+    agent = _FakeAgent()
+    dom = [
+        DOMElement(id=1, tag="div", text="낮은 가격순 안내", ref_id="e1"),
+        DOMElement(id=2, tag="button", role="option", text="낮은 가격순", ref_id="e2"),
+    ]
+
+    match = _find_visible_text_ref_candidate(agent, ["낮은 가격순"], dom)
+
+    assert match is not None
+    assert match.ref_id == "e2"
+
+
+def test_visual_find_label_safety_blocks_destructive_targets() -> None:
+    agent = _FakeAgent()
+
+    assert _visual_find_label_is_safe(agent, "낮은 가격순") is True
+    assert _visual_find_label_is_safe(agent, "결제하기") is False
 
 
 def test_execute_decision_keeps_rebound_live_ref_over_generic_selector_map(monkeypatch) -> None:
@@ -579,3 +604,166 @@ def test_execute_decision_repairs_select_target_when_value_matches_other_combobo
     assert err is None
     assert calls == [{"action": "select", "ref_id": "e34", "value": "교양", "snapshot": "snap-1"}]
     assert any("select 대상 재바인딩" in log for log in agent.logs)
+
+
+def test_execute_decision_uses_safe_visual_coordinate_fallback(monkeypatch) -> None:
+    class _VisionLLM:
+        def find_element_coordinates(self, screenshot: str, description: str) -> dict[str, object]:
+            assert screenshot == "shot"
+            assert description == "낮은 가격순"
+            return {"x": 120, "y": 240, "confidence": 0.93, "reasoning": "visible option"}
+
+    class _CoordinateAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._browser_backend_name = "openclaw"
+            self.llm = _VisionLLM()
+            self.reason_codes: list[str] = []
+
+        def _analyze_dom(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self._active_snapshot_id = "snap-2"
+            self._element_selectors = {}
+            self._element_full_selectors = {}
+            self._element_ref_ids = {}
+            self._element_ref_meta_by_id = {}
+            self._last_snapshot_elements_by_ref = {}
+            self._selector_to_ref_id = {}
+            return []
+
+        def _capture_screenshot(self) -> str:
+            return "shot"
+
+        def _record_reason_code(self, code: str) -> None:
+            self.reason_codes.append(code)
+
+        def _contains_next_pagination_hint(self, _field: object) -> bool:
+            return False
+
+        def _is_numeric_page_label(self, _field: object) -> bool:
+            return False
+
+    agent = _CoordinateAgent()
+    prior = DOMElement(id=23, tag="button", role="option", text="낮은 가격순", ref_id="old-ref")
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="old-ref", reasoning="낮은 가격순 클릭")
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append({"action": action_name, "ref_id": ref_id, "value": value})
+        if action_name == "click":
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="action_timeout",
+                reason='"old-ref"를 찾을 수 없거나 표시되지 않습니다. 최신 snapshot을 기반으로 요소를 다시 확인하세요.',
+            )
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [prior])
+
+    assert ok is True
+    assert err is None
+    assert calls[0]["action"] == "click"
+    assert calls[1]["action"] == "evaluate"
+    assert "elementFromPoint" in str(calls[1]["value"])
+    assert agent._last_exec_result is not None
+    assert agent._last_exec_result.state_change["visual_coordinate_fallback"] is True
+    assert agent._last_exec_result.state_change["visual_target_label"] == "낮은 가격순"
+    assert agent.reason_codes == ["visual_coordinate_fallback"]
+
+
+def test_execute_decision_uses_visual_coordinate_fallback_when_ref_missing(monkeypatch) -> None:
+    class _VisionLLM:
+        def find_element_coordinates(self, screenshot: str, description: str) -> dict[str, object]:
+            assert screenshot == "shot"
+            assert description == "낮은 가격순"
+            return {"x": 120, "y": 240, "confidence": 0.93, "reasoning": "visible option"}
+
+    class _CoordinateAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._browser_backend_name = "openclaw"
+            self.llm = _VisionLLM()
+            self.reason_codes: list[str] = []
+
+        def _capture_screenshot(self) -> str:
+            return "shot"
+
+        def _record_reason_code(self, code: str) -> None:
+            self.reason_codes.append(code)
+
+        def _contains_next_pagination_hint(self, _field: object) -> bool:
+            return False
+
+        def _is_numeric_page_label(self, _field: object) -> bool:
+            return False
+
+    agent = _CoordinateAgent()
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        value="낮은 가격순",
+        reasoning='화면의 "낮은 가격순" 옵션 클릭',
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append({"action": action_name, "ref_id": ref_id, "value": value})
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [])
+
+    assert ok is True
+    assert err is None
+    assert [call["action"] for call in calls] == ["evaluate"]
+    assert "elementFromPoint" in str(calls[0]["value"])
+    assert agent._last_exec_result is not None
+    assert agent._last_exec_result.state_change["visual_coordinate_fallback"] is True
+    assert agent.reason_codes == ["visual_coordinate_fallback"]
+
+
+def test_execute_decision_blocks_visual_coordinate_fallback_for_dangerous_label(monkeypatch) -> None:
+    class _CoordinateAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._browser_backend_name = "openclaw"
+            self.llm = object()
+            self.reason_codes: list[str] = []
+            self._selector_to_ref_id = {}
+
+        def _analyze_dom(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self._element_selectors = {}
+            self._element_full_selectors = {}
+            self._element_ref_ids = {}
+            self._element_ref_meta_by_id = {}
+            self._last_snapshot_elements_by_ref = {}
+            self._selector_to_ref_id = {}
+            return []
+
+        def _record_reason_code(self, code: str) -> None:
+            self.reason_codes.append(code)
+
+    agent = _CoordinateAgent()
+    prior = DOMElement(id=23, tag="button", text="결제하기", ref_id="old-ref")
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="old-ref", reasoning="결제하기 클릭")
+    calls: list[str] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append(action_name)
+        return ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="ref_stale",
+            reason='Error: Unknown ref "old-ref". Run a new snapshot and use a ref from that snapshot.',
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [prior])
+
+    assert ok is False
+    assert "[ref_stale]" in str(err)
+    assert calls == ["click"]
+    assert agent.reason_codes == ["visual_coordinate_fallback_blocked"]

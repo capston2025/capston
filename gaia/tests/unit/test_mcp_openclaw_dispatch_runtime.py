@@ -705,6 +705,98 @@ def test_dispatch_openclaw_action_browser_tabs_focus_switches_session_target(mon
     assert runtime._session_state("focus-s1")["target_id"] == "tab-2"
 
 
+def test_dispatch_openclaw_action_browser_find_prefers_interactive_ref(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    session_id = "find-s1"
+    state = _seed_session(session_id)
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(
+        runtime,
+        "_snapshot_payload_for_target",
+        lambda **kwargs: {
+            "snapshot_id": "openclaw:find-s1:1",
+            "current_url": _DEFAULT_URL,
+            "url": _DEFAULT_URL,
+            "elements": [
+                {
+                    "ref_id": "e3",
+                    "tag": "div",
+                    "text": "낮은 가격순",
+                    "attributes": {"role": "generic", "aria-label": "낮은 가격순"},
+                    "is_visible": True,
+                },
+                {
+                    "ref_id": "e7",
+                    "tag": "button",
+                    "text": "낮은 가격순",
+                    "attributes": {
+                        "role": "option",
+                        "aria-label": "낮은 가격순",
+                        "gaia-actionable": "true",
+                        "gaia-custom-option": "true",
+                    },
+                    "is_visible": True,
+                },
+            ],
+        },
+    )
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_find",
+        params={"session_id": session_id, "query": "낮은 가격순", "limit": 2},
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["found"] is True
+    assert payload["ref_id"] == "e7"
+    assert payload["match"]["role"] == "option"
+    assert [item["ref_id"] for item in payload["matches"]] == ["e7", "e3"]
+
+
+def test_dispatch_openclaw_action_browser_find_returns_not_found(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    session_id = "find-miss-s1"
+    state = _seed_session(session_id)
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(
+        runtime,
+        "_snapshot_payload_for_target",
+        lambda **kwargs: {
+            "snapshot_id": "openclaw:find-miss-s1:1",
+            "current_url": _DEFAULT_URL,
+            "url": _DEFAULT_URL,
+            "elements": [
+                {
+                    "ref_id": "e1",
+                    "tag": "button",
+                    "text": "무신사 추천순",
+                    "attributes": {"role": "button", "aria-label": "무신사 추천순", "gaia-actionable": "true"},
+                    "is_visible": True,
+                }
+            ],
+        },
+    )
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_find",
+        params={"session_id": session_id, "query": "낮은 가격순"},
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["found"] is False
+    assert payload["reason_code"] == "not_found"
+    assert payload["ref_id"] == ""
+    assert payload["matches"] == []
+
+
 def test_dispatch_openclaw_action_capture_screenshot_returns_base64(monkeypatch, tmp_path) -> None:
     shot = tmp_path / "shot.png"
     shot.write_bytes(b"fake-image-bytes")
