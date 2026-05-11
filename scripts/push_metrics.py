@@ -365,20 +365,18 @@ def build_scenario_metrics(
             lines.extend(_gauge(args[0], args[1], args[2], base, declared))
 
         last_status_ok = 1.0 if statuses and statuses[-1] == "SUCCESS" else 0.0
-        # 실패 사유: reason 필드 → 없으면 reason_code_summary 상위 코드 사용
+        # 실패 사유: reason_code_summary 상위 코드 사용 (자유 형식 텍스트는 민감 정보 포함 가능성으로 제외)
         fail_reason = ""
         if last_status_ok == 0.0:
-            raw_reason = (
-                str(last_run.get("reason") or "").strip()
-                or str(last_run.get("summary", {}).get("reason") or "").strip()
-            )
-            if not raw_reason:
-                # reason_code_summary에서 가장 많이 발생한 코드 사용
-                code_summary = last_run.get("summary", {}).get("reason_code_summary", {})
-                if code_summary:
-                    top_code = max(code_summary, key=code_summary.get)
-                    raw_reason = top_code
-            fail_reason = raw_reason.replace("\n", " ")[:120]
+            code_summary = last_run.get("summary", {}).get("reason_code_summary", {})
+            if code_summary:
+                top_code = max(code_summary, key=code_summary.get)
+                top_count = code_summary[top_code]
+                all_codes = ",".join(
+                    f"{k}:{v}" for k, v in
+                    sorted(code_summary.items(), key=lambda x: -x[1])[:3]
+                )
+                fail_reason = all_codes[:120]
         lines.extend(_gauge(
             "gaia_scenario_last_status",
             "Last run result (1=SUCCESS 0=FAIL)",
@@ -386,7 +384,6 @@ def build_scenario_metrics(
             {**base, "completion": completion, "fail_reason": fail_reason},
             declared,
         ))
-        goal = str(runs[0].get("goal") or "")[:200].replace("\n", " ")
         lines.extend(_gauge(
             "gaia_scenario_info",
             "Scenario presence marker with description",
@@ -397,7 +394,6 @@ def build_scenario_metrics(
                     "scenario_id": scenario_id,
                     "site": metadata["site"],
                     "runner_id": runner_id,
-                    "goal": goal,
                 },
                 metadata,
             ),
@@ -671,7 +667,7 @@ def push_suite_dir(
     pack_metrics = build_external_pack_metrics(summary, results or [], declared)
 
     full_metrics = suite_metrics + scenario_metrics + pack_metrics
-    instance = suite_dir.name  # 타임스탬프 포함된 고유 이름으로 실행마다 별도 저장
+    instance = suite_id  # suite_id(or pack_id)는 실행 간 안정적인 값 → Pushgateway에서 덮어쓰기로 최신 상태 유지
 
     if push_to_gateway(full_metrics, instance, gateway_url, token):
         print(f"  [완료] {suite_id} ({len(results or [])}개 시나리오)")

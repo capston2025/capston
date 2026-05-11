@@ -55,6 +55,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_SERVER_HTTP_PORT=3000
+      - GF_INSTALL_PLUGINS=ae3e-plotly-panel
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
