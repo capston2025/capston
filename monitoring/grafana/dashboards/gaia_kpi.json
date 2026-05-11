@@ -489,6 +489,7 @@
                 "scenario_id",
                 "model",
                 "completion",
+                "fail_reason",
                 "gaia_scenario_last_status"
               ]
             }
@@ -501,13 +502,15 @@
               "scenario_id": "SCENARIO",
               "model": "MODEL",
               "completion": "COMPLETION",
+              "fail_reason": "실패 사유",
               "gaia_scenario_last_status": "STATUS"
             },
             "indexByName": {
               "scenario_id": 0,
               "model": 1,
               "gaia_scenario_last_status": 2,
-              "completion": 3
+              "completion": 3,
+              "fail_reason": 4
             },
             "excludeByName": {
               "Time": true

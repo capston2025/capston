@@ -365,11 +365,25 @@ def build_scenario_metrics(
             lines.extend(_gauge(args[0], args[1], args[2], base, declared))
 
         last_status_ok = 1.0 if statuses and statuses[-1] == "SUCCESS" else 0.0
+        # 실패 사유: reason 필드 → 없으면 reason_code_summary 상위 코드 사용
+        fail_reason = ""
+        if last_status_ok == 0.0:
+            raw_reason = (
+                str(last_run.get("reason") or "").strip()
+                or str(last_run.get("summary", {}).get("reason") or "").strip()
+            )
+            if not raw_reason:
+                # reason_code_summary에서 가장 많이 발생한 코드 사용
+                code_summary = last_run.get("summary", {}).get("reason_code_summary", {})
+                if code_summary:
+                    top_code = max(code_summary, key=code_summary.get)
+                    raw_reason = top_code
+            fail_reason = raw_reason.replace("\n", " ")[:120]
         lines.extend(_gauge(
             "gaia_scenario_last_status",
             "Last run result (1=SUCCESS 0=FAIL)",
             last_status_ok,
-            {**base, "completion": completion},
+            {**base, "completion": completion, "fail_reason": fail_reason},
             declared,
         ))
         goal = str(runs[0].get("goal") or "")[:200].replace("\n", " ")
