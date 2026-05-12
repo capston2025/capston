@@ -11,28 +11,40 @@ services:
       - "--storage.tsdb.retention.time=90d"
       - "--web.enable-lifecycle"
     restart: unless-stopped
-    # Prometheus는 외부에 직접 노출하지 않음 (내부 전용)
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   pushgateway:
     image: prom/pushgateway:v1.8.0
     container_name: gaia_pushgateway
     restart: unless-stopped
-    # Pushgateway도 외부에 직접 노출하지 않음 → nginx가 앞에서 인증 처리
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   nginx:
     image: nginx:1.25-alpine
     container_name: gaia_nginx
     ports:
-      - "9091:9091"   # 팀원이 push하는 포트 (토큰 인증)
-      - "3000:3000"   # Grafana (Grafana가 직접 처리)
+      - "9091:9091"
+      - "3000:3000"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/tokens:/etc/nginx/tokens:ro
-      - ./shared:/srv/gaia-shared
     depends_on:
       - pushgateway
       - grafana
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   grafana:
     image: grafana/grafana:11.4.0
@@ -43,6 +55,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_SERVER_HTTP_PORT=3000
+      - GF_INSTALL_PLUGINS=ae3e-plotly-panel
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -50,6 +63,11 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
 
 volumes:
   prometheus_data:
