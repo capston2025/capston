@@ -77,6 +77,20 @@ class LLMVisionClient:
         return any(str(raw.get(key) or "").strip() for key in ("OPENAI_API_KEY", "auth_mode")) or bool(raw.get("tokens"))
 
     @staticmethod
+    def _load_openai_key_from_codex_auth() -> str | None:
+        """~/.codex/auth.json에서 OPENAI_API_KEY 추출 (codex CLI가 ChatGPT 로그인으로
+        받아온 키). codex CLI가 깨졌을 때 OpenAI API 직접 호출용 fallback으로 사용."""
+        auth_path = Path.home() / ".codex" / "auth.json"
+        try:
+            raw = json.loads(auth_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(raw, dict):
+            return None
+        key = str(raw.get("OPENAI_API_KEY") or "").strip()
+        return key or None
+
+    @staticmethod
     def _read_local_env_file_assignments() -> dict[str, str]:
         env_file = Path(__file__).parent.parent.parent.parent / ".env"
         if not env_file.exists():
@@ -120,6 +134,12 @@ class LLMVisionClient:
                     os.environ[env_key] = api_key
             if api_key is None:
                 api_key = self._load_profile_token(self.provider)
+                if api_key:
+                    os.environ[env_key] = api_key
+            # OpenAI provider이고 위에서 아무것도 못 찾았으면 ~/.codex/auth.json에서 추출
+            # (codex CLI ChatGPT 로그인 사용 사용자가 codex가 broken일 때 fallback)
+            if api_key is None and self.provider == "openai":
+                api_key = self._load_openai_key_from_codex_auth()
                 if api_key:
                     os.environ[env_key] = api_key
         if self.provider == "ollama" and not api_key:
@@ -211,6 +231,56 @@ class LLMVisionClient:
         return "429" in lowered and "quota" in lowered
 
     @staticmethod
+    def _raise_actionable(exc: Exception) -> None:
+        """일반 OpenAI 에러를 사용자가 즉시 알아볼 수 있는 한글 메시지로 변환하여 재발생.
+
+        호출자는 catch한 exc 를 넘기고, 변환 가능한 패턴이면 새 RuntimeError를 raise.
+        매칭이 안 되면 그대로 두고 호출자가 원래 exc를 다시 raise하도록 함.
+        """
+        text = str(exc) or ""
+        lower = text.lower()
+        # 토큰 만료 / 인증 실패
+        if "token_expired" in lower or "authentication token has expired" in lower:
+            raise RuntimeError(
+                "🔑 OpenAI 인증 토큰이 만료되었습니다. 터미널에서 'codex login' 으로 재인증하거나, "
+                ".env 파일에 OPENAI_API_KEY=sk-... 를 설정해주세요."
+            ) from exc
+        if "401" in lower and "unauthorized" in lower:
+            raise RuntimeError(
+                "🔑 OpenAI 인증 실패 (401 Unauthorized). 토큰이 만료됐거나 잘못됐습니다. "
+                ".env 파일에 유효한 OPENAI_API_KEY 를 설정해주세요."
+            ) from exc
+        if "insufficient_quota" in lower or "billing" in lower:
+            raise RuntimeError(
+                "💳 OpenAI API 할당량/크레딧이 부족합니다. https://platform.openai.com/billing 에서 충전 후 재시도해주세요."
+            ) from exc
+        if "rate_limit" in lower or "429" in lower:
+            raise RuntimeError(
+                "⏱️ OpenAI Rate limit. 잠시 후 다시 시도해주세요 (또는 다른 API 키 사용)."
+            ) from exc
+        # 매칭 없음 → 변환 안 함
+
+    @staticmethod
+    def _is_codex_unrecoverable(error_text: str) -> bool:
+        """Codex CLI 자체의 환경/버전/인코딩 문제 — 재시도 무의미, API로 fallback해야 함."""
+        lowered = (error_text or "").lower()
+        markers = (
+            # 워크스페이스 경로에 비-ASCII 문자가 있을 때 codex CLI HTTP 헤더가 깨지는 버그
+            "utf-8 encoding error",
+            "failed to convert header to a str",
+            # codex CLI 버전이 모델보다 옛버전일 때
+            "requires a newer version of codex",
+            # 모델 미지원 (ChatGPT 계정 한정)
+            "not supported when using codex",
+            # codex 인증 만료/실패
+            "reading prompt from stdin",
+            "empty_response_from_codex_exec",
+            # 일반 패턴
+            "codex_exec_timeout",
+        )
+        return any(m in lowered for m in markers)
+
+    @staticmethod
     def _decode_image_to_file(image_b64: str, path: Path) -> None:
         raw = image_b64.split(",", 1)[1] if "," in image_b64 else image_b64
         path.write_bytes(base64.b64decode(raw))
@@ -260,12 +330,15 @@ class LLMVisionClient:
 
                 run_cmd.append("-")
                 try:
+                    # cwd를 ASCII-only 임시 디렉터리로 설정하여 codex CLI v0.120.x의
+                    # HTTP 헤더 UTF-8 인코딩 버그(워크스페이스 경로 한글 문자 → 헤더 깨짐) 회피.
                     completed = subprocess.run(
                         run_cmd,
                         input=prompt.encode("utf-8"),
                         capture_output=True,
                         check=False,
                         timeout=codex_timeout_sec,
+                        cwd=str(tmp_path),
                     )
                     stdout_text = (
                         completed.stdout.decode("utf-8", errors="replace")
@@ -336,7 +409,22 @@ class LLMVisionClient:
         temperature: float = 0.1,
     ) -> str:
         if self._prefer_codex_cli:
-            return self._strip_code_fences(self._run_codex_exec(prompt, []))
+            try:
+                return self._strip_code_fences(self._run_codex_exec(prompt, []))
+            except RuntimeError as exc:
+                msg = str(exc)
+                # Codex CLI가 환경/버전/인코딩 문제로 깨졌으면 OpenAI API로 자동 fallback
+                if self._is_codex_unrecoverable(msg) and self.client is not None:
+                    print(
+                        self._console_text(
+                            f"⚠️ Codex CLI 실패({msg[:120]}…) → OpenAI API 직접 호출로 전환합니다.",
+                            windows_fallback=f"Codex CLI 실패 → OpenAI API 직접 호출로 전환합니다.",
+                        )
+                    )
+                    # 이후부터는 codex 시도 안 하도록 prefer 해제
+                    self._prefer_codex_cli = False
+                else:
+                    raise
 
         try:
             response = self.client.chat.completions.create(
@@ -349,6 +437,8 @@ class LLMVisionClient:
         except Exception as exc:
             if self._is_quota_error(str(exc)) and shutil.which("codex"):
                 return self._strip_code_fences(self._run_codex_exec(prompt, []))
+            # 인증 만료 등은 사용자가 조치 가능한 명확한 메시지로 변환
+            self._raise_actionable(exc)
             raise
 
     def select_element_for_step(
@@ -607,7 +697,20 @@ JSON response:"""
             LLM response as string
         """
         if self._prefer_codex_cli:
-            return self._strip_code_fences(self._run_codex_exec(prompt, [screenshot_base64]))
+            try:
+                return self._strip_code_fences(self._run_codex_exec(prompt, [screenshot_base64]))
+            except RuntimeError as exc:
+                msg = str(exc)
+                if self._is_codex_unrecoverable(msg) and self.client is not None:
+                    print(
+                        self._console_text(
+                            f"⚠️ Codex CLI 실패({msg[:120]}…) → OpenAI API로 전환합니다.",
+                            windows_fallback="Codex CLI 실패 → OpenAI API로 전환합니다.",
+                        )
+                    )
+                    self._prefer_codex_cli = False
+                else:
+                    raise
 
         try:
             response = self.client.chat.completions.create(
@@ -646,6 +749,7 @@ JSON response:"""
                     print(f"Codex fallback failed: {codex_exc}")
                     raise
             print(f"LLM vision analysis failed: {e}")
+            self._raise_actionable(e)
             raise
 
     def verify_scenario_success(

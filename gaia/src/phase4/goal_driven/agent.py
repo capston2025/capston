@@ -2125,6 +2125,10 @@ class GoalDrivenAgent:
                 f"ms={int((time.perf_counter() - started) * 1000)} "
                 f"has_image={bool(result)}"
             )
+
+        # GUI live preview hook은 terminal.py의 _on_screenshot callback에서 처리.
+        # (이쪽 _capture_screenshot은 readonly visibility goal에서는 호출되지 않으므로
+        # terminal.py에서 백그라운드 thread로 주기 캡처하는 방식을 사용.)
         return result
 
     @staticmethod

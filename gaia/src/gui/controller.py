@@ -1098,7 +1098,8 @@ class AppController(QObject):
 
     @Slot(str, str)
     def _on_benchmark_run_requested(self, site_key: str, url: str) -> None:
-        self._run_benchmark_request(site_key=site_key, url=url, scenario_id="")
+        # GUI 신규 흐름에서는 기본적으로 Grafana로 메트릭 push하여 결과 보드에 즉시 노출
+        self._run_benchmark_request(site_key=site_key, url=url, scenario_id="", push_metrics=True)
 
     def _run_benchmark_request(
         self,
@@ -1449,18 +1450,38 @@ class AppController(QObject):
         site_key = str(normalized_summary.get("site_key") or "").strip()
         site_label = str(normalized_summary.get("site_label") or "Benchmark").strip()
         target_url = str(normalized_summary.get("target_url") or "").strip()
-        reports = scan_benchmark_reports(
-            workspace_root=Path(__file__).resolve().parents[3],
-            site_key=site_key,
-            selected_url=target_url,
-            registry_payload=self._benchmark_registry,
-        )
-        html_doc = render_benchmark_reports_html(
-            site_label=site_label,
-            selected_url=target_url,
-            reports=reports,
-        )
-        self._window.show_html_in_browser(html_doc)
+        # 신규 GUI: Toss-style 결과 카드 우선 표시.
+        # show_result_card이 새 디자인의 결과 페이지를 brower_view에 렌더링.
+        if hasattr(self._window, "show_result_card"):
+            try:
+                self._window.show_result_card(normalized_summary)
+            except Exception:
+                # 실패 시 레거시 HTML 보드로 fallback
+                reports = scan_benchmark_reports(
+                    workspace_root=Path(__file__).resolve().parents[3],
+                    site_key=site_key,
+                    selected_url=target_url,
+                    registry_payload=self._benchmark_registry,
+                )
+                html_doc = render_benchmark_reports_html(
+                    site_label=site_label,
+                    selected_url=target_url,
+                    reports=reports,
+                )
+                self._window.show_html_in_browser(html_doc)
+        else:
+            reports = scan_benchmark_reports(
+                workspace_root=Path(__file__).resolve().parents[3],
+                site_key=site_key,
+                selected_url=target_url,
+                registry_payload=self._benchmark_registry,
+            )
+            html_doc = render_benchmark_reports_html(
+                site_label=site_label,
+                selected_url=target_url,
+                reports=reports,
+            )
+            self._window.show_html_in_browser(html_doc)
 
     def _persist_execution_history(self, summary: dict[str, Any]) -> None:
         try:

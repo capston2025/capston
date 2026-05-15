@@ -39,16 +39,26 @@ class ScreencastClient(QThread):
             loop.close()
 
     async def _connect_and_listen(self):
-        """WebSocket 연결 및 프레임 수신"""
+        """WebSocket 연결 및 프레임 수신.
+
+        백엔드(Playwright agent)가 안 떠 있는 경우가 잦으므로 로그를 조용히 유지.
+        최초 시도 한 번만 연결을 시도하고, 실패하면 조용히 끝낸다.
+        """
+        max_retries = 1  # 시끄러운 5회 재시도 → 한 번만 시도
         retry_count = 0
-        max_retries = 5
+        connected_at_least_once = False
 
         while self._running and retry_count < max_retries:
             try:
-                async with websockets.connect(self.ws_url) as websocket:
+                async with websockets.connect(
+                    self.ws_url,
+                    open_timeout=2.0,  # 빠르게 포기 (기본 10초 → 2초)
+                ) as websocket:
                     self._websocket = websocket
                     self.connection_status_changed.emit(True)
-                    print(f"[Screencast] Connected to {self.ws_url}")
+                    if not connected_at_least_once:
+                        print(f"[Screencast] Connected to {self.ws_url}")
+                        connected_at_least_once = True
                     retry_count = 0  # 연결 성공 시 재시도 카운트 초기화
 
                     # 첫 프레임 요청
@@ -72,29 +82,28 @@ class ScreencastClient(QThread):
 
                         except asyncio.TimeoutError:
                             # 타임아웃 시 ping 전송
-                            await websocket.send("ping")
+                            try:
+                                await websocket.send("ping")
+                            except Exception:
+                                break
                         except websockets.exceptions.ConnectionClosed:
-                            print("[Screencast] Connection closed by server")
                             break
-                        except Exception as e:
-                            print(f"[Screencast] Error receiving frame: {e}")
+                        except Exception:
+                            # 프레임 수신 실패는 조용히 끝
                             break
 
-            except (ConnectionRefusedError, OSError) as e:
+            except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
+                # Playwright 에이전트가 안 떠 있는 정상 케이스 — 조용히 종료
                 retry_count += 1
                 self.connection_status_changed.emit(False)
-                print(f"[Screencast] Connection failed (attempt {retry_count}/{max_retries}): {e}")
-
-                if retry_count < max_retries:
-                    # 재연결 대기 (지수 백오프)
-                    wait_time = min(2 ** retry_count, 10)
-                    await asyncio.sleep(wait_time)
-                else:
-                    self.error_occurred.emit(f"Failed to connect after {max_retries} attempts")
+                if retry_count >= max_retries:
+                    # 재시도 다 썼으면 error_occurred는 emit하지 않음 (조용히)
                     break
+                # (max_retries=1이라 여기 도달 안 함, 향후 늘릴 때를 위해 둠)
+                await asyncio.sleep(2)
 
-            except Exception as e:
-                self.error_occurred.emit(f"Unexpected error: {str(e)}")
+            except Exception:
+                # 알 수 없는 에러도 조용히 종료
                 break
 
         self.connection_status_changed.emit(False)
