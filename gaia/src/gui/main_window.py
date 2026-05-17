@@ -1870,6 +1870,75 @@ class MainWindow(QMainWindow):
                 color: #fca5a5;
             }
 
+            /* ===========================================================
+             * Result Action Bar — test 완료 시 표시
+             * =========================================================== */
+            QFrame#ResultActionBar {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                border-radius: 12px;
+            }
+            QFrame#ResultActionBar[state="success"] {
+                background: #f0fdf4;
+                border: 1px solid #bbf7d0;
+            }
+            QFrame#ResultActionBar[state="failed"] {
+                background: #fef2f2;
+                border: 1px solid #fecaca;
+            }
+            QLabel#ResultActionStatusIcon {
+                background: #10b981;
+                color: #ffffff;
+                border-radius: 14px;
+                font-size: 16px;
+                font-weight: 900;
+            }
+            QLabel#ResultActionStatusIcon[state="failed"] {
+                background: #ef4444;
+            }
+            QLabel#ResultActionStatusIcon[state="warn"] {
+                background: #f59e0b;
+            }
+            QLabel#ResultActionTitle {
+                color: #191f28;
+                font-size: 14px;
+                font-weight: 800;
+                background: transparent;
+            }
+            QLabel#ResultActionReason {
+                color: #4e5968;
+                font-size: 12px;
+                background: transparent;
+                padding-left: 38px;
+            }
+            QPushButton#ResultGrafanaButton {
+                background: #3182f6;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                font-size: 12.5px;
+                font-weight: 700;
+                padding: 8px 16px;
+                min-height: 0px;
+            }
+            QPushButton#ResultGrafanaButton:hover {
+                background: #1b64da;
+            }
+            QPushButton#ResultOpenFolderButton {
+                background: #ffffff;
+                color: #4e5968;
+                border: 1px solid #e5e8eb;
+                border-radius: 8px;
+                font-size: 12.5px;
+                font-weight: 700;
+                padding: 8px 14px;
+                min-height: 0px;
+            }
+            QPushButton#ResultOpenFolderButton:hover {
+                background: #f9fafb;
+                border: 1px solid #d1d6db;
+            }
+
             /* KPI grid card — 컴팩트한 110px 고정 카드 */
             QFrame#KpiGridCard {
                 background: #ffffff;
@@ -4191,6 +4260,60 @@ class MainWindow(QMainWindow):
         # 로그 영역을 가장 큰 stretch로 확장 (KPI 아래 남은 공간 모두 사용)
         page_v.addWidget(log_zone, stretch=1)
 
+        # ── 결과 액션 바 (test 완료 시 표시) ─────────────────────────
+        # 평소에는 hidden, set_busy(False) + show_result_card 호출 시 visible.
+        # Grafana 링크 + 결과 폴더 열기 버튼 + (실패 시) 이유 표시.
+        self._result_action_bar = QFrame(page)
+        self._result_action_bar.setObjectName("ResultActionBar")
+        self._result_action_bar.setVisible(False)
+        rab_layout = QVBoxLayout(self._result_action_bar)
+        rab_layout.setContentsMargins(16, 12, 16, 12)
+        rab_layout.setSpacing(8)
+
+        # 상단 결과 요약 (status + reason)
+        rab_summary_row = QHBoxLayout()
+        rab_summary_row.setSpacing(10)
+        self._result_action_status_icon = QLabel("✓", self._result_action_bar)
+        self._result_action_status_icon.setObjectName("ResultActionStatusIcon")
+        self._result_action_status_icon.setFixedSize(28, 28)
+        self._result_action_status_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rab_summary_row.addWidget(self._result_action_status_icon)
+        self._result_action_title = QLabel("테스트 완료", self._result_action_bar)
+        self._result_action_title.setObjectName("ResultActionTitle")
+        rab_summary_row.addWidget(self._result_action_title)
+        rab_summary_row.addStretch(1)
+        rab_layout.addLayout(rab_summary_row)
+
+        # 이유 (실패/차단 시에만 표시)
+        self._result_action_reason = QLabel("", self._result_action_bar)
+        self._result_action_reason.setObjectName("ResultActionReason")
+        self._result_action_reason.setWordWrap(True)
+        self._result_action_reason.setVisible(False)
+        rab_layout.addWidget(self._result_action_reason)
+
+        # 액션 버튼들
+        rab_buttons_row = QHBoxLayout()
+        rab_buttons_row.setSpacing(8)
+        self._result_grafana_button = QPushButton("Grafana 대시보드 열기", self._result_action_bar)
+        self._result_grafana_button.setObjectName("ResultGrafanaButton")
+        self._result_grafana_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._result_grafana_button.clicked.connect(self._open_grafana_dashboard)
+        rab_buttons_row.addWidget(self._result_grafana_button)
+        self._result_open_folder_button = QPushButton("결과 폴더 열기", self._result_action_bar)
+        self._result_open_folder_button.setObjectName("ResultOpenFolderButton")
+        self._result_open_folder_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._result_open_folder_button.setVisible(False)
+        self._result_open_folder_button.clicked.connect(self._open_result_folder)
+        rab_buttons_row.addWidget(self._result_open_folder_button)
+        rab_buttons_row.addStretch(1)
+        rab_layout.addLayout(rab_buttons_row)
+
+        # 내부 상태 저장 (버튼 클릭 시 사용)
+        self._result_grafana_url: str = ""
+        self._result_output_dir: str = ""
+
+        page_v.addWidget(self._result_action_bar)
+
         # 하단 사이트 변경 버튼
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(8)
@@ -4900,6 +5023,9 @@ class MainWindow(QMainWindow):
     def set_busy(self, busy: bool, *, message: str | None = None) -> None:
         self._is_busy = busy
         if busy:
+            # 새 테스트 시작 — 이전 실행 결과 액션 바 숨김
+            if hasattr(self, "_result_action_bar") and self._result_action_bar is not None:
+                self._result_action_bar.setVisible(False)
             # 테스트 시작 시점에만 screencast 클라이언트 가동 (브라우저 없을 때 에러 스팸 방지)
             self._start_screencast_if_needed()
             self._reset_exec_metrics()
@@ -5078,11 +5204,57 @@ class MainWindow(QMainWindow):
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
         self._browser_view.setHtml(html_content)
 
-    def show_result_card(self, summary: Mapping[str, Any]) -> None:
-        """Step 3 완료 시점에 호출 — Toss-style 결과 카드를 browser_view에 렌더링.
+    def _open_grafana_dashboard(self) -> None:
+        """결과 액션 바의 Grafana 버튼 클릭 — 외부 기본 브라우저에서 대시보드 열기."""
+        import os
+        url = (
+            getattr(self, "_result_grafana_url", "")
+            or os.getenv("GAIA_GRAFANA_URL", "").strip()
+            or "http://localhost:3000"
+        )
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl as _QUrl
+            QDesktopServices.openUrl(_QUrl(url))
+        except Exception:
+            # fallback — Python webbrowser
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                pass
 
-        기존 show_html_in_browser는 legacy 보드를 띄우지만 신규 GUI에는 어울리지 않아
-        이 메서드로 새 디자인의 결과 페이지를 직접 렌더링한다.
+    def _open_result_folder(self) -> None:
+        """결과 액션 바의 폴더 열기 버튼 클릭 — OS 파일 탐색기에서 output_dir 열기."""
+        import os
+        from pathlib import Path
+        folder = getattr(self, "_result_output_dir", "").strip()
+        if not folder:
+            return
+        path = Path(folder)
+        if not path.exists():
+            return
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl as _QUrl
+            QDesktopServices.openUrl(_QUrl.fromLocalFile(str(path)))
+        except Exception:
+            # fallback — os.startfile (Windows) or subprocess
+            try:
+                if os.name == "nt":
+                    os.startfile(str(path))  # type: ignore[attr-defined]
+                else:
+                    import subprocess
+                    subprocess.Popen(["xdg-open", str(path)])
+            except Exception:
+                pass
+
+    def show_result_card(self, summary: Mapping[str, Any]) -> None:
+        """Step 3 완료 시점에 호출 — visible Result Action Bar를 활성화.
+
+        신규 단일 컬럼 레이아웃에서는 _browser_view가 invisible legacy stub이라
+        HTML 렌더링이 사용자에게 보이지 않음. 대신 visible Result Action Bar에
+        결과 요약 + Grafana 링크 + 결과 폴더 버튼을 표시한다.
         """
         try:
             import html as _html
@@ -5099,6 +5271,45 @@ class MainWindow(QMainWindow):
             blocked = int(summary.get("blocked_runs") or 0)
             output_dir = str(summary.get("output_dir") or "").strip()
             push_metrics_enabled = bool(summary.get("push_metrics"))
+
+            # ─── Visible Result Action Bar 활성화 (신규 GUI의 핵심 결과 표시) ──
+            if hasattr(self, "_result_action_bar") and self._result_action_bar is not None:
+                # 상태별 색상/아이콘
+                if status == "success" and total_runs > 0 and successful == total_runs:
+                    state_key, icon_text, title_text = "success", "✓", f"테스트 완료 — {successful}/{total_runs} 통과"
+                elif failed > 0 or blocked > 0 or (total_runs > 0 and successful < total_runs):
+                    state_key, icon_text, title_text = "failed", "!", f"테스트 실패 — {successful}/{total_runs} 통과"
+                else:
+                    state_key, icon_text, title_text = "warn", "i", "테스트 완료"
+
+                self._result_action_bar.setProperty("state", state_key)
+                self._result_action_status_icon.setProperty("state", state_key)
+                self._result_action_status_icon.setText(icon_text)
+                self._result_action_title.setText(title_text)
+
+                # 이유 표시 (실패/차단 시)
+                if reason and reason != "-" and state_key != "success":
+                    self._result_action_reason.setText(reason)
+                    self._result_action_reason.setVisible(True)
+                else:
+                    self._result_action_reason.setText("")
+                    self._result_action_reason.setVisible(False)
+
+                # Grafana URL 저장 + 버튼 활성화
+                grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://localhost:3000"
+                self._result_grafana_url = grafana_base
+                self._result_grafana_button.setToolTip(f"외부 브라우저에서 {grafana_base} 열기")
+
+                # 결과 폴더 (output_dir이 존재하는 경우)
+                self._result_output_dir = output_dir
+                self._result_open_folder_button.setVisible(bool(output_dir))
+                if output_dir:
+                    self._result_open_folder_button.setToolTip(f"폴더 열기: {output_dir}")
+
+                # 스타일 재적용
+                self._restyle(self._result_action_bar)
+                self._restyle(self._result_action_status_icon)
+                self._result_action_bar.setVisible(True)
 
             # 정합성 보강 — successful + failed >= total 안 되면 차이를 failed로 흡수
             if total_runs > 0 and successful + failed < total_runs:
