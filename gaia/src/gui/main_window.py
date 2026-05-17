@@ -1871,6 +1871,35 @@ class MainWindow(QMainWindow):
             }
 
             /* ===========================================================
+             * Step 3 Scroll Area — 컨텐츠가 윈도우 높이 초과 시 스크롤
+             * =========================================================== */
+            QScrollArea#Step3ScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QWidget#Step3ScrollContent {
+                background: transparent;
+            }
+            QScrollArea#Step3ScrollArea QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 4px 2px 4px 2px;
+            }
+            QScrollArea#Step3ScrollArea QScrollBar::handle:vertical {
+                background: #d1d6db;
+                border-radius: 5px;
+                min-height: 24px;
+            }
+            QScrollArea#Step3ScrollArea QScrollBar::handle:vertical:hover {
+                background: #b0b8c1;
+            }
+            QScrollArea#Step3ScrollArea QScrollBar::add-line:vertical,
+            QScrollArea#Step3ScrollArea QScrollBar::sub-line:vertical {
+                background: transparent;
+                height: 0px;
+            }
+
+            /* ===========================================================
              * Result Action Bar — test 완료 시 표시
              * =========================================================== */
             QFrame#ResultActionBar {
@@ -3979,12 +4008,32 @@ class MainWindow(QMainWindow):
         │ [← 사이트 변경]                          │
         └─────────────────────────────────────────┘
         """
+        # 외부 page — QScrollArea를 호스팅 (컨텐츠가 윈도우 높이 초과 시 스크롤 가능)
         page = QWidget(parent)
         page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        page_outer = QVBoxLayout(page)
+        page_outer.setContentsMargins(0, 0, 0, 0)
+        page_outer.setSpacing(0)
+
+        # 스크롤 영역 — 세로만 스크롤, 가로는 부모 폭에 맞춤 (responsive)
+        self._step3_scroll = QScrollArea(page)
+        self._step3_scroll.setObjectName("Step3ScrollArea")
+        self._step3_scroll.setWidgetResizable(True)
+        self._step3_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._step3_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._step3_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        page_outer.addWidget(self._step3_scroll)
+
+        # 실제 컨텐츠 widget — 모든 위젯의 부모는 이 widget이 됨
+        # (자식 위젯들이 page를 부모로 갖던 기존 동작과 동일하게 보이도록 page 변수를 재할당)
+        scroll_content = QWidget(self._step3_scroll)
+        scroll_content.setObjectName("Step3ScrollContent")
+        self._step3_scroll.setWidget(scroll_content)
+        page = scroll_content  # 이후 코드는 page를 부모로 사용 — 기존 로직 유지
 
         # 단일 컬럼 layout — 좁은 폭(반쪽 화면)에서도 어색하지 않도록 설계
         page_v = QVBoxLayout(page)
-        page_v.setContentsMargins(8, 0, 8, 0)
+        page_v.setContentsMargins(8, 0, 8, 4)
         page_v.setSpacing(14)
 
         # ── 상단 status header card (좁은 폭에서도 한 줄 유지) ──────
@@ -4252,13 +4301,14 @@ class MainWindow(QMainWindow):
         self._log_output.setObjectName("TerminalLog")
         self._log_output.setReadOnly(True)
         self._log_output.setPlaceholderText("[ready] 테스트가 시작되면 여기에 실행 로그가 표시됩니다.")
-        # KPI 카드를 110px로 컴팩트하게 줄였으므로 로그에 더 많은 공간 배분 가능.
-        # min 180px 보장 + stretch=1로 남는 공간 모두 흡수 → 로그 영역이 KPI 영역 합보다 큼.
-        self._log_output.setMinimumHeight(180)
-        lz_layout.addWidget(self._log_output, stretch=1)
+        # QScrollArea 안에서는 stretch=1이 무한 공간을 의미해서 layout이 깨질 수 있음.
+        # 명확한 min/max로 안정적인 높이 보장 (스크롤 가능하므로 큰 컨텐츠도 OK).
+        self._log_output.setMinimumHeight(220)
+        self._log_output.setMaximumHeight(360)
+        lz_layout.addWidget(self._log_output)
 
-        # 로그 영역을 가장 큰 stretch로 확장 (KPI 아래 남은 공간 모두 사용)
-        page_v.addWidget(log_zone, stretch=1)
+        # QScrollArea 안에서는 stretch 없이 자연 높이로 — 컨텐츠 초과 시 페이지 스크롤
+        page_v.addWidget(log_zone)
 
         # ── 결과 액션 바 (test 완료 시 표시) ─────────────────────────
         # 평소에는 hidden, set_busy(False) + show_result_card 호출 시 visible.
@@ -4417,7 +4467,10 @@ class MainWindow(QMainWindow):
         # legacy_holder를 page에 add (visible=False라 영향 없음)
         legacy_holder.setMaximumHeight(0)
 
-        return page
+        # NOTE: `page` 변수는 QScrollArea 내부의 scroll_content를 가리킴.
+        # workflow_stack에 추가될 widget은 외부 host (self._step3_scroll의 parent)여야 함.
+        # _step3_scroll.parent()는 outer page widget (QScrollArea 호스팅용).
+        return self._step3_scroll.parentWidget()
 
     def _set_device_mode(self, key: str) -> None:
         """레거시 호환 no-op (신규 50:50 layout에선 디바이스 토글 없음)."""
