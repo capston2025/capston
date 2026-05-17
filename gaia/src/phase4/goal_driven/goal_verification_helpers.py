@@ -103,58 +103,6 @@ def is_verification_style_goal(agent, goal: TestGoal) -> bool:
     return True
 
 
-def is_filter_style_goal(agent, goal: TestGoal) -> bool:
-    text = agent._normalize_text(
-        " ".join(
-            [
-                str(goal.name or ""),
-                str(goal.description or ""),
-                " ".join(str(item or "") for item in (goal.success_criteria or [])),
-            ]
-        )
-    )
-    if not text:
-        return False
-    if not is_verification_style_goal(agent, goal):
-        return False
-    explicit_filter_hints = (
-        "필터",
-        "filter",
-        "정렬",
-        "sort",
-    )
-    category_like_hints = (
-        "분류",
-        "category",
-    )
-    readonly_verification_hints = (
-        "현재",
-        "이미",
-        "추가 조작 없이",
-        "보이는지",
-        "표시",
-        "존재",
-        "확인",
-        "visible",
-        "already",
-        "without interaction",
-    )
-    if any(hint in text for hint in category_like_hints) and not any(
-        hint in text for hint in explicit_filter_hints
-    ):
-        return False
-    if any(hint in text for hint in readonly_verification_hints) and not any(
-        hint in text for hint in explicit_filter_hints
-    ):
-        return False
-    filter_hints = (
-        *explicit_filter_hints,
-        "분류",
-        "category",
-    )
-    return any(hint in text for hint in filter_hints)
-
-
 def _goal_expected_signals(goal: TestGoal) -> List[str]:
     signals: List[str] = []
     direct = getattr(goal, "expected_signals", None)

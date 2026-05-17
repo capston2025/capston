@@ -46,7 +46,6 @@ from .goal_completion_helpers import (
 )
 from .goal_verification_helpers import (
     extract_goal_query_tokens as extract_goal_query_tokens_impl,
-    is_filter_style_goal as is_filter_style_goal_impl,
     is_verification_style_goal as is_verification_style_goal_impl,
 )
 from .deterministic_goal_preplan import build_deterministic_goal_preplan as build_deterministic_goal_preplan_impl
@@ -842,9 +841,6 @@ class GoalDrivenAgent:
 
     def _is_verification_style_goal(self, goal: TestGoal) -> bool:
         return is_verification_style_goal_impl(self, goal)
-
-    def _is_filter_style_goal(self, goal: TestGoal) -> bool:
-        return is_filter_style_goal_impl(self, goal)
 
     def _extract_goal_query_tokens(self, goal: TestGoal) -> List[str]:
         return extract_goal_query_tokens_impl(self, goal)

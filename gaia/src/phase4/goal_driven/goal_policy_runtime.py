@@ -15,7 +15,6 @@ def initialize_goal_policy_runtime(agent: Any, goal: TestGoal) -> None:
         goal,
         agent._goal_constraints,
         normalize_fn=agent._normalize_text,
-        filter_style=agent._is_filter_style_goal(goal),
         verification_style=agent._is_verification_style_goal(goal),
     )
     agent._goal_policy = get_goal_policy(

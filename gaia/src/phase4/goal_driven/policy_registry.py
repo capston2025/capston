@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Protocol
 from .evidence_bundle import InterruptResult
 from .goal_kinds import GoalKind
 from .interrupts import AuthInterruptPolicy, CloseOverlayInterruptPolicy
-from .policies import AddToListPolicy, ClearListPolicy, FilterPolicy, RemoveFromListPolicy
+from .policies import AddToListPolicy, ClearListPolicy, RemoveFromListPolicy
 
 
 class GoalPolicy(Protocol):
@@ -59,7 +59,6 @@ GOAL_POLICY_REGISTRY: Dict[GoalKind, GoalPolicy] = {
     GoalKind.ADD_TO_LIST: AddToListPolicy(),
     GoalKind.REMOVE_FROM_LIST: RemoveFromListPolicy(),
     GoalKind.CLEAR_LIST: ClearListPolicy(),
-    GoalKind.FILTER: FilterPolicy(),
     GoalKind.GENERIC_FALLBACK: GenericFallbackPolicy(),
 }
 

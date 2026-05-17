@@ -7,7 +7,6 @@ class GoalKind(str, Enum):
     ADD_TO_LIST = "add_to_list"
     REMOVE_FROM_LIST = "remove_from_list"
     CLEAR_LIST = "clear_list"
-    FILTER = "filter"
     AUTH = "auth"
     CLOSE_OVERLAY = "close_overlay"
     OPEN_DETAIL = "open_detail"
