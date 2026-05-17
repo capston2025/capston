@@ -5,7 +5,7 @@ import os
 import re
 from typing import List, Optional
 
-from .goal_verification_helpers import extract_goal_query_tokens, is_filter_style_goal
+from .goal_verification_helpers import extract_goal_query_tokens
 from .media_playback_helpers import (
     collect_visible_play_controls,
     describe_play_control,

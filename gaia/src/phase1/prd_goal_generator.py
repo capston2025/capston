@@ -81,7 +81,7 @@ def goals_from_requirements(requirements: List[PRDRequirement]) -> List[PRDGoal]
         if any(token in lowered for token in ("검색", "search", "키워드")):
             add("검색 기능 검증", "검색 기능이 정상 동작하는지 검증해줘", "search_results_validation")
         if any(token in lowered for token in ("필터", "filter", "학점", "구분", "시간대")):
-            add("필터 기능 검증", "필터링 로직이 결과 목록과 선택 상태에 반영되는지 검증해줘", "filter_validation")
+            add("조건 선택 검증", "조건 선택이 결과 목록과 선택 상태에 반영되는지 검증해줘", "generic_feature_validation")
         if any(token in lowered for token in ("페이지네이션", "pagination", "페이지 이동", "total 결과 수")):
             add("페이지네이션 검증", "페이지네이션이 결과 목록과 함께 정상 동작하는지 검증해줘", "pagination_validation")
         if any(token in lowered for token in ("위시리스트", "wishlist")):

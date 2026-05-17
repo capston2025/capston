@@ -215,12 +215,10 @@ def _extract_destination_aliases(texts: Iterable[str], normalize_fn: Callable[[s
     return matched
 
 
-def _extract_goal_kind(texts: Iterable[str], constraints: Dict[str, Any], filter_style: bool, verification_style: bool, destination_aliases: Dict[str, List[str]]) -> GoalKind:
+def _extract_goal_kind(texts: Iterable[str], constraints: Dict[str, Any], verification_style: bool, destination_aliases: Dict[str, List[str]]) -> GoalKind:
     joined = " ".join(str(t or "") for t in texts).lower()
     mutation_direction = str((constraints or {}).get("mutation_direction") or "").strip().lower()
     explicit_auth_goal = any(token in joined for token in _AUTH_TOKENS)
-    if filter_style:
-        return GoalKind.FILTER
     if explicit_auth_goal:
         return GoalKind.AUTH
     if mutation_direction == "clear" and destination_aliases:
@@ -274,7 +272,6 @@ def extract_goal_semantics(
     constraints: Dict[str, Any] | None,
     *,
     normalize_fn: Callable[[str], str] | None = None,
-    filter_style: bool = False,
     verification_style: bool = False,
 ) -> GoalSemantics:
     normalize = normalize_fn or _default_normalize
@@ -293,7 +290,7 @@ def extract_goal_semantics(
             if alias not in destination_terms:
                 destination_terms.append(alias)
     target_terms = _sanitize_target_terms(target_terms, destination_aliases, normalize)
-    goal_kind = _extract_goal_kind(texts, goal_constraints, filter_style, verification_style, destination_aliases)
+    goal_kind = _extract_goal_kind(texts, goal_constraints, verification_style, destination_aliases)
     explicit_auth_goal = goal_kind == GoalKind.AUTH
     mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
     remediation_direction = str(goal_constraints.get("remediation_direction") or "").strip().lower()
