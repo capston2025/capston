@@ -58,6 +58,10 @@ def load_state() -> dict:
             return json.loads(STATE_FILE.read_text())
         except Exception:
             pass
+    return empty_state()
+
+
+def empty_state() -> dict:
     return {
         "rounds": [],
         "gaia_wins": 0,
@@ -72,6 +76,45 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+
+
+def _round_num(row: dict) -> int | None:
+    try:
+        return int(row.get("round"))
+    except (TypeError, ValueError):
+        return None
+
+
+def rebuild_state(rounds: list[dict], latest_speed_ratio: float | None) -> dict:
+    state = empty_state()
+    state["rounds"] = sorted(rounds, key=lambda r: (_round_num(r) is None, _round_num(r) or 0))
+    state["latest_speed_ratio"] = latest_speed_ratio
+
+    for row in state["rounds"]:
+        winner = row.get("winner")
+        if winner == "gaia":
+            state["gaia_wins"] += 1
+        elif winner == "human":
+            state["human_wins"] += 1
+        elif winner == "draw":
+            state["draws"] += 1
+
+        state["gaia_success"] += 1 if row.get("gaia_ok") else 0
+        state["human_success"] += 1 if row.get("human_ok") else 0
+
+    return state
+
+
+def upsert_round(state: dict, round_result: dict, speed_ratio: float | None) -> tuple[dict, bool]:
+    target_round = _round_num(round_result)
+    existing_rounds = list(state.get("rounds") or [])
+    kept_rounds = [
+        row for row in existing_rounds
+        if _round_num(row) != target_round
+    ]
+    replaced = len(kept_rounds) != len(existing_rounds)
+    kept_rounds.append(round_result)
+    return rebuild_state(kept_rounds, speed_ratio), replaced
 
 
 # ── GAIA 결과 자동 탐색 ──────────────────────────────────────────────────────
@@ -326,9 +369,7 @@ def main() -> None:
         _delete_instance("gaia_demo", gateway_url, token)
         for r in state["rounds"]:
             _delete_instance(f"gaia_demo_r{r['round']}", gateway_url, token)
-        empty = {"rounds": [], "gaia_wins": 0, "human_wins": 0, "draws": 0,
-                 "gaia_success": 0, "human_success": 0, "latest_speed_ratio": None}
-        save_state(empty)
+        save_state(empty_state())
         print("✅ 초기화 완료")
         return
 
@@ -373,17 +414,7 @@ def main() -> None:
     )
 
     # ── 상태 업데이트 ─────────────────────────────────────────────────────
-    if winner == "gaia":
-        state["gaia_wins"] += 1
-    elif winner == "human":
-        state["human_wins"] += 1
-    elif winner == "draw":
-        state["draws"] += 1
-
-    state["gaia_success"]  += 1 if gaia_ok  else 0
-    state["human_success"] += 1 if human_ok else 0
-    state["latest_speed_ratio"] = speed_ratio
-    state["rounds"].append({
+    round_result = {
         "round":       args.round,
         "scenario_id": args.scenario,
         "human_time":  human_time,
@@ -391,7 +422,8 @@ def main() -> None:
         "gaia_time":   gaia_time,
         "gaia_ok":     gaia_ok,
         "winner":      winner,
-    })
+    }
+    state, replaced_round = upsert_round(state, round_result, speed_ratio)
     save_state(state)
 
     # ── 메트릭 빌드 & 전송 ────────────────────────────────────────────────
@@ -422,6 +454,8 @@ def main() -> None:
             print(f"  │  ⚡ GAIA가 {speed_ratio:.1f}배 빠름")
         print(f"  │  → {winner_label}")
         print(f"  └─────────────────────────────────────────")
+        if replaced_round:
+            print(f"  ↻ 기존 {args.round}라운드를 새 결과로 갱신했습니다.")
         print(f"  누적: 🤖 {state['gaia_wins']}승 / "
               f"👤 {state['human_wins']}승 / "
               f"🤝 {state['draws']}무")
