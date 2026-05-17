@@ -1,0 +1,367 @@
+{
+  "title": "GAIA 시연회 — 체험자 vs GAIA",
+  "uid": "gaia-demo-v1",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1d", "to": "now" },
+  "timezone": "browser",
+  "tags": ["gaia", "demo"],
+  "panels": [
+
+    {
+      "id": 1,
+      "type": "row",
+      "title": "🏆 스코어보드",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 2,
+      "title": "🤖 GAIA",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 1, "w": 9, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "승",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "#1a5c2a", "value": null }]
+          },
+          "color": { "mode": "fixed", "fixedColor": "#1a5c2a" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 100 }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_score{player=\"gaia\"}",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 3,
+      "title": "👤 체험자",
+      "type": "stat",
+      "gridPos": { "x": 9, "y": 1, "w": 9, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "승",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "#1a3a5c", "value": null }]
+          },
+          "color": { "mode": "fixed", "fixedColor": "#1a3a5c" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto",
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 100 }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_score{player=\"human\"}",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 4,
+      "title": "진행 라운드",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "회",
+          "color": { "mode": "fixed", "fixedColor": "#555577" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "#555577", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "text": { "valueSize": 40 }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_rounds_total",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 5,
+      "title": "⚡ 최근 라운드 — GAIA가 몇 배 빠른가",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 5, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "unit": "x",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#F2495C", "value": null },
+              { "color": "#FF9830", "value": 1 },
+              { "color": "#73BF69", "value": 2 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "text": { "valueSize": 36 }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_latest_speed_ratio",
+          "instant": true,
+          "legendFormat": "배속",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 10,
+      "type": "row",
+      "title": "📊 누적 통계",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 11,
+      "title": "⏱ 평균 소요 시간 비교 (초)",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 10, "w": 10, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 30 },
+              { "color": "red",    "value": 60 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "🤖 GAIA" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }] },
+          { "matcher": { "id": "byName", "options": "👤 체험자" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }] }
+        ]
+      },
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_avg_duration_seconds{player=\"gaia\"}",
+          "instant": true,
+          "legendFormat": "🤖 GAIA",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_avg_duration_seconds{player=\"human\"}",
+          "instant": true,
+          "legendFormat": "👤 체험자",
+          "refId": "B"
+        }
+      ]
+    },
+
+    {
+      "id": 12,
+      "title": "✅ 성공률 비교",
+      "type": "gauge",
+      "gridPos": { "x": 10, "y": 10, "w": 7, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "green",  "value": 0.7 }
+            ]
+          },
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_success_rate{player=\"gaia\"}",
+          "instant": true,
+          "legendFormat": "🤖 GAIA",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_success_rate{player=\"human\"}",
+          "instant": true,
+          "legendFormat": "👤 체험자",
+          "refId": "B"
+        }
+      ]
+    },
+
+    {
+      "id": 13,
+      "title": "🤝 무승부",
+      "type": "stat",
+      "gridPos": { "x": 17, "y": 10, "w": 7, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "회",
+          "color": { "mode": "fixed", "fixedColor": "#444466" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "#444466", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "text": { "valueSize": 60 }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_draws",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "type": "row",
+      "title": "📋 라운드 히스토리",
+      "gridPos": { "x": 0, "y": 17, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+
+    {
+      "id": 21,
+      "title": "라운드별 결과",
+      "type": "ae3e-plotly-panel",
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 16 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "script": "var rounds = {};\n\ndata.series.forEach(function(frame) {\n  var refId = frame.refId || '';\n  var round = null;\n  var scenario_id = null;\n  var winner = null;\n  var value = null;\n\n  frame.fields.forEach(function(field) {\n    if (field.labels) {\n      if (field.labels.round) round = field.labels.round;\n      if (field.labels.scenario_id) scenario_id = field.labels.scenario_id;\n      if (field.labels.winner) winner = field.labels.winner;\n    }\n    if (field.type === 'number' && field.values && field.values.length > 0) {\n      value = field.values[field.values.length - 1];\n    }\n  });\n\n  if (!round || !scenario_id) return;\n\n  if (!rounds[round]) {\n    rounds[round] = { round: parseInt(round), scenario_id: scenario_id };\n  }\n\n  if (refId === 'A') {\n    rounds[round].human_time = value;\n  } else if (refId === 'B') {\n    rounds[round].gaia_time = value;\n  } else if (refId === 'C') {\n    rounds[round].human_ok = value === 1;\n  } else if (refId === 'D') {\n    rounds[round].gaia_ok = value === 1;\n  } else if (refId === 'E') {\n    rounds[round].speed_ratio = value;\n  } else if (refId === 'F' && winner && value === 1) {\n    rounds[round].winner = winner;\n  }\n});\n\nvar rows = Object.values(rounds).sort(function(a, b) { return a.round - b.round; });\n\nif (rows.length === 0) {\n  return {\n    data: [{ type: 'table',\n      header: { values: [['라운드'], ['시나리오'], ['👤 체험자'], ['🤖 GAIA'], ['⚡ 배속'], ['승자']],\n        fill: { color: '#1a1a2e' }, font: { color: '#aaaacc', size: 13 }, align: 'center' },\n      cells: { values: [['—'], ['아직 기록 없음'], ['—'], ['—'], ['—'], ['—']],\n        fill: { color: '#1e1e3a' }, font: { color: '#888899', size: 12 }, align: 'center', height: 36 }\n    }],\n    layout: { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',\n      font: { color: '#ffffff' }, margin: { t: 10, b: 10, l: 10, r: 10 } },\n    config: { responsive: true }\n  };\n}\n\nvar colRound     = rows.map(function(r) { return 'R' + r.round; });\nvar colScenario  = rows.map(function(r) { return r.scenario_id; });\nvar colHuman     = rows.map(function(r) {\n  if (r.human_time == null) return '?';\n  return Math.round(r.human_time) + '초 ' + (r.human_ok ? '✅' : '❌');\n});\nvar colGaia      = rows.map(function(r) {\n  if (r.gaia_time == null) return '?';\n  return r.gaia_time.toFixed(1) + '초 ' + (r.gaia_ok ? '✅' : '❌');\n});\nvar colRatio     = rows.map(function(r) {\n  if (!r.speed_ratio) return '—';\n  return r.speed_ratio.toFixed(1) + '×';\n});\nvar colWinner    = rows.map(function(r) {\n  var m = { gaia: '🤖 GAIA', human: '👤 체험자', draw: '🤝 무승부', unknown: '—' };\n  return m[r.winner] || '—';\n});\n\nvar winnerBg = rows.map(function(r) {\n  if (r.winner === 'gaia')  return 'rgba(26,92,42,0.8)';\n  if (r.winner === 'human') return 'rgba(26,58,92,0.8)';\n  if (r.winner === 'draw')  return 'rgba(60,60,60,0.8)';\n  return 'rgba(30,30,58,0.4)';\n});\n\nvar nRows = rows.length;\nvar cellBg = [\n  Array(nRows).fill('rgba(30,30,58,0.6)'),\n  Array(nRows).fill('rgba(30,30,58,0.6)'),\n  Array(nRows).fill('rgba(30,30,58,0.6)'),\n  Array(nRows).fill('rgba(30,30,58,0.6)'),\n  Array(nRows).fill('rgba(30,30,58,0.6)'),\n  winnerBg\n];\n\nreturn {\n  data: [{\n    type: 'table',\n    header: {\n      values: [['라운드'], ['시나리오'], ['👤 체험자'], ['🤖 GAIA'], ['⚡ 배속'], ['승자']],\n      fill: { color: '#1a1a2e' },\n      font: { color: '#aaaacc', size: 14 },\n      align: ['center', 'left', 'center', 'center', 'center', 'center'],\n      line: { width: 1, color: '#333355' },\n      height: 40\n    },\n    cells: {\n      values: [colRound, colScenario, colHuman, colGaia, colRatio, colWinner],\n      fill: { color: cellBg },\n      font: { color: '#ffffff', size: 13 },\n      align: ['center', 'left', 'center', 'center', 'center', 'center'],\n      line: { width: 1, color: '#2a2a4a' },\n      height: 36\n    }\n  }],\n  layout: {\n    paper_bgcolor: 'rgba(0,0,0,0)',\n    plot_bgcolor: 'rgba(0,0,0,0)',\n    font: { color: '#ffffff', family: 'Arial', size: 13 },\n    margin: { t: 10, b: 10, l: 10, r: 10 }\n  },\n  config: { responsive: true }\n};",
+        "onclick": "",
+        "jsonData": ""
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_round_human_duration_seconds",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_round_gaia_duration_seconds",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_round_human_status",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_round_gaia_status",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "D"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_round_speed_ratio",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "E"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
+          "expr": "gaia_demo_round_winner",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "F"
+        }
+      ]
+    }
+
+  ]
+}
