@@ -1158,6 +1158,9 @@ class AppController(QObject):
         run_tag: str = "full_suite",
         push_metrics: bool = False,
     ) -> None:
+        # GUI에서 사용자가 일부 시나리오만 선택했으면 window가 _pending_scenario_ids에 저장.
+        # None이면 suite의 전체 시나리오 실행 (기존 동작).
+        scenario_ids = getattr(self._window, "_pending_scenario_ids", None)
         thread = QThread(self)
         worker = BenchmarkWorker(
             site_key=preset.key,
@@ -1168,6 +1171,7 @@ class AppController(QObject):
             run_tag=run_tag,
             workspace_root=Path(__file__).resolve().parents[3],
             push_metrics=push_metrics,
+            scenario_ids=scenario_ids,
         )
         worker.moveToThread(thread)
 
@@ -1629,6 +1633,11 @@ class AppController(QObject):
     def _update_overall_progress_display(self) -> None:
         items = getattr(self._tracker, "items", {})
         total = len(items)
+        if total == 0:
+            # 트래커 비어있음 (benchmark 모드) — window가 _parse_progress_for_metrics로
+            # 직접 진행률을 갱신하므로 여기서 0/0으로 덮어쓰지 않음 (그러면 100% → 0%로
+            # 깜빡이는 회귀가 발생). 진행률은 window가 자율 관리.
+            return
         completed = sum(1 for item in items.values() if getattr(item, "checked", False))
         percent = (completed / total * 100) if total else 0.0
         self._window.update_overall_progress(percent, completed, total)

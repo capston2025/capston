@@ -833,6 +833,7 @@ class TestCaseRow(QFrame):
         icon_mode: str,
         recommended: bool = False,
         favorite: bool = False,
+        scenario_id: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -845,6 +846,11 @@ class TestCaseRow(QFrame):
         self._selected = False
         self._favorite = bool(favorite)
         self._recommended = bool(recommended)
+        # 카테고리 필터 (Step 2 콤보)에서 사용할 icon_mode 저장
+        self._icon_mode = str(icon_mode or "benchmark")
+        # 벤치마크 시나리오 1개에만 해당하는 케이스이면 해당 scenario_id 저장
+        # ""(빈 문자열)이면 전체 시나리오 실행 또는 비-벤치 모드
+        self._scenario_id = str(scenario_id or "")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -855,6 +861,8 @@ class TestCaseRow(QFrame):
         self._check.setObjectName("CaseRowCheck")
         self._check.setFixedSize(22, 22)
         self._check.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 마우스 이벤트가 row(부모)로 전달되도록 transparent — 체크 자체를 클릭해도 row 토글
+        self._check.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._update_check_style()
         layout.addWidget(self._check, alignment=Qt.AlignmentFlag.AlignVCenter)
 
@@ -870,25 +878,32 @@ class TestCaseRow(QFrame):
             f"font-size: 16px;"
             f"font-weight: 700;"
         )
+        # 마우스 이벤트 row로 통과 — 아이콘 클릭해도 row 토글
+        self._icon_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(self._icon_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # 제목 + 설명
         text_col = QWidget(self)
+        text_col.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_layout = QVBoxLayout(text_col)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
         self._title_label = QLabel(title, text_col)
         self._title_label.setObjectName("CaseRowTitle")
+        self._title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_layout.addWidget(self._title_label)
         self._desc_label = QLabel(description, text_col)
         self._desc_label.setObjectName("CaseRowDesc")
         self._desc_label.setWordWrap(True)
+        self._desc_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_layout.addWidget(self._desc_label)
         layout.addWidget(text_col, stretch=1)
 
         # ETA pill
         self._eta_pill = QLabel(eta_text, self)
         self._eta_pill.setObjectName("CaseRowEtaPill")
+        # 마우스 이벤트 row로 통과 — ETA pill 클릭해도 row 토글
+        self._eta_pill.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(self._eta_pill, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # ★ 즐겨찾기
@@ -914,6 +929,12 @@ class TestCaseRow(QFrame):
 
     def is_recommended(self) -> bool:
         return self._recommended
+
+    def icon_mode(self) -> str:
+        return self._icon_mode
+
+    def scenario_id(self) -> str:
+        return self._scenario_id
 
     def set_selected(self, selected: bool) -> None:
         self._selected = bool(selected)
@@ -964,6 +985,12 @@ class TestCaseRow(QFrame):
 
     def mousePressEvent(self, event) -> None:  # noqa: D401
         if event.button() == Qt.MouseButton.LeftButton:
+            # 별(★) 영역 클릭은 favorite 토글만 — row selection 변화 없음
+            star_rect = self._star.geometry() if hasattr(self, "_star") else None
+            if star_rect and star_rect.contains(event.position().toPoint()):
+                # _star.mousePressEvent가 이미 처리 (favorite 토글). row.toggle은 skip.
+                super().mousePressEvent(event)
+                return
             self.set_selected(not self._selected)
             self.toggled.emit(self._case_id, self._selected)
         super().mousePressEvent(event)
@@ -2734,6 +2761,8 @@ class MainWindow(QMainWindow):
         self._benchmark_catalog: list[dict[str, Any]] = []
         self._selected_benchmark_site_key: str = ""
         self._selected_benchmark_url: str = ""
+        # 선택된 시나리오 ID 리스트 (None = 전체 실행) — controller가 BenchmarkWorker 생성 시 읽음
+        self._pending_scenario_ids: list[str] | None = None
         self._site_cards: list[SiteCard] = []
         self._selected_site_url: str = ""
         # Favicon 비동기 fetch용 네트워크 매니저 (전체 카드 공유)
@@ -3149,8 +3178,13 @@ class MainWindow(QMainWindow):
         controls_row.addWidget(self._site_search_input, stretch=1)
 
         self._site_category = QComboBox(page)
-        self._site_category.addItems(["전체", "기본", "커스텀"])
+        # 현재는 모두 기본 사이트 → "전체"/"기본"만 의미가 있음. 커스텀 모드는 향후 확장 시.
+        self._site_category.addItems(["전체", "기본"])
         self._site_category.setMinimumWidth(120)
+        # 카테고리 변경 시 현재 검색어로 재필터 (변경의 시각적 피드백)
+        self._site_category.currentTextChanged.connect(
+            lambda _t: self._filter_site_grid(self._site_search_input.text() if hasattr(self, "_site_search_input") else "")
+        )
         controls_row.addWidget(self._site_category)
 
         add_url_btn = QPushButton("+ 직접 URL 입력하기", page)
@@ -3307,7 +3341,12 @@ class MainWindow(QMainWindow):
         if not url:
             return
         self._selected_site_url = url
+        # 등록된 사이트면 site_key 매칭, 아니면 빈 문자열 (커스텀 URL)
+        self._selected_benchmark_site_key = self._resolve_site_key_for_url(url)
+        self._selected_benchmark_url = url
         self.urlSubmitted.emit(url)
+        # 케이스 목록 갱신 (site_key 매칭 안 되면 DEFAULT로 폴백)
+        self.refresh_test_cases_for_site()
         # 곧바로 다음 단계로
         self.show_setup_stage_with_browser()
 
@@ -3323,6 +3362,8 @@ class MainWindow(QMainWindow):
         for card in self._site_cards:
             card.set_selected(card._url == url)  # noqa: SLF001
         self.urlSubmitted.emit(url)
+        # 선택된 사이트의 실제 벤치마크 시나리오로 케이스 목록 갱신
+        self.refresh_test_cases_for_site()
         self.show_test_case_stage()
 
     def _resolve_site_key_for_url(self, url: str) -> str:
@@ -3458,6 +3499,10 @@ class MainWindow(QMainWindow):
         self._case_category = QComboBox(page)
         self._case_category.addItems(["전체 카테고리", "기본", "검색", "AI"])
         self._case_category.setMinimumWidth(140)
+        # 카테고리 변경 시 케이스 행 재필터링 (search query는 그대로 유지)
+        self._case_category.currentTextChanged.connect(
+            lambda _text: self._filter_case_rows(self._case_search_input.text() if hasattr(self, "_case_search_input") else "")
+        )
         controls_row.addWidget(self._case_category)
 
         layout.addLayout(controls_row)
@@ -3529,6 +3574,7 @@ class MainWindow(QMainWindow):
                 icon_mode=str(case.get("icon_mode", "benchmark")),
                 recommended=bool(case.get("recommended", False)),
                 favorite=False,
+                scenario_id=str(case.get("scenario_id", "")),
                 parent=self._case_rows_container,
             )
             # 메타데이터 보관
@@ -3539,6 +3585,133 @@ class MainWindow(QMainWindow):
 
         self._apply_case_tab_filter()
         self._update_case_selection_summary()
+
+    def _load_scenarios_for_site_key(self, site_key: str) -> list[Mapping[str, Any]]:
+        """주어진 site_key의 suite JSON에서 시나리오 리스트를 로드.
+
+        Returns: scenarios list (각 항목 dict) — 빈 리스트면 suite 없거나 로드 실패.
+        """
+        if not site_key:
+            return []
+        # _benchmark_catalog에서 suite_path 찾음
+        suite_path_rel = ""
+        for item in self._benchmark_catalog or []:
+            if str(item.get("key") or "").strip() == site_key:
+                suite_path_rel = str(item.get("suite_path") or "").strip()
+                break
+        if not suite_path_rel:
+            return []
+        try:
+            from pathlib import Path
+            import json as _json
+            workspace_root = Path(__file__).resolve().parents[3]  # gaia/src/gui → repo root
+            suite_path = workspace_root / suite_path_rel
+            if not suite_path.exists():
+                return []
+            data = _json.loads(suite_path.read_text(encoding="utf-8"))
+            scenarios = data.get("scenarios") or []
+            if not isinstance(scenarios, list):
+                return []
+            return [s for s in scenarios if isinstance(s, dict) and s.get("id")]
+        except Exception:
+            return []
+
+    def _build_dynamic_test_cases(self, site_key: str) -> list[dict[str, Any]]:
+        """사이트별 동적 테스트 케이스 목록 생성.
+
+        Returns:
+            전체 시나리오 실행 카드 1개 + 각 시나리오별 카드 N개 + 부가 모드들 (빠른 목표, AI, 기획서)
+        """
+        cases: list[dict[str, Any]] = []
+        scenarios = self._load_scenarios_for_site_key(site_key)
+
+        if scenarios:
+            # 1. "전체 시나리오 실행" — 카탈로그에 등록된 모든 시나리오
+            total_min = 0
+            total_max = 0
+            for s in scenarios:
+                budget = int(s.get("time_budget_sec", 0)) or 60
+                total_min += max(1, budget // 90)  # rough lower bound (분)
+                total_max += max(2, budget // 60)
+            cases.append({
+                "id": "benchmark_all",
+                "mode": "benchmark",
+                "icon_mode": "benchmark_all",
+                "title": f"전체 시나리오 실행 ({len(scenarios)}개)",
+                "desc": "이 사이트에 등록된 모든 시나리오를 순서대로 실행합니다.",
+                "eta": f"예상 소요 {total_min}~{total_max}분",
+                "recommended": True,
+                "scenario_id": "",  # 빈 문자열 → 전체 실행
+            })
+
+            # 2. 각 시나리오별 카드 (1:1)
+            for s in scenarios:
+                budget = int(s.get("time_budget_sec", 0)) or 60
+                eta_min = max(1, budget // 90)
+                eta_max = max(2, budget // 60)
+                desc = str(s.get("goal", "") or "").strip()
+                # 너무 길면 단축
+                if len(desc) > 110:
+                    desc = desc[:107] + "…"
+                cases.append({
+                    "id": str(s.get("id", "")),
+                    "mode": "benchmark",
+                    "icon_mode": "benchmark",
+                    "title": str(s.get("name", s.get("id", "시나리오"))),
+                    "desc": desc or "이 시나리오만 단독 실행합니다.",
+                    "eta": f"예상 소요 {eta_min}~{eta_max}분",
+                    "recommended": False,
+                    "scenario_id": str(s.get("id", "")),
+                })
+
+        # 3. 부가 모드들 (사이트 무관) — 빠른 목표, AI 자율 탐색, 기획서
+        cases.extend([
+            {
+                "id": "quick_goal",
+                "mode": "quick",
+                "icon_mode": "quick",
+                "title": "빠른 목표 직접 입력",
+                "desc": "AI가 직접 목표를 이해하고 수행합니다 (단일 실행).",
+                "eta": "예상 소요 1~3분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+            {
+                "id": "ai_explore",
+                "mode": "ai",
+                "icon_mode": "ai",
+                "title": "AI 자율 탐색",
+                "desc": "AI가 사이트를 자유 탐색하며 이상 여부를 보고합니다.",
+                "eta": "예상 소요 5~10분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+            {
+                "id": "from_spec",
+                "mode": "bundle",
+                "icon_mode": "spec",
+                "title": "기획서 업로드해서 자동 생성",
+                "desc": "PDF/DOCX 기획서를 업로드하면 시나리오 자동 생성.",
+                "eta": "예상 소요 2~5분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+        ])
+        return cases
+
+    def refresh_test_cases_for_site(self) -> None:
+        """현재 선택된 site_key에 맞춰 테스트 케이스 행을 새로 채움.
+
+        사이트 카드 클릭 → Step 2 진입 직전에 호출. site_key가 없으면 DEFAULT_TEST_CASES 사용.
+        """
+        site_key = (self._selected_benchmark_site_key or "").strip()
+        if site_key:
+            cases = self._build_dynamic_test_cases(site_key)
+            if cases:
+                self._populate_test_case_rows(cases)
+                return
+        # 폴백 — 정적 default
+        self._populate_test_case_rows(DEFAULT_TEST_CASES)
 
     def _set_case_tab(self, key: str) -> None:
         self._current_case_tab = key
@@ -3564,8 +3737,12 @@ class MainWindow(QMainWindow):
 
     def _filter_case_rows(self, query: str) -> None:
         q = (query or "").strip().lower()
+        # 카테고리 필터 (Step 2 콤보) — "전체 카테고리"는 패스, 외에는 매칭
+        cat_sel = ""
+        if hasattr(self, "_case_category") and self._case_category is not None:
+            cat_sel = self._case_category.currentText().strip()
         for row in self._case_rows:
-            # 탭 필터 먼저 적용
+            # 1. 탭 필터 적용
             tab_ok = (
                 row.is_recommended() if self._current_case_tab == "recommended"
                 else row.is_favorite() if self._current_case_tab == "favorite"
@@ -3574,6 +3751,21 @@ class MainWindow(QMainWindow):
             if not tab_ok:
                 row.setVisible(False)
                 continue
+            # 2. 카테고리 필터 (icon_mode + title 기반)
+            if cat_sel and cat_sel != "전체 카테고리":
+                mode = row.icon_mode().lower()
+                title = row._title_label.text().lower()  # noqa: SLF001
+                cat_ok = False
+                if cat_sel == "기본":
+                    cat_ok = mode.startswith("benchmark") or mode == "quick"
+                elif cat_sel == "검색":
+                    cat_ok = "검색" in title or "search" in mode
+                elif cat_sel == "AI":
+                    cat_ok = mode == "ai" or "ai" in title
+                if not cat_ok:
+                    row.setVisible(False)
+                    continue
+            # 3. 검색 쿼리 필터
             if not q:
                 row.setVisible(True)
                 continue
@@ -3584,6 +3776,25 @@ class MainWindow(QMainWindow):
             row.setVisible(q in haystack)
 
     def _on_case_row_toggled(self, case_id: str, selected: bool) -> None:
+        """체크박스 토글 시 — 상호 배타 처리 + 요약 갱신.
+
+        "benchmark_all" (전체 시나리오) ↔ 개별 시나리오 (scenario_id 있는 카드) 상호 배타.
+        - 전체 시나리오 선택 → 개별 시나리오 모두 자동 해제
+        - 개별 시나리오 선택 → 전체 시나리오 자동 해제
+        """
+        if not selected:
+            self._update_case_selection_summary()
+            return
+        if case_id == "benchmark_all":
+            # 전체 시나리오를 선택했으면, 다른 개별 시나리오 카드는 모두 해제
+            for r in self._case_rows:
+                if r.case_id() != "benchmark_all" and r.scenario_id() and r.is_selected():
+                    r.set_selected(False)
+        elif case_id and any(r.case_id() == case_id and r.scenario_id() for r in self._case_rows):
+            # 개별 시나리오를 선택했으면, "전체 시나리오" 카드는 자동 해제
+            for r in self._case_rows:
+                if r.case_id() == "benchmark_all" and r.is_selected():
+                    r.set_selected(False)
         self._update_case_selection_summary()
 
     def _selected_case_rows(self) -> list[TestCaseRow]:
@@ -3620,9 +3831,14 @@ class MainWindow(QMainWindow):
     def _on_case_selection_complete(self) -> None:
         """\"선택 완료\" 클릭 — 모드/시그널 결정 후 Step 3로 자동 전환.
 
-        - benchmark 모드: benchmarkRunRequested 시그널로 라우팅 (controller가 set_busy(True) 호출 → Step 3).
-        - quick/ai/bundle 모드: set_selected_run_mode + startRequested (기존 흐름).
+        모드별 분기:
+        - benchmark: scenario_ids 저장 + benchmarkRunRequested emit
+        - ai: startRequested emit (즉시 시작, 추가 입력 불필요)
+        - quick: QInputDialog로 목표 입력받음 → set_feature_query → startRequested
+        - bundle: QFileDialog로 기획서 파일 선택받음 → planFileSelected → startRequested
         """
+        from PySide6.QtWidgets import QInputDialog, QFileDialog, QMessageBox
+
         rows = self._selected_case_rows()
         if not rows:
             return
@@ -3635,8 +3851,19 @@ class MainWindow(QMainWindow):
         self.set_selected_run_mode(mode)
 
         if mode == "benchmark":
+            # 시나리오 ID 수집 — "전체 시나리오"(scenario_id="")가 포함되면 None (필터 없이 전체 실행)
+            scenario_ids: list[str] = []
+            run_all = False
+            for r in rows:
+                sid = r.scenario_id()
+                if r.case_id() == "benchmark_all" or not sid:
+                    run_all = True
+                    break
+                scenario_ids.append(sid)
+            # controller가 BenchmarkWorker 생성 시 읽어갈 수 있도록 저장
+            self._pending_scenario_ids = None if run_all else (scenario_ids or None)
+
             # 벤치마킹 흐름: site_key + url로 controller에 요청.
-            # site_key가 없으면 (커스텀 URL) 안내 후 ai 모드로 fallback.
             site_key = self._selected_benchmark_site_key or ""
             url = self._selected_benchmark_url or self._selected_site_url or ""
             if site_key:
@@ -3647,10 +3874,48 @@ class MainWindow(QMainWindow):
             self.append_log(
                 "ℹ️ 등록된 벤치 시나리오가 없어 AI 자율 탐색으로 대체 실행합니다."
             )
+            self._pending_scenario_ids = None
             self.startRequested.emit()
             return
 
-        # 기타 모드 (quick/ai/bundle) → 기존 흐름
+        # 기본: scenario_ids 초기화
+        self._pending_scenario_ids = None
+
+        if mode == "quick":
+            # 빠른 목표 — 이미 set 된 feature_query 있으면 그대로 사용, 없으면 dialog로 입력받음
+            existing = self.get_feature_query().strip() if hasattr(self, "get_feature_query") else ""
+            if not existing:
+                goal, ok = QInputDialog.getText(
+                    self,
+                    "빠른 목표 입력",
+                    "AI에게 실행시킬 목표를 한 줄로 입력하세요:\n"
+                    "(예: 로그인 후 메인 페이지에서 검색창을 사용해 '아이폰'을 검색)",
+                )
+                if not ok:
+                    return  # 사용자 취소
+                goal = goal.strip()
+                if not goal:
+                    QMessageBox.information(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
+                    return
+                self.set_feature_query(goal)
+            self.startRequested.emit()
+            return
+
+        if mode == "bundle":
+            # 기획서 업로드 — QFileDialog로 파일 선택받음
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "기획서/번들 파일 선택",
+                "",
+                "Supported Files (*.pdf *.docx *.md *.txt *.json);;All Files (*)",
+            )
+            if not file_path:
+                return  # 사용자 취소
+            # planFileSelected 시그널로 controller에 전달 (controller가 분석 후 startRequested 시킴)
+            self.planFileSelected.emit(file_path)
+            return
+
+        # ai 모드 또는 fallback
         self.startRequested.emit()
 
     def show_test_case_stage(self) -> None:
@@ -4077,10 +4342,12 @@ class MainWindow(QMainWindow):
         sh_layout.addLayout(title_col, stretch=1)
 
         # 우: 일시정지 + 중지 (compact, fixed sizing)
+        # NOTE: 일시정지는 백엔드 미지원 → 사용자 혼란 방지하기 위해 hidden (legacy 호환 위해 객체 자체는 유지)
         self._pause_button = QPushButton("일시정지", status_card)
         self._pause_button.setObjectName("Step3PauseButton")
         self._pause_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pause_button.setEnabled(False)  # 백엔드 일시정지 미지원 — visual only
+        self._pause_button.setEnabled(False)
+        self._pause_button.setVisible(False)  # 백엔드 미구현이므로 화면에 노출하지 않음
         self._pause_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         sh_layout.addWidget(self._pause_button, alignment=Qt.AlignmentFlag.AlignVCenter)
         self._cancel_button = QPushButton("중지", status_card)
@@ -4279,12 +4546,14 @@ class MainWindow(QMainWindow):
         except Exception:
             self._terminal_autoscroll = None
 
-        # 로그 레벨 필터 콤보
+        # 로그 레벨 필터 콤보 — 선택 시 _log_output 재렌더링하여 해당 레벨만 표시
         try:
             self._terminal_level_combo = QComboBox(log_zone)
             self._terminal_level_combo.setObjectName("TerminalLogLevelCombo")
             self._terminal_level_combo.addItems(["로그 레벨", "ALL", "INFO", "WARN", "ERROR"])
             self._terminal_level_combo.setCurrentIndex(0)
+            # 콤보 변경 시 필터 재적용
+            self._terminal_level_combo.currentTextChanged.connect(self._apply_log_level_filter)
             lz_header.addWidget(self._terminal_level_combo)
         except Exception:
             self._terminal_level_combo = None
@@ -4742,9 +5011,72 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_metric_fail_value"):
             self._metric_fail_value.setText(str(fail_count))
 
+    def _detect_log_level(self, text: str) -> str:
+        """메시지 텍스트에서 ERROR/WARN/INFO 레벨 추정 — append_log + 필터 공용."""
+        lower = text.lower()
+        if "❌" in text or "fail" in lower or "error" in lower or "오류" in text or "실패" in text:
+            return "ERROR"
+        if "⚠️" in text or "warn" in lower or "blocked" in lower or "차단" in text:
+            return "WARN"
+        return "INFO"
+
+    def _format_log_line_html(self, message: str, ts: str | None = None) -> tuple[str, str]:
+        """레벨 컬러 적용된 HTML 한 줄 + 추정된 레벨 반환."""
+        import html as _html
+        from datetime import datetime as _dt
+        if ts is None:
+            ts = _dt.now().strftime("%H:%M:%S.%f")[:-3]
+        text = str(message or "")
+        level = self._detect_log_level(text)
+        if level == "ERROR":
+            level_color, msg_color = "#ef4444", "#fca5a5"
+        elif level == "WARN":
+            level_color, msg_color = "#f59e0b", "#fde68a"
+        elif "✅" in text or "success" in text.lower() or "pass" in text.lower() or "성공" in text or "달성" in text:
+            level_color, msg_color = "#10b981", "#86efac"
+        else:
+            level_color, msg_color = "#10b981", "#e2e8f0"
+        safe_text = _html.escape(text)
+        html_line = (
+            f'<span style="color:#94a3b8;">{ts}</span>  '
+            f'<span style="color:{level_color}; font-weight:700;">{level}</span>  '
+            f'<span style="color:{msg_color};">{safe_text}</span>'
+        )
+        return html_line, level
+
+    def _log_level_filter_passes(self, line_level: str) -> bool:
+        """현재 콤보 선택을 기준으로 해당 레벨을 표시할지 여부."""
+        combo = getattr(self, "_terminal_level_combo", None)
+        if combo is None:
+            return True
+        sel = combo.currentText().strip().upper()
+        if sel in ("", "로그 레벨", "ALL"):
+            return True
+        return sel == line_level.upper()
+
+    def _apply_log_level_filter(self, *_args) -> None:
+        """콤보 변경 시 호출 — _full_execution_logs 전체를 필터링하여 _log_output 재렌더링."""
+        log_output = getattr(self, "_log_output", None)
+        if log_output is None:
+            return
+        try:
+            log_output.clear()
+            for line in getattr(self, "_full_execution_logs", []):
+                html_line, level = self._format_log_line_html(str(line), ts="--:--:--.---")
+                if self._log_level_filter_passes(level):
+                    log_output.append(html_line)
+            # 필터 변경 후 맨 아래로 스크롤 (자동 스크롤 옵션 ON인 경우)
+            autoscroll = getattr(self, "_terminal_autoscroll", None)
+            if autoscroll is None or autoscroll.isChecked():
+                sb = log_output.verticalScrollBar()
+                if sb:
+                    sb.setValue(sb.maximum())
+        except Exception:
+            pass
+
     def append_log(self, message: str) -> None:
-        """로그 메시지를 터미널에 출력 + KPI 지표 파싱."""
-        # 항상 전체 로그를 저장
+        """로그 메시지를 터미널에 출력 + KPI 지표 파싱 + 레벨 필터 적용."""
+        # 항상 전체 로그를 저장 (필터 변경 시 재렌더링 위해)
         self._full_execution_logs.append(message)
         # KPI: 실행 로그 수 갱신
         if hasattr(self, "_metric_log_count") and self._metric_log_count is not None:
@@ -4758,44 +5090,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 터미널 스타일로 _log_output에 출력
+        # 터미널 스타일로 _log_output에 출력 (현재 레벨 필터에 부합하는 경우만)
         log_output = getattr(self, "_log_output", None)
         if log_output is None:
             return
         try:
-            from datetime import datetime
             from PySide6.QtCore import QCoreApplication
-            import html
-
-            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # 14:32:10.124
-            text = str(message or "")
-            # 레벨 추정
-            lower = text.lower()
-            if "❌" in text or "fail" in lower or "error" in lower or "오류" in text or "실패" in text:
-                level, level_color, msg_color = "ERROR", "#ef4444", "#fca5a5"
-            elif "⚠️" in text or "warn" in lower or "blocked" in lower or "차단" in text:
-                level, level_color, msg_color = "WARN", "#f59e0b", "#fde68a"
-            elif "✅" in text or "success" in lower or "pass" in lower or "성공" in text or "달성" in text:
-                level, level_color, msg_color = "INFO", "#10b981", "#86efac"
-            else:
-                level, level_color, msg_color = "INFO", "#10b981", "#e2e8f0"
-
-            ts_color = "#94a3b8"
-            safe_text = html.escape(text)
-            html_line = (
-                f'<span style="color:{ts_color};">{ts}</span>  '
-                f'<span style="color:{level_color}; font-weight:700;">{level}</span>  '
-                f'<span style="color:{msg_color};">{safe_text}</span>'
-            )
-            log_output.append(html_line)
-
-            # auto-scroll
-            autoscroll = getattr(self, "_terminal_autoscroll", None)
-            if autoscroll is None or autoscroll.isChecked():
-                sb = log_output.verticalScrollBar()
-                if sb:
-                    sb.setValue(sb.maximum())
-
+            html_line, level = self._format_log_line_html(message)
+            if self._log_level_filter_passes(level):
+                log_output.append(html_line)
+                # auto-scroll
+                autoscroll = getattr(self, "_terminal_autoscroll", None)
+                if autoscroll is None or autoscroll.isChecked():
+                    sb = log_output.verticalScrollBar()
+                    if sb:
+                        sb.setValue(sb.maximum())
             QCoreApplication.processEvents()
         except Exception:
             pass
@@ -4864,8 +5173,8 @@ class MainWindow(QMainWindow):
     def _apply_benchmark_metric_state(self) -> None:
         """_benchmark_metric_state를 Step 3 metric 위젯에 반영.
 
-        진행률(%)은 **성공률** 기준 — completed 중 passed의 비율.
-        하나라도 실패하면 100%에 도달할 수 없음 (사용자 직관 일치).
+        진행률(%)은 **완료율** 기준 — completed / total.
+        (성공/실패 여부와 무관하게 진행 정도를 표시. 성공률은 별도의 통과/실패 카드.)
         """
         state = getattr(self, "_benchmark_metric_state", None)
         if state is None:
@@ -4874,13 +5183,9 @@ class MainWindow(QMainWindow):
         completed = int(state.get("completed", 0))
         passed = int(state.get("pass", 0))
         failed = int(state.get("fail", 0))
-        # 성공률 — 완료된 시나리오 중 성공 비율
-        # (전체 시나리오 대비가 아니라 completed 대비로 계산 — 실시간 의미가 명확)
-        if completed > 0:
-            percent = passed / completed * 100.0
-        elif total > 0:
-            # 아직 완료된 게 없으면 0%로 시작
-            percent = 0.0
+        # 완료율 — 진행률은 완료된 시나리오의 비율 (성공/실패 무관)
+        if total > 0:
+            percent = min(100.0, completed / total * 100.0)
         else:
             percent = 0.0
         if hasattr(self, "_overall_progress_widget") and self._overall_progress_widget:
@@ -5263,7 +5568,7 @@ class MainWindow(QMainWindow):
         url = (
             getattr(self, "_result_grafana_url", "")
             or os.getenv("GAIA_GRAFANA_URL", "").strip()
-            or "http://localhost:3000"
+            or "http://15.164.24.65:3000"
         )
         try:
             from PySide6.QtGui import QDesktopServices
@@ -5349,7 +5654,7 @@ class MainWindow(QMainWindow):
                     self._result_action_reason.setVisible(False)
 
                 # Grafana URL 저장 + 버튼 활성화
-                grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://localhost:3000"
+                grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://15.164.24.65:3000"
                 self._result_grafana_url = grafana_base
                 self._result_grafana_button.setToolTip(f"외부 브라우저에서 {grafana_base} 열기")
 
@@ -5381,7 +5686,7 @@ class MainWindow(QMainWindow):
             rate_color = "#10b981"
 
             # Grafana 링크 — 항상 표시. env 변수가 없으면 기본 로컬 인스턴스(http://localhost:3000) 사용.
-            grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://localhost:3000"
+            grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://15.164.24.65:3000"
             grafana_link_html = (
                 f'<a href="{_html.escape(grafana_base)}" target="_blank" '
                 f'style="display:inline-flex; align-items:center; gap:10px; '
@@ -5698,27 +6003,61 @@ class MainWindow(QMainWindow):
     # 내부 헬퍼
     # ------------------------------------------------------------------
     def _show_detailed_logs(self) -> None:
-        """대화 상자로 상세 실행 로그를 표시합니다."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton
+        """로그 전체를 파일로 다운로드합니다 (버튼 라벨이 '전체 다운로드'이므로 실제 download 동작).
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("상세 실행 로그")
-        dialog.resize(800, 600)
+        QFileDialog로 저장 위치 선택 → .txt 파일로 저장.
+        로그가 비어있으면 안내 메시지만 표시.
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from datetime import datetime
 
-        layout = QVBoxLayout(dialog)
+        # 다운로드할 로그 수집 — _full_execution_logs 우선, 없으면 현재 _log_output 텍스트
+        logs: list[str] = []
+        if hasattr(self, "_full_execution_logs") and self._full_execution_logs:
+            logs = list(self._full_execution_logs)
+        elif hasattr(self, "_log_output") and self._log_output is not None:
+            current_text = self._log_output.toPlainText().strip()
+            if current_text:
+                logs = current_text.splitlines()
 
-        # 로그 텍스트 영역
-        log_view = QTextEdit(dialog)
-        log_view.setReadOnly(True)
-        log_view.setPlainText("\n".join(self._full_execution_logs))
-        layout.addWidget(log_view)
+        if not logs:
+            QMessageBox.information(
+                self,
+                "다운로드할 로그 없음",
+                "아직 실행된 로그가 없습니다. 테스트를 먼저 실행해 주세요.",
+            )
+            return
 
-        # 닫기 버튼
-        close_button = QPushButton("닫기", dialog)
-        close_button.clicked.connect(dialog.close)
-        layout.addWidget(close_button)
+        # 기본 파일명 — 타임스탬프 포함
+        default_name = f"gaia_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "로그 다운로드",
+            default_name,
+            "Text Files (*.txt);;Log Files (*.log);;All Files (*)",
+        )
+        if not file_path:
+            return  # 사용자가 취소
 
-        dialog.exec()
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("# GAIA Test Execution Logs\n")
+                f.write(f"# Exported: {datetime.now().isoformat()}\n")
+                f.write(f"# Total lines: {len(logs)}\n")
+                f.write("# " + "=" * 60 + "\n\n")
+                for line in logs:
+                    f.write(line.rstrip() + "\n")
+            QMessageBox.information(
+                self,
+                "다운로드 완료",
+                f"로그가 저장되었습니다:\n{file_path}\n\n총 {len(logs)}줄",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "다운로드 실패",
+                f"로그 저장 중 오류가 발생했습니다:\n{exc}",
+            )
 
     def _open_file_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(

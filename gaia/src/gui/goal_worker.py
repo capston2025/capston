@@ -414,6 +414,7 @@ class BenchmarkWorker(QObject):
         run_tag: str = "full_suite",
         timeout_cap: int = 600,
         push_metrics: bool = False,
+        scenario_ids: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._site_key = site_key
@@ -425,6 +426,8 @@ class BenchmarkWorker(QObject):
         self._run_tag = str(run_tag or "full_suite").strip() or "full_suite"
         self._timeout_cap = max(600, int(timeout_cap))
         self._push_metrics = bool(push_metrics)
+        # 선택된 시나리오 ID 리스트 — None이면 suite의 전체 시나리오 실행, list면 해당 ID만 필터
+        self._scenario_ids = list(scenario_ids) if scenario_ids else None
         self._cancel_requested = False
         self._process: subprocess.Popen[str] | None = None
 
@@ -444,6 +447,20 @@ class BenchmarkWorker(QObject):
                 if not isinstance(suite_payload, dict):
                     raise ValueError("benchmark suite must be a JSON object")
             overridden = override_suite_urls(suite_payload, self._target_url)
+
+            # scenario_ids 필터 — 선택된 ID만 포함 (None이면 전체 유지)
+            if self._scenario_ids:
+                wanted = set(self._scenario_ids)
+                all_scenarios = overridden.get("scenarios") or []
+                filtered = [s for s in all_scenarios if isinstance(s, dict) and str(s.get("id", "")) in wanted]
+                if not filtered:
+                    raise ValueError(
+                        f"선택한 scenario_id가 suite에 존재하지 않음: {sorted(wanted)} "
+                        f"(suite scenarios: {[s.get('id') for s in all_scenarios]})"
+                    )
+                overridden["scenarios"] = filtered
+                # run_tag에 시나리오 수 반영 (artifacts/tmp 파일명에 사용)
+                self._run_tag = f"selected_{len(filtered)}"
 
             tmp_root = self._workspace_root / "artifacts" / "tmp"
             tmp_root.mkdir(parents=True, exist_ok=True)
