@@ -1386,8 +1386,23 @@ class MainWindow(QMainWindow):
             }
 
             /* ===========================================================
-             * Step 2 — 테스트 케이스 row / 탭 / footer
+             * Step 2 — 테스트 케이스 row / 탭 / footer / 섹션 라벨
              * =========================================================== */
+            QLabel#CaseSectionLabel {
+                color: #191f28;
+                font-size: 14px;
+                font-weight: 800;
+                background: transparent;
+                padding: 8px 0px 4px 0px;
+                letter-spacing: -0.2px;
+            }
+            QLabel#CaseSectionSubLabel {
+                color: #8b95a1;
+                font-size: 12px;
+                background: transparent;
+                padding: 0px 0px 8px 0px;
+            }
+
             QFrame#TestCaseRow {
                 background: #ffffff;
                 border-radius: 12px;
@@ -3507,14 +3522,40 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(controls_row)
 
-        # Case rows 컨테이너
+        # ─── 섹션 1: 등록된 테스트 케이스 (벤치마크 시나리오) ─────────
+        section_main_label = QLabel("등록된 테스트 케이스", page)
+        section_main_label.setObjectName("CaseSectionLabel")
+        layout.addWidget(section_main_label)
+
         self._case_rows_container = QWidget(page)
         self._case_rows_layout = QVBoxLayout(self._case_rows_container)
         self._case_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._case_rows_layout.setSpacing(10)
         layout.addWidget(self._case_rows_container)
 
-        self._case_rows: list[TestCaseRow] = []
+        # ─── 섹션 2: AI 자율 실행 (사용자 입력 기반) ─────────────────
+        # 구분 spacing
+        layout.addSpacing(20)
+        section_freeform_label = QLabel("AI 자율 실행 (사용자 입력 기반)", page)
+        section_freeform_label.setObjectName("CaseSectionLabel")
+        layout.addWidget(section_freeform_label)
+        section_freeform_sub = QLabel(
+            "직접 목표를 입력하거나 기획서 파일을 업로드해 AI에게 단독 실행을 맡길 수 있어요.",
+            page,
+        )
+        section_freeform_sub.setObjectName("CaseSectionSubLabel")
+        section_freeform_sub.setWordWrap(True)
+        layout.addWidget(section_freeform_sub)
+
+        self._freeform_rows_container = QWidget(page)
+        self._freeform_rows_layout = QVBoxLayout(self._freeform_rows_container)
+        self._freeform_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._freeform_rows_layout.setSpacing(10)
+        layout.addWidget(self._freeform_rows_container)
+
+        # 두 섹션 모두 row 보관 — _selected_case_rows()는 둘 다 합쳐서 반환
+        self._case_rows: list[TestCaseRow] = []           # 섹션 1 (테스트 케이스)
+        self._freeform_rows: list[TestCaseRow] = []       # 섹션 2 (AI 자율)
         self._current_case_tab: str = "recommended"
         self._populate_test_case_rows(DEFAULT_TEST_CASES)
 
@@ -3557,15 +3598,31 @@ class MainWindow(QMainWindow):
         return container
 
     def _populate_test_case_rows(self, cases: Sequence[Mapping[str, Any]]) -> None:
-        """테스트 케이스 row를 새로 렌더링."""
-        while self._case_rows_layout.count():
-            item = self._case_rows_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        """테스트 케이스 row를 새로 렌더링.
+
+        섹션 분리:
+          - 섹션 1 (_case_rows_layout): mode in {benchmark, ai} → 등록된 테스트 케이스
+          - 섹션 2 (_freeform_rows_layout): mode in {quick, bundle} → AI 자율 실행
+        """
+        # 양쪽 컨테이너 초기화
+        for layout in (self._case_rows_layout, getattr(self, "_freeform_rows_layout", None)):
+            if layout is None:
+                continue
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
         self._case_rows = []
+        self._freeform_rows = []
 
         for case in cases:
+            mode = str(case.get("mode", "benchmark"))
+            # quick/bundle은 freeform 섹션, 나머지는 메인 섹션
+            is_freeform = mode in ("quick", "bundle")
+            target_parent = self._freeform_rows_container if is_freeform else self._case_rows_container
+            target_layout = self._freeform_rows_layout if is_freeform else self._case_rows_layout
+
             row = TestCaseRow(
                 case_id=str(case.get("id", "")),
                 title=str(case.get("title", "")),
@@ -3575,13 +3632,15 @@ class MainWindow(QMainWindow):
                 recommended=bool(case.get("recommended", False)),
                 favorite=False,
                 scenario_id=str(case.get("scenario_id", "")),
-                parent=self._case_rows_container,
+                parent=target_parent,
             )
-            # 메타데이터 보관
-            row.setProperty("mode", str(case.get("mode", "benchmark")))
+            row.setProperty("mode", mode)
             row.toggled.connect(self._on_case_row_toggled)
-            self._case_rows.append(row)
-            self._case_rows_layout.addWidget(row)
+            if is_freeform:
+                self._freeform_rows.append(row)
+            else:
+                self._case_rows.append(row)
+            target_layout.addWidget(row)
 
         self._apply_case_tab_filter()
         self._update_case_selection_summary()
@@ -3727,6 +3786,7 @@ class MainWindow(QMainWindow):
         self._filter_case_rows(self._case_search_input.text() if hasattr(self, "_case_search_input") else "")
 
     def _apply_case_tab_filter(self) -> None:
+        # 섹션 1 (테스트 케이스) — 탭 필터 적용
         for row in self._case_rows:
             if self._current_case_tab == "recommended":
                 row.setVisible(row.is_recommended())
@@ -3734,6 +3794,9 @@ class MainWindow(QMainWindow):
                 row.setVisible(row.is_favorite())
             else:
                 row.setVisible(True)
+        # 섹션 2 (AI 자율 실행) — 탭/카테고리/검색 무관하게 항상 표시
+        for row in getattr(self, "_freeform_rows", []):
+            row.setVisible(True)
 
     def _filter_case_rows(self, query: str) -> None:
         q = (query or "").strip().lower()
@@ -3741,8 +3804,8 @@ class MainWindow(QMainWindow):
         cat_sel = ""
         if hasattr(self, "_case_category") and self._case_category is not None:
             cat_sel = self._case_category.currentText().strip()
+        # 섹션 1 — 탭 + 카테고리 + 검색 필터 적용
         for row in self._case_rows:
-            # 1. 탭 필터 적용
             tab_ok = (
                 row.is_recommended() if self._current_case_tab == "recommended"
                 else row.is_favorite() if self._current_case_tab == "favorite"
@@ -3751,7 +3814,6 @@ class MainWindow(QMainWindow):
             if not tab_ok:
                 row.setVisible(False)
                 continue
-            # 2. 카테고리 필터 (icon_mode + title 기반)
             if cat_sel and cat_sel != "전체 카테고리":
                 mode = row.icon_mode().lower()
                 title = row._title_label.text().lower()  # noqa: SLF001
@@ -3765,7 +3827,6 @@ class MainWindow(QMainWindow):
                 if not cat_ok:
                     row.setVisible(False)
                     continue
-            # 3. 검색 쿼리 필터
             if not q:
                 row.setVisible(True)
                 continue
@@ -3774,31 +3835,56 @@ class MainWindow(QMainWindow):
                 row._desc_label.text().lower(),   # noqa: SLF001
             ])
             row.setVisible(q in haystack)
+        # 섹션 2 (AI 자율 실행) — 항상 표시 (탭/카테고리/검색 무관)
+        for row in getattr(self, "_freeform_rows", []):
+            row.setVisible(True)
 
     def _on_case_row_toggled(self, case_id: str, selected: bool) -> None:
         """체크박스 토글 시 — 상호 배타 처리 + 요약 갱신.
 
-        "benchmark_all" (전체 시나리오) ↔ 개별 시나리오 (scenario_id 있는 카드) 상호 배타.
-        - 전체 시나리오 선택 → 개별 시나리오 모두 자동 해제
-        - 개별 시나리오 선택 → 전체 시나리오 자동 해제
+        상호 배타 규칙:
+        - "benchmark_all"(전체 시나리오) 선택 → 개별 시나리오 모두 해제
+        - 개별 시나리오 선택 → "benchmark_all" 자동 해제
+        - 섹션 2(AI 자율 실행: quick/bundle)는 단일 선택 — 하나 선택 시 다른 모두 해제
+        - 섹션 2 카드 선택 시 → 섹션 1(테스트 케이스) 모두 자동 해제 (모드 충돌 방지)
+        - 섹션 1 카드 선택 시 → 섹션 2 모두 자동 해제
         """
         if not selected:
             self._update_case_selection_summary()
             return
-        if case_id == "benchmark_all":
-            # 전체 시나리오를 선택했으면, 다른 개별 시나리오 카드는 모두 해제
-            for r in self._case_rows:
-                if r.case_id() != "benchmark_all" and r.scenario_id() and r.is_selected():
+
+        all_freeform = list(getattr(self, "_freeform_rows", []))
+        clicked_in_freeform = any(r.case_id() == case_id for r in all_freeform)
+
+        if clicked_in_freeform:
+            # 섹션 2 단일 선택 — 같은 섹션 내 다른 모두 해제 + 섹션 1 전체 해제
+            for r in all_freeform:
+                if r.case_id() != case_id and r.is_selected():
                     r.set_selected(False)
-        elif case_id and any(r.case_id() == case_id and r.scenario_id() for r in self._case_rows):
-            # 개별 시나리오를 선택했으면, "전체 시나리오" 카드는 자동 해제
             for r in self._case_rows:
-                if r.case_id() == "benchmark_all" and r.is_selected():
+                if r.is_selected():
                     r.set_selected(False)
+        else:
+            # 섹션 1 (테스트 케이스) 선택 — 섹션 2 모두 해제 (모드 충돌 방지)
+            for r in all_freeform:
+                if r.is_selected():
+                    r.set_selected(False)
+            # 섹션 1 내부 상호 배타 — 전체 시나리오 ↔ 개별 시나리오
+            if case_id == "benchmark_all":
+                for r in self._case_rows:
+                    if r.case_id() != "benchmark_all" and r.scenario_id() and r.is_selected():
+                        r.set_selected(False)
+            elif case_id and any(r.case_id() == case_id and r.scenario_id() for r in self._case_rows):
+                for r in self._case_rows:
+                    if r.case_id() == "benchmark_all" and r.is_selected():
+                        r.set_selected(False)
         self._update_case_selection_summary()
 
     def _selected_case_rows(self) -> list[TestCaseRow]:
-        return [r for r in self._case_rows if r.is_selected()]
+        # 두 섹션 모두 합쳐서 반환
+        return [r for r in self._case_rows if r.is_selected()] + [
+            r for r in getattr(self, "_freeform_rows", []) if r.is_selected()
+        ]
 
     def _update_case_selection_summary(self) -> None:
         rows = self._selected_case_rows()
@@ -3902,17 +3988,34 @@ class MainWindow(QMainWindow):
             return
 
         if mode == "bundle":
-            # 기획서 업로드 — QFileDialog로 파일 선택받음
+            # 기획서/번들 업로드 — QFileDialog로 파일 선택받음
+            # JSON 번들/플랜은 즉시 로드+실행 가능, PDF/DOCX는 controller의 비동기 분석 후
+            # 자동 실행이 안 되므로 별도 안내. 우선 JSON 우선 노출.
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
-                "기획서/번들 파일 선택",
+                "기획서/번들 파일 선택 (JSON 번들 권장 — PDF는 분석 시간 필요)",
                 "",
-                "Supported Files (*.pdf *.docx *.md *.txt *.json);;All Files (*)",
+                "JSON 번들 (*.json);;PDF 기획서 (*.pdf);;Word 문서 (*.docx);;텍스트 (*.md *.txt);;All Files (*)",
             )
             if not file_path:
                 return  # 사용자 취소
-            # planFileSelected 시그널로 controller에 전달 (controller가 분석 후 startRequested 시킴)
-            self.planFileSelected.emit(file_path)
+
+            from pathlib import Path as _Path
+            suffix = _Path(file_path).suffix.lower()
+            if suffix == ".json":
+                # JSON 번들/플랜 → sync 로드 + 즉시 실행
+                self.planFileSelected.emit(file_path)
+                self.startRequested.emit()
+            elif suffix in (".pdf", ".docx", ".md", ".txt"):
+                # PDF/DOCX 등 — controller가 비동기 분석 → 분석 완료 후 사용자가 다시 실행
+                self.append_log(
+                    f"📄 기획서 분석 시작: {_Path(file_path).name} — 분석 완료 후 자동 실행됩니다."
+                )
+                self._pending_auto_start_after_analysis = True
+                self.fileDropped.emit(file_path)
+            else:
+                QMessageBox.warning(self, "지원하지 않는 형식",
+                                    "JSON 번들, PDF, DOCX, MD, TXT 파일만 지원합니다.")
             return
 
         # ai 모드 또는 fallback

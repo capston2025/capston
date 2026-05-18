@@ -663,6 +663,20 @@ class AppController(QObject):
         self._analysis_thread = None
         self._analysis_worker = None
 
+        # Step 2의 "기획서 업로드" 카드에서 PDF/DOCX를 선택해 분석한 경우 →
+        # 분석 완료 직후 자동으로 실행 시작 (사용자가 다시 버튼 누를 필요 없음)
+        if getattr(self._window, "_pending_auto_start_after_analysis", False):
+            try:
+                self._window._pending_auto_start_after_analysis = False
+                if self._analysis_goals:
+                    self._window.set_selected_run_mode("bundle")
+                    self._window.append_log("🚀 분석 완료 — 자동으로 실행을 시작합니다.")
+                    self._on_start_requested()
+                else:
+                    self._window.append_log("⚠️ 분석 결과에 실행 가능한 목표가 없어 자동 실행을 건너뜁니다.")
+            except Exception as exc:
+                self._window.append_log(f"⚠️ 자동 실행 중 오류: {exc}")
+
     def _summarize_scenarios(self, scenarios: Sequence[TestScenario]) -> dict[str, int]:
         summary = {"total": 0, "must": 0, "should": 0, "may": 0}
         for scenario in scenarios:
