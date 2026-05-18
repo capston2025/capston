@@ -1,0 +1,35 @@
+{
+  "suite_id": "namu_wiki_public_v1",
+  "site": {
+    "name": "나무위키",
+    "base_url": "https://namu.wiki/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "NAMU_001_REALTIME_TOP5_ARTICLE_STRUCTURE",
+      "name": "실시간 검색어 5위 문서 구조 확인",
+      "url": "https://namu.wiki/",
+      "goal": "나무위키 홈에서 실시간 검색어 목록의 5위 문서를 클릭한 뒤, 열린 문서 화면에서 분류와 목차가 잘 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "실시간 검색어",
+        "5위",
+        "분류",
+        "목차"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

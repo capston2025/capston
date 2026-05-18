@@ -1,0 +1,24 @@
+{
+  "suite_id": "chat_gpt_public_v1",
+  "site": {
+    "name": "Chat gpt",
+    "base_url": "https://chatgpt.com/",
+    "mode": "public_browse"
+  },
+  "grader_configs": {},
+  "scenarios": [
+    {
+      "id": "CHATGPT_001_GAIA_VS_HUMAN_V1",
+      "name": "Gaia_VS_Human_V1",
+      "url": "https://chatgpt.com/",
+      "goal": "새 채팅 생성 후 “자동화 QA의 이점 한가지만 알려줘”라고 입력했을 때 답변 영역이 정상 렌더링되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    }
+  ]
+}

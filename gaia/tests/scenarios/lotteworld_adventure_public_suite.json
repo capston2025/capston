@@ -1,0 +1,37 @@
+{
+  "suite_id": "lotteworld_adventure_public_v1",
+  "site": {
+    "name": "롯데월드 어드벤처",
+    "base_url": "https://adventure.lotteworld.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "LOTTEWORLD_001_MAGICPASS_ATTRACTION_LIST",
+      "name": "매직패스 권종별 탑승 가능 어트랙션 확인",
+      "url": "https://adventure.lotteworld.com/",
+      "goal": "홈에서 요금/혜택 부분을 클릭한 후 티켓요금을 클릭한다. 이후 매직패스를 클릭해서 어트랙션 보러가기를 눌렀을 때 권종별 탑승 가능 어트랙션이 나오는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "요금/혜택",
+        "티켓요금",
+        "매직패스",
+        "어트랙션 보러가기",
+        "권종별",
+        "탑승 가능 어트랙션"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}
