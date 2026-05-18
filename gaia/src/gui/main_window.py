@@ -845,6 +845,8 @@ class TestCaseRow(QFrame):
         self._selected = False
         self._favorite = bool(favorite)
         self._recommended = bool(recommended)
+        # 카테고리 필터 (Step 2 콤보)에서 사용할 icon_mode 저장
+        self._icon_mode = str(icon_mode or "benchmark")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -914,6 +916,9 @@ class TestCaseRow(QFrame):
 
     def is_recommended(self) -> bool:
         return self._recommended
+
+    def icon_mode(self) -> str:
+        return self._icon_mode
 
     def set_selected(self, selected: bool) -> None:
         self._selected = bool(selected)
@@ -3149,8 +3154,13 @@ class MainWindow(QMainWindow):
         controls_row.addWidget(self._site_search_input, stretch=1)
 
         self._site_category = QComboBox(page)
-        self._site_category.addItems(["전체", "기본", "커스텀"])
+        # 현재는 모두 기본 사이트 → "전체"/"기본"만 의미가 있음. 커스텀 모드는 향후 확장 시.
+        self._site_category.addItems(["전체", "기본"])
         self._site_category.setMinimumWidth(120)
+        # 카테고리 변경 시 현재 검색어로 재필터 (변경의 시각적 피드백)
+        self._site_category.currentTextChanged.connect(
+            lambda _t: self._filter_site_grid(self._site_search_input.text() if hasattr(self, "_site_search_input") else "")
+        )
         controls_row.addWidget(self._site_category)
 
         add_url_btn = QPushButton("+ 직접 URL 입력하기", page)
@@ -3458,6 +3468,10 @@ class MainWindow(QMainWindow):
         self._case_category = QComboBox(page)
         self._case_category.addItems(["전체 카테고리", "기본", "검색", "AI"])
         self._case_category.setMinimumWidth(140)
+        # 카테고리 변경 시 케이스 행 재필터링 (search query는 그대로 유지)
+        self._case_category.currentTextChanged.connect(
+            lambda _text: self._filter_case_rows(self._case_search_input.text() if hasattr(self, "_case_search_input") else "")
+        )
         controls_row.addWidget(self._case_category)
 
         layout.addLayout(controls_row)
@@ -3564,8 +3578,12 @@ class MainWindow(QMainWindow):
 
     def _filter_case_rows(self, query: str) -> None:
         q = (query or "").strip().lower()
+        # 카테고리 필터 (Step 2 콤보) — "전체 카테고리"는 패스, 외에는 매칭
+        cat_sel = ""
+        if hasattr(self, "_case_category") and self._case_category is not None:
+            cat_sel = self._case_category.currentText().strip()
         for row in self._case_rows:
-            # 탭 필터 먼저 적용
+            # 1. 탭 필터 적용
             tab_ok = (
                 row.is_recommended() if self._current_case_tab == "recommended"
                 else row.is_favorite() if self._current_case_tab == "favorite"
@@ -3574,6 +3592,21 @@ class MainWindow(QMainWindow):
             if not tab_ok:
                 row.setVisible(False)
                 continue
+            # 2. 카테고리 필터 (icon_mode + title 기반)
+            if cat_sel and cat_sel != "전체 카테고리":
+                mode = row.icon_mode().lower()
+                title = row._title_label.text().lower()  # noqa: SLF001
+                cat_ok = False
+                if cat_sel == "기본":
+                    cat_ok = mode.startswith("benchmark") or mode == "quick"
+                elif cat_sel == "검색":
+                    cat_ok = "검색" in title or "search" in mode
+                elif cat_sel == "AI":
+                    cat_ok = mode == "ai" or "ai" in title
+                if not cat_ok:
+                    row.setVisible(False)
+                    continue
+            # 3. 검색 쿼리 필터
             if not q:
                 row.setVisible(True)
                 continue
@@ -4077,10 +4110,12 @@ class MainWindow(QMainWindow):
         sh_layout.addLayout(title_col, stretch=1)
 
         # 우: 일시정지 + 중지 (compact, fixed sizing)
+        # NOTE: 일시정지는 백엔드 미지원 → 사용자 혼란 방지하기 위해 hidden (legacy 호환 위해 객체 자체는 유지)
         self._pause_button = QPushButton("일시정지", status_card)
         self._pause_button.setObjectName("Step3PauseButton")
         self._pause_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pause_button.setEnabled(False)  # 백엔드 일시정지 미지원 — visual only
+        self._pause_button.setEnabled(False)
+        self._pause_button.setVisible(False)  # 백엔드 미구현이므로 화면에 노출하지 않음
         self._pause_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         sh_layout.addWidget(self._pause_button, alignment=Qt.AlignmentFlag.AlignVCenter)
         self._cancel_button = QPushButton("중지", status_card)
@@ -4279,12 +4314,14 @@ class MainWindow(QMainWindow):
         except Exception:
             self._terminal_autoscroll = None
 
-        # 로그 레벨 필터 콤보
+        # 로그 레벨 필터 콤보 — 선택 시 _log_output 재렌더링하여 해당 레벨만 표시
         try:
             self._terminal_level_combo = QComboBox(log_zone)
             self._terminal_level_combo.setObjectName("TerminalLogLevelCombo")
             self._terminal_level_combo.addItems(["로그 레벨", "ALL", "INFO", "WARN", "ERROR"])
             self._terminal_level_combo.setCurrentIndex(0)
+            # 콤보 변경 시 필터 재적용
+            self._terminal_level_combo.currentTextChanged.connect(self._apply_log_level_filter)
             lz_header.addWidget(self._terminal_level_combo)
         except Exception:
             self._terminal_level_combo = None
@@ -4742,9 +4779,72 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_metric_fail_value"):
             self._metric_fail_value.setText(str(fail_count))
 
+    def _detect_log_level(self, text: str) -> str:
+        """메시지 텍스트에서 ERROR/WARN/INFO 레벨 추정 — append_log + 필터 공용."""
+        lower = text.lower()
+        if "❌" in text or "fail" in lower or "error" in lower or "오류" in text or "실패" in text:
+            return "ERROR"
+        if "⚠️" in text or "warn" in lower or "blocked" in lower or "차단" in text:
+            return "WARN"
+        return "INFO"
+
+    def _format_log_line_html(self, message: str, ts: str | None = None) -> tuple[str, str]:
+        """레벨 컬러 적용된 HTML 한 줄 + 추정된 레벨 반환."""
+        import html as _html
+        from datetime import datetime as _dt
+        if ts is None:
+            ts = _dt.now().strftime("%H:%M:%S.%f")[:-3]
+        text = str(message or "")
+        level = self._detect_log_level(text)
+        if level == "ERROR":
+            level_color, msg_color = "#ef4444", "#fca5a5"
+        elif level == "WARN":
+            level_color, msg_color = "#f59e0b", "#fde68a"
+        elif "✅" in text or "success" in text.lower() or "pass" in text.lower() or "성공" in text or "달성" in text:
+            level_color, msg_color = "#10b981", "#86efac"
+        else:
+            level_color, msg_color = "#10b981", "#e2e8f0"
+        safe_text = _html.escape(text)
+        html_line = (
+            f'<span style="color:#94a3b8;">{ts}</span>  '
+            f'<span style="color:{level_color}; font-weight:700;">{level}</span>  '
+            f'<span style="color:{msg_color};">{safe_text}</span>'
+        )
+        return html_line, level
+
+    def _log_level_filter_passes(self, line_level: str) -> bool:
+        """현재 콤보 선택을 기준으로 해당 레벨을 표시할지 여부."""
+        combo = getattr(self, "_terminal_level_combo", None)
+        if combo is None:
+            return True
+        sel = combo.currentText().strip().upper()
+        if sel in ("", "로그 레벨", "ALL"):
+            return True
+        return sel == line_level.upper()
+
+    def _apply_log_level_filter(self, *_args) -> None:
+        """콤보 변경 시 호출 — _full_execution_logs 전체를 필터링하여 _log_output 재렌더링."""
+        log_output = getattr(self, "_log_output", None)
+        if log_output is None:
+            return
+        try:
+            log_output.clear()
+            for line in getattr(self, "_full_execution_logs", []):
+                html_line, level = self._format_log_line_html(str(line), ts="--:--:--.---")
+                if self._log_level_filter_passes(level):
+                    log_output.append(html_line)
+            # 필터 변경 후 맨 아래로 스크롤 (자동 스크롤 옵션 ON인 경우)
+            autoscroll = getattr(self, "_terminal_autoscroll", None)
+            if autoscroll is None or autoscroll.isChecked():
+                sb = log_output.verticalScrollBar()
+                if sb:
+                    sb.setValue(sb.maximum())
+        except Exception:
+            pass
+
     def append_log(self, message: str) -> None:
-        """로그 메시지를 터미널에 출력 + KPI 지표 파싱."""
-        # 항상 전체 로그를 저장
+        """로그 메시지를 터미널에 출력 + KPI 지표 파싱 + 레벨 필터 적용."""
+        # 항상 전체 로그를 저장 (필터 변경 시 재렌더링 위해)
         self._full_execution_logs.append(message)
         # KPI: 실행 로그 수 갱신
         if hasattr(self, "_metric_log_count") and self._metric_log_count is not None:
@@ -4758,44 +4858,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # 터미널 스타일로 _log_output에 출력
+        # 터미널 스타일로 _log_output에 출력 (현재 레벨 필터에 부합하는 경우만)
         log_output = getattr(self, "_log_output", None)
         if log_output is None:
             return
         try:
-            from datetime import datetime
             from PySide6.QtCore import QCoreApplication
-            import html
-
-            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]  # 14:32:10.124
-            text = str(message or "")
-            # 레벨 추정
-            lower = text.lower()
-            if "❌" in text or "fail" in lower or "error" in lower or "오류" in text or "실패" in text:
-                level, level_color, msg_color = "ERROR", "#ef4444", "#fca5a5"
-            elif "⚠️" in text or "warn" in lower or "blocked" in lower or "차단" in text:
-                level, level_color, msg_color = "WARN", "#f59e0b", "#fde68a"
-            elif "✅" in text or "success" in lower or "pass" in lower or "성공" in text or "달성" in text:
-                level, level_color, msg_color = "INFO", "#10b981", "#86efac"
-            else:
-                level, level_color, msg_color = "INFO", "#10b981", "#e2e8f0"
-
-            ts_color = "#94a3b8"
-            safe_text = html.escape(text)
-            html_line = (
-                f'<span style="color:{ts_color};">{ts}</span>  '
-                f'<span style="color:{level_color}; font-weight:700;">{level}</span>  '
-                f'<span style="color:{msg_color};">{safe_text}</span>'
-            )
-            log_output.append(html_line)
-
-            # auto-scroll
-            autoscroll = getattr(self, "_terminal_autoscroll", None)
-            if autoscroll is None or autoscroll.isChecked():
-                sb = log_output.verticalScrollBar()
-                if sb:
-                    sb.setValue(sb.maximum())
-
+            html_line, level = self._format_log_line_html(message)
+            if self._log_level_filter_passes(level):
+                log_output.append(html_line)
+                # auto-scroll
+                autoscroll = getattr(self, "_terminal_autoscroll", None)
+                if autoscroll is None or autoscroll.isChecked():
+                    sb = log_output.verticalScrollBar()
+                    if sb:
+                        sb.setValue(sb.maximum())
             QCoreApplication.processEvents()
         except Exception:
             pass
@@ -5698,27 +5775,61 @@ class MainWindow(QMainWindow):
     # 내부 헬퍼
     # ------------------------------------------------------------------
     def _show_detailed_logs(self) -> None:
-        """대화 상자로 상세 실행 로그를 표시합니다."""
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QPushButton
+        """로그 전체를 파일로 다운로드합니다 (버튼 라벨이 '전체 다운로드'이므로 실제 download 동작).
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("상세 실행 로그")
-        dialog.resize(800, 600)
+        QFileDialog로 저장 위치 선택 → .txt 파일로 저장.
+        로그가 비어있으면 안내 메시지만 표시.
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        from datetime import datetime
 
-        layout = QVBoxLayout(dialog)
+        # 다운로드할 로그 수집 — _full_execution_logs 우선, 없으면 현재 _log_output 텍스트
+        logs: list[str] = []
+        if hasattr(self, "_full_execution_logs") and self._full_execution_logs:
+            logs = list(self._full_execution_logs)
+        elif hasattr(self, "_log_output") and self._log_output is not None:
+            current_text = self._log_output.toPlainText().strip()
+            if current_text:
+                logs = current_text.splitlines()
 
-        # 로그 텍스트 영역
-        log_view = QTextEdit(dialog)
-        log_view.setReadOnly(True)
-        log_view.setPlainText("\n".join(self._full_execution_logs))
-        layout.addWidget(log_view)
+        if not logs:
+            QMessageBox.information(
+                self,
+                "다운로드할 로그 없음",
+                "아직 실행된 로그가 없습니다. 테스트를 먼저 실행해 주세요.",
+            )
+            return
 
-        # 닫기 버튼
-        close_button = QPushButton("닫기", dialog)
-        close_button.clicked.connect(dialog.close)
-        layout.addWidget(close_button)
+        # 기본 파일명 — 타임스탬프 포함
+        default_name = f"gaia_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "로그 다운로드",
+            default_name,
+            "Text Files (*.txt);;Log Files (*.log);;All Files (*)",
+        )
+        if not file_path:
+            return  # 사용자가 취소
 
-        dialog.exec()
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("# GAIA Test Execution Logs\n")
+                f.write(f"# Exported: {datetime.now().isoformat()}\n")
+                f.write(f"# Total lines: {len(logs)}\n")
+                f.write("# " + "=" * 60 + "\n\n")
+                for line in logs:
+                    f.write(line.rstrip() + "\n")
+            QMessageBox.information(
+                self,
+                "다운로드 완료",
+                f"로그가 저장되었습니다:\n{file_path}\n\n총 {len(logs)}줄",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "다운로드 실패",
+                f"로그 저장 중 오류가 발생했습니다:\n{exc}",
+            )
 
     def _open_file_dialog(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
