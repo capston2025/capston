@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -361,9 +363,10 @@ class CircularProgressWidget(QWidget):
         font.setWeight(QFont.Weight.Black)
         font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 95)
         painter.setFont(font)
+        # 다른 KPI 카드 value들과 동일하게 좌측 정렬 (수직은 가운데 유지)
         painter.drawText(
             full_rect,
-            Qt.AlignmentFlag.AlignCenter,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             f"{int(round(self._value))}%",
         )
 
@@ -596,19 +599,35 @@ class SiteCard(QFrame):
         self._apply_initial_badge_style()
         layout.addWidget(self._badge)
 
-        # 텍스트 (이름 + URL)
+        # 텍스트 (이름 + URL) — 카드 폭이 좁아져도 텍스트가 폭을 강제하지 않도록
+        # sizePolicy를 Ignored로 두고 ellipsis(...)로 처리.
         text_container = QWidget(self)
+        text_container.setMinimumWidth(0)
+        text_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         text_layout = QVBoxLayout(text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
 
         name_label = QLabel(label, text_container)
         name_label.setObjectName("SiteCardName")
+        name_label.setMinimumWidth(0)
+        name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # 텍스트가 길면 끝에 ... 표시
+        name_label.setTextFormat(Qt.TextFormat.PlainText)
         text_layout.addWidget(name_label)
 
         url_label = QLabel(url, text_container)
         url_label.setObjectName("SiteCardURL")
+        url_label.setMinimumWidth(0)
+        url_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        url_label.setTextFormat(Qt.TextFormat.PlainText)
         text_layout.addWidget(url_label)
+
+        # Python attribute로 라벨 참조 보관 (resize 시 elide 갱신)
+        self._name_label = name_label
+        self._url_label = url_label
+        self._full_label_text = label
+        self._full_url_text = url
 
         layout.addWidget(text_container, stretch=1)
 
@@ -618,6 +637,10 @@ class SiteCard(QFrame):
         self._indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._indicator.setFixedSize(20, 20)
         layout.addWidget(self._indicator)
+
+        # 카드 자체도 freely shrinkable (그리드가 viewport보다 못 넘치도록)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         # Favicon 비동기 요청 (Google s2 favicons API)
         if network_manager is not None:
@@ -632,6 +655,24 @@ class SiteCard(QFrame):
             f"font-weight: 800;"
             f"font-size: 13px;"
         )
+
+    def resizeEvent(self, event) -> None:  # noqa: D401
+        super().resizeEvent(event)
+        # 카드 폭이 변경되면 텍스트 elide 갱신 — 폭이 부족하면 끝에 "..."
+        if hasattr(self, "_name_label") and hasattr(self, "_url_label"):
+            try:
+                # 텍스트 영역 폭 = 카드 폭 - badge(40) - indicator(20) - margins(14*2) - spacing(12*2)
+                available = max(40, self.width() - 40 - 20 - 28 - 24)
+                fm_name = self._name_label.fontMetrics()
+                fm_url = self._url_label.fontMetrics()
+                self._name_label.setText(
+                    fm_name.elidedText(self._full_label_text, Qt.TextElideMode.ElideRight, available)
+                )
+                self._url_label.setText(
+                    fm_url.elidedText(self._full_url_text, Qt.TextElideMode.ElideRight, available)
+                )
+            except Exception:
+                pass
 
     def _request_favicon(self, manager: QNetworkAccessManager) -> None:
         from urllib.parse import urlparse
@@ -996,6 +1037,780 @@ class TestCaseRow(QFrame):
         super().mousePressEvent(event)
 
 
+class QuickGoalInputDialog(QDialog):
+    """빠른 목표 직접 입력 — 사용자 정의 다이얼로그 (QInputDialog 대체).
+
+    개선점:
+    - multiline QPlainTextEdit (3-5줄)
+    - 예시 버튼들 (클릭하면 자동 채우기)
+    - 글자 수 카운터
+    - Toss 디자인 톤 (Step 3 카드와 일관)
+    """
+
+    EXAMPLES = [
+        "로그인 후 메인 페이지에서 검색창을 사용해 '아이폰'을 검색해줘",
+        "메인 페이지 상단 메뉴에서 '카테고리'를 클릭하고 첫 번째 항목으로 이동해줘",
+        "회원가입 폼을 열어서 이메일/비밀번호 필드가 정상 동작하는지 확인해줘",
+        "장바구니에 상품을 하나 담고 결제 페이지까지 이동해줘 (실제 결제는 안 함)",
+    ]
+
+    def __init__(self, parent: QWidget | None = None, initial_text: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("빠른 목표 직접 입력")
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(440)
+        self.setObjectName("QuickGoalDialog")
+
+        self.setStyleSheet("""
+            QDialog#QuickGoalDialog { background: #ffffff; }
+            QLabel#QuickGoalTitle {
+                color: #191f28; font-size: 18px; font-weight: 800;
+                letter-spacing: -0.3px; background: transparent;
+            }
+            QLabel#QuickGoalSub {
+                color: #6b7684; font-size: 12.5px;
+                background: transparent;
+            }
+            QLabel#QuickGoalSectionLabel {
+                color: #4e5968; font-size: 12px; font-weight: 700;
+                background: transparent;
+            }
+            QPlainTextEdit#QuickGoalInput {
+                background: #ffffff;
+                border: 1.5px solid #e5e8eb;
+                border-radius: 10px;
+                color: #191f28;
+                font-size: 14px;
+                padding: 12px 14px;
+                selection-background-color: #b2d4ff;
+            }
+            QPlainTextEdit#QuickGoalInput:focus {
+                border: 1.5px solid #3182f6;
+            }
+            QLabel#QuickGoalCounter {
+                color: #8b95a1; font-size: 11px;
+                background: transparent;
+            }
+            QPushButton#QuickGoalExampleBtn {
+                background: #f9fafb;
+                border: 1px solid #e5e8eb;
+                border-radius: 8px;
+                color: #4e5968;
+                font-size: 11.5px;
+                font-weight: 500;
+                padding: 8px 12px;
+                text-align: left;
+                min-height: 0px;
+            }
+            QPushButton#QuickGoalExampleBtn:hover {
+                background: #eff6ff;
+                border: 1px solid #b2d4ff;
+                color: #1b64da;
+            }
+            QPushButton#QuickGoalConfirmBtn {
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 22px; min-height: 0px;
+            }
+            QPushButton#QuickGoalConfirmBtn:hover { background: #1b64da; }
+            QPushButton#QuickGoalConfirmBtn:disabled {
+                background: #d1d6db; color: #ffffff;
+            }
+            QPushButton#QuickGoalCancelBtn {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 18px; min-height: 0px;
+            }
+            QPushButton#QuickGoalCancelBtn:hover {
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+
+        # 헤더
+        title = QLabel("빠른 목표 직접 입력", self)
+        title.setObjectName("QuickGoalTitle")
+        layout.addWidget(title)
+        sub = QLabel(
+            "AI에게 실행시킬 목표를 자유롭게 입력하세요. 구체적일수록 정확하게 동작합니다.",
+            self,
+        )
+        sub.setObjectName("QuickGoalSub")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # 예시 섹션
+        ex_label = QLabel("💡 예시 (클릭하면 자동 입력)", self)
+        ex_label.setObjectName("QuickGoalSectionLabel")
+        layout.addWidget(ex_label)
+
+        ex_grid = QGridLayout()
+        ex_grid.setHorizontalSpacing(8)
+        ex_grid.setVerticalSpacing(8)
+        for i, example in enumerate(self.EXAMPLES):
+            btn = QPushButton(example, self)
+            btn.setObjectName("QuickGoalExampleBtn")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, t=example: self._set_input_text(t))
+            row, col = divmod(i, 2)
+            ex_grid.addWidget(btn, row, col)
+        layout.addLayout(ex_grid)
+
+        # 입력 섹션
+        in_label = QLabel("✏️  목표 텍스트", self)
+        in_label.setObjectName("QuickGoalSectionLabel")
+        layout.addWidget(in_label)
+
+        self._input = QPlainTextEdit(self)
+        self._input.setObjectName("QuickGoalInput")
+        self._input.setPlaceholderText(
+            "예: 메인 페이지에서 '맥북' 키워드로 검색하고 첫 번째 검색 결과를 클릭해줘"
+        )
+        if initial_text:
+            self._input.setPlainText(initial_text)
+        self._input.setMinimumHeight(110)
+        self._input.textChanged.connect(self._update_state)
+        layout.addWidget(self._input)
+
+        # 카운터 — 우측 정렬
+        counter_row = QHBoxLayout()
+        counter_row.addStretch(1)
+        self._counter = QLabel("0자", self)
+        self._counter.setObjectName("QuickGoalCounter")
+        counter_row.addWidget(self._counter)
+        layout.addLayout(counter_row)
+
+        layout.addStretch(1)
+
+        # 액션 버튼
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        cancel = QPushButton("취소", self)
+        cancel.setObjectName("QuickGoalCancelBtn")
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(cancel)
+        self._confirm = QPushButton("실행 시작  →", self)
+        self._confirm.setObjectName("QuickGoalConfirmBtn")
+        self._confirm.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._confirm.clicked.connect(self.accept)
+        btn_row.addWidget(self._confirm)
+        layout.addLayout(btn_row)
+
+        self._update_state()
+        self._input.setFocus()
+
+    def _set_input_text(self, text: str) -> None:
+        self._input.setPlainText(text)
+        self._input.setFocus()
+        # 커서를 끝으로
+        cursor = self._input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._input.setTextCursor(cursor)
+
+    def _update_state(self) -> None:
+        text = self._input.toPlainText().strip()
+        n = len(text)
+        self._counter.setText(f"{n}자")
+        # 색상: 너무 짧으면 회색, 5자 이상이면 brand
+        if n >= 5:
+            self._counter.setStyleSheet("color: #3182f6; font-size: 11px; font-weight: 600; background: transparent;")
+        else:
+            self._counter.setStyleSheet("color: #8b95a1; font-size: 11px; background: transparent;")
+        self._confirm.setEnabled(n >= 3)
+
+    def goal_text(self) -> str:
+        return self._input.toPlainText().strip()
+
+
+class BundleSelectionDialog(QDialog):
+    """기획서 업로드 — 샘플 사용 vs 파일 업로드 선택 다이얼로그.
+
+    accept()되면:
+    - choice == "sample" → 샘플 번들 경로 반환
+    - choice == "upload" → QFileDialog로 사용자 파일 경로 반환
+    """
+
+    def __init__(self, parent: QWidget | None = None, sample_path: str | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("기획서 선택")
+        self.setMinimumWidth(520)
+        self.setObjectName("BundleSelectionDialog")
+        self._sample_path = sample_path or ""
+        self._chosen: str | None = None
+
+        self.setStyleSheet("""
+            QDialog#BundleSelectionDialog { background: #ffffff; }
+            QLabel#BundleTitle {
+                color: #191f28; font-size: 18px; font-weight: 800;
+                letter-spacing: -0.3px; background: transparent;
+            }
+            QLabel#BundleSub {
+                color: #6b7684; font-size: 12.5px;
+                background: transparent;
+            }
+            QFrame#BundleOption {
+                background: #ffffff;
+                border: 1.5px solid #e5e8eb;
+                border-radius: 12px;
+            }
+            QFrame#BundleOption:hover {
+                border: 1.5px solid #b2d4ff;
+                background: #f9fbff;
+            }
+            QFrame#BundleOption[selected="true"] {
+                border: 2px solid #3182f6;
+                background: #eff6ff;
+            }
+            QLabel#BundleOptionTitle {
+                color: #191f28; font-size: 14px; font-weight: 700;
+                background: transparent;
+            }
+            QLabel#BundleOptionDesc {
+                color: #6b7684; font-size: 12px;
+                background: transparent;
+            }
+            QLabel#BundleOptionTag {
+                background: #eff6ff; color: #1b64da;
+                font-size: 10.5px; font-weight: 800;
+                padding: 3px 8px; border-radius: 999px;
+            }
+            QPushButton#BundleConfirmBtn {
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 22px; min-height: 0px;
+            }
+            QPushButton#BundleConfirmBtn:hover { background: #1b64da; }
+            QPushButton#BundleConfirmBtn:disabled {
+                background: #d1d6db; color: #ffffff;
+            }
+            QPushButton#BundleCancelBtn {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 18px; min-height: 0px;
+            }
+            QPushButton#BundleCancelBtn:hover {
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }
+            /* 샘플 미리보기 버튼 — ghost 톤 + 작은 사이즈 */
+            QPushButton#BundlePreviewBtn {
+                background: transparent;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 6px;
+                font-size: 11.5px;
+                font-weight: 600;
+                padding: 5px 12px;
+                min-height: 0px;
+            }
+            QPushButton#BundlePreviewBtn:hover {
+                background: #eff6ff;
+                border: 1px solid #b2d4ff;
+                color: #1b64da;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("기획서 선택", self)
+        title.setObjectName("BundleTitle")
+        layout.addWidget(title)
+        sub = QLabel(
+            "샘플을 골라 즉시 실행하거나 본인의 기획서 파일을 업로드할 수 있어요.",
+            self,
+        )
+        sub.setObjectName("BundleSub")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # 옵션 1: 샘플 사용 (+ 미리보기 버튼)
+        self._opt_sample = self._make_option_card(
+            "샘플 기획서 사용 (즉시 실행)",
+            "Wikipedia 검색 기능 검증 시나리오 2개 — 외부 의존성 없이 바로 실행됩니다.",
+            tag="추천",
+            enabled=bool(self._sample_path),
+        )
+        self._opt_sample.mousePressEvent = lambda _e: self._select("sample")  # type: ignore[assignment]
+        layout.addWidget(self._opt_sample)
+
+        # 샘플 미리보기 버튼 (샘플 옵션 바로 아래, 우측 정렬)
+        if self._sample_path:
+            preview_row = QHBoxLayout()
+            preview_row.setContentsMargins(0, 4, 4, 0)
+            preview_row.addStretch(1)
+            self._preview_button = QPushButton("📄  샘플 내용 미리보기", self)
+            self._preview_button.setObjectName("BundlePreviewBtn")
+            self._preview_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._preview_button.clicked.connect(self._show_sample_preview)
+            preview_row.addWidget(self._preview_button)
+            layout.addLayout(preview_row)
+
+        # 옵션 2: 파일 업로드
+        self._opt_upload = self._make_option_card(
+            "내 파일 업로드",
+            "PDF / DOCX / MD / TXT / JSON 번들 — 파일 다이얼로그가 열립니다.",
+            tag=None,
+            enabled=True,
+        )
+        self._opt_upload.mousePressEvent = lambda _e: self._select("upload")  # type: ignore[assignment]
+        layout.addWidget(self._opt_upload)
+
+        layout.addStretch(1)
+
+        # 액션 버튼
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        cancel = QPushButton("취소", self)
+        cancel.setObjectName("BundleCancelBtn")
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(cancel)
+        self._confirm = QPushButton("다음  →", self)
+        self._confirm.setObjectName("BundleConfirmBtn")
+        self._confirm.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._confirm.setEnabled(False)
+        self._confirm.clicked.connect(self.accept)
+        btn_row.addWidget(self._confirm)
+        layout.addLayout(btn_row)
+
+    def _make_option_card(self, title_text: str, desc_text: str, tag: str | None, enabled: bool) -> QFrame:
+        card = QFrame(self)
+        card.setObjectName("BundleOption")
+        card.setProperty("selected", False)
+        card.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ForbiddenCursor)
+        card.setEnabled(enabled)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(18, 14, 18, 14)
+        cl.setSpacing(4)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        t = QLabel(title_text, card)
+        t.setObjectName("BundleOptionTitle")
+        head.addWidget(t)
+        if tag:
+            tag_label = QLabel(tag, card)
+            tag_label.setObjectName("BundleOptionTag")
+            head.addWidget(tag_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+        cl.addLayout(head)
+        d = QLabel(desc_text, card)
+        d.setObjectName("BundleOptionDesc")
+        d.setWordWrap(True)
+        cl.addWidget(d)
+        return card
+
+    def _select(self, choice: str) -> None:
+        if choice == "sample" and not self._sample_path:
+            return
+        self._chosen = choice
+        for card, key in [(self._opt_sample, "sample"), (self._opt_upload, "upload")]:
+            card.setProperty("selected", choice == key)
+            style = card.style()
+            if style:
+                style.unpolish(card); style.polish(card); card.update()
+        self._confirm.setEnabled(True)
+
+    def _show_sample_preview(self) -> None:
+        """샘플 기획서 JSON 내용을 새 다이얼로그에서 미리보기."""
+        if not self._sample_path:
+            return
+        preview = SamplePreviewDialog(self, file_path=self._sample_path)
+        preview.exec()
+
+    def chosen(self) -> str | None:
+        return self._chosen
+
+    def sample_path(self) -> str:
+        return self._sample_path
+
+
+class SamplePreviewDialog(QDialog):
+    """샘플 기획서 JSON 내용 미리보기 다이얼로그.
+
+    파일을 GUI 내에서 직접 확인할 수 있게 — 외부 에디터 없이도 내용 확인 가능.
+    PRDBundle 형식이면 구조화된 요약 + raw JSON 둘 다 표시.
+    """
+
+    def __init__(self, parent: QWidget | None = None, file_path: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("샘플 기획서 미리보기")
+        self.setMinimumSize(680, 580)
+        self.setObjectName("SamplePreviewDialog")
+        self._file_path = file_path
+
+        self.setStyleSheet("""
+            QDialog#SamplePreviewDialog { background: #ffffff; }
+            QLabel#PreviewTitle {
+                color: #191f28; font-size: 18px; font-weight: 800;
+                letter-spacing: -0.3px; background: transparent;
+            }
+            QLabel#PreviewSub {
+                color: #6b7684; font-size: 12.5px;
+                background: transparent;
+            }
+            QLabel#PreviewPath {
+                color: #8b95a1; font-size: 11px;
+                background: #f9fafb;
+                padding: 6px 10px;
+                border: 1px solid #e5e8eb;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+            }
+            QLabel#PreviewSectionLabel {
+                color: #4e5968; font-size: 12px; font-weight: 700;
+                background: transparent;
+                padding-top: 4px;
+            }
+            QFrame#PreviewSummary {
+                background: #f9fafb;
+                border: 1px solid #e5e8eb;
+                border-radius: 10px;
+            }
+            QLabel#PreviewSummaryItem {
+                color: #191f28; font-size: 13px;
+                background: transparent;
+            }
+            QLabel#PreviewSummaryKey {
+                color: #6b7684; font-size: 12px; font-weight: 700;
+                background: transparent;
+            }
+            QPlainTextEdit#PreviewJsonView {
+                background: #f2f4f6;
+                border: 1px solid #e5e8eb;
+                border-radius: 8px;
+                color: #191f28;
+                font-family: Consolas, monospace;
+                font-size: 11.5px;
+                padding: 10px;
+                selection-background-color: #b2d4ff;
+            }
+            QPushButton#PreviewCloseBtn {
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 22px; min-height: 0px;
+            }
+            QPushButton#PreviewCloseBtn:hover { background: #1b64da; }
+            QPushButton#PreviewOpenExternalBtn {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 16px; min-height: 0px;
+            }
+            QPushButton#PreviewOpenExternalBtn:hover {
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(12)
+
+        title = QLabel("샘플 기획서 미리보기", self)
+        title.setObjectName("PreviewTitle")
+        layout.addWidget(title)
+        sub = QLabel(
+            "실행 전에 어떤 시나리오가 자동 생성되어 동작할지 미리 확인할 수 있어요.",
+            self,
+        )
+        sub.setObjectName("PreviewSub")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # 파일 경로
+        path_label = QLabel(file_path, self)
+        path_label.setObjectName("PreviewPath")
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+
+        # 구조화된 요약 (PRDBundle인 경우)
+        summary_data = self._extract_summary(file_path)
+        if summary_data:
+            section_label = QLabel("📋  요약", self)
+            section_label.setObjectName("PreviewSectionLabel")
+            layout.addWidget(section_label)
+            summary_frame = QFrame(self)
+            summary_frame.setObjectName("PreviewSummary")
+            sf_layout = QVBoxLayout(summary_frame)
+            sf_layout.setContentsMargins(16, 14, 16, 14)
+            sf_layout.setSpacing(8)
+            for key, value in summary_data:
+                row = QHBoxLayout()
+                row.setSpacing(10)
+                k = QLabel(key, summary_frame)
+                k.setObjectName("PreviewSummaryKey")
+                k.setMinimumWidth(110)
+                row.addWidget(k)
+                v = QLabel(str(value), summary_frame)
+                v.setObjectName("PreviewSummaryItem")
+                v.setWordWrap(True)
+                row.addWidget(v, stretch=1)
+                sf_layout.addLayout(row)
+            layout.addWidget(summary_frame)
+
+        # Raw JSON
+        json_label = QLabel("📜  JSON 전체 내용", self)
+        json_label.setObjectName("PreviewSectionLabel")
+        layout.addWidget(json_label)
+
+        self._json_view = QPlainTextEdit(self)
+        self._json_view.setObjectName("PreviewJsonView")
+        self._json_view.setReadOnly(True)
+        self._json_view.setPlainText(self._load_pretty_json(file_path))
+        layout.addWidget(self._json_view, stretch=1)
+
+        # 액션 버튼
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        open_btn = QPushButton("파일 위치 열기", self)
+        open_btn.setObjectName("PreviewOpenExternalBtn")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._open_file_location)
+        btn_row.addWidget(open_btn)
+        close_btn = QPushButton("닫기", self)
+        close_btn.setObjectName("PreviewCloseBtn")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _load_pretty_json(self, file_path: str) -> str:
+        """JSON 파일을 pretty-print해서 문자열로 반환. 실패 시 원본 텍스트."""
+        try:
+            import json as _json
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return _json.dumps(data, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return f"파일을 읽을 수 없습니다:\n{exc}"
+
+    def _extract_summary(self, file_path: str) -> list[tuple[str, str]] | None:
+        """PRDBundle 형식이면 핵심 필드만 추출해서 요약. 아니면 None."""
+        try:
+            import json as _json
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if not isinstance(data, dict):
+                return None
+            schema = str(data.get("schema_version") or "")
+            if not schema.startswith("gaia.prd_bundle."):
+                return None  # PRDBundle 아님
+            project = data.get("project_name") or "-"
+            base_url = (data.get("execution_profile") or {}).get("base_url") or "-"
+            goals = data.get("generated_goals") or []
+            enabled_goals = [g for g in goals if isinstance(g, dict) and g.get("enabled", True)]
+            goals_summary = []
+            for g in enabled_goals[:5]:
+                goals_summary.append(f"• [{g.get('priority', '-')}] {g.get('title', '-')}")
+            if len(enabled_goals) > 5:
+                goals_summary.append(f"… 외 {len(enabled_goals) - 5}개")
+            requirements = data.get("normalized_prd", {}).get("requirements", [])
+            return [
+                ("프로젝트", project),
+                ("타겟 URL", base_url),
+                ("목표 수", f"{len(enabled_goals)}개 (전체 {len(goals)})"),
+                ("요구사항 수", f"{len(requirements)}개"),
+                ("실행 목표", "\n".join(goals_summary) if goals_summary else "-"),
+            ]
+        except Exception:
+            return None
+
+    def _open_file_location(self) -> None:
+        """OS 파일 탐색기에서 파일 위치 열기."""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl as _QUrl
+        from pathlib import Path as _Path
+        try:
+            folder = str(_Path(self._file_path).resolve().parent)
+            QDesktopServices.openUrl(_QUrl.fromLocalFile(folder))
+        except Exception:
+            pass
+
+
+class NotificationDialog(QDialog):
+    """Toss 디자인 톤 통일 알림 다이얼로그 — QMessageBox 대체.
+
+    종류: info / success / warning / error / question (Yes/No)
+
+    상태별 컬러 아이콘 + 흰색 카드 + brand color 액션 버튼.
+    static factory 메서드 제공해서 1줄로 호출 가능:
+        NotificationDialog.info(parent, "안내", "메시지")
+        NotificationDialog.question(parent, "확인", "진행할까요?") -> bool
+    """
+
+    # 종류별 토큰 — (icon, icon_bg, icon_fg, title_color)
+    _VARIANTS = {
+        "info":     ("ⓘ", "#eff6ff", "#3182f6", "#191f28"),
+        "success":  ("✓", "#ecfdf5", "#10b981", "#191f28"),
+        "warning":  ("!", "#fffbeb", "#f59e0b", "#191f28"),
+        "error":    ("✕", "#fef2f2", "#ef4444", "#191f28"),
+        "question": ("?", "#eff6ff", "#3182f6", "#191f28"),
+    }
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        variant: str,
+        title: str,
+        message: str,
+        *,
+        is_question: bool = False,
+        ok_text: str = "확인",
+        cancel_text: str = "취소",
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setObjectName("NotificationDialog")
+        self.setMinimumWidth(420)
+        self.setMaximumWidth(560)
+
+        if variant not in self._VARIANTS:
+            variant = "info"
+        icon_text, icon_bg, icon_fg, title_color = self._VARIANTS[variant]
+
+        self.setStyleSheet(f"""
+            QDialog#NotificationDialog {{ background: #ffffff; }}
+            QLabel#NotifIcon {{
+                background: {icon_bg};
+                color: {icon_fg};
+                border-radius: 22px;
+                font-size: 20px;
+                font-weight: 900;
+            }}
+            QLabel#NotifTitle {{
+                color: {title_color};
+                font-size: 16px;
+                font-weight: 800;
+                letter-spacing: -0.2px;
+                background: transparent;
+            }}
+            QLabel#NotifMessage {{
+                color: #4e5968;
+                font-size: 13px;
+                background: transparent;
+                line-height: 1.5;
+            }}
+            QPushButton#NotifConfirmBtn {{
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 9px 20px; min-height: 0px;
+                min-width: 72px;
+            }}
+            QPushButton#NotifConfirmBtn:hover {{ background: #1b64da; }}
+            QPushButton#NotifCancelBtn {{
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 9px 16px; min-height: 0px;
+                min-width: 72px;
+            }}
+            QPushButton#NotifCancelBtn:hover {{
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }}
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 22)
+        outer.setSpacing(14)
+
+        # 헤더 — 아이콘 + 제목 (한 줄)
+        head_row = QHBoxLayout()
+        head_row.setSpacing(14)
+        icon_lbl = QLabel(icon_text, self)
+        icon_lbl.setObjectName("NotifIcon")
+        icon_lbl.setFixedSize(44, 44)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head_row.addWidget(icon_lbl, alignment=Qt.AlignmentFlag.AlignTop)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(6)
+        title_lbl = QLabel(title, self)
+        title_lbl.setObjectName("NotifTitle")
+        title_lbl.setWordWrap(True)
+        title_col.addWidget(title_lbl)
+        msg_lbl = QLabel(message, self)
+        msg_lbl.setObjectName("NotifMessage")
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        title_col.addWidget(msg_lbl)
+        head_row.addLayout(title_col, stretch=1)
+        outer.addLayout(head_row)
+
+        # 액션 버튼 — question이면 [취소][확인], 아니면 [확인]만
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        if is_question:
+            cancel_btn = QPushButton(cancel_text, self)
+            cancel_btn.setObjectName("NotifCancelBtn")
+            cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            cancel_btn.clicked.connect(self.reject)
+            btn_row.addWidget(cancel_btn)
+        confirm_btn = QPushButton(ok_text, self)
+        confirm_btn.setObjectName("NotifConfirmBtn")
+        confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        confirm_btn.setDefault(True)
+        confirm_btn.clicked.connect(self.accept)
+        btn_row.addWidget(confirm_btn)
+        outer.addLayout(btn_row)
+
+    # ─── 정적 헬퍼 — QMessageBox 스타일 한 줄 호출 ──────────────
+    @staticmethod
+    def info(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "info", title, message).exec()
+
+    @staticmethod
+    def success(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "success", title, message).exec()
+
+    @staticmethod
+    def warning(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "warning", title, message).exec()
+
+    @staticmethod
+    def error(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "error", title, message).exec()
+
+    @staticmethod
+    def question(
+        parent: QWidget | None,
+        title: str,
+        message: str,
+        *,
+        ok_text: str = "확인",
+        cancel_text: str = "취소",
+    ) -> bool:
+        """Yes/No 확인 다이얼로그 — True(확인) / False(취소) 반환."""
+        dlg = NotificationDialog(
+            parent, "question", title, message,
+            is_question=True, ok_text=ok_text, cancel_text=cancel_text,
+        )
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
+
 class MainWindow(QMainWindow):
     """UI 요소와 컨트롤러 콜백을 연결하는 최상위 창입니다."""
 
@@ -1183,6 +1998,32 @@ class MainWindow(QMainWindow):
 
             QPushButton#SidebarMenuItem:pressed {
                 background: #e5e8eb;
+            }
+
+            /* 사이드바 좌하단 접기/펼치기 토글 — SidebarMenuItem과 톤 통일 */
+            QPushButton#SidebarCollapseButton {
+                background: transparent;
+                border: none;
+                color: #6b7684;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 10px 14px;
+                text-align: left;
+                min-height: 0px;
+                border-radius: 8px;
+            }
+            QPushButton#SidebarCollapseButton:hover {
+                background: #f2f4f6;
+                color: #191f28;
+            }
+            QPushButton#SidebarCollapseButton:pressed {
+                background: #eff6ff;
+                color: #1b64da;
+            }
+            QPushButton#SidebarCollapseButton[collapsed="true"] {
+                text-align: center;
+                padding: 10px 0px;
+                font-size: 14px;
             }
 
             QFrame#SidebarUserCard {
@@ -1386,8 +2227,23 @@ class MainWindow(QMainWindow):
             }
 
             /* ===========================================================
-             * Step 2 — 테스트 케이스 row / 탭 / footer
+             * Step 2 — 테스트 케이스 row / 탭 / footer / 섹션 라벨
              * =========================================================== */
+            QLabel#CaseSectionLabel {
+                color: #191f28;
+                font-size: 14px;
+                font-weight: 800;
+                background: transparent;
+                padding: 8px 0px 4px 0px;
+                letter-spacing: -0.2px;
+            }
+            QLabel#CaseSectionSubLabel {
+                color: #8b95a1;
+                font-size: 12px;
+                background: transparent;
+                padding: 0px 0px 8px 0px;
+            }
+
             QFrame#TestCaseRow {
                 background: #ffffff;
                 border-radius: 12px;
@@ -2842,7 +3698,7 @@ class MainWindow(QMainWindow):
         self._workflow_stack = QStackedWidget(control_panel)
         # Step 1: 사이트 선택 (Toss-style 그리드)
         self._site_selection_page = self._create_site_selection_stage(control_panel)
-        # Step 2: 테스트 케이스 선택 (체크박스 row + footer)
+        # Step 2: 테스트 선택 (체크박스 row + footer)
         self._test_case_page = self._create_test_case_stage(control_panel)
         # 기존 setup_page — controller 호환용으로 widget tree에 유지
         self._setup_page = self._create_setup_stage(control_panel)
@@ -2919,7 +3775,7 @@ class MainWindow(QMainWindow):
         self._sidebar_steps: list[QFrame] = []
         step_definitions = [
             ("1", "사이트 선택"),
-            ("2", "테스트 케이스 선택"),
+            ("2", "테스트 선택"),
             ("3", "테스트 진행"),
         ]
         self._sidebar_connectors: list[QFrame] = []
@@ -2960,14 +3816,92 @@ class MainWindow(QMainWindow):
         sites_btn.clicked.connect(self._emit_benchmark_manage)
         layout.addWidget(sites_btn)
 
+        # 보조 메뉴 위젯 보관 — 접힌 상태에서 hide 토글
+        self._sidebar_menu_buttons: list[QPushButton] = [history_btn, sites_btn]
+
         layout.addStretch(1)
 
+        # ─── 좌하단: 사이드바 접기/펼치기 토글 ───────────────────────
+        bottom_divider = QFrame(sidebar)
+        bottom_divider.setObjectName("SidebarDivider")
+        bottom_divider.setFixedHeight(1)
+        layout.addWidget(bottom_divider)
+        self._sidebar_bottom_divider = bottom_divider
+
+        self._sidebar_toggle_button = QPushButton("◀  접기", sidebar)
+        self._sidebar_toggle_button.setObjectName("SidebarCollapseButton")
+        self._sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle_button.setToolTip("사이드바 접기")
+        self._sidebar_toggle_button.clicked.connect(self._toggle_sidebar)
+        layout.addWidget(self._sidebar_toggle_button)
+
         return sidebar
+
+    def _toggle_sidebar(self) -> None:
+        """좌측 사이드바 접기/펼치기 토글.
+
+        - 펼친 상태: 사이드바 240px (저장된 너비), 모든 텍스트/메뉴 노출
+        - 접힌 상태: 사이드바 56px (좁게 유지), 토글 버튼만 노출 → 다시 펼치기 가능
+        """
+        if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
+            return
+        is_collapsed = bool(getattr(self, "_sidebar_collapsed", False))
+
+        if not is_collapsed:
+            # 접기 — 현재 너비 저장
+            if hasattr(self, "_root_splitter"):
+                sizes = self._root_splitter.sizes()
+                if sizes and sizes[0] >= 180:
+                    self._sidebar_expanded_width = sizes[0]
+            self._set_sidebar_inner_visible(False)
+            self._sidebar_panel.setMinimumWidth(56)
+            self._sidebar_panel.setMaximumWidth(56)
+            if hasattr(self, "_root_splitter"):
+                total = sum(self._root_splitter.sizes())
+                self._root_splitter.setSizes([56, max(0, total - 56)])
+            if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setText("▶")
+                self._sidebar_toggle_button.setToolTip("사이드바 펼치기")
+                self._sidebar_toggle_button.setProperty("collapsed", True)
+                self._restyle(self._sidebar_toggle_button)
+            self._sidebar_collapsed = True
+        else:
+            # 펼치기 — 저장된 너비로 복원
+            restore = int(getattr(self, "_sidebar_expanded_width", 240))
+            restore = max(180, min(360, restore))
+            self._sidebar_panel.setMinimumWidth(180)
+            self._sidebar_panel.setMaximumWidth(360)
+            self._set_sidebar_inner_visible(True)
+            if hasattr(self, "_root_splitter"):
+                total = sum(self._root_splitter.sizes())
+                self._root_splitter.setSizes([restore, max(0, total - restore)])
+            if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setText("◀  접기")
+                self._sidebar_toggle_button.setToolTip("사이드바 접기")
+                self._sidebar_toggle_button.setProperty("collapsed", False)
+                self._restyle(self._sidebar_toggle_button)
+            self._sidebar_collapsed = False
+
+    def _set_sidebar_inner_visible(self, visible: bool) -> None:
+        """사이드바 내부의 토글 버튼을 제외한 모든 자식 위젯의 visibility 토글.
+
+        접힌 상태에서는 토글 버튼 + 좌하단 영역만 보이고, 브랜드/스텝/메뉴 모두 hide.
+        """
+        if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
+            return
+        toggle = getattr(self, "_sidebar_toggle_button", None)
+        divider = getattr(self, "_sidebar_bottom_divider", None)
+        for child in self._sidebar_panel.findChildren(QWidget):
+            if child is toggle or child is divider:
+                continue
+            if child.parent() is self._sidebar_panel:
+                child.setVisible(visible)
 
     def _create_sidebar_step(self, parent: QWidget, number: str, label: str) -> QFrame:
         row = QFrame(parent)
         row.setObjectName("SidebarStepRow")
         row.setProperty("state", "pending")
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(7, 6, 8, 6)
         row_layout.setSpacing(12)
@@ -2977,11 +3911,14 @@ class MainWindow(QMainWindow):
         dot.setFixedSize(28, 28)
         dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         dot.setProperty("state", "pending")
+        # 마우스 이벤트가 row로 전달되도록 transparent
+        dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         row_layout.addWidget(dot)
 
         text = QLabel(label, row)
         text.setObjectName("SidebarStepLabel")
         text.setProperty("state", "pending")
+        text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         row_layout.addWidget(text, stretch=1)
 
         # state 갱신을 위해 위젯 참조 저장
@@ -2990,7 +3927,53 @@ class MainWindow(QMainWindow):
         row._gaia_dot = dot       # type: ignore[attr-defined]
         row._gaia_label = text    # type: ignore[attr-defined]
         row._gaia_number = number # type: ignore[attr-defined]
+        # 클릭 핸들러 — number(1/2/3)를 step_index(0/1/2)로 변환하여 라우팅
+        step_index = int(number) - 1
+        row.mousePressEvent = lambda event, idx=step_index: self._on_sidebar_step_clicked(idx, event)  # type: ignore[assignment]
         return row
+
+    def _on_sidebar_step_clicked(self, step_index: int, event) -> None:
+        """사이드바 워크플로 스텝 클릭 핸들러.
+
+        - 평상시: 해당 스텝 페이지로 이동
+        - 테스트 진행 중(_is_busy): 확인 다이얼로그 → 진행 중단 + 페이지 이동
+        - step_index: 0=사이트, 1=테스트 케이스, 2=테스트 진행
+        """
+        from PySide6.QtWidgets import QMessageBox
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        # 현재 step에서 같은 step 클릭은 무시
+        current_step = {"site_selection": 0, "test_case": 1, "review": 2}.get(
+            getattr(self, "_workflow_stage", ""), -1
+        )
+        if step_index == current_step:
+            return
+
+        # 테스트 진행 중인 경우 — 확인 다이얼로그 (Toss 톤)
+        is_busy = bool(getattr(self, "_is_busy", False))
+        if is_busy:
+            target_label = ["사이트 선택", "테스트 선택", "테스트 진행"][step_index]
+            ok = NotificationDialog.question(
+                self,
+                "진행 중인 테스트 중단",
+                f"테스트가 실행 중입니다.\n진행을 중단하고 '{target_label}' 페이지로 이동하시겠습니까?",
+                ok_text="중단하고 이동",
+                cancel_text="계속 실행",
+            )
+            if not ok:
+                return
+            # 진행 중단 — cancelRequested 시그널 + busy 상태 해제
+            self.append_log("⏹️ 사용자 요청으로 테스트를 중단합니다.")
+            self.cancelRequested.emit()
+            self.set_busy(False)
+
+        # 페이지 이동
+        if step_index == 0:
+            self.show_site_selection_stage()
+        elif step_index == 1:
+            self.show_test_case_stage()
+        elif step_index == 2:
+            self.show_review_stage()
 
     def _create_sidebar_menu(self, parent: QWidget, icon: str, label: str) -> QPushButton:
         # 이모지 제거 — 깨끗한 텍스트만 표시 (icon 인자는 향후 SVG 확장용으로 시그니처 유지)
@@ -3040,7 +4023,7 @@ class MainWindow(QMainWindow):
         self._stepper_bars: list[QFrame] = []
         step_labels = [
             ("1", "사이트 선택"),
-            ("2", "테스트 케이스 선택"),
+            ("2", "테스트 선택"),
             ("3", "테스트 진행"),
         ]
         for idx, (number, label) in enumerate(step_labels):
@@ -3294,24 +4277,33 @@ class MainWindow(QMainWindow):
         for card in self._site_cards:
             self._site_grid_layout.removeWidget(card)
 
-        # 컨테이너 너비 기준으로 컬럼 수 결정 (최소 너비 220px, 간격 12px)
-        width = max(1, self._site_grid_container.width())
-        min_card = 220
+        # 컨테이너 너비 — 0이면 부모 윈도우 폭 - 사이드바 추정값으로 fallback
+        width = self._site_grid_container.width()
+        if width <= 0:
+            # 초기 페이지 진입 시 container.width()는 0일 수 있음
+            try:
+                width = max(1, self.width() - 320)  # 사이드바 + 패딩 추정
+            except Exception:
+                width = 1000
+        # 카드 최소 너비 240px (URL 길어도 elide되니 충분), 간격 12px
+        # 가용 폭 / (최소 카드 폭 + 간격) → 가능한 최대 컬럼 수
+        min_card = 240
         gap = 12
         cols = max(1, (width + gap) // (min_card + gap))
-        cols = min(cols, 5)  # 최대 5열로 제한
+        cols = max(1, min(cols, 5))  # 1~5열 범위
 
         for idx, card in enumerate(self._site_cards):
             self._site_grid_layout.addWidget(card, idx // cols, idx % cols)
 
-        # 마지막 row 아래에 stretch — 카드가 위로 정렬되게
-        last_row = (len(self._site_cards) + cols - 1) // cols
-        for r in range(last_row + 1):
+        # 모든 row stretch 초기화 후 마지막 row만 stretch (카드가 위로 정렬)
+        rows_count = (len(self._site_cards) + cols - 1) // cols
+        for r in range(rows_count + 1):
             self._site_grid_layout.setRowStretch(r, 0)
-        self._site_grid_layout.setRowStretch(last_row, 1)
-        # 컬럼 stretch 균등화
-        for c in range(cols):
-            self._site_grid_layout.setColumnStretch(c, 1)
+        if rows_count > 0:
+            self._site_grid_layout.setRowStretch(rows_count, 1)
+        # 컬럼 stretch 균등화 (5열 제한이라 max 5)
+        for c in range(5):
+            self._site_grid_layout.setColumnStretch(c, 1 if c < cols else 0)
 
     def _filter_site_grid(self, query: str) -> None:
         """검색어에 따라 카드 가시성 토글."""
@@ -3351,7 +4343,7 @@ class MainWindow(QMainWindow):
         self.show_setup_stage_with_browser()
 
     def _on_site_card_clicked(self, url: str) -> None:
-        """사이트 카드 1클릭 = URL 채우고 즉시 Step 2 (테스트 케이스 선택)."""
+        """사이트 카드 1클릭 = URL 채우고 즉시 Step 2 (테스트 선택)."""
         self._selected_site_url = url
         # benchmark catalog에서 site_key 매칭 (벤치 실행 시 필요)
         self._selected_benchmark_site_key = self._resolve_site_key_for_url(url)
@@ -3440,7 +4432,7 @@ class MainWindow(QMainWindow):
         return colors[abs(hash(clean)) % len(colors)] if clean else "#3182f6"
 
     # ------------------------------------------------------------------
-    # Step 2 — 테스트 케이스 선택 페이지
+    # Step 2 — 테스트 선택 페이지
     # ------------------------------------------------------------------
     def _create_test_case_stage(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
@@ -3507,14 +4499,39 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(controls_row)
 
-        # Case rows 컨테이너
+        # ─── 섹션 1: 등록된 테스트 케이스 (벤치마크 시나리오) ─────────
+        section_main_label = QLabel("등록된 테스트 케이스", page)
+        section_main_label.setObjectName("CaseSectionLabel")
+        layout.addWidget(section_main_label)
+
         self._case_rows_container = QWidget(page)
         self._case_rows_layout = QVBoxLayout(self._case_rows_container)
         self._case_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._case_rows_layout.setSpacing(10)
         layout.addWidget(self._case_rows_container)
 
-        self._case_rows: list[TestCaseRow] = []
+        # ─── 섹션 2: AI 자율 실행 (사용자 입력 기반) ─────────────────
+        layout.addSpacing(20)
+        section_freeform_label = QLabel("AI 자율 실행 (사용자 입력 기반)", page)
+        section_freeform_label.setObjectName("CaseSectionLabel")
+        layout.addWidget(section_freeform_label)
+        section_freeform_sub = QLabel(
+            "직접 목표를 입력하거나 기획서 파일을 업로드해 AI에게 단독 실행을 맡길 수 있어요.",
+            page,
+        )
+        section_freeform_sub.setObjectName("CaseSectionSubLabel")
+        section_freeform_sub.setWordWrap(True)
+        layout.addWidget(section_freeform_sub)
+
+        self._freeform_rows_container = QWidget(page)
+        self._freeform_rows_layout = QVBoxLayout(self._freeform_rows_container)
+        self._freeform_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._freeform_rows_layout.setSpacing(10)
+        layout.addWidget(self._freeform_rows_container)
+
+        # 두 섹션 row 보관 — _selected_case_rows()는 둘 다 합쳐서 반환
+        self._case_rows: list[TestCaseRow] = []           # 섹션 1 (테스트 케이스)
+        self._freeform_rows: list[TestCaseRow] = []       # 섹션 2 (AI 자율)
         self._current_case_tab: str = "recommended"
         self._populate_test_case_rows(DEFAULT_TEST_CASES)
 
@@ -3557,15 +4574,31 @@ class MainWindow(QMainWindow):
         return container
 
     def _populate_test_case_rows(self, cases: Sequence[Mapping[str, Any]]) -> None:
-        """테스트 케이스 row를 새로 렌더링."""
-        while self._case_rows_layout.count():
-            item = self._case_rows_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        """테스트 케이스 row를 새로 렌더링.
+
+        섹션 분리:
+          - 섹션 1 (_case_rows_layout): mode in {benchmark, ai} → 등록된 테스트 케이스
+          - 섹션 2 (_freeform_rows_layout): mode in {quick, bundle} → AI 자율 실행
+        """
+        # 양쪽 컨테이너 초기화
+        for layout in (self._case_rows_layout, getattr(self, "_freeform_rows_layout", None)):
+            if layout is None:
+                continue
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
         self._case_rows = []
+        self._freeform_rows = []
 
         for case in cases:
+            mode = str(case.get("mode", "benchmark"))
+            # quick/bundle은 freeform 섹션, 나머지는 메인 섹션
+            is_freeform = mode in ("quick", "bundle")
+            target_parent = self._freeform_rows_container if is_freeform else self._case_rows_container
+            target_layout = self._freeform_rows_layout if is_freeform else self._case_rows_layout
+
             row = TestCaseRow(
                 case_id=str(case.get("id", "")),
                 title=str(case.get("title", "")),
@@ -3575,13 +4608,15 @@ class MainWindow(QMainWindow):
                 recommended=bool(case.get("recommended", False)),
                 favorite=False,
                 scenario_id=str(case.get("scenario_id", "")),
-                parent=self._case_rows_container,
+                parent=target_parent,
             )
-            # 메타데이터 보관
-            row.setProperty("mode", str(case.get("mode", "benchmark")))
+            row.setProperty("mode", mode)
             row.toggled.connect(self._on_case_row_toggled)
-            self._case_rows.append(row)
-            self._case_rows_layout.addWidget(row)
+            if is_freeform:
+                self._freeform_rows.append(row)
+            else:
+                self._case_rows.append(row)
+            target_layout.addWidget(row)
 
         self._apply_case_tab_filter()
         self._update_case_selection_summary()
@@ -3727,6 +4762,7 @@ class MainWindow(QMainWindow):
         self._filter_case_rows(self._case_search_input.text() if hasattr(self, "_case_search_input") else "")
 
     def _apply_case_tab_filter(self) -> None:
+        # 섹션 1 (테스트 케이스) — 탭 필터 적용
         for row in self._case_rows:
             if self._current_case_tab == "recommended":
                 row.setVisible(row.is_recommended())
@@ -3734,6 +4770,9 @@ class MainWindow(QMainWindow):
                 row.setVisible(row.is_favorite())
             else:
                 row.setVisible(True)
+        # 섹션 2 (AI 자율 실행) — 탭/카테고리/검색 무관하게 항상 표시
+        for row in getattr(self, "_freeform_rows", []):
+            row.setVisible(True)
 
     def _filter_case_rows(self, query: str) -> None:
         q = (query or "").strip().lower()
@@ -3741,8 +4780,8 @@ class MainWindow(QMainWindow):
         cat_sel = ""
         if hasattr(self, "_case_category") and self._case_category is not None:
             cat_sel = self._case_category.currentText().strip()
+        # 섹션 1 — 탭 + 카테고리 + 검색 필터 적용
         for row in self._case_rows:
-            # 1. 탭 필터 적용
             tab_ok = (
                 row.is_recommended() if self._current_case_tab == "recommended"
                 else row.is_favorite() if self._current_case_tab == "favorite"
@@ -3751,7 +4790,6 @@ class MainWindow(QMainWindow):
             if not tab_ok:
                 row.setVisible(False)
                 continue
-            # 2. 카테고리 필터 (icon_mode + title 기반)
             if cat_sel and cat_sel != "전체 카테고리":
                 mode = row.icon_mode().lower()
                 title = row._title_label.text().lower()  # noqa: SLF001
@@ -3765,7 +4803,6 @@ class MainWindow(QMainWindow):
                 if not cat_ok:
                     row.setVisible(False)
                     continue
-            # 3. 검색 쿼리 필터
             if not q:
                 row.setVisible(True)
                 continue
@@ -3774,31 +4811,56 @@ class MainWindow(QMainWindow):
                 row._desc_label.text().lower(),   # noqa: SLF001
             ])
             row.setVisible(q in haystack)
+        # 섹션 2 (AI 자율 실행) — 항상 표시 (탭/카테고리/검색 무관)
+        for row in getattr(self, "_freeform_rows", []):
+            row.setVisible(True)
 
     def _on_case_row_toggled(self, case_id: str, selected: bool) -> None:
         """체크박스 토글 시 — 상호 배타 처리 + 요약 갱신.
 
-        "benchmark_all" (전체 시나리오) ↔ 개별 시나리오 (scenario_id 있는 카드) 상호 배타.
-        - 전체 시나리오 선택 → 개별 시나리오 모두 자동 해제
-        - 개별 시나리오 선택 → 전체 시나리오 자동 해제
+        상호 배타 규칙:
+        - "benchmark_all"(전체 시나리오) 선택 → 개별 시나리오 모두 해제
+        - 개별 시나리오 선택 → "benchmark_all" 자동 해제
+        - 섹션 2(AI 자율 실행: quick/bundle)는 단일 선택 — 하나 선택 시 다른 모두 해제
+        - 섹션 2 카드 선택 시 → 섹션 1(테스트 케이스) 모두 자동 해제 (모드 충돌 방지)
+        - 섹션 1 카드 선택 시 → 섹션 2 모두 자동 해제
         """
         if not selected:
             self._update_case_selection_summary()
             return
-        if case_id == "benchmark_all":
-            # 전체 시나리오를 선택했으면, 다른 개별 시나리오 카드는 모두 해제
-            for r in self._case_rows:
-                if r.case_id() != "benchmark_all" and r.scenario_id() and r.is_selected():
+
+        all_freeform = list(getattr(self, "_freeform_rows", []))
+        clicked_in_freeform = any(r.case_id() == case_id for r in all_freeform)
+
+        if clicked_in_freeform:
+            # 섹션 2 단일 선택 — 같은 섹션 내 다른 모두 해제 + 섹션 1 전체 해제
+            for r in all_freeform:
+                if r.case_id() != case_id and r.is_selected():
                     r.set_selected(False)
-        elif case_id and any(r.case_id() == case_id and r.scenario_id() for r in self._case_rows):
-            # 개별 시나리오를 선택했으면, "전체 시나리오" 카드는 자동 해제
             for r in self._case_rows:
-                if r.case_id() == "benchmark_all" and r.is_selected():
+                if r.is_selected():
                     r.set_selected(False)
+        else:
+            # 섹션 1 (테스트 케이스) 선택 — 섹션 2 모두 해제 (모드 충돌 방지)
+            for r in all_freeform:
+                if r.is_selected():
+                    r.set_selected(False)
+            # 섹션 1 내부 상호 배타 — 전체 시나리오 ↔ 개별 시나리오
+            if case_id == "benchmark_all":
+                for r in self._case_rows:
+                    if r.case_id() != "benchmark_all" and r.scenario_id() and r.is_selected():
+                        r.set_selected(False)
+            elif case_id and any(r.case_id() == case_id and r.scenario_id() for r in self._case_rows):
+                for r in self._case_rows:
+                    if r.case_id() == "benchmark_all" and r.is_selected():
+                        r.set_selected(False)
         self._update_case_selection_summary()
 
     def _selected_case_rows(self) -> list[TestCaseRow]:
-        return [r for r in self._case_rows if r.is_selected()]
+        # 두 섹션 모두 합쳐서 반환
+        return [r for r in self._case_rows if r.is_selected()] + [
+            r for r in getattr(self, "_freeform_rows", []) if r.is_selected()
+        ]
 
     def _update_case_selection_summary(self) -> None:
         rows = self._selected_case_rows()
@@ -3882,44 +4944,70 @@ class MainWindow(QMainWindow):
         self._pending_scenario_ids = None
 
         if mode == "quick":
-            # 빠른 목표 — 이미 set 된 feature_query 있으면 그대로 사용, 없으면 dialog로 입력받음
+            # 빠른 목표 — 사용자 정의 QuickGoalInputDialog (multiline + 예시 + 카운터)
             existing = self.get_feature_query().strip() if hasattr(self, "get_feature_query") else ""
-            if not existing:
-                goal, ok = QInputDialog.getText(
-                    self,
-                    "빠른 목표 입력",
-                    "AI에게 실행시킬 목표를 한 줄로 입력하세요:\n"
-                    "(예: 로그인 후 메인 페이지에서 검색창을 사용해 '아이폰'을 검색)",
-                )
-                if not ok:
-                    return  # 사용자 취소
-                goal = goal.strip()
-                if not goal:
-                    QMessageBox.information(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
-                    return
-                self.set_feature_query(goal)
+            dlg = QuickGoalInputDialog(self, initial_text=existing)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return  # 사용자 취소
+            goal = dlg.goal_text()
+            if not goal:
+                NotificationDialog.info(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
+                return
+            self.set_feature_query(goal)
             self.startRequested.emit()
             return
 
         if mode == "bundle":
-            # 기획서 업로드 — QFileDialog로 파일 선택받음
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "기획서/번들 파일 선택",
-                "",
-                "Supported Files (*.pdf *.docx *.md *.txt *.json);;All Files (*)",
+            # 기획서 — BundleSelectionDialog (샘플 vs 파일 업로드 선택)
+            from pathlib import Path as _Path
+            sample_path = str(
+                _Path(__file__).resolve().parents[3] / "examples" / "sample_plan_bundle.json"
             )
-            if not file_path:
-                return  # 사용자 취소
-            # planFileSelected 시그널로 controller에 전달 (controller가 분석 후 startRequested 시킴)
-            self.planFileSelected.emit(file_path)
+            if not _Path(sample_path).exists():
+                sample_path = ""  # 샘플 파일 없으면 옵션 disable
+
+            dlg = BundleSelectionDialog(self, sample_path=sample_path)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            choice = dlg.chosen()
+            file_path = ""
+            if choice == "sample":
+                file_path = dlg.sample_path()
+                self.append_log(f"📦 샘플 기획서로 실행 시작: {_Path(file_path).name}")
+            elif choice == "upload":
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "기획서/번들 파일 선택 (JSON 권장 — PDF는 분석 시간 필요)",
+                    "",
+                    "JSON 번들 (*.json);;PDF 기획서 (*.pdf);;Word 문서 (*.docx);;텍스트 (*.md *.txt);;All Files (*)",
+                )
+                if not file_path:
+                    return  # 사용자 취소
+
+            suffix = _Path(file_path).suffix.lower() if file_path else ""
+            if suffix == ".json":
+                # JSON 번들/플랜 → sync 로드 + 즉시 실행
+                self.planFileSelected.emit(file_path)
+                self.startRequested.emit()
+            elif suffix in (".pdf", ".docx", ".md", ".txt"):
+                # PDF 등 → controller가 비동기 분석 → 완료 후 자동 실행
+                self.append_log(
+                    f"📄 기획서 분석 시작: {_Path(file_path).name} — 분석 완료 후 자동 실행됩니다."
+                )
+                self._pending_auto_start_after_analysis = True
+                self.fileDropped.emit(file_path)
+            else:
+                NotificationDialog.warning(
+                    self, "지원하지 않는 형식",
+                    "JSON 번들, PDF, DOCX, MD, TXT 파일만 지원합니다.",
+                )
             return
 
         # ai 모드 또는 fallback
         self.startRequested.emit()
 
     def show_test_case_stage(self) -> None:
-        """Step 2 — 테스트 케이스 선택 페이지로 이동."""
+        """Step 2 — 테스트 선택 페이지로 이동."""
         self._workflow_stage = "test_case"
         if self._workflow_stack.currentWidget() is not self._test_case_page:
             self._workflow_stack.setCurrentWidget(self._test_case_page)
@@ -4791,11 +5879,16 @@ class MainWindow(QMainWindow):
             self._back_to_setup_button.setEnabled(False)
         self._set_browser_panel_visible(False)
         self._update_workflow_indicators(0)
+        # 페이지가 실제 보이게 된 후 컨테이너 너비가 확정되므로 그리드 재배치 호출
+        # (QTimer로 다음 이벤트 루프 tick에 호출 — width()가 0이 아닌 값으로 확정된 후)
+        if hasattr(self, "_site_grid_container"):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._rearrange_site_grid)
 
     def show_setup_stage(self) -> None:
         """레거시 진입점 — 이제 항상 test_case_stage로 리다이렉트.
 
-        controller가 호환성을 위해 호출하지만, 신규 UX에서는 Step 2 = 테스트 케이스 선택.
+        controller가 호환성을 위해 호출하지만, 신규 UX에서는 Step 2 = 테스트 선택.
         """
         self.show_test_case_stage()
 
@@ -6021,7 +7114,7 @@ class MainWindow(QMainWindow):
                 logs = current_text.splitlines()
 
         if not logs:
-            QMessageBox.information(
+            NotificationDialog.info(
                 self,
                 "다운로드할 로그 없음",
                 "아직 실행된 로그가 없습니다. 테스트를 먼저 실행해 주세요.",
@@ -6047,13 +7140,13 @@ class MainWindow(QMainWindow):
                 f.write("# " + "=" * 60 + "\n\n")
                 for line in logs:
                     f.write(line.rstrip() + "\n")
-            QMessageBox.information(
+            NotificationDialog.success(
                 self,
                 "다운로드 완료",
-                f"로그가 저장되었습니다:\n{file_path}\n\n총 {len(logs)}줄",
+                f"로그가 저장되었습니다.\n\n위치: {file_path}\n총 {len(logs)}줄",
             )
         except Exception as exc:
-            QMessageBox.critical(
+            NotificationDialog.error(
                 self,
                 "다운로드 실패",
                 f"로그 저장 중 오류가 발생했습니다:\n{exc}",
@@ -6342,17 +7435,13 @@ class MainWindow(QMainWindow):
 
     def ask_for_bug_json(self) -> None:
         """플랜 불러오기 후 bug.json 선택 여부를 묻습니다."""
-        from PySide6.QtWidgets import QMessageBox
-
-        reply = QMessageBox.question(
+        ok = NotificationDialog.question(
             self,
             "Bug JSON 파일 선택",
             "ER (Error Rate) 측정을 위한 bug.json 파일을 선택하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            ok_text="선택", cancel_text="건너뛰기",
         )
-
-        if reply == QMessageBox.Yes:
+        if ok:
             # bug.json 선택 다이얼로그 열기
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
