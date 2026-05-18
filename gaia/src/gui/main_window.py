@@ -833,6 +833,7 @@ class TestCaseRow(QFrame):
         icon_mode: str,
         recommended: bool = False,
         favorite: bool = False,
+        scenario_id: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -847,6 +848,9 @@ class TestCaseRow(QFrame):
         self._recommended = bool(recommended)
         # 카테고리 필터 (Step 2 콤보)에서 사용할 icon_mode 저장
         self._icon_mode = str(icon_mode or "benchmark")
+        # 벤치마크 시나리오 1개에만 해당하는 케이스이면 해당 scenario_id 저장
+        # ""(빈 문자열)이면 전체 시나리오 실행 또는 비-벤치 모드
+        self._scenario_id = str(scenario_id or "")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
@@ -857,6 +861,8 @@ class TestCaseRow(QFrame):
         self._check.setObjectName("CaseRowCheck")
         self._check.setFixedSize(22, 22)
         self._check.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 마우스 이벤트가 row(부모)로 전달되도록 transparent — 체크 자체를 클릭해도 row 토글
+        self._check.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._update_check_style()
         layout.addWidget(self._check, alignment=Qt.AlignmentFlag.AlignVCenter)
 
@@ -872,25 +878,32 @@ class TestCaseRow(QFrame):
             f"font-size: 16px;"
             f"font-weight: 700;"
         )
+        # 마우스 이벤트 row로 통과 — 아이콘 클릭해도 row 토글
+        self._icon_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(self._icon_badge, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # 제목 + 설명
         text_col = QWidget(self)
+        text_col.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_layout = QVBoxLayout(text_col)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
         self._title_label = QLabel(title, text_col)
         self._title_label.setObjectName("CaseRowTitle")
+        self._title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_layout.addWidget(self._title_label)
         self._desc_label = QLabel(description, text_col)
         self._desc_label.setObjectName("CaseRowDesc")
         self._desc_label.setWordWrap(True)
+        self._desc_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         text_layout.addWidget(self._desc_label)
         layout.addWidget(text_col, stretch=1)
 
         # ETA pill
         self._eta_pill = QLabel(eta_text, self)
         self._eta_pill.setObjectName("CaseRowEtaPill")
+        # 마우스 이벤트 row로 통과 — ETA pill 클릭해도 row 토글
+        self._eta_pill.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         layout.addWidget(self._eta_pill, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         # ★ 즐겨찾기
@@ -919,6 +932,9 @@ class TestCaseRow(QFrame):
 
     def icon_mode(self) -> str:
         return self._icon_mode
+
+    def scenario_id(self) -> str:
+        return self._scenario_id
 
     def set_selected(self, selected: bool) -> None:
         self._selected = bool(selected)
@@ -2739,6 +2755,8 @@ class MainWindow(QMainWindow):
         self._benchmark_catalog: list[dict[str, Any]] = []
         self._selected_benchmark_site_key: str = ""
         self._selected_benchmark_url: str = ""
+        # 선택된 시나리오 ID 리스트 (None = 전체 실행) — controller가 BenchmarkWorker 생성 시 읽음
+        self._pending_scenario_ids: list[str] | None = None
         self._site_cards: list[SiteCard] = []
         self._selected_site_url: str = ""
         # Favicon 비동기 fetch용 네트워크 매니저 (전체 카드 공유)
@@ -3317,7 +3335,12 @@ class MainWindow(QMainWindow):
         if not url:
             return
         self._selected_site_url = url
+        # 등록된 사이트면 site_key 매칭, 아니면 빈 문자열 (커스텀 URL)
+        self._selected_benchmark_site_key = self._resolve_site_key_for_url(url)
+        self._selected_benchmark_url = url
         self.urlSubmitted.emit(url)
+        # 케이스 목록 갱신 (site_key 매칭 안 되면 DEFAULT로 폴백)
+        self.refresh_test_cases_for_site()
         # 곧바로 다음 단계로
         self.show_setup_stage_with_browser()
 
@@ -3333,6 +3356,8 @@ class MainWindow(QMainWindow):
         for card in self._site_cards:
             card.set_selected(card._url == url)  # noqa: SLF001
         self.urlSubmitted.emit(url)
+        # 선택된 사이트의 실제 벤치마크 시나리오로 케이스 목록 갱신
+        self.refresh_test_cases_for_site()
         self.show_test_case_stage()
 
     def _resolve_site_key_for_url(self, url: str) -> str:
@@ -3543,6 +3568,7 @@ class MainWindow(QMainWindow):
                 icon_mode=str(case.get("icon_mode", "benchmark")),
                 recommended=bool(case.get("recommended", False)),
                 favorite=False,
+                scenario_id=str(case.get("scenario_id", "")),
                 parent=self._case_rows_container,
             )
             # 메타데이터 보관
@@ -3553,6 +3579,133 @@ class MainWindow(QMainWindow):
 
         self._apply_case_tab_filter()
         self._update_case_selection_summary()
+
+    def _load_scenarios_for_site_key(self, site_key: str) -> list[Mapping[str, Any]]:
+        """주어진 site_key의 suite JSON에서 시나리오 리스트를 로드.
+
+        Returns: scenarios list (각 항목 dict) — 빈 리스트면 suite 없거나 로드 실패.
+        """
+        if not site_key:
+            return []
+        # _benchmark_catalog에서 suite_path 찾음
+        suite_path_rel = ""
+        for item in self._benchmark_catalog or []:
+            if str(item.get("key") or "").strip() == site_key:
+                suite_path_rel = str(item.get("suite_path") or "").strip()
+                break
+        if not suite_path_rel:
+            return []
+        try:
+            from pathlib import Path
+            import json as _json
+            workspace_root = Path(__file__).resolve().parents[3]  # gaia/src/gui → repo root
+            suite_path = workspace_root / suite_path_rel
+            if not suite_path.exists():
+                return []
+            data = _json.loads(suite_path.read_text(encoding="utf-8"))
+            scenarios = data.get("scenarios") or []
+            if not isinstance(scenarios, list):
+                return []
+            return [s for s in scenarios if isinstance(s, dict) and s.get("id")]
+        except Exception:
+            return []
+
+    def _build_dynamic_test_cases(self, site_key: str) -> list[dict[str, Any]]:
+        """사이트별 동적 테스트 케이스 목록 생성.
+
+        Returns:
+            전체 시나리오 실행 카드 1개 + 각 시나리오별 카드 N개 + 부가 모드들 (빠른 목표, AI, 기획서)
+        """
+        cases: list[dict[str, Any]] = []
+        scenarios = self._load_scenarios_for_site_key(site_key)
+
+        if scenarios:
+            # 1. "전체 시나리오 실행" — 카탈로그에 등록된 모든 시나리오
+            total_min = 0
+            total_max = 0
+            for s in scenarios:
+                budget = int(s.get("time_budget_sec", 0)) or 60
+                total_min += max(1, budget // 90)  # rough lower bound (분)
+                total_max += max(2, budget // 60)
+            cases.append({
+                "id": "benchmark_all",
+                "mode": "benchmark",
+                "icon_mode": "benchmark_all",
+                "title": f"전체 시나리오 실행 ({len(scenarios)}개)",
+                "desc": "이 사이트에 등록된 모든 시나리오를 순서대로 실행합니다.",
+                "eta": f"예상 소요 {total_min}~{total_max}분",
+                "recommended": True,
+                "scenario_id": "",  # 빈 문자열 → 전체 실행
+            })
+
+            # 2. 각 시나리오별 카드 (1:1)
+            for s in scenarios:
+                budget = int(s.get("time_budget_sec", 0)) or 60
+                eta_min = max(1, budget // 90)
+                eta_max = max(2, budget // 60)
+                desc = str(s.get("goal", "") or "").strip()
+                # 너무 길면 단축
+                if len(desc) > 110:
+                    desc = desc[:107] + "…"
+                cases.append({
+                    "id": str(s.get("id", "")),
+                    "mode": "benchmark",
+                    "icon_mode": "benchmark",
+                    "title": str(s.get("name", s.get("id", "시나리오"))),
+                    "desc": desc or "이 시나리오만 단독 실행합니다.",
+                    "eta": f"예상 소요 {eta_min}~{eta_max}분",
+                    "recommended": False,
+                    "scenario_id": str(s.get("id", "")),
+                })
+
+        # 3. 부가 모드들 (사이트 무관) — 빠른 목표, AI 자율 탐색, 기획서
+        cases.extend([
+            {
+                "id": "quick_goal",
+                "mode": "quick",
+                "icon_mode": "quick",
+                "title": "빠른 목표 직접 입력",
+                "desc": "AI가 직접 목표를 이해하고 수행합니다 (단일 실행).",
+                "eta": "예상 소요 1~3분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+            {
+                "id": "ai_explore",
+                "mode": "ai",
+                "icon_mode": "ai",
+                "title": "AI 자율 탐색",
+                "desc": "AI가 사이트를 자유 탐색하며 이상 여부를 보고합니다.",
+                "eta": "예상 소요 5~10분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+            {
+                "id": "from_spec",
+                "mode": "bundle",
+                "icon_mode": "spec",
+                "title": "기획서 업로드해서 자동 생성",
+                "desc": "PDF/DOCX 기획서를 업로드하면 시나리오 자동 생성.",
+                "eta": "예상 소요 2~5분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+        ])
+        return cases
+
+    def refresh_test_cases_for_site(self) -> None:
+        """현재 선택된 site_key에 맞춰 테스트 케이스 행을 새로 채움.
+
+        사이트 카드 클릭 → Step 2 진입 직전에 호출. site_key가 없으면 DEFAULT_TEST_CASES 사용.
+        """
+        site_key = (self._selected_benchmark_site_key or "").strip()
+        if site_key:
+            cases = self._build_dynamic_test_cases(site_key)
+            if cases:
+                self._populate_test_case_rows(cases)
+                return
+        # 폴백 — 정적 default
+        self._populate_test_case_rows(DEFAULT_TEST_CASES)
 
     def _set_case_tab(self, key: str) -> None:
         self._current_case_tab = key
@@ -3617,6 +3770,25 @@ class MainWindow(QMainWindow):
             row.setVisible(q in haystack)
 
     def _on_case_row_toggled(self, case_id: str, selected: bool) -> None:
+        """체크박스 토글 시 — 상호 배타 처리 + 요약 갱신.
+
+        "benchmark_all" (전체 시나리오) ↔ 개별 시나리오 (scenario_id 있는 카드) 상호 배타.
+        - 전체 시나리오 선택 → 개별 시나리오 모두 자동 해제
+        - 개별 시나리오 선택 → 전체 시나리오 자동 해제
+        """
+        if not selected:
+            self._update_case_selection_summary()
+            return
+        if case_id == "benchmark_all":
+            # 전체 시나리오를 선택했으면, 다른 개별 시나리오 카드는 모두 해제
+            for r in self._case_rows:
+                if r.case_id() != "benchmark_all" and r.scenario_id() and r.is_selected():
+                    r.set_selected(False)
+        elif case_id and any(r.case_id() == case_id and r.scenario_id() for r in self._case_rows):
+            # 개별 시나리오를 선택했으면, "전체 시나리오" 카드는 자동 해제
+            for r in self._case_rows:
+                if r.case_id() == "benchmark_all" and r.is_selected():
+                    r.set_selected(False)
         self._update_case_selection_summary()
 
     def _selected_case_rows(self) -> list[TestCaseRow]:
@@ -3653,7 +3825,8 @@ class MainWindow(QMainWindow):
     def _on_case_selection_complete(self) -> None:
         """\"선택 완료\" 클릭 — 모드/시그널 결정 후 Step 3로 자동 전환.
 
-        - benchmark 모드: benchmarkRunRequested 시그널로 라우팅 (controller가 set_busy(True) 호출 → Step 3).
+        - benchmark 모드: 선택된 시나리오 ID들을 self._pending_scenario_ids에 저장 후
+          benchmarkRunRequested 시그널로 라우팅 (controller가 worker에 전달).
         - quick/ai/bundle 모드: set_selected_run_mode + startRequested (기존 흐름).
         """
         rows = self._selected_case_rows()
@@ -3668,8 +3841,19 @@ class MainWindow(QMainWindow):
         self.set_selected_run_mode(mode)
 
         if mode == "benchmark":
+            # 시나리오 ID 수집 — "전체 시나리오"(scenario_id="")가 포함되면 None (필터 없이 전체 실행)
+            scenario_ids: list[str] = []
+            run_all = False
+            for r in rows:
+                sid = r.scenario_id()
+                if r.case_id() == "benchmark_all" or not sid:
+                    run_all = True
+                    break
+                scenario_ids.append(sid)
+            # controller가 BenchmarkWorker 생성 시 읽어갈 수 있도록 저장
+            self._pending_scenario_ids = None if run_all else (scenario_ids or None)
+
             # 벤치마킹 흐름: site_key + url로 controller에 요청.
-            # site_key가 없으면 (커스텀 URL) 안내 후 ai 모드로 fallback.
             site_key = self._selected_benchmark_site_key or ""
             url = self._selected_benchmark_url or self._selected_site_url or ""
             if site_key:
@@ -3684,6 +3868,7 @@ class MainWindow(QMainWindow):
             return
 
         # 기타 모드 (quick/ai/bundle) → 기존 흐름
+        self._pending_scenario_ids = None
         self.startRequested.emit()
 
     def show_test_case_stage(self) -> None:
@@ -4941,8 +5126,8 @@ class MainWindow(QMainWindow):
     def _apply_benchmark_metric_state(self) -> None:
         """_benchmark_metric_state를 Step 3 metric 위젯에 반영.
 
-        진행률(%)은 **성공률** 기준 — completed 중 passed의 비율.
-        하나라도 실패하면 100%에 도달할 수 없음 (사용자 직관 일치).
+        진행률(%)은 **완료율** 기준 — completed / total.
+        (성공/실패 여부와 무관하게 진행 정도를 표시. 성공률은 별도의 통과/실패 카드.)
         """
         state = getattr(self, "_benchmark_metric_state", None)
         if state is None:
@@ -4951,13 +5136,9 @@ class MainWindow(QMainWindow):
         completed = int(state.get("completed", 0))
         passed = int(state.get("pass", 0))
         failed = int(state.get("fail", 0))
-        # 성공률 — 완료된 시나리오 중 성공 비율
-        # (전체 시나리오 대비가 아니라 completed 대비로 계산 — 실시간 의미가 명확)
-        if completed > 0:
-            percent = passed / completed * 100.0
-        elif total > 0:
-            # 아직 완료된 게 없으면 0%로 시작
-            percent = 0.0
+        # 완료율 — 진행률은 완료된 시나리오의 비율 (성공/실패 무관)
+        if total > 0:
+            percent = min(100.0, completed / total * 100.0)
         else:
             percent = 0.0
         if hasattr(self, "_overall_progress_widget") and self._overall_progress_widget:
@@ -5340,7 +5521,7 @@ class MainWindow(QMainWindow):
         url = (
             getattr(self, "_result_grafana_url", "")
             or os.getenv("GAIA_GRAFANA_URL", "").strip()
-            or "http://localhost:3000"
+            or "http://15.164.24.65:3000"
         )
         try:
             from PySide6.QtGui import QDesktopServices
@@ -5426,7 +5607,7 @@ class MainWindow(QMainWindow):
                     self._result_action_reason.setVisible(False)
 
                 # Grafana URL 저장 + 버튼 활성화
-                grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://localhost:3000"
+                grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://15.164.24.65:3000"
                 self._result_grafana_url = grafana_base
                 self._result_grafana_button.setToolTip(f"외부 브라우저에서 {grafana_base} 열기")
 
@@ -5458,7 +5639,7 @@ class MainWindow(QMainWindow):
             rate_color = "#10b981"
 
             # Grafana 링크 — 항상 표시. env 변수가 없으면 기본 로컬 인스턴스(http://localhost:3000) 사용.
-            grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://localhost:3000"
+            grafana_base = os.getenv("GAIA_GRAFANA_URL", "").strip() or "http://15.164.24.65:3000"
             grafana_link_html = (
                 f'<a href="{_html.escape(grafana_base)}" target="_blank" '
                 f'style="display:inline-flex; align-items:center; gap:10px; '
