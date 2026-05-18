@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import base64
+import threading
+import time
 from io import BytesIO
 
 from PIL import Image
 
 from gaia import chat_hub
+from gaia.chat_hub import CommandResult, HubContext
 
 
 def test_parse_kv_tokens_keeps_dynamic_human_answer_fields() -> None:
@@ -16,6 +19,103 @@ def test_parse_kv_tokens_keeps_dynamic_human_answer_fields() -> None:
         "otp": "123456",
         "answer": "cold mans",
     }
+
+
+def test_dispatch_command_preserves_inline_credentials_when_router_rewrites_goal(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_interpret(_context, _text, *, pending_kind=""):
+        return {
+            "intent": "run_test",
+            "confidence": 0.9,
+            "goal_text": "로그인 후 메인 화면을 확인해줘",
+            "steering_text": "",
+            "handoff": {},
+        }
+
+    def fake_run_test(context, query, sink, intervention_callback=None):
+        del context, sink, intervention_callback
+        captured["query"] = query
+        return 0, {
+            "goal": query,
+            "status": "success",
+            "final_status": "SUCCESS",
+            "steps": 0,
+            "duration_seconds": 0,
+        }
+
+    monkeypatch.setattr(chat_hub, "_interpret_user_message_with_llm", fake_interpret)
+    monkeypatch.setattr(chat_hub, "_run_test", fake_run_test)
+    context = HubContext(
+        provider="openai",
+        model="gpt-5.5",
+        auth_strategy="reuse",
+        url="https://example.com/login",
+        runtime="terminal",
+        control_channel="telegram",
+    )
+
+    result = chat_hub.dispatch_command(
+        context,
+        "로그인 후 메인 화면 확인 username=student01 password=secret",
+        chat_hub.TerminalSink(),
+    )
+
+    assert isinstance(result, CommandResult)
+    assert result.code == 0
+    assert captured["query"].startswith("로그인 후 메인 화면을 확인해줘")
+    assert "username=student01" in captured["query"]
+    assert "password=secret" in captured["query"]
+
+
+def test_telegram_intervention_callback_waits_for_pending_response(monkeypatch) -> None:
+    class _Sink:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def info(self, text: str) -> None:
+            self.lines.append(text)
+
+        def error(self, text: str) -> None:
+            self.lines.append(text)
+
+    context = HubContext(
+        provider="openai",
+        model="gpt-5.5",
+        auth_strategy="reuse",
+        url="https://example.com/login",
+        runtime="terminal",
+        control_channel="telegram",
+    )
+    sink = _Sink()
+    callback = chat_hub._build_telegram_intervention_callback(context, sink)
+    monkeypatch.setenv("GAIA_TELEGRAM_INTERVENTION_TIMEOUT_SEC", "2")
+
+    def provide_response() -> None:
+        time.sleep(0.1)
+        context.pending_user_response = {
+            "action": "continue",
+            "proceed": "true",
+            "username": "student01",
+            "password": "secret",
+        }
+
+    thread = threading.Thread(target=provide_response)
+    thread.start()
+    response = callback(
+        {
+            "kind": "auth",
+            "question": "로그인 정보가 필요합니다.",
+            "fields": ["username", "password"],
+        }
+    )
+    thread.join(timeout=1)
+
+    assert response["action"] == "continue"
+    assert response["username"] == "student01"
+    assert response["password"] == "secret"
+    assert context.pending_user_input == {}
+    assert context.pending_user_response == {}
 
 
 def test_help_text_advertises_generic_resume_key_values() -> None:

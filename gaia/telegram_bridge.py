@@ -52,6 +52,7 @@ class _PendingIntervention:
     fields: list[str]
     event: threading.Event
     response_text: str = ""
+    ack_text: str = "응답을 받았습니다. 실행을 계속합니다."
 
 
 @dataclass(slots=True)
@@ -710,13 +711,18 @@ class _TelegramBridge:
         return out
 
     @staticmethod
-    def _parse_intervention_response(kind: str, text: str) -> Dict[str, Any]:
+    def _parse_intervention_response(
+        kind: str,
+        text: str,
+        fields: list[str] | None = None,
+    ) -> Dict[str, Any]:
         raw = (text or "").strip()
         low = raw.lower()
         if low in {"cancel", "/cancel", "n", "no", "취소"}:
             return {"action": "cancel", "proceed": False}
 
         kv = _TelegramBridge._parse_kv(raw)
+        requested_fields = [str(field or "").strip() for field in (fields or []) if str(field or "").strip()]
         if kind == "auth":
             if low in {"manual", "manual_done", "done", "수동완료"}:
                 return {"manual_done": True, "proceed": True}
@@ -772,6 +778,30 @@ class _TelegramBridge:
                 return {"action": "cancel", "proceed": False}
             return {"action": "cancel", "proceed": False}
 
+        if kind in {"human_answer", "input"}:
+            if kv:
+                kv.setdefault("action", "continue")
+                kv.setdefault("proceed", "true")
+                return kv
+            fillable_fields = [
+                field
+                for field in requested_fields
+                if field not in {"proceed", "manual_done", "instruction", "auth_mode", "return_credentials"}
+            ]
+            if raw and len(fillable_fields) == 1:
+                return {
+                    "action": "continue",
+                    "proceed": "true",
+                    fillable_fields[0]: raw,
+                }
+            if raw:
+                return {
+                    "action": "continue",
+                    "proceed": "true",
+                    "instruction": raw,
+                }
+            return {"action": "cancel", "proceed": False}
+
         if kind == "clarification":
             if not kv and raw:
                 return {"goal_text": raw, "proceed": True}
@@ -789,6 +819,232 @@ class _TelegramBridge:
             return {"action": "continue", "proceed": True}
 
         return {"action": "cancel", "proceed": False}
+
+    @staticmethod
+    def _fallback_intervention_message(kind: str, question: str, fields: list[str]) -> str:
+        def _has_field(name: str) -> bool:
+            return any(str(field or "").strip().lower() == name for field in fields)
+
+        helper_lines = []
+        if kind == "auth":
+            first_field = "이메일" if _has_field("email") and not _has_field("username") else "아이디"
+            helper_lines.append(f"로그인을 이어가려면 {first_field}를 먼저 보내주세요.")
+            if _has_field("auth_mode"):
+                helper_lines.append("회원가입으로 진행하려면: auth_mode=signup")
+        elif kind in {"human_answer", "input"}:
+            requested_fields = [
+                str(v).strip()
+                for v in fields
+                if str(v).strip()
+                and str(v).strip().lower()
+                not in {"action", "proceed", "manual_done", "instruction", "auth_mode", "return_credentials"}
+            ]
+            requested_set = {field.lower() for field in requested_fields}
+            if "password" in requested_set and ("username" in requested_set or "email" in requested_set):
+                first_field = "이메일" if "email" in requested_set and "username" not in requested_set else "아이디"
+                helper_lines.append(f"로그인을 이어가려면 {first_field}를 먼저 보내주세요.")
+            elif requested_fields:
+                helper_lines.append("필요한 값을 한 줄로 보내주세요.")
+            else:
+                helper_lines.append("원하는 처리 방향을 문장으로 답장해 주세요.")
+        elif kind == "clarification":
+            helper_lines.append("목표를 조금 더 구체적으로 보내주세요.")
+            helper_lines.append("예: 11주차 특강 영상을 재생해줘")
+        helper_lines.append("중단하려면 /cancel")
+        return "\n".join([question, *helper_lines]).strip()
+
+    @staticmethod
+    def _sequential_login_field(fields: list[str]) -> str:
+        normalized = {str(field or "").strip().lower() for field in fields}
+        if "email" in normalized and "username" not in normalized:
+            return "email"
+        return "username"
+
+    @staticmethod
+    def _should_collect_login_credentials(kind: str, fields: list[str]) -> bool:
+        if kind not in {"auth", "human_answer", "input"}:
+            return False
+        normalized = {str(field or "").strip().lower() for field in fields}
+        return "password" in normalized and ("username" in normalized or "email" in normalized)
+
+    @staticmethod
+    def _compose_intervention_message(payload: Dict[str, Any], fields: list[str]) -> str:
+        kind = str(payload.get("kind") or "input").strip().lower()
+        question = str(payload.get("question") or "추가 입력이 필요합니다.").strip()
+        fallback = _TelegramBridge._fallback_intervention_message(kind, question, fields)
+        if os.getenv("GAIA_TELEGRAM_LLM_INTERVENTION_MESSAGE", "1").strip().lower() in {"0", "false", "off", "no"}:
+            return fallback
+        try:
+            from gaia import chat_hub
+
+            client = chat_hub._get_chat_router_client()
+            if client is None or not hasattr(client, "analyze_text"):
+                return fallback
+            safe_payload = {
+                "kind": kind,
+                "question": question,
+                "fields": [str(v) for v in fields if str(v).strip()],
+                "goal_name": str(payload.get("goal_name") or "").strip(),
+                "goal_description": str(payload.get("goal_description") or "").strip(),
+                "reason_code": str(payload.get("reason_code") or "").strip(),
+            }
+            prompt = (
+                "당신은 GAIA Telegram 봇의 사용자 개입 안내문을 작성합니다.\n"
+                "사용자가 지금 답장해야 실행이 계속됩니다. 한국어로 자연스럽고 짧게 쓰세요.\n"
+                "반드시 JSON만 출력하세요: {\"message\":\"...\"}\n\n"
+                "작성 규칙:\n"
+                "- 현재 요청 kind/question/fields를 보고 필요한 정보만 요청합니다.\n"
+                "- 사용자가 자연스럽게 답장할 수 있도록 한 번에 하나씩 요청합니다.\n"
+                "- 로그인 정보는 예시를 들지 말고 '아이디를 먼저 보내주세요'처럼 안내합니다.\n"
+                "- proceed, action 같은 내부 제어 필드는 사용자에게 쓰라고 안내하지 않습니다.\n"
+                "- username/password, manual_done, instruction 같은 필드명은 꼭 필요한 경우가 아니면 사용자에게 노출하지 않습니다.\n"
+                "- password, otp, token 같은 민감값은 실제 값을 추측하거나 예시 값으로 길게 만들지 말고 <pw>, <otp>처럼 표기합니다.\n"
+                "- 취소 방법 /cancel은 마지막에 한 줄로 포함합니다.\n"
+                "- Telegram 메시지이므로 900자 이하, 마크다운 표 없이 작성합니다.\n\n"
+                f"요청 payload:\n{json.dumps(safe_payload, ensure_ascii=False, indent=2)}"
+            )
+            response = client.analyze_text(prompt, max_completion_tokens=700, temperature=0.2)
+            data = json.loads(chat_hub._extract_json_object(str(response)))
+            message = str(data.get("message") or "").strip() if isinstance(data, dict) else ""
+            if message:
+                return message[:1800]
+        except Exception:
+            return fallback
+        return fallback
+
+    def _wait_for_intervention_text(
+        self,
+        application,
+        chat_id: int,
+        reply_to_message_id: int | None,
+        *,
+        kind: str,
+        question: str,
+        fields: list[str],
+        prompt: str,
+        attachments: list[dict] | None = None,
+        timeout: int = 600,
+        ack_text: str = "",
+    ) -> tuple[str, str]:
+        loop = self.loop
+        if loop is None:
+            return ("cancel", "")
+
+        pending = _PendingIntervention(
+            kind=kind,
+            question=question,
+            fields=fields,
+            event=threading.Event(),
+            ack_text=ack_text,
+        )
+        with self._pending_lock:
+            self._pending_interventions[chat_id] = pending
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._send_text(application.bot, chat_id, prompt, reply_to_message_id),
+                loop,
+            )
+            fut.result(timeout=15)
+            if attachments:
+                fut_attach = asyncio.run_coroutine_threadsafe(
+                    self._send_attachments(
+                        application.bot,
+                        chat_id,
+                        attachments[:1],
+                        reply_to_message_id,
+                    ),
+                    loop,
+                )
+                fut_attach.result(timeout=15)
+        except Exception:
+            with self._pending_lock:
+                if self._pending_interventions.get(chat_id) is pending:
+                    self._pending_interventions.pop(chat_id, None)
+            return ("cancel", "")
+
+        waited = pending.event.wait(timeout=timeout)
+        with self._pending_lock:
+            if self._pending_interventions.get(chat_id) is pending:
+                self._pending_interventions.pop(chat_id, None)
+        if not waited:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_text(
+                        application.bot,
+                        chat_id,
+                        "입력 대기 시간(10분) 초과로 실행을 취소했습니다.",
+                        reply_to_message_id,
+                    ),
+                    loop,
+                )
+            except Exception:
+                pass
+            return ("timeout", "")
+
+        response_text = str(pending.response_text or "").strip()
+        if response_text.lower() in {"cancel", "/cancel", "취소"}:
+            return ("cancel", "")
+        return ("ok", response_text)
+
+    def _collect_login_credentials(
+        self,
+        application,
+        chat_id: int,
+        reply_to_message_id: int | None,
+        *,
+        kind: str,
+        question: str,
+        fields: list[str],
+        attachments: list[dict],
+    ) -> Dict[str, Any]:
+        username_field = self._sequential_login_field(fields)
+        username_label = "이메일" if username_field == "email" else "아이디"
+
+        status, first_text = self._wait_for_intervention_text(
+            application,
+            chat_id,
+            reply_to_message_id,
+            kind=kind,
+            question=question,
+            fields=[username_field],
+            prompt=f"로그인이 필요해요.\n먼저 {username_label}를 보내주세요.\n중단하려면 /cancel",
+            attachments=attachments,
+        )
+        if status != "ok":
+            return {"action": "cancel", "proceed": False}
+
+        first_kv = self._parse_kv(first_text)
+        username_value = first_kv.get(username_field) or first_kv.get("username") or first_kv.get("email") or first_text
+        password_value = first_kv.get("password")
+        if password_value:
+            return {
+                "action": "continue",
+                "proceed": "true",
+                username_field: username_value,
+                "password": password_value,
+            }
+
+        status, second_text = self._wait_for_intervention_text(
+            application,
+            chat_id,
+            reply_to_message_id,
+            kind=kind,
+            question=question,
+            fields=["password"],
+            prompt=f"{username_label} 확인했습니다.\n이제 비밀번호를 보내주세요.\n중단하려면 /cancel",
+        )
+        if status != "ok":
+            return {"action": "cancel", "proceed": False}
+
+        second_kv = self._parse_kv(second_text)
+        password_value = second_kv.get("password") or second_text
+        return {
+            "action": "continue",
+            "proceed": "true",
+            username_field: username_value,
+            "password": password_value,
+        }
 
     def _build_intervention_callback(self, application, chat_id: int, reply_to_message_id: int | None):
         def _callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -827,21 +1083,24 @@ class _TelegramBridge:
             if isinstance(attachments, list):
                 attachment_items = [item for item in attachments if isinstance(item, dict)]
 
-            helper_lines = []
-            if kind == "auth":
-                helper_lines.append("1) 계정 정보 전달: username=<id_or_email> password=<pw> [email=<email>]")
-                helper_lines.append("2) 회원가입 진행: auth_mode=signup")
-                helper_lines.append("3) 브라우저에서 직접 로그인 후 완료 알림: manual_done")
-            elif kind == "clarification":
-                helper_lines.append("1) 구체 목표 문장만 보내기")
-                helper_lines.append("2) goal=\"...\" username=<id> password=<pw> [email=<email>]")
-            helper_lines.append("취소: /cancel")
-            text = "\n".join(["추가 입력이 필요해 실행을 잠시 멈췄습니다.", question, *helper_lines]).strip()
+            normalized_fields = [str(v) for v in fields]
+            if self._should_collect_login_credentials(kind, normalized_fields):
+                return self._collect_login_credentials(
+                    application,
+                    chat_id,
+                    reply_to_message_id,
+                    kind=kind,
+                    question=question,
+                    fields=normalized_fields,
+                    attachments=attachment_items,
+                )
+
+            text = self._compose_intervention_message(payload, normalized_fields)
 
             pending = _PendingIntervention(
                 kind=kind,
                 question=question,
-                fields=[str(v) for v in fields],
+                fields=normalized_fields,
                 event=threading.Event(),
             )
             with self._pending_lock:
@@ -886,7 +1145,11 @@ class _TelegramBridge:
                 except Exception:
                     pass
                 return {"action": "cancel", "proceed": False}
-            return self._parse_intervention_response(kind, pending.response_text)
+            return self._parse_intervention_response(
+                kind,
+                pending.response_text,
+                fields=list(pending.fields or []),
+            )
 
         return _callback
 
@@ -1025,12 +1288,18 @@ class _TelegramBridge:
                         item.reply_to_message_id,
                     )
             except Exception as exc:
-                await self._send_text(
-                    application.bot,
-                    item.chat_id,
-                    f"명령 실행 중 오류: {exc}",
-                    item.reply_to_message_id,
-                )
+                try:
+                    await self._send_text(
+                        application.bot,
+                        item.chat_id,
+                        f"명령 실행 중 오류: {exc}",
+                        item.reply_to_message_id,
+                    )
+                except Exception as send_exc:
+                    print(
+                        "[telegram/bridge] failed to send error report: "
+                        f"{type(send_exc).__name__}: {send_exc}"
+                    )
             finally:
                 with self._state_lock:
                     self._active_runs.pop(item.chat_id, None)
@@ -1245,7 +1514,8 @@ class _TelegramBridge:
                 return
             pending.response_text = "cancel" if lowered in {"/cancel", "cancel", "취소"} else raw
             pending.event.set()
-            await message.reply_text("응답을 받았습니다. 실행을 계속합니다.")
+            if pending.ack_text:
+                await message.reply_text(pending.ack_text)
             return
 
         if await self._handle_pair_command(raw, chat_id, message, context):
@@ -1260,6 +1530,23 @@ class _TelegramBridge:
 
         if self._looks_like_live_status_query(raw):
             await message.reply_text(self._format_live_status(chat_id))
+            return
+
+        hub_pending = dict(getattr(self.hub_context, "pending_user_input", {}) or {})
+        if hub_pending:
+            kind = str(hub_pending.get("kind") or "input").strip().lower()
+            fields = hub_pending.get("fields")
+            if not isinstance(fields, list):
+                fields = []
+            response = self._parse_intervention_response(kind, raw, fields=[str(item) for item in fields])
+            self.hub_context.pending_user_response = response
+            self.hub_context.pending_user_input = {}
+            if self.hub_context.on_session_update:
+                try:
+                    self.hub_context.on_session_update(self.hub_context)
+                except Exception:
+                    pass
+            await message.reply_text("응답을 받았습니다. 실행을 계속합니다.")
             return
 
         position = self.queue.qsize() + 1

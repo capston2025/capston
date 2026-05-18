@@ -425,6 +425,22 @@ def _parse_kv_tokens(raw: str) -> Dict[str, str]:
     return out
 
 
+def _append_missing_kv_tokens(text: str, kv: Dict[str, str]) -> str:
+    base = str(text or "").strip()
+    if not kv:
+        return base
+    existing = _parse_kv_tokens(base)
+    additions = []
+    for key, value in kv.items():
+        if key in existing:
+            continue
+        additions.append(f"{key}={shlex.quote(str(value))}")
+    suffix = " ".join(additions).strip()
+    if not suffix:
+        return base
+    return f"{base} {suffix}".strip()
+
+
 def _looks_like_steering_text(text: str) -> bool:
     norm = str(text or "").strip().lower()
     if not norm:
@@ -936,6 +952,20 @@ def _run_gui(*args: str) -> int:
 
 
 def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
+    def _wait_for_response(timeout_sec: float) -> Optional[Dict[str, Any]]:
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        while time.monotonic() < deadline:
+            if context.pending_user_response:
+                response = dict(context.pending_user_response)
+                context.pending_user_response = {}
+                context.pending_user_input = {}
+                _notify_session_update(context)
+                return response
+            if bool(context.stop_requested):
+                return {"action": "cancel", "proceed": False, "reason_code": "user_cancelled"}
+            time.sleep(0.25)
+        return None
+
     def _callback(payload: dict) -> dict:
         context.pending_user_input = dict(payload or {})
         _notify_session_update(context)
@@ -968,7 +998,17 @@ def _build_telegram_intervention_callback(context: HubContext, sink: HubSink):
             )
         else:
             sink.info("실행에 필요한 정보가 부족해 잠시 멈췄습니다. 필요한 값을 함께 다시 실행해 주세요.")
-        return {"action": "cancel", "proceed": False, "reason_code": "user_intervention_missing"}
+        try:
+            timeout_sec = float(os.getenv("GAIA_TELEGRAM_INTERVENTION_TIMEOUT_SEC", "600") or "600")
+        except Exception:
+            timeout_sec = 600.0
+        response = _wait_for_response(timeout_sec)
+        if response is not None:
+            return response
+        sink.info("입력 대기 시간 초과로 실행을 취소했습니다.")
+        context.pending_user_input = {}
+        _notify_session_update(context)
+        return {"action": "cancel", "proceed": False, "reason_code": "intervention_timeout"}
 
     return _callback
 
@@ -1176,6 +1216,7 @@ def dispatch_command(
         return CommandResult(code=0, status="empty")
 
     if not line.startswith("/"):
+        inline_kv = _parse_kv_tokens(line)
         pending_kind = str((context.pending_user_input or {}).get("kind") or "").strip().lower()
         nlu = _interpret_user_message_with_llm(context, line, pending_kind=pending_kind)
         nlu_intent = str(nlu.get("intent") or "").strip().lower()
@@ -1259,7 +1300,7 @@ def dispatch_command(
 
         if nlu_intent == "run_test" and nlu_conf >= 0.35:
             goal_text = str(nlu.get("goal_text") or "").strip()
-            line = f"/test {goal_text or line}"
+            line = f"/test {_append_missing_kv_tokens(goal_text or line, inline_kv)}"
 
         # 일반 입력도 스티어링 문장 패턴이면 /steer 없이 정책으로 적용
         if not line.startswith("/") and _looks_like_steering_text(line):
