@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -58,6 +59,15 @@ class LLMVisionClient:
         except Exception:
             return None
         profile = raw.get(provider, {}) if isinstance(raw, dict) else {}
+        source = str(profile.get("source") or "").strip().lower()
+        metadata = profile.get("metadata")
+        if source.startswith("oauth") and isinstance(metadata, dict):
+            try:
+                expires_at = int(metadata.get("expires_at") or 0)
+            except Exception:
+                expires_at = 0
+            if expires_at and expires_at <= int(time.time()) + 30:
+                return None
         token = profile.get("token")
         if isinstance(token, str) and token.strip():
             return token.strip()

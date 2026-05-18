@@ -253,10 +253,14 @@ def _is_oauth_provider(provider: str) -> bool:
     return provider == "openai"
 
 
+def _is_oauth_source(source: Any) -> bool:
+    return isinstance(source, str) and source.strip().lower().startswith("oauth")
+
+
 def _is_oauth_token_expired(profile: dict[str, Any]) -> bool:
     source = profile.get("source")
     metadata = profile.get("metadata")
-    if source != "oauth" or not isinstance(metadata, dict):
+    if not _is_oauth_source(source) or not isinstance(metadata, dict):
         return False
     expires_at = _to_int(metadata.get("expires_at"))
     if not expires_at:
@@ -313,8 +317,11 @@ def _refresh_openai_token(profile: dict[str, Any]) -> str | None:
         return None
 
     new_expires = _to_int(response.get("expires_in"))
+    source = str(profile.get("source") or "oauth").strip() or "oauth"
+    if not _is_oauth_source(source):
+        source = "oauth"
     metadata_updates: dict[str, Any] = {
-        "source": "oauth",
+        "source": source,
         "oauth": True,
         "updated_at": _now_iso(),
         "issued_at": _now_iso(),
@@ -333,7 +340,7 @@ def _refresh_openai_token(profile: dict[str, Any]) -> str | None:
     _save_provider_profile(
         provider="openai",
         token=access_token.strip(),
-        source="oauth",
+        source=source,
         metadata=metadata_updates,
     )
     return access_token.strip()
@@ -440,11 +447,15 @@ def get_stored_token(provider: str) -> str | None:
     if not isinstance(token, str) or not token.strip():
         return None
 
-    if _is_oauth_provider(provider) and profile.get("source") == "oauth":
+    if _is_oauth_provider(provider) and _is_oauth_source(profile.get("source")):
         if _is_oauth_token_expired(profile):
-            refreshed = _refresh_openai_token(profile)
+            try:
+                refreshed = _refresh_openai_token(profile)
+            except Exception:
+                refreshed = None
             if refreshed:
                 return refreshed
+            return None
         return token.strip()
 
     return token.strip()
@@ -655,6 +666,17 @@ def _persist_codex_openai_profile(token_payload: dict[str, Any]) -> str | None:
     expires_at = _to_int(token_payload.get("expires_at"))
     if expires_at:
         metadata["expires_at"] = expires_at
+        if expires_at <= _now_ts() + 30:
+            try:
+                return _refresh_openai_token(
+                    {
+                        "source": "oauth_codex_cli",
+                        "token": access.strip(),
+                        "metadata": metadata,
+                    }
+                )
+            except Exception:
+                return None
     _save_provider_profile("openai", access.strip(), source="oauth_codex_cli", metadata=metadata)
     return access.strip()
 

@@ -68,3 +68,44 @@ def test_openai_client_uses_codex_cli_auth_without_api_key(monkeypatch, tmp_path
     assert client.provider == "openai"
     assert client._prefer_codex_cli is True
     assert client.client is None
+
+
+def test_openai_profile_loader_skips_expired_codex_oauth_token(monkeypatch, tmp_path) -> None:
+    auth_dir = tmp_path / ".gaia" / "auth"
+    auth_dir.mkdir(parents=True)
+    (auth_dir / "profiles.json").write_text(
+        json.dumps(
+            {
+                "openai": {
+                    "provider": "openai",
+                    "token": "expired-token",
+                    "source": "oauth_codex_cli",
+                    "updated_at": "2026-05-18T00:00:00Z",
+                    "metadata": {
+                        "expires_at": 1,
+                        "refresh_token": "refresh-token",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.shutil.which", lambda _name: None)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.openai.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.LLMVisionClient._read_local_env_file_assignments", staticmethod(lambda: {}))
+    monkeypatch.setenv("GAIA_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("GAIA_LLM_MODEL", "gpt-5.5")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GAIA_OPENAI_AUTH_SOURCE", raising=False)
+
+    client = LLMVisionClient(provider="openai")
+
+    assert client.provider == "openai"
+    assert captured["api_key"] is None
