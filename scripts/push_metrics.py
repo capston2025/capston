@@ -408,6 +408,65 @@ def build_scenario_metrics(
             declared,
         ))
 
+        # ── 실행별(per-run) 메트릭: 각 실행을 별도 시리즈로 푸시 ────────
+        # run_idx + run_dir 라벨로 같은 시나리오의 여러 실행을 구분.
+        # Grafana 테이블에서 실행마다 별도 row 로 표시할 때 사용.
+        for idx, run in enumerate(runs, start=1):
+            run_status_ok = 1.0 if str(run.get("status") or "").upper() == "SUCCESS" else 0.0
+            run_duration = run.get("duration_seconds")
+            run_dir = str(run.get("_suite_dir") or f"run_{idx}")
+            run_model = run.get("model", model)
+            run_provider = run.get("provider", provider)
+            run_runner_id = run.get("runner_id", runner_id)
+            run_completion = (run.get("summary") or {}).get("goal_completion_source", "")
+            run_started_ts = _timestamp_seconds(run.get("started_at"))
+
+            run_fail_reason = ""
+            if run_status_ok == 0.0:
+                rc_summary = (run.get("summary") or {}).get("reason_code_summary", {})
+                if rc_summary:
+                    run_fail_reason = ",".join(
+                        f"{k}:{v}" for k, v in
+                        sorted(rc_summary.items(), key=lambda x: -x[1])[:3]
+                    )[:120]
+
+            # 정렬용 zero-pad 인덱스 (001, 002, ... 형태로 lexicographic 정렬 보장)
+            run_idx_padded = str(idx).zfill(4)
+            run_base = _with_site_labels({
+                "suite_id": suite_id,
+                "scenario_id": scenario_id,
+                "site": metadata["site"],
+                "model": run_model,
+                "provider": run_provider,
+                "runner_id": run_runner_id,
+                "run_idx": run_idx_padded,
+                "run_dir": run_dir,
+            }, metadata)
+
+            lines.extend(_gauge(
+                "gaia_scenario_run_status",
+                "Per-run scenario status (1=SUCCESS 0=FAIL)",
+                run_status_ok,
+                {**run_base, "completion": run_completion, "fail_reason": run_fail_reason},
+                declared,
+            ))
+            if run_duration is not None:
+                lines.extend(_gauge(
+                    "gaia_scenario_run_duration_sec",
+                    "Per-run scenario duration (seconds)",
+                    run_duration,
+                    run_base,
+                    declared,
+                ))
+            if run_started_ts is not None:
+                lines.extend(_gauge(
+                    "gaia_scenario_run_timestamp_seconds",
+                    "Per-run scenario start timestamp",
+                    run_started_ts,
+                    run_base,
+                    declared,
+                ))
+
     return "\n".join(lines) + "\n"
 
 
@@ -596,21 +655,22 @@ def merge_into_history(
     new_rows: list[dict],
     suite_dir_name: str,
 ) -> list[dict]:
-    """새 실행 결과를 히스토리에 병합 (scenario_id + started_at 기준 중복 제거).
-    병합 후 started_at 기준 오름차순 정렬 → runs[-1] 이 항상 최신 실행.
+    """새 실행 결과를 히스토리에 병합 (suite_dir_name + scenario_id 기준 중복 제거).
+    suite_dir_name 은 타임스탬프 기반 디렉토리명이라 실행마다 고유함.
+    병합 후 suite_dir_name 기준 오름차순 정렬 → runs[-1] 이 항상 최신 실행.
     """
     existing_keys: set[tuple[str, str]] = {
-        (str(r.get("scenario_id") or ""), str(r.get("started_at") or ""))
+        (str(r.get("_suite_dir") or ""), str(r.get("scenario_id") or ""))
         for r in history
     }
     for row in new_rows:
-        key = (str(row.get("scenario_id") or ""), str(row.get("started_at") or ""))
+        key = (suite_dir_name, str(row.get("scenario_id") or ""))
         if key not in existing_keys:
             history.append({**row, "_suite_dir": suite_dir_name})
             existing_keys.add(key)
 
-    # started_at 기준 정렬 (없으면 빈 문자열로 처리 → 맨 앞)
-    history.sort(key=lambda r: str(r.get("started_at") or ""))
+    # suite_dir_name 기준 정렬 (타임스탬프 포함 → 오름차순이면 runs[-1] 이 최신)
+    history.sort(key=lambda r: str(r.get("_suite_dir") or ""))
     return history
 
 
