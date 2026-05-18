@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from gaia.src.phase4.goal_driven.agent_intervention_runtime import request_goal_clarification
 from gaia.src.phase4.goal_driven.execute_goal_intervention import handle_login_intervention
 from gaia.src.phase4.goal_driven.human_answer_runtime import (
+    is_goal_achievement_confirmation_request,
     parse_human_answer_request,
     request_human_answer,
 )
@@ -72,6 +73,26 @@ def test_parse_human_answer_request_accepts_wait_skill_payload() -> None:
     assert parsed["question"] == "현재 인증번호가 필요합니다."
     assert parsed["fields"] == ["otp"]
     assert parsed["sensitive"] is False
+
+
+def test_goal_achievement_confirmation_request_is_not_user_input() -> None:
+    assert is_goal_achievement_confirmation_request(
+        {
+            "question": "현재 화면에서 목표가 달성되었는지 확인해 주세요.",
+            "fields": [],
+            "reason_code": "goal_achieved_confirmation",
+        }
+    )
+
+
+def test_goal_achievement_confirmation_ignores_real_required_fields() -> None:
+    assert not is_goal_achievement_confirmation_request(
+        {
+            "question": "OTP를 알려주세요.",
+            "fields": ["otp"],
+            "reason_code": "human_answer_required",
+        }
+    )
 
 
 def test_request_human_answer_uses_ai_requested_fields_and_merges_response() -> None:

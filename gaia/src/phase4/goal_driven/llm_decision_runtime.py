@@ -695,6 +695,7 @@ def decide_next_action(
 - 로그인/인증/OTP/보안문자/정답 입력처럼 현재 화면에서 사용자의 실제 값이 필요하지만 `사용 가능한 테스트 데이터`에 그 값이 없으면 추측하지 마세요. 이때는 아래 human_answer skill을 호출하세요.
 - human_answer skill 사용법: `action`은 `wait`, `value`는 JSON 문자열/객체 `{{"skill":"human_answer","question":"사용자에게 물어볼 질문","fields":["필요한_key"],"reason_code":"human_answer_required"}}`로 응답합니다. 필요한 필드명은 현재 화면과 목표를 보고 직접 정하세요.
 - human_answer는 사용자에게 묻기 위한 skill입니다. 버튼 클릭/입력으로 해결 가능한 단계에는 쓰지 말고, 모델이 알 수 없는 실제 비밀값/정답/인증값이 필요할 때만 사용하세요.
+- 목표 달성 여부를 사용자에게 확인하려고 human_answer를 호출하지 마세요. 순위표/목록/기사/검색결과처럼 화면 증거로 검증 가능한 목표는 `is_goal_achieved=true`와 `goal_achievement_reason`으로 선언하면 검증 에이전트가 DOM 증거로 판정합니다.
 
 {participant_skill_prompt}
 

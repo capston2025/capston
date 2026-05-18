@@ -180,7 +180,11 @@ from gaia.src.phase4.orchestrator import MasterOrchestrator
 from .text_llm_runtime import call_llm_text_only as call_llm_text_only_impl
 from .captcha_observer_runtime import run_captcha_observer as run_captcha_observer_impl
 from .wrapper_trace_runtime import thin_wrapper_enabled
-from .human_answer_runtime import parse_human_answer_request, request_human_answer
+from .human_answer_runtime import (
+    is_goal_achievement_confirmation_request,
+    parse_human_answer_request,
+    request_human_answer,
+)
 from .multi_user_interaction_runtime import (
     activate_multi_user_interaction,
     begin_participant_turn,
@@ -1729,6 +1733,67 @@ class GoalDrivenAgent:
                 else {}
             )
             if human_answer_request:
+                if is_goal_achievement_confirmation_request(human_answer_request):
+                    self._consecutive_wait_count = (
+                        int(getattr(self, "_consecutive_wait_count", 0) or 0) + 1
+                    )
+                    completion_reason = (
+                        str(human_answer_request.get("question") or "").strip()
+                        or str(decision.reasoning or "").strip()
+                        or "화면 증거 기반 목표 달성 후보"
+                    )
+                    verification_decision = decision.model_copy(
+                        update={
+                            "is_goal_achieved": True,
+                            "goal_achievement_reason": completion_reason,
+                        }
+                    )
+                    is_valid, invalid_reason = self._validate_goal_achievement_claim(
+                        goal=goal,
+                        decision=verification_decision,
+                        dom_elements=dom_elements,
+                    )
+                    steps.append(
+                        StepResult(
+                            step_number=step_count,
+                            action=verification_decision,
+                            success=is_valid,
+                            error_message=None if is_valid else invalid_reason,
+                            duration_ms=int((time.time() - step_start) * 1000),
+                            participant_id=getattr(decision, "participant_id", None),
+                        )
+                    )
+                    if is_valid:
+                        self._record_reason_code("goal_achievement_verified")
+                        self._log(
+                            "✅ human_answer 목표 달성 확인 요청을 사용자 개입 대신 검증 에이전트로 처리했습니다."
+                        )
+                        result = GoalResult(
+                            goal_id=goal.id,
+                            goal_name=goal.name,
+                            success=True,
+                            steps_taken=steps,
+                            total_steps=step_count,
+                            final_reason=verification_decision.goal_achievement_reason or completion_reason,
+                            duration_seconds=time.time() - start_time,
+                        )
+                        self._record_goal_summary(
+                            goal=goal,
+                            status="success",
+                            reason=result.final_reason,
+                            step_count=step_count,
+                            duration_seconds=result.duration_seconds,
+                        )
+                        return result
+                    self._record_reason_code("goal_achievement_verification_rejected")
+                    self._log(f"⚠️ human_answer 목표 달성 확인 요청 보류: {invalid_reason}")
+                    self._action_feedback.append(
+                        "목표 달성 확인은 사용자에게 묻지 말고 is_goal_achieved=true로 선언해야 합니다. "
+                        f"검증 보류 사유: {invalid_reason}"
+                    )
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
+                    continue
                 ok, answer_reason = request_human_answer(
                     self,
                     goal,

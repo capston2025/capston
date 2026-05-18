@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Mapping
 
@@ -70,6 +71,41 @@ def parse_human_answer_request(value: Any) -> dict[str, Any]:
         "sensitive": _to_bool(raw.get("sensitive"), default=True),
         "instructions": str(raw.get("instructions") or "").strip(),
     }
+
+
+def is_goal_achievement_confirmation_request(request: Mapping[str, Any]) -> bool:
+    """Detect legacy human_answer payloads that should be handled by goal verification."""
+    reason_code = str(request.get("reason_code") or "").strip().lower()
+    if reason_code in {
+        "goal_achieved_confirmation",
+        "goal_achievement_confirmation",
+        "goal_completion_confirmation",
+    }:
+        return True
+
+    fields = [
+        str(field or "").strip()
+        for field in list(request.get("fields") or [])
+        if str(field or "").strip()
+    ]
+    if fields:
+        return False
+
+    question = re.sub(r"\s+", " ", str(request.get("question") or "").strip().lower())
+    if not question:
+        return False
+    korean_confirmation = "목표" in question and any(token in question for token in ("달성", "완료", "성공"))
+    english_confirmation = any(
+        token in question
+        for token in (
+            "goal achieved",
+            "goal is achieved",
+            "goal completed",
+            "task completed",
+            "successfully displayed",
+        )
+    )
+    return bool(korean_confirmation or english_confirmation)
 
 
 def request_human_answer(agent: Any, goal: Any, request: Mapping[str, Any]) -> tuple[bool, str]:

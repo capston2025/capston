@@ -232,6 +232,12 @@ def handle_post_action_runtime(
             agent._action_feedback = agent._action_feedback[-10:]
     if bool(success and changed):
         agent._overlay_intercept_pending = False
+        force_resnapshot = getattr(agent, "_force_next_dom_resnapshot", None)
+        if callable(force_resnapshot):
+            try:
+                force_resnapshot(reason="post_action_changed")
+            except Exception:
+                pass
     elif reason_code in {"not_actionable", "no_state_change"} and agent._error_indicates_overlay_intercept(error):
         agent._overlay_intercept_pending = True
         agent._record_reason_code("overlay_intercept_detected")

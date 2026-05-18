@@ -248,6 +248,123 @@ def _force_analyze_dom_for_visual_find(agent) -> List[DOMElement]:
         return []
 
 
+def _force_analyze_dom_for_ref_recovery(agent, *, reason: str = "ref_recovery") -> List[DOMElement]:
+    force_resnapshot = getattr(agent, "_force_next_dom_resnapshot", None)
+    if callable(force_resnapshot):
+        try:
+            force_resnapshot(reason=reason)
+        except Exception:
+            pass
+    try:
+        return list(agent._analyze_dom(force_refresh=True) or [])
+    except TypeError:
+        return list(agent._analyze_dom() or [])
+    except Exception:
+        return []
+
+
+def _is_fillable_element(agent, element: Optional[DOMElement]) -> bool:
+    if element is None:
+        return False
+    if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+        return False
+    if not str(getattr(element, "ref_id", "") or "").strip():
+        return False
+    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    if field_type in {"hidden", "button", "submit", "reset", "checkbox", "radio", "file", "image"}:
+        return False
+    return tag in {"input", "textarea"} or role in {"textbox", "searchbox", "combobox"}
+
+
+def _fill_target_score(
+    agent,
+    decision: ActionDecision,
+    element: DOMElement,
+    current_element: Optional[DOMElement],
+) -> float:
+    if not _is_fillable_element(agent, element):
+        return -1.0
+    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    element_blob = _normalized_binding_text(
+        agent,
+        " ".join(
+            [
+                str(getattr(element, "text", "") or ""),
+                str(getattr(element, "aria_label", "") or ""),
+                str(getattr(element, "placeholder", "") or ""),
+                str(getattr(element, "title", "") or ""),
+                str(getattr(element, "role_ref_name", "") or ""),
+                str(getattr(element, "container_name", "") or ""),
+                str(getattr(element, "context_text", "") or ""),
+                str(getattr(element, "type", "") or ""),
+            ]
+        ),
+    )
+    intent_blob = _normalized_binding_text(
+        agent,
+        " ".join(
+            [
+                str(getattr(decision, "reasoning", "") or ""),
+                str(getattr(decision, "value", "") or ""),
+            ]
+        ),
+    )
+    score = 1.0
+    if tag == "input":
+        score += 2.0
+    elif tag == "textarea":
+        score += 1.5
+    if role == "searchbox" or field_type == "search":
+        score += 5.0
+    elif role == "textbox":
+        score += 3.0
+    elif role == "combobox":
+        score += 1.5
+    if bool(getattr(element, "is_focused", False)):
+        score += 6.0
+
+    search_intent = any(token in intent_blob for token in ("검색", "뉴스 검색", "search", "query"))
+    if search_intent:
+        if any(token in element_blob for token in ("검색", "search", "query")):
+            score += 7.0
+        if "뉴스" in intent_blob and "뉴스" in element_blob:
+            score += 3.0
+    if current_element is not None:
+        current_container = _normalized_binding_text(agent, getattr(current_element, "container_name", ""))
+        current_context = _normalized_binding_text(agent, getattr(current_element, "context_text", ""))
+        if current_container and current_container == _normalized_binding_text(agent, getattr(element, "container_name", "")):
+            score += 1.0
+        if current_context and current_context == _normalized_binding_text(agent, getattr(element, "context_text", "")):
+            score += 1.0
+    return score
+
+
+def _find_fill_target_candidate(
+    agent,
+    decision: ActionDecision,
+    current_element: Optional[DOMElement],
+    live_dom: List[DOMElement],
+) -> Optional[DOMElement]:
+    if not isinstance(live_dom, list) or not live_dom:
+        return None
+    if _is_fillable_element(agent, current_element):
+        return current_element
+    best_score = -1.0
+    best_element: Optional[DOMElement] = None
+    for candidate in live_dom:
+        score = _fill_target_score(agent, decision, candidate, current_element)
+        if score > best_score:
+            best_score = score
+            best_element = candidate
+    if best_score < 6.0:
+        return None
+    return best_element
+
+
 def _coordinate_click_script(x: int, y: int) -> str:
     return (
         "() => {"
@@ -769,6 +886,23 @@ def execute_decision(
         if selected_element is not None and getattr(selected_element, "id", None) is not None
         else None
     )
+
+    def _bind_recovered_element(rebound_element: Optional[DOMElement]) -> None:
+        nonlocal selector, full_selector, ref_id, bound_element_id, selected_element
+        if rebound_element is None or getattr(rebound_element, "id", None) is None:
+            return
+        bound_element_id = int(getattr(rebound_element, "id"))
+        selected_element = rebound_element
+        selector = agent._element_selectors.get(bound_element_id) or selector
+        full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
+        ref_id = agent._element_ref_ids.get(bound_element_id) or None
+        if not ref_id:
+            ref_meta = (getattr(agent, "_element_ref_meta_by_id", {}) or {}).get(bound_element_id)
+            if isinstance(ref_meta, dict):
+                ref_id = str(ref_meta.get("ref") or ref_meta.get("ref_id") or "").strip() or None
+        if not ref_id:
+            ref_id = str(getattr(rebound_element, "ref_id", "") or "").strip() or None
+
     if requires_ref and decision.element_id is not None:
         selector = agent._element_selectors.get(decision.element_id)
         full_selector = agent._element_full_selectors.get(decision.element_id)
@@ -809,6 +943,27 @@ def execute_decision(
         selector = agent._element_selectors.get(bound_element_id) or selector
         full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
         ref_id = ref_id or agent._element_ref_ids.get(bound_element_id)
+    if decision.action == ActionType.FILL and not _is_fillable_element(agent, selected_element):
+        previous_ref_id = ref_id
+        repaired_fill_target = _find_fill_target_candidate(
+            agent,
+            decision,
+            selected_element,
+            list(dom_elements or []),
+        )
+        if repaired_fill_target is None:
+            refreshed_dom = _force_analyze_dom_for_ref_recovery(agent, reason="fill_target_recovery")
+            if refreshed_dom:
+                repaired_fill_target = _find_fill_target_candidate(
+                    agent,
+                    decision,
+                    selected_element,
+                    refreshed_dom,
+                )
+        if repaired_fill_target is not None:
+            _bind_recovered_element(repaired_fill_target)
+            if ref_id and previous_ref_id != ref_id:
+                agent._log(f"♻️ fill 대상 재바인딩: {previous_ref_id or 'none'} -> {ref_id}")
     element_actions = {
         ActionType.CLICK,
         ActionType.FILL,
@@ -837,7 +992,7 @@ def execute_decision(
             candidate_meta = previous_elements_by_ref.get(previous_ref_id)
             if isinstance(candidate_meta, dict):
                 previous_meta = candidate_meta
-        refreshed_dom = agent._analyze_dom() or []
+        refreshed_dom = _force_analyze_dom_for_ref_recovery(agent)
         selector_to_ref = getattr(agent, "_selector_to_ref_id", {}) or {}
         ref_id = None
         rebound_element = None
@@ -886,6 +1041,15 @@ def execute_decision(
             )
             if repaired is not None:
                 rebound_element = repaired
+        if decision.action == ActionType.FILL:
+            repaired = _find_fill_target_candidate(
+                agent,
+                decision,
+                rebound_element or selected_element,
+                refreshed_dom,
+            )
+            if repaired is not None:
+                rebound_element = repaired
         if rebound_element is None and decision.action == ActionType.CLICK:
             visual_labels = _visual_find_label_candidates(agent, decision, selected_element)
             rebound_element = _find_visible_text_ref_candidate(agent, visual_labels, refreshed_dom)
@@ -895,19 +1059,7 @@ def execute_decision(
                     rebound_element = _find_visible_text_ref_candidate(agent, visual_labels, force_refreshed_dom)
                     if rebound_element is not None:
                         refreshed_dom = force_refreshed_dom
-        if rebound_element is not None and getattr(rebound_element, "id", None) is not None:
-            bound_element_id = int(getattr(rebound_element, "id"))
-            selected_element = rebound_element
-        if bound_element_id is not None:
-            selector = agent._element_selectors.get(bound_element_id) or selector
-            full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
-            ref_id = agent._element_ref_ids.get(bound_element_id) or None
-            if not ref_id:
-                ref_meta = (getattr(agent, "_element_ref_meta_by_id", {}) or {}).get(bound_element_id)
-                if isinstance(ref_meta, dict):
-                    ref_id = str(ref_meta.get("ref") or ref_meta.get("ref_id") or "").strip() or None
-        if not ref_id and rebound_element is not None:
-            ref_id = str(getattr(rebound_element, "ref_id", "") or "").strip() or None
+        _bind_recovered_element(rebound_element)
         if not ref_id:
             for candidate in (full_selector, selector):
                 if candidate:

@@ -230,6 +230,175 @@ def test_execute_decision_retries_ref_stale_with_rebound_ref(monkeypatch) -> Non
     assert calls == ["old-ref", "new-ref"]
 
 
+def test_execute_decision_force_refreshes_fill_ref_recovery(monkeypatch) -> None:
+    class _SearchAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._active_snapshot_id = "snap-search-1"
+            self._element_selectors = {1: "input[type='search']"}
+            self._element_full_selectors = {1: "header input[type='search']"}
+            self._element_ref_ids = {1: "old-search-ref"}
+            self._element_ref_meta_by_id = {
+                1: {
+                    "ref": "old-search-ref",
+                    "selector": "input[type='search']",
+                    "full_selector": "header input[type='search']",
+                    "tag": "input",
+                    "type": "search",
+                    "role_ref_role": "searchbox",
+                    "role_ref_name": "검색",
+                    "placeholder": "검색",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {
+                "old-search-ref": dict(self._element_ref_meta_by_id[1]),
+            }
+            self._selector_to_ref_id = {"header input[type='search']": "new-search-ref"}
+            self.force_reasons: list[str] = []
+            self.analyze_force_flags: list[object] = []
+
+        def _force_next_dom_resnapshot(self, *, reason: str = "") -> None:
+            self.force_reasons.append(reason)
+
+        def _analyze_dom(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self.analyze_force_flags.append(kwargs.get("force_refresh"))
+            self._active_snapshot_id = "snap-search-2"
+            self._element_selectors = {9: "input[type='search']"}
+            self._element_full_selectors = {9: "header input[type='search']"}
+            self._element_ref_ids = {9: "new-search-ref"}
+            self._element_ref_meta_by_id = {
+                9: {
+                    "ref": "new-search-ref",
+                    "selector": "input[type='search']",
+                    "full_selector": "header input[type='search']",
+                    "tag": "input",
+                    "type": "search",
+                    "role_ref_role": "searchbox",
+                    "role_ref_name": "뉴스 검색",
+                    "placeholder": "뉴스 검색",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {
+                "new-search-ref": dict(self._element_ref_meta_by_id[9]),
+            }
+            self._selector_to_ref_id = {"header input[type='search']": "new-search-ref"}
+            return [
+                DOMElement(
+                    id=9,
+                    tag="input",
+                    type="search",
+                    role="searchbox",
+                    placeholder="뉴스 검색",
+                    aria_label="뉴스 검색",
+                    ref_id="new-search-ref",
+                    is_visible=True,
+                    is_enabled=True,
+                )
+            ]
+
+    agent = _SearchAgent()
+    dom_elements = [
+        DOMElement(
+            id=1,
+            tag="input",
+            type="search",
+            role="searchbox",
+            placeholder="검색",
+            aria_label="검색",
+            ref_id="old-search-ref",
+        )
+    ]
+    decision = ActionDecision(
+        action=ActionType.FILL,
+        ref_id="old-search-ref",
+        value="손흥민",
+        reasoning="뉴스 검색 입력 필드에 손흥민 입력",
+    )
+    calls: list[str] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append(str(ref_id or ""))
+        if len(calls) == 1:
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="not_found",
+                reason="old ref not found",
+            )
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == ["old-search-ref", "new-search-ref"]
+    assert "ref_recovery" in agent.force_reasons
+    assert True in agent.analyze_force_flags
+
+
+def test_execute_decision_repairs_non_fillable_search_target_before_fill(monkeypatch) -> None:
+    class _SearchAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._active_snapshot_id = "snap-link-1"
+            self._element_selectors = {10: "a.logo"}
+            self._element_full_selectors = {10: "header a.logo"}
+            self._element_ref_ids = {10: "naver-link-ref"}
+            self._element_ref_meta_by_id = {}
+            self._last_snapshot_elements_by_ref = {}
+            self._selector_to_ref_id = {}
+            self.force_reasons: list[str] = []
+
+        def _force_next_dom_resnapshot(self, *, reason: str = "") -> None:
+            self.force_reasons.append(reason)
+
+        def _analyze_dom(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self._active_snapshot_id = "snap-link-2"
+            self._element_selectors = {42: "input[placeholder='뉴스 검색']"}
+            self._element_full_selectors = {42: "header input[placeholder='뉴스 검색']"}
+            self._element_ref_ids = {42: "news-search-ref"}
+            self._element_ref_meta_by_id = {}
+            self._last_snapshot_elements_by_ref = {}
+            self._selector_to_ref_id = {}
+            return [
+                DOMElement(
+                    id=42,
+                    tag="input",
+                    type="search",
+                    role="searchbox",
+                    placeholder="뉴스 검색",
+                    aria_label="뉴스 검색",
+                    ref_id="news-search-ref",
+                )
+            ]
+
+    agent = _SearchAgent()
+    dom_elements = [DOMElement(id=10, tag="a", text="NAVER", ref_id="naver-link-ref")]
+    decision = ActionDecision(
+        action=ActionType.FILL,
+        ref_id="naver-link-ref",
+        value="손흥민",
+        reasoning="뉴스 검색 입력 필드에 손흥민을 입력한다.",
+    )
+    calls: list[str] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append(str(ref_id or ""))
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == ["news-search-ref"]
+    assert "fill_target_recovery" in agent.force_reasons
+    assert any("fill 대상 재바인딩" in log for log in agent.logs)
+
+
 def test_find_visible_text_ref_candidate_prefers_safe_interactive_match() -> None:
     agent = _FakeAgent()
     dom = [
