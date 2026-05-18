@@ -83,6 +83,24 @@
         "includeAll": true,
         "allValue": ".*",
         "label": "Runner"
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "gaia-prometheus"
+        },
+        "query": {
+          "query": "label_values(gaia_scenario_last_status{suite_id=\"$suite_id\"}, instance)",
+          "refId": "A"
+        },
+        "refresh": 2,
+        "sort": 5,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Run (Instance)"
       }
     ]
   },
@@ -158,7 +176,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (scenario_id) (gaia_scenario_success_rate{suite_id=\"$suite_id\",model=~\"$model\"})",
+          "expr": "max by (scenario_id) (gaia_scenario_success_rate{suite_id=\"$suite_id\",instance=~\"$instance\",model=~\"$model\"})",
           "legendFormat": "{{scenario_id}}",
           "instant": true
         }
@@ -221,7 +239,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (scenario_id) (gaia_scenario_avg_duration_sec{suite_id=\"$suite_id\",model=~\"$model\"})",
+          "expr": "max by (scenario_id) (gaia_scenario_avg_duration_sec{suite_id=\"$suite_id\",instance=~\"$instance\",model=~\"$model\"})",
           "legendFormat": "{{scenario_id}}",
           "instant": true
         }
@@ -524,7 +542,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "gaia_scenario_last_status{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "expr": "gaia_scenario_last_status{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
           "legendFormat": "STATUS",
           "instant": true,
           "refId": "A"
@@ -582,7 +600,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (scenario_id) (gaia_scenario_avg_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
+          "expr": "max by (scenario_id) (gaia_scenario_avg_duration_sec{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
           "legendFormat": "{{scenario_id}}",
           "instant": true,
           "range": false,
@@ -629,7 +647,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "max by (scenario_id) (gaia_scenario_max_duration_sec{suite_id=\"$suite_id\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
+          "expr": "max by (scenario_id) (gaia_scenario_max_duration_sec{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=~\"$scenario_id\",model=~\"$model\"})",
           "legendFormat": "{{scenario_id}}",
           "instant": true,
           "range": false,
@@ -694,7 +712,7 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "sum by (scenario_id) (gaia_scenario_runs_total{suite_id=\"$suite_id\",scenario_id=\"$scenario_id\",model=~\"$model\"})",
+          "expr": "sum by (scenario_id) (gaia_scenario_runs_total{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=\"$scenario_id\",model=~\"$model\"})",
           "legendFormat": "{{scenario_id}}",
           "instant": true
         }

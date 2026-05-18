@@ -37,6 +37,7 @@ from scripts.benchmark_blocking import is_blocked_user_action, summary_reason_co
 
 ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts" / "benchmarks"
 MONITORING_CONFIG = Path.home() / ".gaia" / "monitoring.json"
+HISTORY_DIR = Path.home() / ".gaia" / "metrics_history"
 EXTERNAL_PUBLIC_MANIFEST = WORKSPACE_ROOT / "gaia" / "tests" / "scenarios" / "external_public_manifest.json"
 PUSH_USER = "gaia"
 
@@ -561,6 +562,58 @@ def build_external_pack_metrics(summary: dict, results: list, declared: set | No
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+# ── 실행 히스토리 관리 ────────────────────────────────────────────────────
+
+
+def load_history(suite_id: str) -> list[dict]:
+    """suite_id 에 해당하는 누적 실행 히스토리를 로드.
+    파일이 없거나 읽기 실패 시 빈 리스트 반환.
+    """
+    path = HISTORY_DIR / f"{suite_id}.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def save_history(suite_id: str, rows: list[dict]) -> None:
+    """누적 실행 히스토리를 로컬 파일에 저장."""
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    path = HISTORY_DIR / f"{suite_id}.json"
+    path.write_text(
+        json.dumps(rows, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def merge_into_history(
+    history: list[dict],
+    new_rows: list[dict],
+    suite_dir_name: str,
+) -> list[dict]:
+    """새 실행 결과를 히스토리에 병합 (scenario_id + started_at 기준 중복 제거).
+    병합 후 started_at 기준 오름차순 정렬 → runs[-1] 이 항상 최신 실행.
+    """
+    existing_keys: set[tuple[str, str]] = {
+        (str(r.get("scenario_id") or ""), str(r.get("started_at") or ""))
+        for r in history
+    }
+    for row in new_rows:
+        key = (str(row.get("scenario_id") or ""), str(row.get("started_at") or ""))
+        if key not in existing_keys:
+            history.append({**row, "_suite_dir": suite_dir_name})
+            existing_keys.add(key)
+
+    # started_at 기준 정렬 (없으면 빈 문자열로 처리 → 맨 앞)
+    history.sort(key=lambda r: str(r.get("started_at") or ""))
+    return history
+
+
 # ── Pushgateway 전송 ───────────────────────────────────────────────────────
 
 def push_to_gateway(metrics_text: str, instance: str, gateway_url: str, token: str | None) -> bool:
@@ -656,12 +709,21 @@ def push_suite_dir(
     suite_id = summary.get("suite_id") or summary.get("pack_id") or suite_dir.name
     print(f"  push → {suite_dir.name}")
 
+    # ── 히스토리 병합: 현재 실행 결과를 누적 히스토리에 추가 후 저장 ──
+    history = load_history(suite_id)
+    before_count = len(history)
+    history = merge_into_history(history, results or [], suite_dir.name)
+    added = len(history) - before_count
+    save_history(suite_id, history)
+    print(f"  [히스토리] 누적 {len(history)}건 (+{added}건 신규)")
+
     # declared 집합을 공유해서 HELP/TYPE 중복 방지
     declared: set = set()
     suite_metrics    = build_suite_metrics(summary, declared, suite_json_path=suite_json_path)
+    # 시나리오 메트릭은 히스토리 전체 기반으로 계산 → 누적 통계 반영
     scenario_metrics = (
-        build_scenario_metrics(summary, results or [], declared, suite_json_path=suite_json_path)
-        if results
+        build_scenario_metrics(summary, history, declared, suite_json_path=suite_json_path)
+        if history
         else ""
     )
     pack_metrics = build_external_pack_metrics(summary, results or [], declared)
@@ -743,6 +805,8 @@ def main():
     parser.add_argument("--suite-json", type=Path, help="metrics와 함께 공유할 원본 suite JSON")
     parser.add_argument("--suite-key", help="공유 suite key. 기본값은 suite_id에서 추론")
     parser.add_argument("--no-share-suite", action="store_true", help="--suite-json이 있어도 suite 정의를 공유하지 않음")
+    parser.add_argument("--reset-history", metavar="SUITE_ID",
+                        help="지정한 suite_id 의 로컬 누적 히스토리를 초기화 (파일 삭제)")
     args = parser.parse_args()
 
     if args.gateway:
@@ -757,6 +821,15 @@ def main():
             print("팀장에게 연결 명령어를 받아 실행하세요:")
             print("  python scripts/gaia_monitor_connect.py <서버주소> --token <토큰>")
             sys.exit(1)
+
+    if args.reset_history:
+        path = HISTORY_DIR / f"{args.reset_history}.json"
+        if path.exists():
+            path.unlink()
+            print(f"[완료] {args.reset_history} 히스토리 초기화됨: {path}")
+        else:
+            print(f"[정보] 히스토리 파일 없음 (이미 비어있음): {path}")
+        return
 
     if args.push_suite_info:
         push_all_suite_info(gateway_url, token)
