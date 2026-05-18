@@ -67,7 +67,70 @@ def test_openai_client_uses_codex_cli_auth_without_api_key(monkeypatch, tmp_path
 
     assert client.provider == "openai"
     assert client._prefer_codex_cli is True
+    assert client._prefer_codex_app_server is True
     assert client.client is None
+
+
+def test_codex_app_server_can_be_disabled_for_cli_auth(monkeypatch, tmp_path) -> None:
+    auth_dir = tmp_path / ".codex"
+    auth_dir.mkdir()
+    (auth_dir / "auth.json").write_text(
+        json.dumps({"auth_mode": "chatgpt", "tokens": {"access_token": "redacted"}}),
+        encoding="utf-8",
+    )
+
+    def fail_openai_init(**_kwargs):
+        raise AssertionError("OpenAI client should not be initialized for Codex CLI auth")
+
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.shutil.which", lambda name: "/opt/homebrew/bin/codex" if name == "codex" else None)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.openai.OpenAI", fail_openai_init)
+    monkeypatch.setattr("gaia.src.phase4.llm_vision_client.LLMVisionClient._read_local_env_file_assignments", staticmethod(lambda: {}))
+    monkeypatch.setenv("GAIA_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("GAIA_LLM_MODEL", "gpt-5.5")
+    monkeypatch.setenv("GAIA_CODEX_APP_SERVER", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+
+    client = LLMVisionClient(provider="openai")
+
+    assert client._prefer_codex_cli is True
+    assert client._prefer_codex_app_server is False
+
+
+def test_codex_transport_prefers_app_server(monkeypatch) -> None:
+    calls: list[tuple[str, list[str] | None]] = []
+    client = object.__new__(LLMVisionClient)
+    client._prefer_codex_app_server = True
+    client._codex_app_server_client = None
+
+    def fake_app_server(prompt: str, images: list[str] | None = None) -> str:
+        calls.append((prompt, images))
+        return "app-server-result"
+
+    monkeypatch.setattr(client, "_run_codex_app_server", fake_app_server)
+
+    assert client._run_codex_transport("prompt", ["image"]) == "app-server-result"
+    assert calls == [("prompt", ["image"])]
+
+
+def test_codex_transport_falls_back_to_exec_when_app_server_fails(monkeypatch) -> None:
+    client = object.__new__(LLMVisionClient)
+    client._prefer_codex_app_server = True
+    client._codex_app_server_client = None
+
+    def fake_app_server(_prompt: str, _images: list[str] | None = None) -> str:
+        raise RuntimeError("boom")
+
+    def fake_exec(prompt: str, images: list[str] | None = None) -> str:
+        return f"exec:{prompt}:{len(images or [])}"
+
+    monkeypatch.setattr(client, "_run_codex_app_server", fake_app_server)
+    monkeypatch.setattr(client, "_run_codex_exec", fake_exec)
+    monkeypatch.setattr(client, "_console_text", lambda text, **_kwargs: text)
+
+    assert client._run_codex_transport("prompt", ["image"]) == "exec:prompt:1"
+    assert client._prefer_codex_app_server is False
 
 
 def test_openai_profile_loader_skips_expired_codex_oauth_token(monkeypatch, tmp_path) -> None:

@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 
 import openai
 
+from gaia.src.phase4.codex_app_server_client import CodexAppServerClient, CodexAppServerError
 from gaia.src.utils.models import DomElement
 
 
@@ -181,6 +182,8 @@ class LLMVisionClient:
             and (self._auth_source.startswith("oauth_codex_cli") or model_prefers_codex or (not api_key and codex_cli_auth_available))
             and shutil.which("codex") is not None
         )
+        self._prefer_codex_app_server = self._prefer_codex_cli and self._codex_app_server_enabled()
+        self._codex_app_server_client: CodexAppServerClient | None = None
         client_kwargs: dict[str, Any] = {"api_key": api_key, "timeout": 60.0}
         if base_url:
             client_kwargs["base_url"] = base_url
@@ -192,12 +195,29 @@ class LLMVisionClient:
                     windows_fallback="OpenAI OAuth(Codex) 감지: Codex CLI 경로를 우선 사용합니다.",
                 )
             )
+            if self._prefer_codex_app_server:
+                print(
+                    self._console_text(
+                        "⚡ Codex app-server 경로를 우선 사용합니다. 실패하면 기존 codex exec로 자동 fallback합니다.",
+                        windows_fallback="Codex app-server 경로를 우선 사용합니다. 실패하면 기존 codex exec로 자동 fallback합니다.",
+                    )
+                )
         print(
             self._console_text(
                 f"🤖 Vision AI: Using {provider_config['display_name']} ({self.model})",
                 windows_fallback=f"Vision AI: Using {provider_config['display_name']} ({self.model})",
             )
         )
+
+    @staticmethod
+    def _codex_app_server_enabled() -> bool:
+        raw = str(os.getenv("GAIA_CODEX_APP_SERVER", "auto") or "auto").strip().lower()
+        return raw not in {"0", "false", "no", "off", "disabled", "exec"}
+
+    @staticmethod
+    def _codex_app_server_reuse_thread() -> bool:
+        raw = str(os.getenv("GAIA_CODEX_APP_SERVER_REUSE_THREAD", "1") or "1").strip().lower()
+        return raw not in {"0", "false", "no", "off", "disabled"}
 
     @staticmethod
     def _strip_code_fences(text: str) -> str:
@@ -389,6 +409,46 @@ class LLMVisionClient:
 
         raise RuntimeError(f"codex exec failed: {last_error or 'unknown error'}")
 
+    def _run_codex_app_server(self, prompt: str, images: List[str] | None = None) -> str:
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            raise RuntimeError("codex CLI를 찾을 수 없습니다.")
+        try:
+            codex_timeout_sec = int(os.getenv("GAIA_CODEX_EXEC_TIMEOUT_SEC", "120") or 120)
+        except Exception:
+            codex_timeout_sec = 120
+        if self._codex_app_server_client is None:
+            self._codex_app_server_client = CodexAppServerClient(
+                codex_bin=codex_bin,
+                model=self.model,
+                timeout_sec=codex_timeout_sec,
+                reasoning_effort=str(os.getenv("GAIA_CODEX_REASONING_EFFORT", "") or "low"),
+                reuse_thread=self._codex_app_server_reuse_thread(),
+            )
+        try:
+            if images:
+                return self._codex_app_server_client.analyze_with_images(prompt, images)
+            return self._codex_app_server_client.analyze_text(prompt)
+        except CodexAppServerError as exc:
+            raise RuntimeError(f"codex app-server failed: {exc}") from exc
+
+    def _run_codex_transport(self, prompt: str, images: List[str] | None = None) -> str:
+        if self._prefer_codex_app_server:
+            try:
+                return self._run_codex_app_server(prompt, images)
+            except RuntimeError as exc:
+                self._prefer_codex_app_server = False
+                if self._codex_app_server_client is not None:
+                    self._codex_app_server_client.close()
+                    self._codex_app_server_client = None
+                print(
+                    self._console_text(
+                        f"⚠️ Codex app-server 실패({str(exc)[:120]}…) → 기존 codex exec 경로로 전환합니다.",
+                        windows_fallback="Codex app-server 실패 → 기존 codex exec 경로로 전환합니다.",
+                    )
+                )
+        return self._run_codex_exec(prompt, images or [])
+
     @staticmethod
     def _response_text(response: Any) -> str:
         try:
@@ -420,7 +480,7 @@ class LLMVisionClient:
     ) -> str:
         if self._prefer_codex_cli:
             try:
-                return self._strip_code_fences(self._run_codex_exec(prompt, []))
+                return self._strip_code_fences(self._run_codex_transport(prompt, []))
             except RuntimeError as exc:
                 msg = str(exc)
                 # Codex CLI가 환경/버전/인코딩 문제로 깨졌으면 OpenAI API로 자동 fallback
@@ -446,7 +506,7 @@ class LLMVisionClient:
             return self._strip_code_fences(self._response_text(response))
         except Exception as exc:
             if self._is_quota_error(str(exc)) and shutil.which("codex"):
-                return self._strip_code_fences(self._run_codex_exec(prompt, []))
+                return self._strip_code_fences(self._run_codex_transport(prompt, []))
             # 인증 만료 등은 사용자가 조치 가능한 명확한 메시지로 변환
             self._raise_actionable(exc)
             raise
@@ -708,7 +768,7 @@ JSON response:"""
         """
         if self._prefer_codex_cli:
             try:
-                return self._strip_code_fences(self._run_codex_exec(prompt, [screenshot_base64]))
+                return self._strip_code_fences(self._run_codex_transport(prompt, [screenshot_base64]))
             except RuntimeError as exc:
                 msg = str(exc)
                 if self._is_codex_unrecoverable(msg) and self.client is not None:
@@ -752,7 +812,7 @@ JSON response:"""
                 try:
                     print("ℹ️ OpenAI direct API 경로를 사용할 수 없어 Codex CLI 경로로 전환합니다.")
                     return self._strip_code_fences(
-                        self._run_codex_exec(prompt, [screenshot_base64])
+                        self._run_codex_transport(prompt, [screenshot_base64])
                     )
                 except Exception as codex_exc:
                     print(f"LLM vision analysis failed: {e}")
