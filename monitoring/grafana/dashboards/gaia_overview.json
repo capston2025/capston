@@ -44,21 +44,21 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "sum by (suite_id, scenario_id) (gaia_scenario_success_count{suite_id=~\".*_public_v2$\",suite_id!=\"visit_korea_public_v2\",model=~\"$model\"}) / sum by (suite_id, scenario_id) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",suite_id!=\"visit_korea_public_v2\",model=~\"$model\"})",
+          "expr": "sum by (suite_id, scenario_id) (gaia_scenario_success_count{suite_id=~\".*_public_v2$\",suite_id!~\"visit_korea_public_v2\",model=~\"$model\"}) / sum by (suite_id, scenario_id) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",suite_id!~\"visit_korea_public_v2\",model=~\"$model\"})",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "sum by (suite_id, scenario_id) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",suite_id!=\"visit_korea_public_v2\",model=~\"$model\"})",
+          "expr": "sum by (suite_id, scenario_id) (gaia_scenario_runs_total{suite_id=~\".*_public_v2$\",suite_id!~\"visit_korea_public_v2\",model=~\"$model\"})",
           "instant": true,
           "legendFormat": "",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "gaia-prometheus" },
-          "expr": "gaia_scenario_last_status{suite_id=~\".*_public_v2$\",suite_id!=\"visit_korea_public_v2\",model=~\"$model\",fail_reason!=\"\"}",
+          "expr": "gaia_scenario_last_status{suite_id=~\".*_public_v2$\",suite_id!~\"visit_korea_public_v2\",model=~\"$model\",fail_reason!=\"\"}",
           "instant": true,
           "legendFormat": "",
           "refId": "C"

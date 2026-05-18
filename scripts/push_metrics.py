@@ -655,16 +655,26 @@ def merge_into_history(
     new_rows: list[dict],
     suite_dir_name: str,
 ) -> list[dict]:
-    """새 실행 결과를 히스토리에 병합 (suite_dir_name + scenario_id 기준 중복 제거).
+    """새 실행 결과를 히스토리에 병합 (suite_dir + suite_id + scenario_id 기준 중복 제거).
     suite_dir_name 은 타임스탬프 기반 디렉토리명이라 실행마다 고유함.
+    suite_id 까지 키에 포함시켜 pack 결과처럼 한 디렉토리에 여러 suite 가
+    같은 scenario_id 를 가질 수 있는 경우에도 row 가 누락되지 않도록 함.
     병합 후 suite_dir_name 기준 오름차순 정렬 → runs[-1] 이 항상 최신 실행.
     """
-    existing_keys: set[tuple[str, str]] = {
-        (str(r.get("_suite_dir") or ""), str(r.get("scenario_id") or ""))
+    existing_keys: set[tuple[str, str, str]] = {
+        (
+            str(r.get("_suite_dir") or ""),
+            str(r.get("suite_id") or ""),
+            str(r.get("scenario_id") or ""),
+        )
         for r in history
     }
     for row in new_rows:
-        key = (suite_dir_name, str(row.get("scenario_id") or ""))
+        key = (
+            suite_dir_name,
+            str(row.get("suite_id") or ""),
+            str(row.get("scenario_id") or ""),
+        )
         if key not in existing_keys:
             history.append({**row, "_suite_dir": suite_dir_name})
             existing_keys.add(key)
