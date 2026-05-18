@@ -361,9 +361,10 @@ class CircularProgressWidget(QWidget):
         font.setWeight(QFont.Weight.Black)
         font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 95)
         painter.setFont(font)
+        # 다른 KPI 카드 value들과 동일하게 좌측 정렬 (수직은 가운데 유지)
         painter.drawText(
             full_rect,
-            Qt.AlignmentFlag.AlignCenter,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             f"{int(round(self._value))}%",
         )
 
@@ -1213,6 +1214,28 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
                 border: none;
                 border-bottom: 1px solid #e5e8eb;
+            }
+
+            /* 사이드바 접기/펼치기 햄버거 토글 (헤더 좌측) */
+            QPushButton#SidebarToggleButton {
+                background: transparent;
+                border: 1px solid #e5e8eb;
+                border-radius: 8px;
+                color: #4e5968;
+                font-size: 18px;
+                font-weight: 600;
+                padding: 0px;
+                min-height: 0px;
+            }
+            QPushButton#SidebarToggleButton:hover {
+                background: #f9fafb;
+                border: 1px solid #d1d6db;
+                color: #3182f6;
+            }
+            QPushButton#SidebarToggleButton:pressed {
+                background: #eff6ff;
+                border: 1px solid #b2d4ff;
+                color: #1b64da;
             }
 
             QFrame#StepperPill {
@@ -2800,7 +2823,11 @@ class MainWindow(QMainWindow):
         self._root_splitter = QSplitter(Qt.Orientation.Horizontal, central)
         self._root_splitter.setObjectName("RootSplitter")
         self._root_splitter.setHandleWidth(2)
-        self._root_splitter.setChildrenCollapsible(False)
+        # 토글 버튼으로 사이드바를 0px로 접을 수 있어야 하므로 collapsible 허용.
+        # (드래그로는 보통 minimumWidth(180px) 아래로 안 줄어들지만, setSizes(0, ...)는 가능)
+        self._root_splitter.setChildrenCollapsible(True)
+        # 접기 토글 시 복원할 사이드바 너비 (펼친 마지막 너비 저장)
+        self._sidebar_expanded_width: int = 240
 
         # ── 좌측: 사이드바 (resizable, 180~360px) ──────────────────────
         self._sidebar_panel = self._create_sidebar(self._root_splitter)
@@ -3026,6 +3053,15 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(header)
         layout.setContentsMargins(20, 12, 20, 12)
         layout.setSpacing(12)
+
+        # 좌측 햄버거 토글 — 사이드바 접기/펼치기
+        self._sidebar_toggle_button = QPushButton("☰", header)
+        self._sidebar_toggle_button.setObjectName("SidebarToggleButton")
+        self._sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle_button.setToolTip("사이드바 접기/펼치기")
+        self._sidebar_toggle_button.setFixedSize(36, 36)
+        self._sidebar_toggle_button.clicked.connect(self._toggle_sidebar)
+        layout.addWidget(self._sidebar_toggle_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         layout.addStretch(1)
 
@@ -4752,6 +4788,37 @@ class MainWindow(QMainWindow):
         비율을 조정할 대상이 없음.
         """
         return
+
+    def _toggle_sidebar(self) -> None:
+        """좌측 사이드바 접기/펼치기 토글.
+
+        - 펼친 상태: 사이드바 visible (저장된 너비로)
+        - 접힌 상태: 사이드바 hidden (메인 영역이 전체 폭 사용)
+        sidebar.setMinimumWidth(180)이 걸려 있어 setSizes(0)으로는 안 줄어들기 때문에
+        setVisible(False)로 완전히 숨김.
+        """
+        if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
+            return
+        is_visible = self._sidebar_panel.isVisible()
+        if is_visible:
+            # 접기 — 현재 너비 저장 후 hide
+            if hasattr(self, "_root_splitter"):
+                sizes = self._root_splitter.sizes()
+                if sizes and sizes[0] > 0:
+                    self._sidebar_expanded_width = sizes[0]
+            self._sidebar_panel.setVisible(False)
+            if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setToolTip("사이드바 펼치기")
+        else:
+            # 펼치기 — 저장된 너비로 복원
+            self._sidebar_panel.setVisible(True)
+            restore = int(getattr(self, "_sidebar_expanded_width", 240))
+            restore = max(180, min(360, restore))
+            if hasattr(self, "_root_splitter"):
+                total = sum(self._root_splitter.sizes())
+                self._root_splitter.setSizes([restore, max(0, total - restore)])
+            if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setToolTip("사이드바 접기")
 
     # ------------------------------------------------------------------
     # Step 3 헬퍼
