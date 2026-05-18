@@ -985,6 +985,12 @@ class TestCaseRow(QFrame):
 
     def mousePressEvent(self, event) -> None:  # noqa: D401
         if event.button() == Qt.MouseButton.LeftButton:
+            # 별(★) 영역 클릭은 favorite 토글만 — row selection 변화 없음
+            star_rect = self._star.geometry() if hasattr(self, "_star") else None
+            if star_rect and star_rect.contains(event.position().toPoint()):
+                # _star.mousePressEvent가 이미 처리 (favorite 토글). row.toggle은 skip.
+                super().mousePressEvent(event)
+                return
             self.set_selected(not self._selected)
             self.toggled.emit(self._case_id, self._selected)
         super().mousePressEvent(event)
@@ -3825,10 +3831,14 @@ class MainWindow(QMainWindow):
     def _on_case_selection_complete(self) -> None:
         """\"선택 완료\" 클릭 — 모드/시그널 결정 후 Step 3로 자동 전환.
 
-        - benchmark 모드: 선택된 시나리오 ID들을 self._pending_scenario_ids에 저장 후
-          benchmarkRunRequested 시그널로 라우팅 (controller가 worker에 전달).
-        - quick/ai/bundle 모드: set_selected_run_mode + startRequested (기존 흐름).
+        모드별 분기:
+        - benchmark: scenario_ids 저장 + benchmarkRunRequested emit
+        - ai: startRequested emit (즉시 시작, 추가 입력 불필요)
+        - quick: QInputDialog로 목표 입력받음 → set_feature_query → startRequested
+        - bundle: QFileDialog로 기획서 파일 선택받음 → planFileSelected → startRequested
         """
+        from PySide6.QtWidgets import QInputDialog, QFileDialog, QMessageBox
+
         rows = self._selected_case_rows()
         if not rows:
             return
@@ -3864,11 +3874,48 @@ class MainWindow(QMainWindow):
             self.append_log(
                 "ℹ️ 등록된 벤치 시나리오가 없어 AI 자율 탐색으로 대체 실행합니다."
             )
+            self._pending_scenario_ids = None
             self.startRequested.emit()
             return
 
-        # 기타 모드 (quick/ai/bundle) → 기존 흐름
+        # 기본: scenario_ids 초기화
         self._pending_scenario_ids = None
+
+        if mode == "quick":
+            # 빠른 목표 — 이미 set 된 feature_query 있으면 그대로 사용, 없으면 dialog로 입력받음
+            existing = self.get_feature_query().strip() if hasattr(self, "get_feature_query") else ""
+            if not existing:
+                goal, ok = QInputDialog.getText(
+                    self,
+                    "빠른 목표 입력",
+                    "AI에게 실행시킬 목표를 한 줄로 입력하세요:\n"
+                    "(예: 로그인 후 메인 페이지에서 검색창을 사용해 '아이폰'을 검색)",
+                )
+                if not ok:
+                    return  # 사용자 취소
+                goal = goal.strip()
+                if not goal:
+                    QMessageBox.information(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
+                    return
+                self.set_feature_query(goal)
+            self.startRequested.emit()
+            return
+
+        if mode == "bundle":
+            # 기획서 업로드 — QFileDialog로 파일 선택받음
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "기획서/번들 파일 선택",
+                "",
+                "Supported Files (*.pdf *.docx *.md *.txt *.json);;All Files (*)",
+            )
+            if not file_path:
+                return  # 사용자 취소
+            # planFileSelected 시그널로 controller에 전달 (controller가 분석 후 startRequested 시킴)
+            self.planFileSelected.emit(file_path)
+            return
+
+        # ai 모드 또는 fallback
         self.startRequested.emit()
 
     def show_test_case_stage(self) -> None:
