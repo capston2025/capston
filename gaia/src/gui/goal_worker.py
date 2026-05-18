@@ -472,6 +472,10 @@ class BenchmarkWorker(QObject):
             env = os.environ.copy()
             env.setdefault("GAIA_RAIL_ENABLED", "0")
             env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
+            # Windows에서 subprocess stdout이 버퍼링되어 GUI로 전달이 막히는 문제 방지.
+            # 자식 Python 프로세스의 출력을 즉시 flush하도록 강제.
+            env["PYTHONUNBUFFERED"] = "1"
+            env.setdefault("PYTHONIOENCODING", "utf-8")
 
             self.progress.emit(f"🚀 벤치 실행 시작: {self._site_label}")
             self.progress.emit(f"   - suite: {suite_path.name}")
@@ -479,6 +483,7 @@ class BenchmarkWorker(QObject):
                 self.progress.emit(f"   - target: {self._target_url}")
             if self._push_metrics:
                 self.progress.emit("   - metrics: upload enabled (--push-metrics)")
+            self.progress.emit(f"   - cmd: {sys.executable} {' '.join(cmd[1:3])} ...")
 
             self._process = subprocess.Popen(
                 cmd,
@@ -488,6 +493,8 @@ class BenchmarkWorker(QObject):
                 text=True,
                 bufsize=1,
                 env=env,
+                encoding="utf-8",
+                errors="replace",
             )
 
             captured: list[str] = []
@@ -511,10 +518,46 @@ class BenchmarkWorker(QObject):
             status_counts = summary_payload.get("status_counts") if isinstance(summary_payload, dict) else {}
             status_counts = status_counts if isinstance(status_counts, dict) else {}
             success_count = int(status_counts.get("SUCCESS") or 0)
-            fail_count = int(status_counts.get("FAIL") or 0)
+            explicit_fail_count = int(status_counts.get("FAIL") or 0)
+            blocked_count = sum(
+                int(v or 0) for k, v in status_counts.items()
+                if isinstance(k, str) and ("BLOCKED" in k.upper() or k.upper() == "BLOCKED_USER_ACTION")
+            )
+            # SUCCESS도 FAIL도 BLOCKED도 아닌 기타 status (e.g., TIMEOUT) — 실패로 간주
+            other_failures = sum(
+                int(v or 0) for k, v in status_counts.items()
+                if isinstance(k, str)
+                and k.upper() not in ("SUCCESS",)
+                and not ("BLOCKED" in k.upper())
+                and k.upper() != "FAIL"
+            )
             total_count = int(summary_payload.get("scenario_count") or len(results_payload or []))
-            final_status = "success" if return_code == 0 and fail_count == 0 else "failed"
-            reason = "벤치 실행이 완료되었습니다." if final_status == "success" else "일부 시나리오가 실패했습니다."
+            # 정확한 실패 카운트 = FAIL + BLOCKED + 기타 비성공 (정확한 회계)
+            fail_count = explicit_fail_count + blocked_count + other_failures
+            # successful_runs + failed_runs == total_count 보장 (totals 합치 정확성)
+            if success_count + fail_count < total_count:
+                # status_counts에 명시 안 된 시나리오 (e.g., 미실행) — 실패로 간주
+                fail_count = max(fail_count, total_count - success_count)
+            # final_status: 모든 시나리오가 SUCCESS여야만 "성공". 하나라도 실패/차단이면 "실패".
+            final_status = "success" if return_code == 0 and success_count == total_count and total_count > 0 else "failed"
+            if final_status == "success":
+                reason = "모든 시나리오가 성공했습니다."
+            else:
+                reason_parts = []
+                if explicit_fail_count:
+                    reason_parts.append(f"실패 {explicit_fail_count}건")
+                if blocked_count:
+                    reason_parts.append(f"차단 {blocked_count}건")
+                if other_failures:
+                    reason_parts.append(f"기타 {other_failures}건")
+                if not reason_parts and total_count == 0:
+                    reason = "실행된 시나리오가 없습니다."
+                else:
+                    reason = (
+                        "일부 시나리오가 실패했습니다 ("
+                        + ", ".join(reason_parts or ["원인 불명"])
+                        + ")."
+                    )
 
             self.result_ready.emit(
                 {
@@ -536,9 +579,10 @@ class BenchmarkWorker(QObject):
                     "total_runs": total_count,
                     "successful_runs": success_count,
                     "failed_runs": fail_count,
+                    "blocked_runs": blocked_count,
                     "proof_lines": [
                         f"artifact: {output_dir}",
-                        f"success {success_count} / fail {fail_count}",
+                        f"success {success_count} / fail {explicit_fail_count} / blocked {blocked_count} / total {total_count}",
                     ],
                 }
             )

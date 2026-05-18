@@ -603,6 +603,22 @@ def _run_single_chat_goal(
             except Exception:
                 pass
 
+        # GUI live preview hook — GAIA_LIVE_PREVIEW_PATH 환경변수가 설정되어 있으면
+        # 캡처된 screenshot을 즉시 파일로 dump하여 GUI 폴링이 실시간 표시 가능하도록 함.
+        # _on_screenshot은 모든 screenshot capture 경로를 통과하므로 가장 안정적인 hook 위치.
+        preview_path_env = os.getenv("GAIA_LIVE_PREVIEW_PATH")
+        if preview_path_env:
+            try:
+                import base64 as _b64
+                from pathlib import Path as _Path
+                _target = _Path(preview_path_env)
+                _target.parent.mkdir(parents=True, exist_ok=True)
+                _tmp = _target.with_suffix(_target.suffix + ".tmp")
+                _tmp.write_bytes(_b64.b64decode(payload))
+                _tmp.replace(_target)
+            except Exception:
+                pass
+
     normalized_session_id = session_id or WORKSPACE_DEFAULT
     agent = GoalDrivenAgent(
         mcp_host_url=CONFIG.mcp.host_url,
@@ -610,6 +626,27 @@ def _run_single_chat_goal(
         screenshot_callback=_on_screenshot,
         intervention_callback=intervention_callback,
     )
+
+    # ── GUI live preview ─────────────────────────────────────────────────
+    # OpenClaw MCP runtime은 동시 capture_screenshot 요청을 처리할 free port가 없어서
+    # 외부 thread에서 별도로 캡처할 수 없다 ("no free port set available" 에러).
+    # 따라서 agent가 자체적으로 호출하는 `_capture_screenshot()` → `_on_screenshot`
+    # callback에 piggyback하는 방식만 사용. 이미 _on_screenshot에 GAIA_LIVE_PREVIEW_PATH로
+    # 파일을 dump하는 로직이 들어가 있음.
+    # → 결과:
+    #   - 인터랙티브 시나리오 (click/fill 등 동작 있는 케이스): 각 step마다 캡처 → 실시간 OK
+    #   - readonly visibility 시나리오 (위키 "보이는지 확인" 류): agent가 screenshot 자체를 안 찍음
+    #     → live preview는 비어있는 placeholder 유지 (대안 없음)
+    _live_preview_path_env = os.getenv("GAIA_LIVE_PREVIEW_PATH")
+    _live_preview_stop = None
+    _live_preview_thread = None
+    if _live_preview_path_env:
+        print(
+            f"📷 live preview enabled — path={_live_preview_path_env} "
+            f"(captures piggyback on agent screenshots)",
+            flush=True,
+        )
+
     try:
         print(f"목표 실행: {goal.description}")
         result = agent.execute_goal(goal)

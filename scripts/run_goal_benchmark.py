@@ -15,6 +15,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+# Windows cp949 환경에서 emoji/한글 출력이 가능하도록 stdout/stderr를 UTF-8로 강제.
+# GUI BenchmarkWorker가 이미 PYTHONIOENCODING=utf-8을 넘기지만, 사용자가 직접
+# 스크립트를 실행하거나 다른 경로로 호출할 때도 안전하도록 보장.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
@@ -39,6 +48,8 @@ _LIVE_TRACE_MARKERS = (
     "⚠️ 액션 실패:",
     "🔁 phase 전환:",
     "📍 시작 URL로 이동:",
+    # GUI live preview thread 진단용 — GUI 로그에 노출
+    "📷 live preview",
 )
 
 
@@ -83,6 +94,9 @@ def _prepare_scenario_env(env: Dict[str, str], timeout_sec: int) -> Dict[str, st
     scenario_env["GAIA_CODEX_EXEC_TIMEOUT_SEC"] = str(_resolve_codex_exec_timeout(timeout_sec))
     scenario_env["GAIA_CODEX_REASONING_EFFORT"] = _BENCHMARK_CODEX_REASONING_EFFORT
     scenario_env.setdefault("PYTHONUNBUFFERED", "1")
+    # Windows에서 자식 Python의 print()가 emoji를 cp949로 인코딩하려다 실패하는
+    # UnicodeEncodeError를 방지하기 위해 UTF-8로 강제 설정.
+    scenario_env.setdefault("PYTHONIOENCODING", "utf-8")
     return scenario_env
 
 
@@ -110,6 +124,12 @@ def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
     return f"""
 import contextlib, io, json, sys
 import os
+# Windows cp949 환경에서도 emoji/한글 출력이 가능하도록 stdout/stderr를 UTF-8로 강제 재설정.
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
 payload = json.loads({payload!r})
 scenario = payload['scenario']
@@ -189,6 +209,10 @@ def _run_scenario_once(
             bufsize=1,
             env=scenario_env,
             cwd=str(WORKSPACE_ROOT),
+            # 자식 프로세스가 UTF-8로 출력하므로 부모도 UTF-8로 디코드해야 함
+            # (Windows의 기본 cp949 코덱으로 디코드하면 한글/emoji 바이트가 깨짐)
+            encoding="utf-8",
+            errors="replace",
         )
         stdout_lines: list[str] = []
         assert proc.stdout is not None
