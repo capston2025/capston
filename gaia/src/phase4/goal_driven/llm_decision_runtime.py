@@ -539,11 +539,19 @@ def _is_forbidden_global_control(agent: Any, element: Optional[DOMElement], deci
             ]
         )
     )
+    logout_tokens = ("로그아웃", "logout", "log out", "sign out", "signout")
+    if any(token in blob for token in logout_tokens):
+        goal_allows_logout = getattr(agent, "_goal_allows_logout", None)
+        if callable(goal_allows_logout):
+            try:
+                if bool(goal_allows_logout()):
+                    return False
+            except Exception:
+                pass
+        return True
     return any(
         token in blob
         for token in (
-            "로그아웃",
-            "logout",
             "pdf",
             "download",
             "다운로드",

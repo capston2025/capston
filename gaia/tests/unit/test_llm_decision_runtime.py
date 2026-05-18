@@ -21,13 +21,17 @@ from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMEl
 
 
 class _FakeAgent:
-    def __init__(self) -> None:
+    def __init__(self, *, allow_logout: bool = False) -> None:
         self._goal_semantics = SimpleNamespace(target_terms=["포용사회와문화탐방1"], destination_terms=["시간표", "내 시간표"])
         self._last_snapshot_evidence = {}
         self._last_exec_result = None
+        self._allow_logout = allow_logout
 
     def _normalize_text(self, value: object) -> str:
         return str(value or "").strip().lower()
+
+    def _goal_allows_logout(self) -> bool:
+        return bool(self._allow_logout)
 
 
 def test_build_goal_state_summary_suppresses_low_confidence_belief_in_thin_wrapper_mode():
@@ -458,6 +462,39 @@ def test_forbidden_global_control_does_not_block_destination_reveal_with_logout_
     decision = ActionDecision(action=ActionType.CLICK, ref_id="e1092")
 
     assert _is_forbidden_global_control(agent, element, decision) is False
+
+
+def test_forbidden_global_control_allows_logout_when_goal_requests_logout():
+    agent = _FakeAgent(allow_logout=True)
+    element = DOMElement(
+        id=24,
+        tag="button",
+        role="button",
+        text="로그아웃",
+        aria_label="로그아웃",
+        title="로그아웃",
+        ref_id="e80",
+        context_text="이미 로그인 하였습니다 | 로그아웃 | 취소",
+    )
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="e80")
+
+    assert _is_forbidden_global_control(agent, element, decision) is False
+
+
+def test_forbidden_global_control_blocks_logout_when_goal_does_not_request_logout():
+    agent = _FakeAgent(allow_logout=False)
+    element = DOMElement(
+        id=24,
+        tag="button",
+        role="button",
+        text="로그아웃",
+        aria_label="로그아웃",
+        title="로그아웃",
+        ref_id="e80",
+    )
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="e80")
+
+    assert _is_forbidden_global_control(agent, element, decision) is True
 
 
 def test_build_active_surface_summary_describes_foreground_surface_and_occluded_background():
