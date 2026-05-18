@@ -1646,6 +1646,171 @@ class SamplePreviewDialog(QDialog):
             pass
 
 
+class NotificationDialog(QDialog):
+    """Toss 디자인 톤 통일 알림 다이얼로그 — QMessageBox 대체.
+
+    종류: info / success / warning / error / question (Yes/No)
+
+    상태별 컬러 아이콘 + 흰색 카드 + brand color 액션 버튼.
+    static factory 메서드 제공해서 1줄로 호출 가능:
+        NotificationDialog.info(parent, "안내", "메시지")
+        NotificationDialog.question(parent, "확인", "진행할까요?") -> bool
+    """
+
+    # 종류별 토큰 — (icon, icon_bg, icon_fg, title_color)
+    _VARIANTS = {
+        "info":     ("ⓘ", "#eff6ff", "#3182f6", "#191f28"),
+        "success":  ("✓", "#ecfdf5", "#10b981", "#191f28"),
+        "warning":  ("!", "#fffbeb", "#f59e0b", "#191f28"),
+        "error":    ("✕", "#fef2f2", "#ef4444", "#191f28"),
+        "question": ("?", "#eff6ff", "#3182f6", "#191f28"),
+    }
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        variant: str,
+        title: str,
+        message: str,
+        *,
+        is_question: bool = False,
+        ok_text: str = "확인",
+        cancel_text: str = "취소",
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setObjectName("NotificationDialog")
+        self.setMinimumWidth(420)
+        self.setMaximumWidth(560)
+
+        if variant not in self._VARIANTS:
+            variant = "info"
+        icon_text, icon_bg, icon_fg, title_color = self._VARIANTS[variant]
+
+        self.setStyleSheet(f"""
+            QDialog#NotificationDialog {{ background: #ffffff; }}
+            QLabel#NotifIcon {{
+                background: {icon_bg};
+                color: {icon_fg};
+                border-radius: 22px;
+                font-size: 20px;
+                font-weight: 900;
+            }}
+            QLabel#NotifTitle {{
+                color: {title_color};
+                font-size: 16px;
+                font-weight: 800;
+                letter-spacing: -0.2px;
+                background: transparent;
+            }}
+            QLabel#NotifMessage {{
+                color: #4e5968;
+                font-size: 13px;
+                background: transparent;
+                line-height: 1.5;
+            }}
+            QPushButton#NotifConfirmBtn {{
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 9px 20px; min-height: 0px;
+                min-width: 72px;
+            }}
+            QPushButton#NotifConfirmBtn:hover {{ background: #1b64da; }}
+            QPushButton#NotifCancelBtn {{
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 9px 16px; min-height: 0px;
+                min-width: 72px;
+            }}
+            QPushButton#NotifCancelBtn:hover {{
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }}
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 22)
+        outer.setSpacing(14)
+
+        # 헤더 — 아이콘 + 제목 (한 줄)
+        head_row = QHBoxLayout()
+        head_row.setSpacing(14)
+        icon_lbl = QLabel(icon_text, self)
+        icon_lbl.setObjectName("NotifIcon")
+        icon_lbl.setFixedSize(44, 44)
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        head_row.addWidget(icon_lbl, alignment=Qt.AlignmentFlag.AlignTop)
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(6)
+        title_lbl = QLabel(title, self)
+        title_lbl.setObjectName("NotifTitle")
+        title_lbl.setWordWrap(True)
+        title_col.addWidget(title_lbl)
+        msg_lbl = QLabel(message, self)
+        msg_lbl.setObjectName("NotifMessage")
+        msg_lbl.setWordWrap(True)
+        msg_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        title_col.addWidget(msg_lbl)
+        head_row.addLayout(title_col, stretch=1)
+        outer.addLayout(head_row)
+
+        # 액션 버튼 — question이면 [취소][확인], 아니면 [확인]만
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        if is_question:
+            cancel_btn = QPushButton(cancel_text, self)
+            cancel_btn.setObjectName("NotifCancelBtn")
+            cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            cancel_btn.clicked.connect(self.reject)
+            btn_row.addWidget(cancel_btn)
+        confirm_btn = QPushButton(ok_text, self)
+        confirm_btn.setObjectName("NotifConfirmBtn")
+        confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        confirm_btn.setDefault(True)
+        confirm_btn.clicked.connect(self.accept)
+        btn_row.addWidget(confirm_btn)
+        outer.addLayout(btn_row)
+
+    # ─── 정적 헬퍼 — QMessageBox 스타일 한 줄 호출 ──────────────
+    @staticmethod
+    def info(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "info", title, message).exec()
+
+    @staticmethod
+    def success(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "success", title, message).exec()
+
+    @staticmethod
+    def warning(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "warning", title, message).exec()
+
+    @staticmethod
+    def error(parent: QWidget | None, title: str, message: str) -> None:
+        NotificationDialog(parent, "error", title, message).exec()
+
+    @staticmethod
+    def question(
+        parent: QWidget | None,
+        title: str,
+        message: str,
+        *,
+        ok_text: str = "확인",
+        cancel_text: str = "취소",
+    ) -> bool:
+        """Yes/No 확인 다이얼로그 — True(확인) / False(취소) 반환."""
+        dlg = NotificationDialog(
+            parent, "question", title, message,
+            is_question=True, ok_text=ok_text, cancel_text=cancel_text,
+        )
+        return dlg.exec() == QDialog.DialogCode.Accepted
+
+
 class MainWindow(QMainWindow):
     """UI 요소와 컨트롤러 콜백을 연결하는 최상위 창입니다."""
 
@@ -3784,18 +3949,18 @@ class MainWindow(QMainWindow):
         if step_index == current_step:
             return
 
-        # 테스트 진행 중인 경우 — 확인 다이얼로그
+        # 테스트 진행 중인 경우 — 확인 다이얼로그 (Toss 톤)
         is_busy = bool(getattr(self, "_is_busy", False))
         if is_busy:
             target_label = ["사이트 선택", "테스트 케이스 선택", "테스트 진행"][step_index]
-            reply = QMessageBox.question(
+            ok = NotificationDialog.question(
                 self,
                 "진행 중인 테스트 중단",
                 f"테스트가 실행 중입니다.\n진행을 중단하고 '{target_label}' 페이지로 이동하시겠습니까?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+                ok_text="중단하고 이동",
+                cancel_text="계속 실행",
             )
-            if reply != QMessageBox.StandardButton.Yes:
+            if not ok:
                 return
             # 진행 중단 — cancelRequested 시그널 + busy 상태 해제
             self.append_log("⏹️ 사용자 요청으로 테스트를 중단합니다.")
@@ -4786,7 +4951,7 @@ class MainWindow(QMainWindow):
                 return  # 사용자 취소
             goal = dlg.goal_text()
             if not goal:
-                QMessageBox.information(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
+                NotificationDialog.info(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
                 return
             self.set_feature_query(goal)
             self.startRequested.emit()
@@ -4832,8 +4997,10 @@ class MainWindow(QMainWindow):
                 self._pending_auto_start_after_analysis = True
                 self.fileDropped.emit(file_path)
             else:
-                QMessageBox.warning(self, "지원하지 않는 형식",
-                                    "JSON 번들, PDF, DOCX, MD, TXT 파일만 지원합니다.")
+                NotificationDialog.warning(
+                    self, "지원하지 않는 형식",
+                    "JSON 번들, PDF, DOCX, MD, TXT 파일만 지원합니다.",
+                )
             return
 
         # ai 모드 또는 fallback
@@ -6947,7 +7114,7 @@ class MainWindow(QMainWindow):
                 logs = current_text.splitlines()
 
         if not logs:
-            QMessageBox.information(
+            NotificationDialog.info(
                 self,
                 "다운로드할 로그 없음",
                 "아직 실행된 로그가 없습니다. 테스트를 먼저 실행해 주세요.",
@@ -6973,13 +7140,13 @@ class MainWindow(QMainWindow):
                 f.write("# " + "=" * 60 + "\n\n")
                 for line in logs:
                     f.write(line.rstrip() + "\n")
-            QMessageBox.information(
+            NotificationDialog.success(
                 self,
                 "다운로드 완료",
-                f"로그가 저장되었습니다:\n{file_path}\n\n총 {len(logs)}줄",
+                f"로그가 저장되었습니다.\n\n위치: {file_path}\n총 {len(logs)}줄",
             )
         except Exception as exc:
-            QMessageBox.critical(
+            NotificationDialog.error(
                 self,
                 "다운로드 실패",
                 f"로그 저장 중 오류가 발생했습니다:\n{exc}",
@@ -7268,17 +7435,13 @@ class MainWindow(QMainWindow):
 
     def ask_for_bug_json(self) -> None:
         """플랜 불러오기 후 bug.json 선택 여부를 묻습니다."""
-        from PySide6.QtWidgets import QMessageBox
-
-        reply = QMessageBox.question(
+        ok = NotificationDialog.question(
             self,
             "Bug JSON 파일 선택",
             "ER (Error Rate) 측정을 위한 bug.json 파일을 선택하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            ok_text="선택", cancel_text="건너뛰기",
         )
-
-        if reply == QMessageBox.Yes:
+        if ok:
             # bug.json 선택 다이얼로그 열기
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
