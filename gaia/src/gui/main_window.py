@@ -1216,26 +1216,31 @@ class MainWindow(QMainWindow):
                 border-bottom: 1px solid #e5e8eb;
             }
 
-            /* 사이드바 접기/펼치기 햄버거 토글 (헤더 좌측) */
-            QPushButton#SidebarToggleButton {
+            /* 사이드바 좌하단 접기/펼치기 토글 — SidebarMenuItem과 톤 통일 */
+            QPushButton#SidebarCollapseButton {
                 background: transparent;
-                border: 1px solid #e5e8eb;
-                border-radius: 8px;
-                color: #4e5968;
-                font-size: 18px;
+                border: none;
+                color: #6b7684;
+                font-size: 13px;
                 font-weight: 600;
-                padding: 0px;
+                padding: 10px 14px;
+                text-align: left;
                 min-height: 0px;
+                border-radius: 8px;
             }
-            QPushButton#SidebarToggleButton:hover {
-                background: #f9fafb;
-                border: 1px solid #d1d6db;
-                color: #3182f6;
+            QPushButton#SidebarCollapseButton:hover {
+                background: #f2f4f6;
+                color: #191f28;
             }
-            QPushButton#SidebarToggleButton:pressed {
+            QPushButton#SidebarCollapseButton:pressed {
                 background: #eff6ff;
-                border: 1px solid #b2d4ff;
                 color: #1b64da;
+            }
+            /* 접힌 상태 — 텍스트 없이 ▶만 표시될 때 */
+            QPushButton#SidebarCollapseButton[collapsed="true"] {
+                text-align: center;
+                padding: 10px 0px;
+                font-size: 14px;
             }
 
             QFrame#StepperPill {
@@ -2987,7 +2992,24 @@ class MainWindow(QMainWindow):
         sites_btn.clicked.connect(self._emit_benchmark_manage)
         layout.addWidget(sites_btn)
 
+        # 동적 visibility 토글을 위해 보조 메뉴 위젯들 보관
+        self._sidebar_menu_buttons: list[QPushButton] = [history_btn, sites_btn]
+
         layout.addStretch(1)
+
+        # ─── 좌하단: 사이드바 접기/펼치기 토글 (구분선 + 버튼) ─────
+        bottom_divider = QFrame(sidebar)
+        bottom_divider.setObjectName("SidebarDivider")
+        bottom_divider.setFixedHeight(1)
+        layout.addWidget(bottom_divider)
+        self._sidebar_bottom_divider = bottom_divider
+
+        self._sidebar_toggle_button = QPushButton("◀  접기", sidebar)
+        self._sidebar_toggle_button.setObjectName("SidebarCollapseButton")
+        self._sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle_button.setToolTip("사이드바 접기")
+        self._sidebar_toggle_button.clicked.connect(self._toggle_sidebar)
+        layout.addWidget(self._sidebar_toggle_button)
 
         return sidebar
 
@@ -3053,15 +3075,6 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(header)
         layout.setContentsMargins(20, 12, 20, 12)
         layout.setSpacing(12)
-
-        # 좌측 햄버거 토글 — 사이드바 접기/펼치기
-        self._sidebar_toggle_button = QPushButton("☰", header)
-        self._sidebar_toggle_button.setObjectName("SidebarToggleButton")
-        self._sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sidebar_toggle_button.setToolTip("사이드바 접기/펼치기")
-        self._sidebar_toggle_button.setFixedSize(36, 36)
-        self._sidebar_toggle_button.clicked.connect(self._toggle_sidebar)
-        layout.addWidget(self._sidebar_toggle_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         layout.addStretch(1)
 
@@ -4792,33 +4805,68 @@ class MainWindow(QMainWindow):
     def _toggle_sidebar(self) -> None:
         """좌측 사이드바 접기/펼치기 토글.
 
-        - 펼친 상태: 사이드바 visible (저장된 너비로)
-        - 접힌 상태: 사이드바 hidden (메인 영역이 전체 폭 사용)
-        sidebar.setMinimumWidth(180)이 걸려 있어 setSizes(0)으로는 안 줄어들기 때문에
-        setVisible(False)로 완전히 숨김.
+        - 펼친 상태: 사이드바 240px (저장된 너비), 모든 텍스트/메뉴 노출
+        - 접힌 상태: 사이드바 56px (좁게 유지), 토글 버튼만 노출 → 다시 펼치기 가능
         """
         if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
             return
-        is_visible = self._sidebar_panel.isVisible()
-        if is_visible:
-            # 접기 — 현재 너비 저장 후 hide
+        # 현재 접힌 상태 여부를 인스턴스에 저장 (width 비교는 splitter 흐름에서 불안정)
+        is_collapsed = bool(getattr(self, "_sidebar_collapsed", False))
+
+        if not is_collapsed:
+            # 접기 — 현재 너비 저장
             if hasattr(self, "_root_splitter"):
                 sizes = self._root_splitter.sizes()
-                if sizes and sizes[0] > 0:
+                if sizes and sizes[0] >= 180:
                     self._sidebar_expanded_width = sizes[0]
-            self._sidebar_panel.setVisible(False)
+            # 사이드바 내부 — 토글 버튼 외 모두 hide
+            self._set_sidebar_inner_visible(False)
+            # 너비를 56px로 (토글 버튼만 보이는 폭)
+            self._sidebar_panel.setMinimumWidth(56)
+            self._sidebar_panel.setMaximumWidth(56)
+            if hasattr(self, "_root_splitter"):
+                total = sum(self._root_splitter.sizes())
+                self._root_splitter.setSizes([56, max(0, total - 56)])
+            # 토글 버튼 UI 업데이트
             if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setText("▶")
                 self._sidebar_toggle_button.setToolTip("사이드바 펼치기")
+                self._sidebar_toggle_button.setProperty("collapsed", True)
+                self._restyle(self._sidebar_toggle_button)
+            self._sidebar_collapsed = True
         else:
             # 펼치기 — 저장된 너비로 복원
-            self._sidebar_panel.setVisible(True)
             restore = int(getattr(self, "_sidebar_expanded_width", 240))
             restore = max(180, min(360, restore))
+            self._sidebar_panel.setMinimumWidth(180)
+            self._sidebar_panel.setMaximumWidth(360)
+            self._set_sidebar_inner_visible(True)
             if hasattr(self, "_root_splitter"):
                 total = sum(self._root_splitter.sizes())
                 self._root_splitter.setSizes([restore, max(0, total - restore)])
             if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setText("◀  접기")
                 self._sidebar_toggle_button.setToolTip("사이드바 접기")
+                self._sidebar_toggle_button.setProperty("collapsed", False)
+                self._restyle(self._sidebar_toggle_button)
+            self._sidebar_collapsed = False
+
+    def _set_sidebar_inner_visible(self, visible: bool) -> None:
+        """사이드바 내부의 토글 버튼을 제외한 모든 자식 위젯의 visibility 토글.
+
+        접힌 상태에서는 토글 버튼 + 좌하단 영역만 보이고, 브랜드/스텝/메뉴 모두 hide.
+        """
+        if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
+            return
+        toggle = getattr(self, "_sidebar_toggle_button", None)
+        divider = getattr(self, "_sidebar_bottom_divider", None)
+        # 사이드바 자식 위젯 순회 — 토글/구분선은 항상 visible
+        for child in self._sidebar_panel.findChildren(QWidget):
+            if child is toggle or child is divider:
+                continue
+            # 직속 자식만 (중첩된 child는 skip — 부모가 hide되면 자동 처리)
+            if child.parent() is self._sidebar_panel:
+                child.setVisible(visible)
 
     # ------------------------------------------------------------------
     # Step 3 헬퍼
