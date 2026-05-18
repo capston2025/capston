@@ -599,19 +599,35 @@ class SiteCard(QFrame):
         self._apply_initial_badge_style()
         layout.addWidget(self._badge)
 
-        # 텍스트 (이름 + URL)
+        # 텍스트 (이름 + URL) — 카드 폭이 좁아져도 텍스트가 폭을 강제하지 않도록
+        # sizePolicy를 Ignored로 두고 ellipsis(...)로 처리.
         text_container = QWidget(self)
+        text_container.setMinimumWidth(0)
+        text_container.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         text_layout = QVBoxLayout(text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
 
         name_label = QLabel(label, text_container)
         name_label.setObjectName("SiteCardName")
+        name_label.setMinimumWidth(0)
+        name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # 텍스트가 길면 끝에 ... 표시
+        name_label.setTextFormat(Qt.TextFormat.PlainText)
         text_layout.addWidget(name_label)
 
         url_label = QLabel(url, text_container)
         url_label.setObjectName("SiteCardURL")
+        url_label.setMinimumWidth(0)
+        url_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        url_label.setTextFormat(Qt.TextFormat.PlainText)
         text_layout.addWidget(url_label)
+
+        # Python attribute로 라벨 참조 보관 (resize 시 elide 갱신)
+        self._name_label = name_label
+        self._url_label = url_label
+        self._full_label_text = label
+        self._full_url_text = url
 
         layout.addWidget(text_container, stretch=1)
 
@@ -621,6 +637,10 @@ class SiteCard(QFrame):
         self._indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._indicator.setFixedSize(20, 20)
         layout.addWidget(self._indicator)
+
+        # 카드 자체도 freely shrinkable (그리드가 viewport보다 못 넘치도록)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
         # Favicon 비동기 요청 (Google s2 favicons API)
         if network_manager is not None:
@@ -635,6 +655,24 @@ class SiteCard(QFrame):
             f"font-weight: 800;"
             f"font-size: 13px;"
         )
+
+    def resizeEvent(self, event) -> None:  # noqa: D401
+        super().resizeEvent(event)
+        # 카드 폭이 변경되면 텍스트 elide 갱신 — 폭이 부족하면 끝에 "..."
+        if hasattr(self, "_name_label") and hasattr(self, "_url_label"):
+            try:
+                # 텍스트 영역 폭 = 카드 폭 - badge(40) - indicator(20) - margins(14*2) - spacing(12*2)
+                available = max(40, self.width() - 40 - 20 - 28 - 24)
+                fm_name = self._name_label.fontMetrics()
+                fm_url = self._url_label.fontMetrics()
+                self._name_label.setText(
+                    fm_name.elidedText(self._full_label_text, Qt.TextElideMode.ElideRight, available)
+                )
+                self._url_label.setText(
+                    fm_url.elidedText(self._full_url_text, Qt.TextElideMode.ElideRight, available)
+                )
+            except Exception:
+                pass
 
     def _request_favicon(self, manager: QNetworkAccessManager) -> None:
         from urllib.parse import urlparse
@@ -4074,24 +4112,33 @@ class MainWindow(QMainWindow):
         for card in self._site_cards:
             self._site_grid_layout.removeWidget(card)
 
-        # 컨테이너 너비 기준으로 컬럼 수 결정 (최소 너비 220px, 간격 12px)
-        width = max(1, self._site_grid_container.width())
-        min_card = 220
+        # 컨테이너 너비 — 0이면 부모 윈도우 폭 - 사이드바 추정값으로 fallback
+        width = self._site_grid_container.width()
+        if width <= 0:
+            # 초기 페이지 진입 시 container.width()는 0일 수 있음
+            try:
+                width = max(1, self.width() - 320)  # 사이드바 + 패딩 추정
+            except Exception:
+                width = 1000
+        # 카드 최소 너비 240px (URL 길어도 elide되니 충분), 간격 12px
+        # 가용 폭 / (최소 카드 폭 + 간격) → 가능한 최대 컬럼 수
+        min_card = 240
         gap = 12
         cols = max(1, (width + gap) // (min_card + gap))
-        cols = min(cols, 5)  # 최대 5열로 제한
+        cols = max(1, min(cols, 5))  # 1~5열 범위
 
         for idx, card in enumerate(self._site_cards):
             self._site_grid_layout.addWidget(card, idx // cols, idx % cols)
 
-        # 마지막 row 아래에 stretch — 카드가 위로 정렬되게
-        last_row = (len(self._site_cards) + cols - 1) // cols
-        for r in range(last_row + 1):
+        # 모든 row stretch 초기화 후 마지막 row만 stretch (카드가 위로 정렬)
+        rows_count = (len(self._site_cards) + cols - 1) // cols
+        for r in range(rows_count + 1):
             self._site_grid_layout.setRowStretch(r, 0)
-        self._site_grid_layout.setRowStretch(last_row, 1)
-        # 컬럼 stretch 균등화
-        for c in range(cols):
-            self._site_grid_layout.setColumnStretch(c, 1)
+        if rows_count > 0:
+            self._site_grid_layout.setRowStretch(rows_count, 1)
+        # 컬럼 stretch 균등화 (5열 제한이라 max 5)
+        for c in range(5):
+            self._site_grid_layout.setColumnStretch(c, 1 if c < cols else 0)
 
     def _filter_site_grid(self, query: str) -> None:
         """검색어에 따라 카드 가시성 토글."""
@@ -5665,6 +5712,11 @@ class MainWindow(QMainWindow):
             self._back_to_setup_button.setEnabled(False)
         self._set_browser_panel_visible(False)
         self._update_workflow_indicators(0)
+        # 페이지가 실제 보이게 된 후 컨테이너 너비가 확정되므로 그리드 재배치 호출
+        # (QTimer로 다음 이벤트 루프 tick에 호출 — width()가 0이 아닌 값으로 확정된 후)
+        if hasattr(self, "_site_grid_container"):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._rearrange_site_grid)
 
     def show_setup_stage(self) -> None:
         """레거시 진입점 — 이제 항상 test_case_stage로 리다이렉트.
