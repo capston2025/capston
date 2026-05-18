@@ -24,6 +24,8 @@ class ActionType(str, Enum):
 
     CLICK = "click"
     FILL = "fill"
+    TYPE = "type"
+    INSPECT = "inspect"
     FOCUS = "focus"
     PRESS = "press"
     SCROLL = "scroll"
@@ -135,6 +137,11 @@ class DOMElement(BaseModel):
     role_ref_nth: Optional[int] = Field(default=None, description="동일 role/name 중 duplicate index")
     context_score_hint: Optional[float] = Field(default=None, description="선택 설명용 context score")
     ref_id: Optional[str] = Field(default=None, description="브라우저 accessibility snapshot ref ID")
+    frame_ref_id: Optional[str] = Field(default=None, description="ref가 iframe 내부일 때 iframe ref ID")
+    frame_selector: Optional[str] = Field(default=None, description="ref가 iframe 내부일 때 Playwright frame selector")
+    frame_descendant_selector: Optional[str] = Field(default=None, description="iframe 내부 대상 selector")
+    frame_scoped_selector: Optional[str] = Field(default=None, description="iframe piercing selector for action fallback")
+    scope: Optional[dict] = Field(default=None, description="브라우저/frame scope metadata")
 
     # 상태
     is_visible: bool = Field(default=True)

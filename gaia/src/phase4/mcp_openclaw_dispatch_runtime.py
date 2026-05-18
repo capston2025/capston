@@ -762,6 +762,26 @@ def _build_role_ref_context(
                 "text": str(text_match.group(1) or "").strip() if text_match else inline_label,
             }
         )
+        if current_ref and current_ref not in tree_by_ref:
+            parent_ref = ""
+            for _, candidate_ref in reversed(stack[:-1]):
+                candidate_ref = str(candidate_ref or "").strip()
+                if candidate_ref:
+                    parent_ref = candidate_ref
+                    break
+            meta = (refs.get(current_ref) or {}) if isinstance(refs, dict) else {}
+            fallback_node = {
+                "depth": indent,
+                "role": str(meta.get("role") or "").strip().lower() or "generic",
+                "name": str(meta.get("name") or inline_label or "").strip(),
+                "ref": current_ref,
+                "nth": meta.get("nth"),
+                "parent_ref": parent_ref or None,
+                "line": stripped,
+                "ancestor_names": [],
+            }
+            tree_by_ref[current_ref] = fallback_node
+            tree.append(fallback_node)
         if text_match or inline_label:
             text_value = str(text_match.group(1) or "").strip() if text_match else inline_label
             if not text_value:
@@ -839,8 +859,94 @@ def _build_role_ref_context(
     return tree, tree_by_ref, text_by_raw_ref, nearby_text_by_raw_ref, pointer_like_refs, ref_line_index
 
 
-def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _css_attr_value(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _frame_descendant_selector_for_role_node(role: str, name: str, tag: str) -> str:
+    cleaned_name = str(name or "").strip()
+    lowered_role = str(role or "").strip().lower()
+    lowered_tag = str(tag or "").strip().lower()
+    if cleaned_name:
+        quoted = _css_attr_value(cleaned_name)
+        if lowered_role in {"textbox", "searchbox", "combobox"}:
+            return (
+                f'[aria-label="{quoted}"], '
+                f'input[placeholder="{quoted}"], '
+                f'textarea[placeholder="{quoted}"], '
+                f'[role="{_css_attr_value(lowered_role)}"][aria-label="{quoted}"]'
+            )
+        return f'[aria-label="{quoted}"]'
+    if lowered_tag in {"input", "textarea"}:
+        return lowered_tag
+    if lowered_role in {"textbox", "searchbox"}:
+        return f'[role="{_css_attr_value(lowered_role)}"]'
+    return "[contenteditable=\"true\"]"
+
+
+def _frame_selectors_by_iframe_ref(
+    tree: List[Dict[str, Any]],
+    refs: Dict[str, Dict[str, Any]],
+    frame_descriptors: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, str]:
+    iframe_refs: List[str] = []
+    for node in tree:
+        if not isinstance(node, dict):
+            continue
+        raw_ref = str(node.get("ref") or "").strip()
+        if not raw_ref:
+            continue
+        meta = (refs.get(raw_ref) or {}) if isinstance(refs, dict) else {}
+        role = str(meta.get("role") or node.get("role") or "").strip().lower()
+        if role == "iframe":
+            iframe_refs.append(raw_ref)
+    if not iframe_refs:
+        return {}
+
+    descriptors = [item for item in list(frame_descriptors or []) if isinstance(item, dict)]
+    visible_descriptors = [
+        item
+        for item in descriptors
+        if bool(item.get("visible")) and str(item.get("selector") or "").strip()
+    ]
+    usable_descriptors = visible_descriptors or [
+        item for item in descriptors if str(item.get("selector") or "").strip()
+    ]
+    selector_by_ref: Dict[str, str] = {}
+    for index, iframe_ref in enumerate(iframe_refs):
+        if index < len(usable_descriptors):
+            selector = str(usable_descriptors[index].get("selector") or "").strip()
+        else:
+            selector = f"iframe >> nth={index}"
+        if selector:
+            selector_by_ref[iframe_ref] = selector
+    return selector_by_ref
+
+
+def _frame_scope_for_raw_ref(
+    *,
+    raw_ref_id: str,
+    tree_by_ref: Dict[str, Dict[str, Any]],
+    iframe_selector_by_ref: Dict[str, str],
+) -> Tuple[str, str]:
+    current = str((tree_by_ref.get(raw_ref_id) or {}).get("parent_ref") or "").strip()
+    visited: set[str] = set()
+    while current and current not in visited:
+        visited.add(current)
+        selector = str(iframe_selector_by_ref.get(current) or "").strip()
+        if selector:
+            return current, selector
+        current = str((tree_by_ref.get(current) or {}).get("parent_ref") or "").strip()
+    return "", ""
+
+
+def _pseudo_elements_from_role_snapshot(
+    snapshot: str,
+    refs: Dict[str, Dict[str, Any]],
+    frame_descriptors: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     tree, tree_by_ref, text_by_raw_ref, nearby_text_by_raw_ref, pointer_like_refs, ref_line_index = _build_role_ref_context(snapshot, refs)
+    iframe_selector_by_ref = _frame_selectors_by_iframe_ref(tree, refs, frame_descriptors)
     elements: List[Dict[str, Any]] = []
     child_refs_by_parent: Dict[str, List[str]] = {}
     tree_index_by_ref: Dict[str, int] = {}
@@ -1383,6 +1489,19 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             if selected_value:
                 display_name = selected_value
         role_ref_name = selected_value if role in {"combobox", "listbox"} and selected_value else (name or "")
+        element_tag = "button" if custom_option_label or (role == "generic" and interactive) else _role_to_tag(role)
+        frame_ref_id, frame_selector = _frame_scope_for_raw_ref(
+            raw_ref_id=raw_ref_id,
+            tree_by_ref=tree_by_ref,
+            iframe_selector_by_ref=iframe_selector_by_ref,
+        )
+        frame_descendant_selector = ""
+        frame_scoped_selector = ""
+        if frame_selector:
+            frame_descendant_selector = _frame_descendant_selector_for_role_node(role, role_ref_name or display_name, element_tag)
+            frame_scoped_selector = (
+                f"{frame_selector} >> internal:control=enter-frame >> {frame_descendant_selector}"
+            )
         attrs: Dict[str, Any] = {
             "role": role,
             "aria-label": display_name or "",
@@ -1404,6 +1523,16 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
             "gaia-actionable": "true" if interactive else "false",
             "gaia-disabled": "false",
         }
+        if frame_selector:
+            attrs["frame_ref_id"] = frame_ref_id
+            attrs["frame_selector"] = frame_selector
+            attrs["frame_descendant_selector"] = frame_descendant_selector
+            attrs["frame_scoped_selector"] = frame_scoped_selector
+            attrs["scope"] = {
+                "frame_ref_id": frame_ref_id,
+                "frame_selector": frame_selector,
+                "frame_descendant_selector": frame_descendant_selector,
+            }
         if custom_option_label:
             attrs["gaia-custom-option"] = "true"
             attrs["custom_option_kind"] = "dropdown"
@@ -1418,7 +1547,7 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
         elements.append(
             {
                 "id": int(element_id_by_raw_ref.get(raw_ref_id) or (len(elements) + 1)),
-                "tag": ("button" if custom_option_label or (role == "generic" and interactive) else _role_to_tag(role)),
+                "tag": element_tag,
                 "ref_id": ref_id,
                 "selector": f"openclaw-ref:{ref_id}",
                 "full_selector": f"openclaw-ref:{ref_id}",
@@ -1430,6 +1559,7 @@ def _pseudo_elements_from_role_snapshot(snapshot: str, refs: Dict[str, Dict[str,
                 "group_action_labels": group_action_labels or None,
                 "context_score_hint": context_score_hint,
                 "attributes": attrs,
+                "scope": attrs.get("scope"),
                 "bounding_box": None,
                 "element_type": "button" if custom_option_label else _element_type_for_role(role),
                 "is_visible": True,
@@ -1848,11 +1978,22 @@ def _build_snapshot_payload(
     requested_scope_ref_id: str,
     raw_snapshot: Dict[str, Any],
     state: Dict[str, Any],
+    frame_descriptors: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     snapshot = str(raw_snapshot.get("snapshot") or "")
     refs = raw_snapshot.get("refs") if isinstance(raw_snapshot.get("refs"), dict) else {}
-    elements, role_snapshot = _pseudo_elements_from_role_snapshot(snapshot, refs)
+    elements, role_snapshot = _pseudo_elements_from_role_snapshot(snapshot, refs, frame_descriptors)
     evidence = _synthesize_snapshot_evidence(elements)
+    frame_texts = _frame_evidence_texts(frame_descriptors)
+    if frame_texts:
+        evidence["frame_texts"] = frame_texts
+        existing_digest = str(evidence.get("text_digest") or "").strip()
+        evidence["text_digest"] = " ".join([existing_digest, *frame_texts]).strip()[:2000]
+        live_texts = list(evidence.get("live_texts") or [])
+        for frame_text in frame_texts:
+            if frame_text not in live_texts:
+                live_texts.append(frame_text[:160])
+        evidence["live_texts"] = live_texts[:12]
     scoped_elements, context_snapshot, scope_applied = _apply_scope_to_elements(elements, requested_scope_ref_id)
     effective_role_snapshot = dict(role_snapshot or {})
     if scope_applied:
@@ -1929,6 +2070,16 @@ def _snapshot_payload_for_target(
     )
     if status_code >= 400:
         return None
+    frame_descriptors = (
+        _fetch_frame_descriptors_for_target(
+            base_url=base_url,
+            target_id=target_id,
+            profile=profile,
+            timeout=timeout,
+        )
+        if _snapshot_may_contain_iframe(data)
+        else []
+    )
     return _build_snapshot_payload(
         session_id=session_id,
         target_id=target_id,
@@ -1936,6 +2087,7 @@ def _snapshot_payload_for_target(
         requested_scope_ref_id=requested_scope_ref_id,
         raw_snapshot=data,
         state=state,
+        frame_descriptors=frame_descriptors,
     )
 
 
@@ -1962,6 +2114,106 @@ def _same_origin(left: str, right: str) -> bool:
         str(right_parts.scheme).lower(),
         str(right_parts.netloc).lower(),
     )
+
+
+_FRAME_DESCRIPTOR_SCRIPT = r"""() => {
+  const frames = Array.from(document.querySelectorAll('iframe'));
+  return frames.map((frame, index) => {
+    const rect = frame.getBoundingClientRect();
+    let sameOrigin = false;
+    let bodyText = '';
+    let editableCount = 0;
+    try {
+      const doc = frame.contentDocument;
+      sameOrigin = !!doc;
+      if (doc) {
+        bodyText = String(doc.body?.innerText || '').slice(0, 500);
+        editableCount = doc.querySelectorAll('input, textarea, [contenteditable], [role="textbox"], body[contenteditable]').length;
+      }
+    } catch (_) {}
+    return {
+      index,
+      selector: `iframe >> nth=${index}`,
+      id: frame.id || '',
+      name: frame.name || '',
+      title: frame.title || '',
+      src: frame.src || '',
+      visible: !!(rect.width && rect.height),
+      width: Math.round(rect.width || 0),
+      height: Math.round(rect.height || 0),
+      sameOrigin,
+      bodyText,
+      editableCount,
+    };
+  });
+}"""
+
+
+def _fetch_frame_descriptors_for_target(
+    *,
+    base_url: str,
+    target_id: str,
+    profile: str,
+    timeout: Any,
+) -> List[Dict[str, Any]]:
+    if not str(target_id or "").strip():
+        return []
+    payload: Dict[str, Any] = {
+        "kind": "evaluate",
+        "targetId": target_id,
+        "fn": _FRAME_DESCRIPTOR_SCRIPT,
+    }
+    if profile:
+        payload["profile"] = profile
+    try:
+        status_code, data, _ = _request(
+            "POST",
+            base_url=base_url,
+            path="/act",
+            timeout=timeout,
+            payload=payload,
+        )
+    except Exception:
+        return []
+    if status_code >= 400 or not isinstance(data, dict):
+        return []
+    result = data.get("result")
+    if not isinstance(result, list):
+        return []
+    descriptors: List[Dict[str, Any]] = []
+    for item in result:
+        if isinstance(item, dict) and str(item.get("selector") or "").strip():
+            descriptors.append(dict(item))
+    return descriptors[:50]
+
+
+def _snapshot_may_contain_iframe(raw_snapshot: Dict[str, Any]) -> bool:
+    snapshot = str((raw_snapshot or {}).get("snapshot") or "").lower()
+    if "- iframe" in snapshot or " iframe " in snapshot:
+        return True
+    refs = (raw_snapshot or {}).get("refs")
+    if not isinstance(refs, dict):
+        return False
+    return any(
+        str((meta or {}).get("role") or "").strip().lower() == "iframe"
+        for meta in refs.values()
+        if isinstance(meta, dict)
+    )
+
+
+def _frame_evidence_texts(frame_descriptors: Optional[List[Dict[str, Any]]]) -> List[str]:
+    texts: List[str] = []
+    for item in list(frame_descriptors or []):
+        if not isinstance(item, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("bodyText") or "").strip())
+        if not text:
+            continue
+        if text not in texts:
+            texts.append(text[:300])
+        if len(texts) >= 6:
+            break
+    return texts
 
 
 def _tabs_payload_for_target(
@@ -2352,6 +2604,17 @@ def _build_openclaw_action_payload(
                     ],
                 }
             )
+    elif browser_action == "type":
+        selector = str((params or {}).get("selector") or (params or {}).get("full_selector") or "").strip()
+        payload.update({"kind": "type", "text": "" if value is None else str(value)})
+        if ref_id:
+            payload["ref"] = ref_id
+        if selector:
+            payload["selector"] = selector
+        if (params or {}).get("submit") is not None:
+            payload["submit"] = (params or {}).get("submit")
+        if (params or {}).get("slowly") is not None:
+            payload["slowly"] = (params or {}).get("slowly")
     elif browser_action == "press":
         payload.update({"kind": "press", "key": str(value or (params or {}).get("key") or "").strip()})
     elif browser_action == "hover":
@@ -2537,6 +2800,16 @@ def dispatch_openclaw_action(
             )
         if status_code >= 400:
             return _normalize_failure(status_code, data, text)
+        frame_descriptors = (
+            _fetch_frame_descriptors_for_target(
+                base_url=base_url,
+                target_id=target_id,
+                profile=profile_name,
+                timeout=timeout,
+            )
+            if _snapshot_may_contain_iframe(data)
+            else []
+        )
         payload = _build_snapshot_payload(
             session_id=session_id,
             target_id=target_id,
@@ -2544,6 +2817,7 @@ def dispatch_openclaw_action(
             requested_scope_ref_id=str((effective_params or {}).get("scope_container_ref_id") or "").strip(),
             raw_snapshot=data,
             state=state,
+            frame_descriptors=frame_descriptors,
         )
         return 200, payload, ""
 
@@ -2749,7 +3023,7 @@ def dispatch_openclaw_action(
     payload["profile"] = profile_name
 
     probe_kind = str(payload.get("kind") or "").strip()
-    probe_post_action = probe_kind in {"click", "fill", "press", "select", "drag", "hover", "evaluate"}
+    probe_post_action = probe_kind in {"click", "fill", "type", "press", "select", "drag", "hover", "evaluate"}
     before_payload: Optional[Dict[str, Any]] = None
     before_tabs_payload: Optional[Dict[str, Any]] = None
     snapshot_before_ms = 0
@@ -2851,6 +3125,8 @@ def dispatch_openclaw_action(
     }
     eval_result = data.get("result") if isinstance(data.get("result"), dict) else {}
     if probe_kind == "evaluate":
+        if eval_result:
+            state_change["evaluate_result"] = eval_result
         before_pos = eval_result.get("before")
         after_pos = eval_result.get("after")
         try:
@@ -3000,6 +3276,9 @@ def dispatch_openclaw_action(
                     state_change=state_change,
                     evidence=auto_follow_evidence,
                 )
+
+    if probe_kind == "evaluate" and eval_result:
+        state_change["evaluate_result"] = eval_result
 
     backend_trace = {
         "name": "openclaw",

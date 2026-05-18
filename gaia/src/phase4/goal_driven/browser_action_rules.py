@@ -28,7 +28,7 @@ STALE_REF_RULES: list[str] = [
     "페이지 네비게이션이 발생했거나 URL이 바뀌면 이전 턴의 ref_id를 신뢰하지 마세요. 현재 DOM에 존재하는 ref만 사용하세요.",
     "DOM 리스트에 없는 ref_id나 element_id를 추측하지 마세요.",
     "DOM이 'DOM 변경 없음'으로 표시되어도 ref는 현재 DOM 기준으로만 사용하세요.",
-    "click/fill/select/press처럼 요소를 겨냥하는 action은 현재 DOM에 보이는 ref_id 또는 element_id를 반드시 포함하세요. 현재 DOM에 바인딩할 수 없으면 action을 추측하지 말고 wait/scroll로 재탐색하세요.",
+    "click/fill/type/select/press처럼 요소를 겨냥하는 action은 현재 DOM에 보이는 ref_id 또는 element_id를 반드시 포함하세요. 현재 DOM에 바인딩할 수 없으면 action을 추측하지 말고 wait/scroll/inspect로 재탐색하세요.",
 ]
 
 LOADING_STATE_RULES: list[str] = [
@@ -61,6 +61,12 @@ DOM_TRUST_RULES: list[str] = [
     "현재 화면에서 직접 연결된 증거가 더 강한 쪽을 고르세요.",
     "방금 뜬 임시 피드백(toast/snackbar/banner)보다 지속 증거(row, counter, reveal surface)를 우선 확인하세요.",
     "`select`를 고를 때는 해당 combobox의 `options=[...]` 또는 바로 아래 subtree에 실제로 보이는 옵션만 선택하세요.",
+]
+
+AGENTIC_TOOL_RULES: list[str] = [
+    "`inspect`는 상태를 바꾸지 않는 관찰 도구입니다. 입력값이 실제 chip/token/list row로 커밋됐는지, iframe/active element/validation message/nearby controls가 DOM 요약에 부족하면 먼저 inspect로 확인하세요.",
+    "`type`은 키보드 입력 도구입니다. fill이 값만 세팅하고 자동완성, token, chip, combobox, contenteditable 같은 이벤트 기반 UI가 반응하지 않을 때 사용하세요.",
+    "`type` 후 선택/커밋이 필요한 위젯이면 같은 ref에서 `press` Enter/Tab 또는 현재 DOM에 보이는 option 클릭을 다음 단계로 선택하세요. 이 판단은 inspect 결과와 최신 DOM 증거로 하세요.",
 ]
 
 GOAL_COMPLETION_RULES: list[str] = [
@@ -104,6 +110,7 @@ def build_browser_action_rules_block() -> str:
     """LLM 프롬프트에 삽입할 전체 브라우저 행동 규칙 블록을 생성한다."""
     all_rules: list[str] = []
     all_rules.extend(DOM_TRUST_RULES)
+    all_rules.extend(AGENTIC_TOOL_RULES)
     all_rules.extend(ANTI_LOOP_RULES)
     all_rules.extend(STALE_REF_RULES)
     all_rules.extend(LOADING_STATE_RULES)

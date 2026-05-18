@@ -357,6 +357,52 @@ def test_dispatch_openclaw_action_reuses_matching_snapshot_as_before_probe(monke
     assert payload["state_change"]["snapshot_id_before"] == cached_before["snapshot_id"]
 
 
+def test_dispatch_openclaw_action_preserves_evaluate_result_in_state_change(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    session_id = "inspect-s1"
+    current_url = _DEFAULT_URL
+    state = _seed_session(session_id, current_url=current_url)
+    cached_before = _build_cached_snapshot(session_id=session_id, state=state, current_url=current_url)
+    after_payload = {
+        "snapshot_id": "openclaw:inspect-s1:2",
+        "current_url": current_url,
+        "url": current_url,
+        "evidence": _evidence("inspect done"),
+    }
+    inspection = {
+        "activeElement": {"tag": "input", "role": "combobox", "value": "hello"},
+        "fields": [{"tag": "input", "value": "hello"}],
+    }
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", lambda **kwargs: after_payload)
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/act"
+        assert payload["kind"] == "evaluate"
+        return 200, {"ok": True, "result": inspection, "url": current_url, "targetId": "tab-1"}, ""
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": cached_before["snapshot_id"],
+            "action": "evaluate",
+            "fn": "() => ({activeElement: {tag: 'input'}})",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["state_change"]["evaluate_result"] == inspection
+
+
 def test_dispatch_openclaw_action_does_not_reuse_scoped_snapshot_as_before_probe(monkeypatch) -> None:
     monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
     monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
@@ -930,6 +976,84 @@ def test_pseudo_elements_from_role_snapshot_attach_row_local_context_to_action_b
     assert "(HUSS국립부경대)포용사회와문화탐방1" in str(elements_by_ref["e215"].get("context_text") or "")
 
 
+def test_pseudo_elements_from_role_snapshot_attaches_iframe_scope_to_descendants() -> None:
+    snapshot = """
+- generic [ref=e1]:
+  - iframe [ref=e2]:
+    - generic "본문 내용" [ref=f7e4]
+""".strip()
+    refs = {
+        "e1": {"role": "generic"},
+        "e2": {"role": "iframe"},
+        "f7e4": {"role": "generic", "name": "본문 내용"},
+    }
+
+    elements, _ = runtime._pseudo_elements_from_role_snapshot(
+        snapshot,
+        refs,
+        [{"selector": "iframe >> nth=4", "visible": True}],
+    )
+    elements_by_ref = {str(item.get("ref_id") or ""): item for item in elements}
+    body = elements_by_ref["f7e4"]
+    attrs = dict(body.get("attributes") or {})
+
+    assert attrs["frame_ref_id"] == "e2"
+    assert attrs["frame_selector"] == "iframe >> nth=4"
+    assert attrs["frame_descendant_selector"] == '[aria-label="본문 내용"]'
+    assert attrs["frame_scoped_selector"] == 'iframe >> nth=4 >> internal:control=enter-frame >> [aria-label="본문 내용"]'
+    assert body["scope"]["frame_ref_id"] == "e2"
+
+
+def test_build_openclaw_action_payload_supports_type_selector() -> None:
+    payload = runtime._build_openclaw_action_payload(
+        target_id="tab-1",
+        params={
+            "action": "type",
+            "selector": 'iframe >> nth=4 >> internal:control=enter-frame >> [aria-label="본문 내용"]',
+            "value": "hello",
+        },
+    )
+
+    assert payload["kind"] == "type"
+    assert payload["targetId"] == "tab-1"
+    assert payload["selector"] == 'iframe >> nth=4 >> internal:control=enter-frame >> [aria-label="본문 내용"]'
+    assert payload["text"] == "hello"
+
+
+def test_build_snapshot_payload_includes_iframe_body_text_evidence() -> None:
+    payload = runtime._build_snapshot_payload(
+        session_id="s-frame",
+        target_id="tab-1",
+        current_url="https://mail.example.test/new",
+        requested_scope_ref_id="",
+        raw_snapshot={
+            "snapshot": """
+- generic [ref=e1]:
+  - iframe [ref=e2]:
+    - generic "본문 내용" [ref=f7e4]
+""".strip(),
+            "refs": {
+                "e1": {"role": "generic"},
+                "e2": {"role": "iframe"},
+                "f7e4": {"role": "generic", "name": "본문 내용"},
+            },
+        },
+        state={},
+        frame_descriptors=[
+            {
+                "selector": "iframe >> nth=4",
+                "visible": True,
+                "bodyText": "GAIA iframe 본문 입력 검증",
+            }
+        ],
+    )
+
+    evidence = dict(payload.get("evidence") or {})
+    assert evidence["frame_texts"] == ["GAIA iframe 본문 입력 검증"]
+    assert "GAIA iframe 본문 입력 검증" in evidence["text_digest"]
+    assert "GAIA iframe 본문 입력 검증" in evidence["live_texts"]
+
+
 def test_build_snapshot_payload_preserves_raw_role_snapshot_when_scope_applied(monkeypatch) -> None:
     raw_snapshot = {
         "snapshot": '- button "원본 버튼" [ref=e1]',
@@ -939,7 +1063,7 @@ def test_build_snapshot_payload_preserves_raw_role_snapshot_when_scope_applied(m
     monkeypatch.setattr(
         runtime,
         "_pseudo_elements_from_role_snapshot",
-        lambda snapshot, refs: (
+        lambda snapshot, refs, frame_descriptors=None: (
             [
                 {
                     "ref_id": "e1",

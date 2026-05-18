@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from gaia.src.phase4.goal_driven.browser_action_rules import (
+    AGENTIC_TOOL_RULES,
     ANTI_LOOP_RULES,
     CONTEXT_SHIFT_RULES,
     DIALOG_AVOIDANCE_RULES,
@@ -34,6 +35,7 @@ def test_all_rule_lists_are_nonempty():
         DIALOG_AVOIDANCE_RULES,
         CONTEXT_SHIFT_RULES,
         DOM_TRUST_RULES,
+        AGENTIC_TOOL_RULES,
         GOAL_COMPLETION_RULES,
     ):
         assert len(rule_list) >= 1
@@ -60,6 +62,7 @@ def test_build_browser_action_rules_block_total_rule_count():
     """전체 규칙 수가 모든 카테고리의 합과 일치한다."""
     total = (
         len(DOM_TRUST_RULES)
+        + len(AGENTIC_TOOL_RULES)
         + len(ANTI_LOOP_RULES)
         + len(STALE_REF_RULES)
         + len(LOADING_STATE_RULES)
@@ -167,5 +170,5 @@ def test_rules_block_includes_media_playback_guidance():
 
 def test_rules_block_includes_no_unbound_targeted_action_guidance():
     block = build_browser_action_rules_block()
-    assert "click/fill/select/press" in block
+    assert "click/fill/type/select/press" in block
     assert "ref_id 또는 element_id를 반드시 포함" in block

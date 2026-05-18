@@ -205,6 +205,11 @@ def analyze_dom(
                         role_ref_nth=attrs.get("role_ref_nth"),
                         context_score_hint=attrs.get("context_score_hint"),
                         ref_id=ref_id if isinstance(ref_id, str) and ref_id else None,
+                        frame_ref_id=attrs.get("frame_ref_id"),
+                        frame_selector=attrs.get("frame_selector"),
+                        frame_descendant_selector=attrs.get("frame_descendant_selector"),
+                        frame_scoped_selector=attrs.get("frame_scoped_selector"),
+                        scope=attrs.get("scope") if isinstance(attrs.get("scope"), dict) else None,
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=is_enabled,
                     )

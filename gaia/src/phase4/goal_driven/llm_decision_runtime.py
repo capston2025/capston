@@ -719,10 +719,10 @@ def decide_next_action(
 
 ## 응답 형식 (JSON만, 마크다운 없이)
 {{
-    \"action\": \"click\" | \"fill\" | \"focus\" | \"press\" | \"scroll\" | \"wait\" | \"select\",
-    \"ref_id\": 요소 ref ID (문자열, DOM에 [ref=...]로 표시된 값을 우선 사용; focus/wait면 null 허용),
-    \"element_id\": 요소ID (숫자, 없으면 null 허용; focus/wait면 null 허용),
-    \"value\": \"입력값 (fill), target_id/tab_id (focus), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms), 또는 human_answer skill JSON\",
+    \"action\": \"click\" | \"fill\" | \"type\" | \"inspect\" | \"focus\" | \"press\" | \"scroll\" | \"wait\" | \"select\",
+    \"ref_id\": 요소 ref ID (문자열, DOM에 [ref=...]로 표시된 값을 우선 사용; inspect/focus/wait면 null 허용),
+    \"element_id\": 요소ID (숫자, 없으면 null 허용; inspect/focus/wait면 null 허용),
+    \"value\": \"입력값 (fill/type), inspect 질문/관찰 목적, target_id/tab_id (focus), 키 이름 (press), select 값(문자열/콤마구분/JSON 배열), wait 조건(JSON 또는 ms), 또는 human_answer skill JSON\",
     \"reasoning\": \"현재 화면 기준으로 이 행동이 왜 다음 단계인지\",
     \"confidence\": 0.0~1.0,
     \"is_goal_achieved\": true | false,

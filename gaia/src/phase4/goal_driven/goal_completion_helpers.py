@@ -244,6 +244,35 @@ def is_readonly_visibility_goal(agent, goal: TestGoal) -> bool:
     )
 
 
+def requires_explicit_submission_completion(agent, goal: TestGoal) -> bool:
+    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+    if not goal_blob:
+        return False
+    submission_tokens = (
+        "발송",
+        "전송",
+        "보내기",
+        "보낸메일",
+        "보낸 메일",
+        "메일쓰기",
+        "메일 쓰기",
+        "submit",
+        "send",
+        "sent",
+    )
+    completion_tokens = (
+        "완료",
+        "성공",
+        "확인",
+        "보낸메일함",
+        "보낸 메일함",
+        "sent",
+    )
+    return any(token in goal_blob for token in submission_tokens) and any(
+        token in goal_blob for token in completion_tokens
+    )
+
+
 def evaluate_readonly_visibility_completion(
     agent,
     *,
@@ -436,6 +465,8 @@ def evaluate_goal_target_completion(
     if policy_reason:
         return policy_reason
     if is_readonly_visibility_goal(agent, goal):
+        return None
+    if requires_explicit_submission_completion(agent, goal):
         return None
     direction = str(agent._goal_constraints.get("mutation_direction") or "").strip().lower()
     if direction not in {"increase", "decrease", "clear"}:

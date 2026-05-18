@@ -499,7 +499,7 @@ def evaluate_post_action_progress(
         and bool(getattr(recent_exec, "effective", False))
         and str(getattr(recent_exec, "reason_code", "") or "").strip().lower() == "ok"
         and not openclaw_backend_progress
-        and decision.action in {ActionType.FILL, ActionType.SELECT}
+        and decision.action in {ActionType.FILL, ActionType.TYPE, ActionType.SELECT}
     )
     if openclaw_backend_provisional and not changed_by_state:
         changed_by_state = True
@@ -524,7 +524,7 @@ def evaluate_post_action_progress(
     if (
         bool(success)
         and not changed
-        and decision.action in {ActionType.CLICK, ActionType.PRESS, ActionType.SELECT}
+        and decision.action in {ActionType.CLICK, ActionType.TYPE, ActionType.PRESS, ActionType.SELECT}
     ):
         time.sleep(0.8)
         settled_dom = agent._analyze_dom(scope_container_ref_id="")

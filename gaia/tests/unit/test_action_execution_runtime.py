@@ -399,6 +399,119 @@ def test_execute_decision_repairs_non_fillable_search_target_before_fill(monkeyp
     assert any("fill 대상 재바인딩" in log for log in agent.logs)
 
 
+def test_execute_decision_keeps_rich_text_body_target_over_searchbox(monkeypatch) -> None:
+    agent = _FakeAgent()
+    agent._active_snapshot_id = "snap-mail-1"
+    agent._element_selectors = {
+        7: "openclaw-ref:mail-body-ref",
+        8: "openclaw-ref:mail-search-ref",
+    }
+    agent._element_full_selectors = dict(agent._element_selectors)
+    agent._element_ref_ids = {
+        7: "mail-body-ref",
+        8: "mail-search-ref",
+    }
+    agent._element_ref_meta_by_id = {}
+    agent._last_snapshot_elements_by_ref = {}
+    agent._selector_to_ref_id = {}
+    dom_elements = [
+        DOMElement(
+            id=7,
+            tag="body",
+            role="document",
+            aria_label="본문 내용",
+            context_text="메일쓰기 본문 내용",
+            ref_id="mail-body-ref",
+            is_focused=True,
+        ),
+        DOMElement(
+            id=8,
+            tag="input",
+            type="search",
+            role="searchbox",
+            placeholder="메일 검색",
+            aria_label="메일 검색",
+            ref_id="mail-search-ref",
+            is_focused=True,
+        ),
+    ]
+    decision = ActionDecision(
+        action=ActionType.FILL,
+        ref_id="mail-body-ref",
+        value="테스트다 이눔아",
+        reasoning=(
+            "검색창에 잘못 들어간 문구는 성공 증거가 아니므로, "
+            "본문 편집 영역에 직접 목표 본문을 입력합니다."
+        ),
+    )
+    calls: list[str] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append(str(ref_id or ""))
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == ["mail-body-ref"]
+    assert not any("fill 대상 재바인딩" in log for log in agent.logs)
+
+
+def test_execute_decision_passes_iframe_scope_for_body_fill(monkeypatch) -> None:
+    agent = _FakeAgent()
+    agent._active_snapshot_id = "snap-mail-iframe"
+    agent._element_selectors = {7: "openclaw-ref:mail-body-ref"}
+    agent._element_full_selectors = dict(agent._element_selectors)
+    agent._element_ref_ids = {7: "mail-body-ref"}
+    frame_selector = 'iframe >> nth=4 >> internal:control=enter-frame >> [aria-label="본문 내용"]'
+    dom_elements = [
+        DOMElement(
+            id=7,
+            tag="div",
+            role="generic",
+            aria_label="본문 내용",
+            ref_id="mail-body-ref",
+            frame_scoped_selector=frame_selector,
+        )
+    ]
+    decision = ActionDecision(
+        action=ActionType.FILL,
+        ref_id="mail-body-ref",
+        value="테스트다 이눔아",
+        reasoning="메일 본문 iframe 편집 영역에 본문을 입력한다.",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **kwargs):
+        calls.append(
+            {
+                "action": action_name,
+                "ref_id": ref_id,
+                "value": value,
+                "frame_scoped_selector": kwargs.get("frame_scoped_selector"),
+            }
+        )
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == [
+        {
+            "action": "fill",
+            "ref_id": "mail-body-ref",
+            "value": "테스트다 이눔아",
+            "frame_scoped_selector": frame_selector,
+        }
+    ]
+
+
 def test_find_visible_text_ref_candidate_prefers_safe_interactive_match() -> None:
     agent = _FakeAgent()
     dom = [
@@ -518,6 +631,172 @@ def test_execute_action_focus_dispatches_tabs_focus(monkeypatch) -> None:
     assert result.state_change["focused_url"] == "https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"
     assert seen["action"] == "browser_tabs_focus"
     assert seen["params"] == {"session_id": agent.session_id, "targetId": "tab-2"}
+
+
+def test_execute_action_fill_uses_type_selector_for_iframe_scope(monkeypatch) -> None:
+    agent = _FakeAgent()
+    seen: dict[str, object] = {}
+    frame_selector = 'iframe >> nth=4 >> internal:control=enter-frame >> [aria-label="본문 내용"]'
+
+    class _Response:
+        status_code = 200
+        payload = {
+            "success": True,
+            "effective": True,
+            "reason_code": "ok",
+            "state_change": {"backend": "openclaw"},
+        }
+        text = ""
+
+    def fake_execute_mcp_action_with_recovery(*, raw_base_url, action, params, timeout, attempts, is_transport_error, context):
+        seen["action"] = action
+        seen["params"] = dict(params)
+        return _Response()
+
+    monkeypatch.setattr(runtime, "execute_mcp_action_with_recovery", fake_execute_mcp_action_with_recovery)
+
+    result = runtime.execute_action(
+        agent,
+        "fill",
+        ref_id="mail-body-ref",
+        value="테스트다 이눔아",
+        frame_scoped_selector=frame_selector,
+    )
+
+    assert result.success is True
+    assert result.effective is True
+    assert seen["action"] == "browser_act"
+    assert seen["params"]["action"] == "type"
+    assert seen["params"]["selector"] == frame_selector
+    assert seen["params"]["value"] == "테스트다 이눔아"
+
+
+def test_execute_action_type_dispatches_ref_protocol(monkeypatch) -> None:
+    agent = _FakeAgent()
+    seen: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+        payload = {
+            "success": True,
+            "effective": True,
+            "reason_code": "ok",
+            "state_change": {"backend": "openclaw"},
+            "snapshot_id_used": "snap-1",
+            "ref_id_used": "recipient-ref",
+        }
+        text = ""
+
+    def fake_execute_mcp_action_with_recovery(*, raw_base_url, action, params, timeout, attempts, is_transport_error, context):
+        seen["action"] = action
+        seen["params"] = dict(params)
+        return _Response()
+
+    monkeypatch.setattr(runtime, "execute_mcp_action_with_recovery", fake_execute_mcp_action_with_recovery)
+
+    result = runtime.execute_action(
+        agent,
+        "type",
+        ref_id="recipient-ref",
+        value="jangboss02@gmail.com",
+    )
+
+    assert result.success is True
+    assert result.effective is True
+    assert seen["action"] == "browser_act"
+    assert seen["params"]["snapshot_id"] == "snap-1"
+    assert seen["params"]["ref_id"] == "recipient-ref"
+    assert seen["params"]["action"] == "type"
+    assert seen["params"]["value"] == "jangboss02@gmail.com"
+
+
+def test_execute_action_inspect_dispatches_evaluate_and_summarizes(monkeypatch) -> None:
+    agent = _FakeAgent()
+    seen: dict[str, object] = {}
+    inspection = {
+        "activeElement": {
+            "tag": "input",
+            "role": "combobox",
+            "label": "recipient",
+            "value": "jangboss02@gmail.com",
+        },
+        "fields": [
+            {"tag": "input", "role": "combobox", "label": "recipient", "value": "jangboss02@gmail.com"},
+            {"tag": "div", "role": "textbox", "label": "body", "text": "테스트다 이눔아"},
+        ],
+        "tokenAreas": [
+            {
+                "fieldIndex": 0,
+                "nearbyControls": [
+                    {"tag": "button", "text": "jangboss02@gmail.com"},
+                    {"tag": "button", "ariaLabel": "delete"},
+                ],
+            }
+        ],
+        "dialogs": [],
+        "frames": [
+            {"index": 0, "accessible": True, "title": "editor", "bodyText": "테스트다 이눔아", "fields": []}
+        ],
+    }
+
+    class _Response:
+        status_code = 200
+        payload = {
+            "success": True,
+            "effective": True,
+            "reason_code": "ok",
+            "state_change": {"backend": "openclaw", "evaluate_result": inspection},
+        }
+        text = ""
+
+    def fake_execute_mcp_action_with_recovery(*, raw_base_url, action, params, timeout, attempts, is_transport_error, context):
+        seen["action"] = action
+        seen["params"] = dict(params)
+        return _Response()
+
+    monkeypatch.setattr(runtime, "execute_mcp_action_with_recovery", fake_execute_mcp_action_with_recovery)
+
+    result = runtime.execute_action(agent, "inspect")
+
+    assert result.success is True
+    assert result.effective is True
+    assert seen["action"] == "browser_act"
+    assert seen["params"]["action"] == "evaluate"
+    assert "activeElement" in seen["params"]["fn"]
+    assert result.state_change["inspection_tool"] == "browser_inspect"
+    assert result.state_change["inspection"]["activeElement"]["value"] == "jangboss02@gmail.com"
+    assert "nearby interactive state" in result.state_change["inspection_summary"]
+
+
+def test_execute_decision_inspect_appends_action_feedback(monkeypatch) -> None:
+    agent = _FakeAgent()
+    agent._action_feedback = []
+    decision = ActionDecision(
+        action=ActionType.INSPECT,
+        value="check committed input state",
+        reasoning="ambiguous widget state",
+    )
+
+    def fake_execute_action(_agent_obj, action_name, **_kwargs):
+        assert action_name == "inspect"
+        return ActionExecResult(
+            success=True,
+            effective=True,
+            reason_code="ok",
+            reason="ok",
+            state_change={
+                "inspection_tool": "browser_inspect",
+                "inspection_summary": "active: input role=combobox value=jangboss02@gmail.com",
+            },
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [])
+
+    assert ok is True
+    assert err is None
+    assert agent._action_feedback == ["inspect: active: input role=combobox value=jangboss02@gmail.com"]
 
 
 def test_execute_decision_marks_select_target_value_changed(monkeypatch) -> None:

@@ -25,22 +25,6 @@ _TARGET_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
     }
 )
 
-_METRIC_TERM_STOPWORDS = _GENERIC_GOAL_STOPWORDS.union(
-    {
-        "바로",
-        "버튼",
-        "클릭",
-        "눌러서",
-        "누른다음에",
-        "반영",
-        "테스트",
-        "테스트해봐",
-        "추가되어있었으면",
-        "삭제한뒤에",
-    }
-)
-
-
 def _classify_metric_unit(value: str) -> str:
     token = str(value or "").strip().lower()
     if not token:
@@ -50,33 +34,6 @@ def _classify_metric_unit(value: str) -> str:
     if any(hint in token for hint in ("과목", "개", "건", "명", "item", "items", "count", "number", "수량", "개수")):
         return "count"
     return "generic"
-
-
-def _infer_metric_label_from_text(text: str) -> str:
-    blob = str(text or "").strip().lower()
-    if any(hint in blob for hint in ("학점", "credit", "credits")):
-        return "학점"
-    if any(hint in blob for hint in ("과목", "개", "건", "item", "items", "count", "number", "개수", "수량")):
-        return "count"
-    return "count"
-
-
-def _extract_quantity_metric_terms(text: str) -> List[str]:
-    results: List[str] = []
-    seen: set[str] = set()
-    for pattern in (
-        r"(?<!\d)(\d{1,6})\s*([가-힣a-zA-Z]{1,16})",
-        r"([가-힣a-zA-Z]{1,16})\s*(\d{1,6})(?!\d)",
-    ):
-        for match in re.finditer(pattern, str(text or "")):
-            term = str(match.group(2 if pattern.startswith("(?<!") else 1) or "").strip().lower()
-            if not term or term in seen:
-                continue
-            seen.add(term)
-            results.append(term)
-            if len(results) >= 4:
-                return results
-    return results
 
 
 def _derive_context_terms(text: str, normalize_text: NormalizeTextFn) -> List[str]:
@@ -167,8 +124,14 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     increase_hints = ("증가", "늘", "담", "추가", "add", "append", "increase", "grow", "more")
     decrease_hints = ("감소", "줄", "제거", "삭제", "remove", "decrease", "less")
     clear_hints = ("비우", "비웠", "전체 삭제", "전부 삭제", "clear", "empty", "remove all")
-    has_increase = any(hint in text for hint in increase_hints)
-    has_decrease = any(hint in text for hint in decrease_hints)
+    mutation_text = re.sub(
+        r"추가\s*(?:인증|확인|보안|로그인|otp|2fa)",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    has_increase = any(hint in mutation_text for hint in increase_hints)
+    has_decrease = any(hint in mutation_text for hint in decrease_hints)
     conditional_remediation_hints = (
         "이미", "already", "이미 추가", "이미 담", "이미 반영", "이미 들어", "이미 있",
         "되어 있었", "되어있었", "있었으면", "있다면", "있는 경우", "already added", "already in",
@@ -185,18 +148,18 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     remediation_trigger: Optional[str] = None
     mutation_direction: Optional[str] = None
     conditional_remediation = bool(
-        (has_increase or any(hint in text for hint in readd_hints))
+        (has_increase or any(hint in mutation_text for hint in readd_hints))
         and has_decrease
-        and any(hint in text for hint in conditional_remediation_hints)
-        and any(hint in text for hint in conditional_followup_hints)
+        and any(hint in mutation_text for hint in conditional_remediation_hints)
+        and any(hint in mutation_text for hint in conditional_followup_hints)
     )
     if conditional_remediation:
         mutation_direction = "increase"
         remediation_direction = "decrease_then_increase"
         remediation_trigger = "already_present"
-    elif any(hint in text for hint in clear_hints):
+    elif any(hint in mutation_text for hint in clear_hints):
         mutation_direction = "clear"
-    elif has_increase and has_decrease and any(hint in text for hint in readd_hints):
+    elif has_increase and has_decrease and any(hint in mutation_text for hint in readd_hints):
         mutation_direction = "increase"
     elif has_decrease:
         mutation_direction = "decrease"
@@ -216,124 +179,10 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
             target_terms.append(token)
             if len(target_terms) >= 4:
                 break
-    numeric_values: List[int] = []
-    metric_terms: List[str] = []
-    number_pattern = r"(\d{1,3}(?:,\d{3})*|\d{1,6})"
-    for match in re.finditer(rf"(?<!\d){number_pattern}(?!\d)\s*([^\d\s,.;:()]{1,12})?", text):
-        value = int(str(match.group(1)).replace(",", ""))
-        numeric_values.append(value)
-        maybe_term = (match.group(2) or "").strip()
-        if maybe_term and maybe_term not in _METRIC_TERM_STOPWORDS:
-            metric_terms.append(maybe_term)
 
-    if not numeric_values:
-        payload: Dict[str, Any] = {}
-        if require_no_navigation:
-            payload["require_no_navigation"] = True
-        if current_view_only:
-            payload["current_view_only"] = True
-        if forbid_search_action:
-            payload["forbid_search_action"] = True
-        if mutation_direction:
-            payload["mutation_direction"] = mutation_direction
-            payload["context_terms"] = context_terms
-        if remediation_direction:
-            payload["remediation_direction"] = remediation_direction
-        if remediation_trigger:
-            payload["conditional_remediation"] = True
-            payload["requires_pre_action_membership_check"] = True
-            payload["remediation_trigger"] = remediation_trigger
-            payload["already_satisfied_ok"] = False
-            payload["mutate_required"] = True
-        if target_terms:
-            payload["target_terms"] = target_terms
-        return payload
-
-    if len(numeric_values) == 1:
-        only_value = int(numeric_values[0])
-        id_like_patterns = (
-            rf"(?<!\d){only_value}\s*(?:번|번문제|번 문제)",
-            rf"(?:problem|문제)\s*{only_value}(?!\d)",
-            rf"(?<!\d){only_value}\s*(?:id|번호)",
-        )
-        if any(re.search(pattern, text) for pattern in id_like_patterns):
-            payload = {}
-            if require_no_navigation:
-                payload["require_no_navigation"] = True
-            if current_view_only:
-                payload["current_view_only"] = True
-            if forbid_search_action:
-                payload["forbid_search_action"] = True
-            if mutation_direction:
-                payload["mutation_direction"] = mutation_direction
-                payload["context_terms"] = context_terms
-            if remediation_direction:
-                payload["remediation_direction"] = remediation_direction
-            if remediation_trigger:
-                payload["conditional_remediation"] = True
-                payload["requires_pre_action_membership_check"] = True
-                payload["remediation_trigger"] = remediation_trigger
-                payload["already_satisfied_ok"] = False
-                payload["mutate_required"] = True
-            if target_terms:
-                payload["target_terms"] = target_terms
-            return payload
-
-    collect_min: Optional[int] = None
-    apply_target: Optional[int] = None
-
-    if len(numeric_values) >= 2:
-        collect_min = max(numeric_values)
-        apply_target = min(numeric_values)
-    else:
-        collect_min = numeric_values[0]
-
-    if apply_target is not None and collect_min is not None and apply_target >= collect_min:
-        apply_target = None
-
-    term_freq: Dict[str, int] = {}
-    for term in metric_terms:
-        term_freq[term] = int(term_freq.get(term, 0)) + 1
-    sorted_terms = sorted(term_freq.items(), key=lambda kv: kv[1], reverse=True)
-    top_terms = [t for t, _ in sorted_terms[:4]]
-    if not top_terms:
-        top_terms = _extract_quantity_metric_terms(text)
-    metric_label = top_terms[0] if top_terms else _infer_metric_label_from_text(text)
-    metric_unit = _classify_metric_unit(metric_label)
-    if len(numeric_values) == 1 and metric_unit == "generic":
-        payload = {
-            "require_no_navigation": require_no_navigation,
-        }
-        if current_view_only:
-            payload["current_view_only"] = True
-        if forbid_search_action:
-            payload["forbid_search_action"] = True
-        if mutation_direction:
-            payload["mutation_direction"] = mutation_direction
-            payload["context_terms"] = context_terms
-        if remediation_direction:
-            payload["remediation_direction"] = remediation_direction
-        if remediation_trigger:
-            payload["conditional_remediation"] = True
-            payload["requires_pre_action_membership_check"] = True
-            payload["remediation_trigger"] = remediation_trigger
-            payload["already_satisfied_ok"] = False
-            payload["mutate_required"] = True
-        if target_terms:
-            payload["target_terms"] = target_terms
-        return payload
-    require_collect_before_progress = bool(collect_min is not None and apply_target is not None)
-
-    payload = {
-        "metric": "numeric",
-        "metric_label": metric_label,
-        "metric_unit": metric_unit,
-        "metric_terms": top_terms,
-        "collect_min": collect_min,
-        "apply_target": apply_target,
-        "require_collect_before_progress": require_collect_before_progress,
-        "require_no_navigation": require_no_navigation,
-    }
+    payload: Dict[str, Any] = {}
+    if require_no_navigation:
+        payload["require_no_navigation"] = True
     if current_view_only:
         payload["current_view_only"] = True
     if forbid_search_action:
@@ -565,4 +414,3 @@ def estimate_summary_counter_from_dom(
                     best_score = score
                     best_value = candidate
     return best_value, zero_state
-

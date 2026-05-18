@@ -1497,6 +1497,11 @@ class ExploratoryAgent:
                         container_source=attrs.get("container_source"),
                         context_text=attrs.get("context_text"),
                         group_action_labels=attrs.get("group_action_labels"),
+                        frame_ref_id=attrs.get("frame_ref_id"),
+                        frame_selector=attrs.get("frame_selector"),
+                        frame_descendant_selector=attrs.get("frame_descendant_selector"),
+                        frame_scoped_selector=attrs.get("frame_scoped_selector"),
+                        scope=attrs.get("scope") if isinstance(attrs.get("scope"), dict) else None,
                         is_visible=bool(el.get("is_visible", True)),
                         is_enabled=is_enabled,
                     )

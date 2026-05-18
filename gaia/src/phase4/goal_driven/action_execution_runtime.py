@@ -263,33 +263,26 @@ def _force_analyze_dom_for_ref_recovery(agent, *, reason: str = "ref_recovery") 
         return []
 
 
-def _is_fillable_element(agent, element: Optional[DOMElement]) -> bool:
+def _frame_scoped_selector_for_element(element: Optional[DOMElement]) -> str:
     if element is None:
-        return False
-    if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
-        return False
-    if not str(getattr(element, "ref_id", "") or "").strip():
-        return False
-    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
-    role = _normalized_binding_text(agent, getattr(element, "role", ""))
-    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
-    if field_type in {"hidden", "button", "submit", "reset", "checkbox", "radio", "file", "image"}:
-        return False
-    return tag in {"input", "textarea"} or role in {"textbox", "searchbox", "combobox"}
+        return ""
+    direct = str(getattr(element, "frame_scoped_selector", "") or "").strip()
+    if direct:
+        return direct
+    scope = getattr(element, "scope", None)
+    if not isinstance(scope, dict):
+        return ""
+    frame_selector = str(scope.get("frame_selector") or "").strip()
+    descendant_selector = str(scope.get("frame_descendant_selector") or "").strip()
+    if frame_selector and descendant_selector:
+        return f"{frame_selector} >> internal:control=enter-frame >> {descendant_selector}"
+    return ""
 
 
-def _fill_target_score(
-    agent,
-    decision: ActionDecision,
-    element: DOMElement,
-    current_element: Optional[DOMElement],
-) -> float:
-    if not _is_fillable_element(agent, element):
-        return -1.0
-    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
-    role = _normalized_binding_text(agent, getattr(element, "role", ""))
-    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
-    element_blob = _normalized_binding_text(
+def _fill_binding_blob(agent, element: Optional[DOMElement]) -> str:
+    if element is None:
+        return ""
+    return _normalized_binding_text(
         agent,
         " ".join(
             [
@@ -304,22 +297,98 @@ def _fill_target_score(
             ]
         ),
     )
-    intent_blob = _normalized_binding_text(
-        agent,
-        " ".join(
-            [
-                str(getattr(decision, "reasoning", "") or ""),
-                str(getattr(decision, "value", "") or ""),
-            ]
-        ),
+
+
+def _is_rich_text_fillable_element(agent, element: Optional[DOMElement]) -> bool:
+    if element is None:
+        return False
+    if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+        return False
+    if not str(getattr(element, "ref_id", "") or "").strip():
+        return False
+    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    role_ref_role = _normalized_binding_text(agent, getattr(element, "role_ref_role", ""))
+    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    if field_type in {"hidden", "button", "submit", "reset", "checkbox", "radio", "file", "image"}:
+        return False
+    if tag in {"a", "button", "select"}:
+        return False
+    if role in {"button", "link", "checkbox", "radio", "switch", "tab", "option", "combobox", "searchbox"}:
+        return False
+    if role_ref_role in {"button", "link", "checkbox", "radio", "switch", "tab", "option", "combobox", "searchbox"}:
+        return False
+
+    blob = _fill_binding_blob(agent, element)
+    editor_tokens = (
+        "본문",
+        "본문내용",
+        "내용",
+        "메시지",
+        "메일내용",
+        "body",
+        "message",
+        "editor",
+        "compose",
+        "content",
     )
+    if not any(token in blob for token in editor_tokens):
+        return False
+    if any(token in blob for token in ("검색", "search", "query")) and not any(
+        token in blob for token in ("본문", "body", "message", "메시지", "editor")
+    ):
+        return False
+    return tag in {"", "div", "body", "main", "section", "article", "p", "span"} or role in {
+        "document",
+        "generic",
+        "paragraph",
+        "textbox",
+    } or role_ref_role in {"document", "generic", "paragraph", "textbox"}
+
+
+def _is_fillable_element(agent, element: Optional[DOMElement]) -> bool:
+    if element is None:
+        return False
+    if not bool(getattr(element, "is_visible", True)) or not bool(getattr(element, "is_enabled", True)):
+        return False
+    if not str(getattr(element, "ref_id", "") or "").strip():
+        return False
+    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    role_ref_role = _normalized_binding_text(agent, getattr(element, "role_ref_role", ""))
+    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    if field_type in {"hidden", "button", "submit", "reset", "checkbox", "radio", "file", "image"}:
+        return False
+    return (
+        tag in {"input", "textarea"}
+        or role in {"textbox", "searchbox", "combobox"}
+        or role_ref_role in {"textbox", "searchbox", "combobox"}
+        or _is_rich_text_fillable_element(agent, element)
+    )
+
+
+def _fill_target_score(
+    agent,
+    decision: ActionDecision,
+    element: DOMElement,
+    current_element: Optional[DOMElement],
+) -> float:
+    if not _is_fillable_element(agent, element):
+        return -1.0
+    tag = _normalized_binding_text(agent, getattr(element, "tag", ""))
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    element_blob = _fill_binding_blob(agent, element)
+    reasoning_blob = _normalized_binding_text(agent, getattr(decision, "reasoning", "") or "")
+    value_blob = _normalized_binding_text(agent, getattr(decision, "value", "") or "")
+    intent_blob = f"{reasoning_blob} {value_blob}".strip()
     score = 1.0
     if tag == "input":
         score += 2.0
     elif tag == "textarea":
         score += 1.5
     if role == "searchbox" or field_type == "search":
-        score += 5.0
+        score += 1.0
     elif role == "textbox":
         score += 3.0
     elif role == "combobox":
@@ -327,12 +396,53 @@ def _fill_target_score(
     if bool(getattr(element, "is_focused", False)):
         score += 6.0
 
-    search_intent = any(token in intent_blob for token in ("검색", "뉴스 검색", "search", "query"))
+    negative_search_context = any(
+        token in reasoning_blob
+        for token in (
+            "검색창에 잘못",
+            "검색창에만",
+            "검색 오버레이",
+            "검색창 오버레이",
+            "검색 포커스",
+            "성공 증거가 아니",
+            "search overlay",
+            "wrong search",
+        )
+    )
+    search_intent = (
+        any(
+            token in reasoning_blob
+            for token in (
+                "검색 입력",
+                "검색어",
+                "검색창에 입력",
+                "검색 필드",
+                "검색한다",
+                "검색하기",
+                "search for",
+                "search query",
+                "type into search",
+                "enter search",
+            )
+        )
+        and not negative_search_context
+    )
     if search_intent:
         if any(token in element_blob for token in ("검색", "search", "query")):
             score += 7.0
         if "뉴스" in intent_blob and "뉴스" in element_blob:
             score += 3.0
+    body_intent = any(
+        token in reasoning_blob
+        for token in ("본문", "본문 내용", "내용 영역", "메시지", "body", "message", "editor")
+    )
+    if body_intent:
+        if _is_rich_text_fillable_element(agent, element):
+            score += 5.0
+        if any(token in element_blob for token in ("본문", "body", "message", "메시지", "editor")):
+            score += 8.0
+        if any(token in element_blob for token in ("검색", "search", "query")):
+            score -= 12.0
     if current_element is not None:
         current_container = _normalized_binding_text(agent, getattr(current_element, "container_name", ""))
         current_context = _normalized_binding_text(agent, getattr(current_element, "context_text", ""))
@@ -382,6 +492,226 @@ def _coordinate_click_script(x: int, y: int) -> str:
         "   tag: el.tagName, text: (el.innerText || el.textContent || '').slice(0, 80) };"
         "}"
     )
+
+
+_BROWSER_INSPECTION_SCRIPT = r"""() => {
+  const compact = (value, limit = 220) => String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+  const visible = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    const win = el.ownerDocument && el.ownerDocument.defaultView;
+    if (!win) return false;
+    const style = win.getComputedStyle(el);
+    if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const attr = (el, name) => (el && el.getAttribute && el.getAttribute(name)) || "";
+  const rectOf = (el) => {
+    try {
+      const rect = el.getBoundingClientRect();
+      return {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      };
+    } catch (_) {
+      return {};
+    }
+  };
+  const labelText = (el) => {
+    if (!el) return "";
+    const direct = attr(el, "aria-label") || attr(el, "placeholder") || attr(el, "title") || attr(el, "name");
+    if (direct) return compact(direct, 140);
+    const id = attr(el, "id");
+    if (id) {
+      try {
+        const label = el.ownerDocument.querySelector(`label[for="${CSS.escape(id)}"]`);
+        if (label) return compact(label.innerText || label.textContent, 140);
+      } catch (_) {}
+    }
+    const parentLabel = el.closest && el.closest("label");
+    if (parentLabel) return compact(parentLabel.innerText || parentLabel.textContent, 140);
+    return "";
+  };
+  const contextText = (el) => {
+    const container = el && el.closest && el.closest("label, form, fieldset, [role='dialog'], [role='form'], [role='group'], section, article, main, header, footer, li, tr, div");
+    return compact((container && (container.innerText || container.textContent)) || "", 260);
+  };
+  const describe = (el) => {
+    if (!el || el.nodeType !== 1) return {};
+    const tag = String(el.tagName || "").toLowerCase();
+    const value = ("value" in el) ? compact(el.value, 220) : "";
+    return {
+      tag,
+      role: compact(attr(el, "role"), 80),
+      type: compact(attr(el, "type"), 80),
+      id: compact(attr(el, "id"), 80),
+      className: compact(attr(el, "class"), 120),
+      label: labelText(el),
+      ariaLabel: compact(attr(el, "aria-label"), 140),
+      placeholder: compact(attr(el, "placeholder"), 140),
+      title: compact(attr(el, "title"), 140),
+      value,
+      text: compact(el.innerText || el.textContent, 220),
+      checked: ("checked" in el) ? Boolean(el.checked) : undefined,
+      selected: ("selected" in el) ? Boolean(el.selected) : undefined,
+      disabled: Boolean(el.disabled) || attr(el, "aria-disabled") === "true",
+      focused: el === el.ownerDocument.activeElement,
+      rect: rectOf(el),
+      contextText: contextText(el)
+    };
+  };
+  const fieldSelector = "input, textarea, select, [contenteditable='true'], [role='textbox'], [role='combobox'], [role='searchbox']";
+  const collectFields = (doc) => Array.from(doc.querySelectorAll(fieldSelector))
+    .filter(visible)
+    .slice(0, 24);
+  const collectButtons = (doc) => Array.from(doc.querySelectorAll("button, a, [role='button'], [role='option'], [role='menuitem'], [role='tab']"))
+    .filter(visible)
+    .map(describe)
+    .filter((item) => item.text || item.label || item.ariaLabel || item.title)
+    .slice(0, 28);
+  const collectTokenAreas = (doc, fields) => fields
+    .map((field, index) => {
+      const container = field.closest && field.closest("form, [role='form'], [role='group'], [role='listbox'], [aria-label], fieldset, section, li, tr, div");
+      if (!container) return null;
+      const nearbyControls = Array.from(container.querySelectorAll("button, [role='button'], [role='option'], [aria-label], [title], span, div"))
+        .filter((candidate) => candidate !== field && visible(candidate))
+        .map(describe)
+        .filter((item) => item.text || item.label || item.ariaLabel || item.title || item.value)
+        .slice(0, 12);
+      return nearbyControls.length ? { fieldIndex: index, field: describe(field), nearbyControls } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  const fields = collectFields(document);
+  const dialogs = Array.from(document.querySelectorAll("dialog, [role='dialog'], [role='alert'], [aria-modal='true'], .modal, .popup, .toast, .snackbar"))
+    .filter(visible)
+    .map(describe)
+    .slice(0, 10);
+  const frames = Array.from(document.querySelectorAll("iframe"))
+    .slice(0, 10)
+    .map((frame, index) => {
+      const frameInfo = describe(frame);
+      try {
+        const doc = frame.contentDocument;
+        if (!doc) return { index, frame: frameInfo, accessible: false, reason: "no_document" };
+        const frameFields = collectFields(doc);
+        return {
+          index,
+          frame: frameInfo,
+          accessible: true,
+          title: compact(doc.title, 140),
+          bodyText: compact((doc.body && (doc.body.innerText || doc.body.textContent)) || "", 600),
+          activeElement: describe(doc.activeElement),
+          fields: frameFields.map(describe).slice(0, 12),
+          buttons: collectButtons(doc).slice(0, 12),
+          tokenAreas: collectTokenAreas(doc, frameFields).slice(0, 4)
+        };
+      } catch (err) {
+        return { index, frame: frameInfo, accessible: false, reason: String(err && err.message || err) };
+      }
+    });
+  return {
+    url: location.href,
+    title: document.title,
+    activeElement: describe(document.activeElement),
+    fields: fields.map(describe),
+    buttons: collectButtons(document),
+    tokenAreas: collectTokenAreas(document, fields),
+    dialogs,
+    frames
+  };
+}"""
+
+
+def _compact_inspection_text(value: object, *, limit: int = 120) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) > limit:
+        return text[: max(0, limit - 3)].rstrip() + "..."
+    return text
+
+
+def _inspection_label(item: object) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("label", "ariaLabel", "placeholder", "title", "text", "value", "id"):
+        text = _compact_inspection_text(item.get(key), limit=80)
+        if text:
+            return text
+    return ""
+
+
+def _inspection_result_from_state(data: Dict[str, Any], state_change: Dict[str, Any]) -> Dict[str, Any]:
+    for source in (
+        state_change.get("inspection"),
+        state_change.get("evaluate_result"),
+        state_change.get("result"),
+        data.get("result"),
+    ):
+        if isinstance(source, dict):
+            return dict(source)
+    return {}
+
+
+def _summarize_browser_inspection(inspection: Dict[str, Any]) -> str:
+    if not isinstance(inspection, dict) or not inspection:
+        return "inspect 결과 없음"
+    parts: List[str] = []
+    active = inspection.get("activeElement")
+    if isinstance(active, dict):
+        active_tag = _compact_inspection_text(active.get("tag"), limit=30) or "element"
+        active_role = _compact_inspection_text(active.get("role"), limit=40)
+        active_label = _inspection_label(active)
+        active_value = _compact_inspection_text(active.get("value"), limit=80)
+        active_bits = [active_tag]
+        if active_role:
+            active_bits.append(f"role={active_role}")
+        if active_label:
+            active_bits.append(f"name={active_label}")
+        if active_value:
+            active_bits.append(f"value={active_value}")
+        parts.append("active: " + " ".join(active_bits))
+    fields = [item for item in inspection.get("fields", []) if isinstance(item, dict)]
+    field_bits = []
+    for field in fields[:5]:
+        label = _inspection_label(field)
+        value = _compact_inspection_text(field.get("value"), limit=50)
+        role = _compact_inspection_text(field.get("role") or field.get("tag"), limit=30)
+        bit = role
+        if label:
+            bit = f"{bit}:{label}" if bit else label
+        if value:
+            bit += f"={value}"
+        if bit:
+            field_bits.append(bit)
+    if fields:
+        parts.append(f"fields({len(fields)}): " + "; ".join(field_bits))
+    token_areas = [item for item in inspection.get("tokenAreas", []) if isinstance(item, dict)]
+    if token_areas:
+        nearby_count = sum(
+            len(area.get("nearbyControls") or [])
+            for area in token_areas
+            if isinstance(area.get("nearbyControls"), list)
+        )
+        parts.append(f"nearby interactive state: {len(token_areas)} areas/{nearby_count} controls")
+    dialogs = [item for item in inspection.get("dialogs", []) if isinstance(item, dict)]
+    if dialogs:
+        parts.append("dialogs: " + "; ".join(_inspection_label(item) for item in dialogs[:3] if _inspection_label(item)))
+    frames = [item for item in inspection.get("frames", []) if isinstance(item, dict)]
+    accessible_frames = [frame for frame in frames if frame.get("accessible")]
+    if accessible_frames:
+        frame_bits = []
+        for frame in accessible_frames[:3]:
+            title = _compact_inspection_text(frame.get("title"), limit=60)
+            body = _compact_inspection_text(frame.get("bodyText"), limit=80)
+            field_count = len(frame.get("fields") or []) if isinstance(frame.get("fields"), list) else 0
+            frame_bits.append(f"frame#{frame.get('index')} title={title or '-'} fields={field_count} text={body}")
+        parts.append("frames: " + "; ".join(frame_bits))
+    return " | ".join(part for part in parts if part) or "inspect 결과는 있으나 요약 가능한 항목이 없음"
 
 
 def _normalized_select_options(agent, element: Optional[DOMElement]) -> List[dict[str, str]]:
@@ -654,7 +984,7 @@ def execute_decision(
             agent._surface_reacquire_pending = True
 
     def _remember_auth_fill() -> None:
-        if decision.action != ActionType.FILL or selected_element is None:
+        if decision.action not in {ActionType.FILL, ActionType.TYPE} or selected_element is None:
             return
         current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip()
         auth_context_active = (
@@ -717,7 +1047,7 @@ def execute_decision(
     def _remember_persistent_control_state() -> None:
         if selected_element is None:
             return
-        if decision.action not in {ActionType.FILL, ActionType.SELECT}:
+        if decision.action not in {ActionType.FILL, ActionType.TYPE, ActionType.SELECT}:
             return
         expected_value = str(getattr(decision, "value", "") or "").strip()
         if not expected_value:
@@ -728,7 +1058,7 @@ def execute_decision(
         except Exception:
             tag = str(getattr(selected_element, "tag", "") or "").strip().lower()
             role = str(getattr(selected_element, "role", "") or "").strip().lower()
-        if decision.action == ActionType.FILL and tag not in {"input", "textarea"} and role not in {"textbox", "searchbox", "combobox"}:
+        if decision.action in {ActionType.FILL, ActionType.TYPE} and tag not in {"input", "textarea"} and role not in {"textbox", "searchbox", "combobox"}:
             return
         if decision.action == ActionType.SELECT and tag != "select" and role not in {"combobox", "listbox"}:
             return
@@ -740,7 +1070,7 @@ def execute_decision(
                 tokens.append(normalized)
 
         entry: Dict[str, Any] = {
-            "kind": "select" if decision.action == ActionType.SELECT else "fill",
+            "kind": "select" if decision.action == ActionType.SELECT else decision.action.value,
             "expected_value": expected_value,
             "tokens": tokens[:4],
             "ref_id": str(getattr(selected_element, "ref_id", "") or "").strip(),
@@ -796,7 +1126,7 @@ def execute_decision(
                 state_change["target_value_changed"] = previous_value != desired_primary
             return
 
-        if decision.action == ActionType.FILL:
+        if decision.action in {ActionType.FILL, ActionType.TYPE}:
             typed_value = _normalized_binding_text(agent, getattr(decision, "value", ""))
             if not typed_value:
                 return
@@ -862,6 +1192,7 @@ def execute_decision(
     requires_ref = decision.action in {
         ActionType.CLICK,
         ActionType.FILL,
+        ActionType.TYPE,
         ActionType.PRESS,
         ActionType.HOVER,
         ActionType.SELECT,
@@ -943,7 +1274,7 @@ def execute_decision(
         selector = agent._element_selectors.get(bound_element_id) or selector
         full_selector = agent._element_full_selectors.get(bound_element_id) or full_selector
         ref_id = ref_id or agent._element_ref_ids.get(bound_element_id)
-    if decision.action == ActionType.FILL and not _is_fillable_element(agent, selected_element):
+    if decision.action in {ActionType.FILL, ActionType.TYPE} and not _is_fillable_element(agent, selected_element):
         previous_ref_id = ref_id
         repaired_fill_target = _find_fill_target_candidate(
             agent,
@@ -963,10 +1294,11 @@ def execute_decision(
         if repaired_fill_target is not None:
             _bind_recovered_element(repaired_fill_target)
             if ref_id and previous_ref_id != ref_id:
-                agent._log(f"♻️ fill 대상 재바인딩: {previous_ref_id or 'none'} -> {ref_id}")
+                agent._log(f"♻️ {decision.action.value} 대상 재바인딩: {previous_ref_id or 'none'} -> {ref_id}")
     element_actions = {
         ActionType.CLICK,
         ActionType.FILL,
+        ActionType.TYPE,
         ActionType.PRESS,
         ActionType.HOVER,
         ActionType.SELECT,
@@ -1041,10 +1373,10 @@ def execute_decision(
             )
             if repaired is not None:
                 rebound_element = repaired
-        if decision.action == ActionType.FILL:
-            repaired = _find_fill_target_candidate(
-                agent,
-                decision,
+            if decision.action in {ActionType.FILL, ActionType.TYPE}:
+                repaired = _find_fill_target_candidate(
+                    agent,
+                    decision,
                 rebound_element or selected_element,
                 refreshed_dom,
             )
@@ -1075,6 +1407,11 @@ def execute_decision(
         action_value: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         nonlocal selector, full_selector, ref_id
+        frame_scoped_selector = (
+            _frame_scoped_selector_for_element(selected_element)
+            if action_name in {"fill", "type"}
+            else ""
+        )
         agent._last_exec_result = execute_action(
             agent,
             action_name,
@@ -1082,6 +1419,7 @@ def execute_decision(
             full_selector=full_selector,
             ref_id=ref_id,
             value=action_value,
+            frame_scoped_selector=frame_scoped_selector,
         )
         should_retry = (
             decision.action in element_actions
@@ -1102,6 +1440,11 @@ def execute_decision(
                     full_selector=full_selector,
                     ref_id=ref_id,
                     value=action_value,
+                    frame_scoped_selector=(
+                        _frame_scoped_selector_for_element(selected_element)
+                        if action_name in {"fill", "type"}
+                        else ""
+                    ),
                 )
                 if (
                     agent._last_exec_result.success
@@ -1180,6 +1523,7 @@ def execute_decision(
         if decision.action in {
             ActionType.CLICK,
             ActionType.FILL,
+            ActionType.TYPE,
             ActionType.HOVER,
             ActionType.SELECT,
         } and decision.element_id is None and not ref_id:
@@ -1214,7 +1558,7 @@ def execute_decision(
                 return False, agent._last_exec_result.as_error_message()
         if (
             not openclaw_agentic_mode
-            and decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.PRESS}
+            and decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.TYPE, ActionType.PRESS}
             and agent._is_ref_temporarily_blocked(ref_id)
         ):
             agent._last_exec_result = ActionExecResult(
@@ -1290,6 +1634,37 @@ def execute_decision(
                 _remember_auth_fill()
                 _remember_persistent_control_state()
             return ok, err
+
+        if decision.action == ActionType.TYPE:
+            if not decision.value:
+                agent._last_exec_result = ActionExecResult(
+                    success=False,
+                    effective=False,
+                    reason_code="invalid_input",
+                    reason="type 액션에 value가 필요함",
+                )
+                return False, "type 액션에 value가 필요함"
+            ok, err = _execute_with_ref_recovery("type", action_value=decision.value)
+            if ok:
+                _annotate_control_state_change()
+                _remember_recent_signal_event()
+                _remember_auth_fill()
+                _remember_persistent_control_state()
+            return ok, err
+
+        if decision.action == ActionType.INSPECT:
+            agent._last_exec_result = execute_action(agent, "inspect", value=decision.value)
+            state_change = getattr(agent._last_exec_result, "state_change", None)
+            if isinstance(state_change, dict):
+                summary = _compact_inspection_text(state_change.get("inspection_summary"), limit=360)
+                if summary:
+                    try:
+                        feedback = list(getattr(agent, "_action_feedback", []) or [])
+                        feedback.append(f"inspect: {summary}")
+                        agent._action_feedback = feedback[-10:]
+                    except Exception:
+                        pass
+            return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
 
         if decision.action == ActionType.FOCUS:
             if not str(decision.value or "").strip():
@@ -1423,6 +1798,7 @@ def execute_action(
     value: Optional[str] = None,
     values: Optional[List[str]] = None,
     url: Optional[str] = None,
+    frame_scoped_selector: Optional[str] = None,
 ) -> ActionExecResult:
     """MCP Host를 통해 액션 실행"""
     try:
@@ -1431,21 +1807,24 @@ def execute_action(
     except Exception:
         pass
 
+    use_frame_scoped_text = bool(action in {"fill", "type"} and str(frame_scoped_selector or "").strip())
     use_ref_protocol = bool(
         ref_id
         and agent._active_snapshot_id
-        and action in {"click", "fill", "press", "hover", "scroll", "scrollIntoView", "select"}
+        and action in {"click", "fill", "type", "press", "hover", "scroll", "scrollIntoView", "select"}
+        and not use_frame_scoped_text
     )
     is_element_action = action in {
         "click",
         "fill",
+        "type",
         "hover",
         "scrollIntoView",
         "select",
         "dragAndDrop",
         "dragSlider",
     }
-    if is_element_action and not use_ref_protocol:
+    if is_element_action and not use_ref_protocol and not use_frame_scoped_text:
         return ActionExecResult(
             success=False,
             effective=False,
@@ -1478,7 +1857,24 @@ def execute_action(
             params["value"] = value
         request_action = "browser_act"
     else:
-        if action == "focus":
+        if use_frame_scoped_text:
+            params = {
+                "session_id": agent.session_id,
+                "action": "type",
+                "selector": str(frame_scoped_selector or "").strip(),
+                "value": "" if value is None else str(value),
+                "url": url or "",
+            }
+            request_action = "browser_act"
+        elif action == "inspect":
+            params = {
+                "session_id": agent.session_id,
+                "action": "evaluate",
+                "fn": _BROWSER_INSPECTION_SCRIPT,
+                "url": url or "",
+            }
+            request_action = "browser_act"
+        elif action == "focus":
             target_id = str(value or "").strip()
             if not target_id:
                 return ActionExecResult(
@@ -1599,6 +1995,17 @@ def execute_action(
                     "focus_changed": True,
                     "focused_target_id": str(data.get("targetId") or data.get("current_tab_id") or ""),
                     "focused_url": str(data.get("current_url") or ""),
+                }
+            elif action == "inspect":
+                inspection = _inspection_result_from_state(data, state_change)
+                inspection_summary = _summarize_browser_inspection(inspection)
+                state_change = {
+                    **dict(state_change or {}),
+                    "inspection_tool": "browser_inspect",
+                    "backend_progress": False,
+                    "backend_effective_only": True,
+                    "inspection": inspection,
+                    "inspection_summary": inspection_summary,
                 }
             return ActionExecResult(
                 success=True,

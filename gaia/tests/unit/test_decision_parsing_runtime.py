@@ -133,6 +133,53 @@ def test_parse_select_with_list_value():
     assert "option1" in d.value
 
 
+def test_parse_type_action_preserves_target_and_value():
+    agent = _FakeAgent()
+    resp = json.dumps({
+        "action": "type",
+        "ref_id": "e10",
+        "value": "jangboss02@gmail.com",
+        "reasoning": "event-driven recipient input needs keyboard input",
+    })
+
+    d = parse_decision(agent, resp)
+
+    assert d.action == ActionType.TYPE
+    assert d.ref_id == "e10"
+    assert d.value == "jangboss02@gmail.com"
+
+
+def test_parse_inspect_action_allows_missing_ref():
+    agent = _FakeAgent()
+    resp = json.dumps({
+        "action": "inspect",
+        "value": "check active input and committed token state",
+        "reasoning": "DOM summary is not enough to know whether input was committed",
+    })
+
+    d = parse_decision(agent, resp)
+
+    assert d.action == ActionType.INSPECT
+    assert d.ref_id is None
+    assert d.element_id is None
+    assert "active input" in d.value
+
+
+def test_parse_input_alias_maps_to_type():
+    agent = _FakeAgent()
+    resp = json.dumps({
+        "action": "input",
+        "ref_id": "e11",
+        "value": "hello",
+    })
+
+    d = parse_decision(agent, resp)
+
+    assert d.action == ActionType.TYPE
+    assert d.ref_id == "e11"
+    assert d.value == "hello"
+
+
 def test_parse_switch_alias_maps_to_focus_and_uses_value():
     agent = _FakeAgent()
     resp = json.dumps({
