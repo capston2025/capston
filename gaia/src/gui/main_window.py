@@ -363,9 +363,10 @@ class CircularProgressWidget(QWidget):
         font.setWeight(QFont.Weight.Black)
         font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 95)
         painter.setFont(font)
+        # 다른 KPI 카드 value들과 동일하게 좌측 정렬 (수직은 가운데 유지)
         painter.drawText(
             full_rect,
-            Qt.AlignmentFlag.AlignCenter,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             f"{int(round(self._value))}%",
         )
 
