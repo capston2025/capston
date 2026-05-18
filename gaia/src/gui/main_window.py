@@ -3698,7 +3698,7 @@ class MainWindow(QMainWindow):
         self._workflow_stack = QStackedWidget(control_panel)
         # Step 1: 사이트 선택 (Toss-style 그리드)
         self._site_selection_page = self._create_site_selection_stage(control_panel)
-        # Step 2: 테스트 케이스 선택 (체크박스 row + footer)
+        # Step 2: 테스트 선택 (체크박스 row + footer)
         self._test_case_page = self._create_test_case_stage(control_panel)
         # 기존 setup_page — controller 호환용으로 widget tree에 유지
         self._setup_page = self._create_setup_stage(control_panel)
@@ -3775,7 +3775,7 @@ class MainWindow(QMainWindow):
         self._sidebar_steps: list[QFrame] = []
         step_definitions = [
             ("1", "사이트 선택"),
-            ("2", "테스트 케이스 선택"),
+            ("2", "테스트 선택"),
             ("3", "테스트 진행"),
         ]
         self._sidebar_connectors: list[QFrame] = []
@@ -3952,7 +3952,7 @@ class MainWindow(QMainWindow):
         # 테스트 진행 중인 경우 — 확인 다이얼로그 (Toss 톤)
         is_busy = bool(getattr(self, "_is_busy", False))
         if is_busy:
-            target_label = ["사이트 선택", "테스트 케이스 선택", "테스트 진행"][step_index]
+            target_label = ["사이트 선택", "테스트 선택", "테스트 진행"][step_index]
             ok = NotificationDialog.question(
                 self,
                 "진행 중인 테스트 중단",
@@ -4023,7 +4023,7 @@ class MainWindow(QMainWindow):
         self._stepper_bars: list[QFrame] = []
         step_labels = [
             ("1", "사이트 선택"),
-            ("2", "테스트 케이스 선택"),
+            ("2", "테스트 선택"),
             ("3", "테스트 진행"),
         ]
         for idx, (number, label) in enumerate(step_labels):
@@ -4343,7 +4343,7 @@ class MainWindow(QMainWindow):
         self.show_setup_stage_with_browser()
 
     def _on_site_card_clicked(self, url: str) -> None:
-        """사이트 카드 1클릭 = URL 채우고 즉시 Step 2 (테스트 케이스 선택)."""
+        """사이트 카드 1클릭 = URL 채우고 즉시 Step 2 (테스트 선택)."""
         self._selected_site_url = url
         # benchmark catalog에서 site_key 매칭 (벤치 실행 시 필요)
         self._selected_benchmark_site_key = self._resolve_site_key_for_url(url)
@@ -4432,7 +4432,7 @@ class MainWindow(QMainWindow):
         return colors[abs(hash(clean)) % len(colors)] if clean else "#3182f6"
 
     # ------------------------------------------------------------------
-    # Step 2 — 테스트 케이스 선택 페이지
+    # Step 2 — 테스트 선택 페이지
     # ------------------------------------------------------------------
     def _create_test_case_stage(self, parent: QWidget) -> QWidget:
         container = QWidget(parent)
@@ -5007,7 +5007,7 @@ class MainWindow(QMainWindow):
         self.startRequested.emit()
 
     def show_test_case_stage(self) -> None:
-        """Step 2 — 테스트 케이스 선택 페이지로 이동."""
+        """Step 2 — 테스트 선택 페이지로 이동."""
         self._workflow_stage = "test_case"
         if self._workflow_stack.currentWidget() is not self._test_case_page:
             self._workflow_stack.setCurrentWidget(self._test_case_page)
@@ -5888,7 +5888,7 @@ class MainWindow(QMainWindow):
     def show_setup_stage(self) -> None:
         """레거시 진입점 — 이제 항상 test_case_stage로 리다이렉트.
 
-        controller가 호환성을 위해 호출하지만, 신규 UX에서는 Step 2 = 테스트 케이스 선택.
+        controller가 호환성을 위해 호출하지만, 신규 UX에서는 Step 2 = 테스트 선택.
         """
         self.show_test_case_stage()
 
