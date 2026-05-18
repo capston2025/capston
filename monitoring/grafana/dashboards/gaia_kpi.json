@@ -368,8 +368,8 @@
     },
     {
       "id": 30,
-      "title": "최근 실행 상태",
-      "description": "민감한 reason/site URL은 Prometheus label로 저장하지 않고 상태/모델/완료 출처만 표시합니다.",
+      "title": "실행 이력 (회차별)",
+      "description": "각 실행을 별도 row 로 표시. 같은 시나리오를 여러 번 실행하면 횟수만큼 row 가 생김.",
       "type": "table",
       "gridPos": {
         "x": 0,
@@ -423,9 +423,13 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "gaia_scenario_last_status"
+              "options": "Value #STATUS"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "STATUS"
+              },
               {
                 "id": "custom.displayMode",
                 "value": "color-background"
@@ -457,6 +461,38 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Value #DUR"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "DURATION(s)"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RUN"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "MODEL"
             },
             "properties": [
@@ -474,7 +510,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 180
+                "value": 150
               }
             ]
           }
@@ -484,6 +520,10 @@
         "sortBy": [
           {
             "displayName": "SCENARIO",
+            "desc": false
+          },
+          {
+            "displayName": "RUN",
             "desc": false
           }
         ]
@@ -505,10 +545,12 @@
             "include": {
               "names": [
                 "scenario_id",
+                "run_idx",
                 "model",
                 "completion",
                 "fail_reason",
-                "gaia_scenario_last_status"
+                "Value #STATUS",
+                "Value #DUR"
               ]
             }
           }
@@ -518,17 +560,19 @@
           "options": {
             "renameByName": {
               "scenario_id": "SCENARIO",
+              "run_idx": "RUN",
               "model": "MODEL",
               "completion": "COMPLETION",
-              "fail_reason": "실패 사유",
-              "gaia_scenario_last_status": "STATUS"
+              "fail_reason": "실패 사유"
             },
             "indexByName": {
               "scenario_id": 0,
-              "model": 1,
-              "gaia_scenario_last_status": 2,
-              "completion": 3,
-              "fail_reason": 4
+              "run_idx": 1,
+              "Value #STATUS": 2,
+              "Value #DUR": 3,
+              "model": 4,
+              "completion": 5,
+              "fail_reason": 6
             },
             "excludeByName": {
               "Time": true
@@ -542,10 +586,20 @@
             "type": "prometheus",
             "uid": "gaia-prometheus"
           },
-          "expr": "gaia_scenario_last_status{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "expr": "gaia_scenario_run_status{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
           "legendFormat": "STATUS",
           "instant": true,
-          "refId": "A"
+          "refId": "STATUS"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "gaia-prometheus"
+          },
+          "expr": "gaia_scenario_run_duration_sec{suite_id=\"$suite_id\",instance=~\"$instance\",scenario_id=~\"$scenario_id\",model=~\"$model\"}",
+          "legendFormat": "DURATION",
+          "instant": true,
+          "refId": "DUR"
         }
       ]
     },
