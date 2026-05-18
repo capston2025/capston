@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -994,6 +996,371 @@ class TestCaseRow(QFrame):
             self.set_selected(not self._selected)
             self.toggled.emit(self._case_id, self._selected)
         super().mousePressEvent(event)
+
+
+class QuickGoalInputDialog(QDialog):
+    """빠른 목표 직접 입력 — 사용자 정의 다이얼로그 (QInputDialog 대체).
+
+    개선점:
+    - multiline QPlainTextEdit (3-5줄)
+    - 예시 버튼들 (클릭하면 자동 채우기)
+    - 글자 수 카운터
+    - Toss 디자인 톤 (Step 3 카드와 일관)
+    """
+
+    EXAMPLES = [
+        "로그인 후 메인 페이지에서 검색창을 사용해 '아이폰'을 검색해줘",
+        "메인 페이지 상단 메뉴에서 '카테고리'를 클릭하고 첫 번째 항목으로 이동해줘",
+        "회원가입 폼을 열어서 이메일/비밀번호 필드가 정상 동작하는지 확인해줘",
+        "장바구니에 상품을 하나 담고 결제 페이지까지 이동해줘 (실제 결제는 안 함)",
+    ]
+
+    def __init__(self, parent: QWidget | None = None, initial_text: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("빠른 목표 직접 입력")
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(440)
+        self.setObjectName("QuickGoalDialog")
+
+        self.setStyleSheet("""
+            QDialog#QuickGoalDialog { background: #ffffff; }
+            QLabel#QuickGoalTitle {
+                color: #191f28; font-size: 18px; font-weight: 800;
+                letter-spacing: -0.3px; background: transparent;
+            }
+            QLabel#QuickGoalSub {
+                color: #6b7684; font-size: 12.5px;
+                background: transparent;
+            }
+            QLabel#QuickGoalSectionLabel {
+                color: #4e5968; font-size: 12px; font-weight: 700;
+                background: transparent;
+            }
+            QPlainTextEdit#QuickGoalInput {
+                background: #ffffff;
+                border: 1.5px solid #e5e8eb;
+                border-radius: 10px;
+                color: #191f28;
+                font-size: 14px;
+                padding: 12px 14px;
+                selection-background-color: #b2d4ff;
+            }
+            QPlainTextEdit#QuickGoalInput:focus {
+                border: 1.5px solid #3182f6;
+            }
+            QLabel#QuickGoalCounter {
+                color: #8b95a1; font-size: 11px;
+                background: transparent;
+            }
+            QPushButton#QuickGoalExampleBtn {
+                background: #f9fafb;
+                border: 1px solid #e5e8eb;
+                border-radius: 8px;
+                color: #4e5968;
+                font-size: 11.5px;
+                font-weight: 500;
+                padding: 8px 12px;
+                text-align: left;
+                min-height: 0px;
+            }
+            QPushButton#QuickGoalExampleBtn:hover {
+                background: #eff6ff;
+                border: 1px solid #b2d4ff;
+                color: #1b64da;
+            }
+            QPushButton#QuickGoalConfirmBtn {
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 22px; min-height: 0px;
+            }
+            QPushButton#QuickGoalConfirmBtn:hover { background: #1b64da; }
+            QPushButton#QuickGoalConfirmBtn:disabled {
+                background: #d1d6db; color: #ffffff;
+            }
+            QPushButton#QuickGoalCancelBtn {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 18px; min-height: 0px;
+            }
+            QPushButton#QuickGoalCancelBtn:hover {
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+
+        # 헤더
+        title = QLabel("빠른 목표 직접 입력", self)
+        title.setObjectName("QuickGoalTitle")
+        layout.addWidget(title)
+        sub = QLabel(
+            "AI에게 실행시킬 목표를 자유롭게 입력하세요. 구체적일수록 정확하게 동작합니다.",
+            self,
+        )
+        sub.setObjectName("QuickGoalSub")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # 예시 섹션
+        ex_label = QLabel("💡 예시 (클릭하면 자동 입력)", self)
+        ex_label.setObjectName("QuickGoalSectionLabel")
+        layout.addWidget(ex_label)
+
+        ex_grid = QGridLayout()
+        ex_grid.setHorizontalSpacing(8)
+        ex_grid.setVerticalSpacing(8)
+        for i, example in enumerate(self.EXAMPLES):
+            btn = QPushButton(example, self)
+            btn.setObjectName("QuickGoalExampleBtn")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, t=example: self._set_input_text(t))
+            row, col = divmod(i, 2)
+            ex_grid.addWidget(btn, row, col)
+        layout.addLayout(ex_grid)
+
+        # 입력 섹션
+        in_label = QLabel("✏️  목표 텍스트", self)
+        in_label.setObjectName("QuickGoalSectionLabel")
+        layout.addWidget(in_label)
+
+        self._input = QPlainTextEdit(self)
+        self._input.setObjectName("QuickGoalInput")
+        self._input.setPlaceholderText(
+            "예: 메인 페이지에서 '맥북' 키워드로 검색하고 첫 번째 검색 결과를 클릭해줘"
+        )
+        if initial_text:
+            self._input.setPlainText(initial_text)
+        self._input.setMinimumHeight(110)
+        self._input.textChanged.connect(self._update_state)
+        layout.addWidget(self._input)
+
+        # 카운터 — 우측 정렬
+        counter_row = QHBoxLayout()
+        counter_row.addStretch(1)
+        self._counter = QLabel("0자", self)
+        self._counter.setObjectName("QuickGoalCounter")
+        counter_row.addWidget(self._counter)
+        layout.addLayout(counter_row)
+
+        layout.addStretch(1)
+
+        # 액션 버튼
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        cancel = QPushButton("취소", self)
+        cancel.setObjectName("QuickGoalCancelBtn")
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(cancel)
+        self._confirm = QPushButton("실행 시작  →", self)
+        self._confirm.setObjectName("QuickGoalConfirmBtn")
+        self._confirm.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._confirm.clicked.connect(self.accept)
+        btn_row.addWidget(self._confirm)
+        layout.addLayout(btn_row)
+
+        self._update_state()
+        self._input.setFocus()
+
+    def _set_input_text(self, text: str) -> None:
+        self._input.setPlainText(text)
+        self._input.setFocus()
+        # 커서를 끝으로
+        cursor = self._input.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._input.setTextCursor(cursor)
+
+    def _update_state(self) -> None:
+        text = self._input.toPlainText().strip()
+        n = len(text)
+        self._counter.setText(f"{n}자")
+        # 색상: 너무 짧으면 회색, 5자 이상이면 brand
+        if n >= 5:
+            self._counter.setStyleSheet("color: #3182f6; font-size: 11px; font-weight: 600; background: transparent;")
+        else:
+            self._counter.setStyleSheet("color: #8b95a1; font-size: 11px; background: transparent;")
+        self._confirm.setEnabled(n >= 3)
+
+    def goal_text(self) -> str:
+        return self._input.toPlainText().strip()
+
+
+class BundleSelectionDialog(QDialog):
+    """기획서 업로드 — 샘플 사용 vs 파일 업로드 선택 다이얼로그.
+
+    accept()되면:
+    - choice == "sample" → 샘플 번들 경로 반환
+    - choice == "upload" → QFileDialog로 사용자 파일 경로 반환
+    """
+
+    def __init__(self, parent: QWidget | None = None, sample_path: str | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("기획서 선택")
+        self.setMinimumWidth(520)
+        self.setObjectName("BundleSelectionDialog")
+        self._sample_path = sample_path or ""
+        self._chosen: str | None = None
+
+        self.setStyleSheet("""
+            QDialog#BundleSelectionDialog { background: #ffffff; }
+            QLabel#BundleTitle {
+                color: #191f28; font-size: 18px; font-weight: 800;
+                letter-spacing: -0.3px; background: transparent;
+            }
+            QLabel#BundleSub {
+                color: #6b7684; font-size: 12.5px;
+                background: transparent;
+            }
+            QFrame#BundleOption {
+                background: #ffffff;
+                border: 1.5px solid #e5e8eb;
+                border-radius: 12px;
+            }
+            QFrame#BundleOption:hover {
+                border: 1.5px solid #b2d4ff;
+                background: #f9fbff;
+            }
+            QFrame#BundleOption[selected="true"] {
+                border: 2px solid #3182f6;
+                background: #eff6ff;
+            }
+            QLabel#BundleOptionTitle {
+                color: #191f28; font-size: 14px; font-weight: 700;
+                background: transparent;
+            }
+            QLabel#BundleOptionDesc {
+                color: #6b7684; font-size: 12px;
+                background: transparent;
+            }
+            QLabel#BundleOptionTag {
+                background: #eff6ff; color: #1b64da;
+                font-size: 10.5px; font-weight: 800;
+                padding: 3px 8px; border-radius: 999px;
+            }
+            QPushButton#BundleConfirmBtn {
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 22px; min-height: 0px;
+            }
+            QPushButton#BundleConfirmBtn:hover { background: #1b64da; }
+            QPushButton#BundleConfirmBtn:disabled {
+                background: #d1d6db; color: #ffffff;
+            }
+            QPushButton#BundleCancelBtn {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 18px; min-height: 0px;
+            }
+            QPushButton#BundleCancelBtn:hover {
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("기획서 선택", self)
+        title.setObjectName("BundleTitle")
+        layout.addWidget(title)
+        sub = QLabel(
+            "샘플을 골라 즉시 실행하거나 본인의 기획서 파일을 업로드할 수 있어요.",
+            self,
+        )
+        sub.setObjectName("BundleSub")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # 옵션 1: 샘플 사용
+        self._opt_sample = self._make_option_card(
+            "샘플 기획서 사용 (즉시 실행)",
+            "Wikipedia 검색 기능 검증 시나리오 2개 — 외부 의존성 없이 바로 실행됩니다.",
+            tag="추천",
+            enabled=bool(self._sample_path),
+        )
+        self._opt_sample.mousePressEvent = lambda _e: self._select("sample")  # type: ignore[assignment]
+        layout.addWidget(self._opt_sample)
+
+        # 옵션 2: 파일 업로드
+        self._opt_upload = self._make_option_card(
+            "내 파일 업로드",
+            "PDF / DOCX / MD / TXT / JSON 번들 — 파일 다이얼로그가 열립니다.",
+            tag=None,
+            enabled=True,
+        )
+        self._opt_upload.mousePressEvent = lambda _e: self._select("upload")  # type: ignore[assignment]
+        layout.addWidget(self._opt_upload)
+
+        layout.addStretch(1)
+
+        # 액션 버튼
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        cancel = QPushButton("취소", self)
+        cancel.setObjectName("BundleCancelBtn")
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(cancel)
+        self._confirm = QPushButton("다음  →", self)
+        self._confirm.setObjectName("BundleConfirmBtn")
+        self._confirm.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._confirm.setEnabled(False)
+        self._confirm.clicked.connect(self.accept)
+        btn_row.addWidget(self._confirm)
+        layout.addLayout(btn_row)
+
+    def _make_option_card(self, title_text: str, desc_text: str, tag: str | None, enabled: bool) -> QFrame:
+        card = QFrame(self)
+        card.setObjectName("BundleOption")
+        card.setProperty("selected", False)
+        card.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ForbiddenCursor)
+        card.setEnabled(enabled)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(18, 14, 18, 14)
+        cl.setSpacing(4)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        t = QLabel(title_text, card)
+        t.setObjectName("BundleOptionTitle")
+        head.addWidget(t)
+        if tag:
+            tag_label = QLabel(tag, card)
+            tag_label.setObjectName("BundleOptionTag")
+            head.addWidget(tag_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+        cl.addLayout(head)
+        d = QLabel(desc_text, card)
+        d.setObjectName("BundleOptionDesc")
+        d.setWordWrap(True)
+        cl.addWidget(d)
+        return card
+
+    def _select(self, choice: str) -> None:
+        if choice == "sample" and not self._sample_path:
+            return
+        self._chosen = choice
+        for card, key in [(self._opt_sample, "sample"), (self._opt_upload, "upload")]:
+            card.setProperty("selected", choice == key)
+            style = card.style()
+            if style:
+                style.unpolish(card); style.polish(card); card.update()
+        self._confirm.setEnabled(True)
+
+    def chosen(self) -> str | None:
+        return self._chosen
+
+    def sample_path(self) -> str:
+        return self._sample_path
 
 
 class MainWindow(QMainWindow):
@@ -3882,37 +4249,61 @@ class MainWindow(QMainWindow):
         self._pending_scenario_ids = None
 
         if mode == "quick":
-            # 빠른 목표 — 이미 set 된 feature_query 있으면 그대로 사용, 없으면 dialog로 입력받음
+            # 빠른 목표 — 사용자 정의 QuickGoalInputDialog (multiline + 예시 + 카운터)
             existing = self.get_feature_query().strip() if hasattr(self, "get_feature_query") else ""
-            if not existing:
-                goal, ok = QInputDialog.getText(
-                    self,
-                    "빠른 목표 입력",
-                    "AI에게 실행시킬 목표를 한 줄로 입력하세요:\n"
-                    "(예: 로그인 후 메인 페이지에서 검색창을 사용해 '아이폰'을 검색)",
-                )
-                if not ok:
-                    return  # 사용자 취소
-                goal = goal.strip()
-                if not goal:
-                    QMessageBox.information(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
-                    return
-                self.set_feature_query(goal)
+            dlg = QuickGoalInputDialog(self, initial_text=existing)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return  # 사용자 취소
+            goal = dlg.goal_text()
+            if not goal:
+                QMessageBox.information(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
+                return
+            self.set_feature_query(goal)
             self.startRequested.emit()
             return
 
         if mode == "bundle":
-            # 기획서 업로드 — QFileDialog로 파일 선택받음
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "기획서/번들 파일 선택",
-                "",
-                "Supported Files (*.pdf *.docx *.md *.txt *.json);;All Files (*)",
+            # 기획서 — BundleSelectionDialog (샘플 vs 파일 업로드 선택)
+            from pathlib import Path as _Path
+            sample_path = str(
+                _Path(__file__).resolve().parents[3] / "examples" / "sample_plan_bundle.json"
             )
-            if not file_path:
-                return  # 사용자 취소
-            # planFileSelected 시그널로 controller에 전달 (controller가 분석 후 startRequested 시킴)
-            self.planFileSelected.emit(file_path)
+            if not _Path(sample_path).exists():
+                sample_path = ""  # 샘플 파일 없으면 옵션 disable
+
+            dlg = BundleSelectionDialog(self, sample_path=sample_path)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            choice = dlg.chosen()
+            file_path = ""
+            if choice == "sample":
+                file_path = dlg.sample_path()
+                self.append_log(f"📦 샘플 기획서로 실행 시작: {_Path(file_path).name}")
+            elif choice == "upload":
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "기획서/번들 파일 선택 (JSON 권장 — PDF는 분석 시간 필요)",
+                    "",
+                    "JSON 번들 (*.json);;PDF 기획서 (*.pdf);;Word 문서 (*.docx);;텍스트 (*.md *.txt);;All Files (*)",
+                )
+                if not file_path:
+                    return  # 사용자 취소
+
+            suffix = _Path(file_path).suffix.lower() if file_path else ""
+            if suffix == ".json":
+                # JSON 번들/플랜 → sync 로드 + 즉시 실행
+                self.planFileSelected.emit(file_path)
+                self.startRequested.emit()
+            elif suffix in (".pdf", ".docx", ".md", ".txt"):
+                # PDF 등 → controller가 비동기 분석 → 완료 후 자동 실행
+                self.append_log(
+                    f"📄 기획서 분석 시작: {_Path(file_path).name} — 분석 완료 후 자동 실행됩니다."
+                )
+                self._pending_auto_start_after_analysis = True
+                self.fileDropped.emit(file_path)
+            else:
+                QMessageBox.warning(self, "지원하지 않는 형식",
+                                    "JSON 번들, PDF, DOCX, MD, TXT 파일만 지원합니다.")
             return
 
         # ai 모드 또는 fallback
