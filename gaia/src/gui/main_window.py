@@ -1263,6 +1263,22 @@ class BundleSelectionDialog(QDialog):
             QPushButton#BundleCancelBtn:hover {
                 background: #f9fafb; border: 1px solid #d1d6db;
             }
+            /* 샘플 미리보기 버튼 — ghost 톤 + 작은 사이즈 */
+            QPushButton#BundlePreviewBtn {
+                background: transparent;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 6px;
+                font-size: 11.5px;
+                font-weight: 600;
+                padding: 5px 12px;
+                min-height: 0px;
+            }
+            QPushButton#BundlePreviewBtn:hover {
+                background: #eff6ff;
+                border: 1px solid #b2d4ff;
+                color: #1b64da;
+            }
         """)
 
         layout = QVBoxLayout(self)
@@ -1280,7 +1296,7 @@ class BundleSelectionDialog(QDialog):
         sub.setWordWrap(True)
         layout.addWidget(sub)
 
-        # 옵션 1: 샘플 사용
+        # 옵션 1: 샘플 사용 (+ 미리보기 버튼)
         self._opt_sample = self._make_option_card(
             "샘플 기획서 사용 (즉시 실행)",
             "Wikipedia 검색 기능 검증 시나리오 2개 — 외부 의존성 없이 바로 실행됩니다.",
@@ -1289,6 +1305,18 @@ class BundleSelectionDialog(QDialog):
         )
         self._opt_sample.mousePressEvent = lambda _e: self._select("sample")  # type: ignore[assignment]
         layout.addWidget(self._opt_sample)
+
+        # 샘플 미리보기 버튼 (샘플 옵션 바로 아래, 우측 정렬)
+        if self._sample_path:
+            preview_row = QHBoxLayout()
+            preview_row.setContentsMargins(0, 4, 4, 0)
+            preview_row.addStretch(1)
+            self._preview_button = QPushButton("📄  샘플 내용 미리보기", self)
+            self._preview_button.setObjectName("BundlePreviewBtn")
+            self._preview_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._preview_button.clicked.connect(self._show_sample_preview)
+            preview_row.addWidget(self._preview_button)
+            layout.addLayout(preview_row)
 
         # 옵션 2: 파일 업로드
         self._opt_upload = self._make_option_card(
@@ -1356,11 +1384,227 @@ class BundleSelectionDialog(QDialog):
                 style.unpolish(card); style.polish(card); card.update()
         self._confirm.setEnabled(True)
 
+    def _show_sample_preview(self) -> None:
+        """샘플 기획서 JSON 내용을 새 다이얼로그에서 미리보기."""
+        if not self._sample_path:
+            return
+        preview = SamplePreviewDialog(self, file_path=self._sample_path)
+        preview.exec()
+
     def chosen(self) -> str | None:
         return self._chosen
 
     def sample_path(self) -> str:
         return self._sample_path
+
+
+class SamplePreviewDialog(QDialog):
+    """샘플 기획서 JSON 내용 미리보기 다이얼로그.
+
+    파일을 GUI 내에서 직접 확인할 수 있게 — 외부 에디터 없이도 내용 확인 가능.
+    PRDBundle 형식이면 구조화된 요약 + raw JSON 둘 다 표시.
+    """
+
+    def __init__(self, parent: QWidget | None = None, file_path: str = "") -> None:
+        super().__init__(parent)
+        self.setWindowTitle("샘플 기획서 미리보기")
+        self.setMinimumSize(680, 580)
+        self.setObjectName("SamplePreviewDialog")
+        self._file_path = file_path
+
+        self.setStyleSheet("""
+            QDialog#SamplePreviewDialog { background: #ffffff; }
+            QLabel#PreviewTitle {
+                color: #191f28; font-size: 18px; font-weight: 800;
+                letter-spacing: -0.3px; background: transparent;
+            }
+            QLabel#PreviewSub {
+                color: #6b7684; font-size: 12.5px;
+                background: transparent;
+            }
+            QLabel#PreviewPath {
+                color: #8b95a1; font-size: 11px;
+                background: #f9fafb;
+                padding: 6px 10px;
+                border: 1px solid #e5e8eb;
+                border-radius: 6px;
+                font-family: Consolas, monospace;
+            }
+            QLabel#PreviewSectionLabel {
+                color: #4e5968; font-size: 12px; font-weight: 700;
+                background: transparent;
+                padding-top: 4px;
+            }
+            QFrame#PreviewSummary {
+                background: #f9fafb;
+                border: 1px solid #e5e8eb;
+                border-radius: 10px;
+            }
+            QLabel#PreviewSummaryItem {
+                color: #191f28; font-size: 13px;
+                background: transparent;
+            }
+            QLabel#PreviewSummaryKey {
+                color: #6b7684; font-size: 12px; font-weight: 700;
+                background: transparent;
+            }
+            QPlainTextEdit#PreviewJsonView {
+                background: #f2f4f6;
+                border: 1px solid #e5e8eb;
+                border-radius: 8px;
+                color: #191f28;
+                font-family: Consolas, monospace;
+                font-size: 11.5px;
+                padding: 10px;
+                selection-background-color: #b2d4ff;
+            }
+            QPushButton#PreviewCloseBtn {
+                background: #3182f6;
+                border: none; color: #ffffff;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 22px; min-height: 0px;
+            }
+            QPushButton#PreviewCloseBtn:hover { background: #1b64da; }
+            QPushButton#PreviewOpenExternalBtn {
+                background: #ffffff;
+                border: 1px solid #e5e8eb;
+                color: #4e5968;
+                border-radius: 8px; font-size: 13px; font-weight: 700;
+                padding: 10px 16px; min-height: 0px;
+            }
+            QPushButton#PreviewOpenExternalBtn:hover {
+                background: #f9fafb; border: 1px solid #d1d6db;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(12)
+
+        title = QLabel("샘플 기획서 미리보기", self)
+        title.setObjectName("PreviewTitle")
+        layout.addWidget(title)
+        sub = QLabel(
+            "실행 전에 어떤 시나리오가 자동 생성되어 동작할지 미리 확인할 수 있어요.",
+            self,
+        )
+        sub.setObjectName("PreviewSub")
+        sub.setWordWrap(True)
+        layout.addWidget(sub)
+
+        # 파일 경로
+        path_label = QLabel(file_path, self)
+        path_label.setObjectName("PreviewPath")
+        path_label.setWordWrap(True)
+        layout.addWidget(path_label)
+
+        # 구조화된 요약 (PRDBundle인 경우)
+        summary_data = self._extract_summary(file_path)
+        if summary_data:
+            section_label = QLabel("📋  요약", self)
+            section_label.setObjectName("PreviewSectionLabel")
+            layout.addWidget(section_label)
+            summary_frame = QFrame(self)
+            summary_frame.setObjectName("PreviewSummary")
+            sf_layout = QVBoxLayout(summary_frame)
+            sf_layout.setContentsMargins(16, 14, 16, 14)
+            sf_layout.setSpacing(8)
+            for key, value in summary_data:
+                row = QHBoxLayout()
+                row.setSpacing(10)
+                k = QLabel(key, summary_frame)
+                k.setObjectName("PreviewSummaryKey")
+                k.setMinimumWidth(110)
+                row.addWidget(k)
+                v = QLabel(str(value), summary_frame)
+                v.setObjectName("PreviewSummaryItem")
+                v.setWordWrap(True)
+                row.addWidget(v, stretch=1)
+                sf_layout.addLayout(row)
+            layout.addWidget(summary_frame)
+
+        # Raw JSON
+        json_label = QLabel("📜  JSON 전체 내용", self)
+        json_label.setObjectName("PreviewSectionLabel")
+        layout.addWidget(json_label)
+
+        self._json_view = QPlainTextEdit(self)
+        self._json_view.setObjectName("PreviewJsonView")
+        self._json_view.setReadOnly(True)
+        self._json_view.setPlainText(self._load_pretty_json(file_path))
+        layout.addWidget(self._json_view, stretch=1)
+
+        # 액션 버튼
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch(1)
+        open_btn = QPushButton("파일 위치 열기", self)
+        open_btn.setObjectName("PreviewOpenExternalBtn")
+        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_btn.clicked.connect(self._open_file_location)
+        btn_row.addWidget(open_btn)
+        close_btn = QPushButton("닫기", self)
+        close_btn.setObjectName("PreviewCloseBtn")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _load_pretty_json(self, file_path: str) -> str:
+        """JSON 파일을 pretty-print해서 문자열로 반환. 실패 시 원본 텍스트."""
+        try:
+            import json as _json
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return _json.dumps(data, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return f"파일을 읽을 수 없습니다:\n{exc}"
+
+    def _extract_summary(self, file_path: str) -> list[tuple[str, str]] | None:
+        """PRDBundle 형식이면 핵심 필드만 추출해서 요약. 아니면 None."""
+        try:
+            import json as _json
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if not isinstance(data, dict):
+                return None
+            schema = str(data.get("schema_version") or "")
+            if not schema.startswith("gaia.prd_bundle."):
+                return None  # PRDBundle 아님
+            project = data.get("project_name") or "-"
+            base_url = (data.get("execution_profile") or {}).get("base_url") or "-"
+            goals = data.get("generated_goals") or []
+            enabled_goals = [g for g in goals if isinstance(g, dict) and g.get("enabled", True)]
+            goals_summary = []
+            for g in enabled_goals[:5]:
+                goals_summary.append(f"• [{g.get('priority', '-')}] {g.get('title', '-')}")
+            if len(enabled_goals) > 5:
+                goals_summary.append(f"… 외 {len(enabled_goals) - 5}개")
+            requirements = data.get("normalized_prd", {}).get("requirements", [])
+            return [
+                ("프로젝트", project),
+                ("타겟 URL", base_url),
+                ("목표 수", f"{len(enabled_goals)}개 (전체 {len(goals)})"),
+                ("요구사항 수", f"{len(requirements)}개"),
+                ("실행 목표", "\n".join(goals_summary) if goals_summary else "-"),
+            ]
+        except Exception:
+            return None
+
+    def _open_file_location(self) -> None:
+        """OS 파일 탐색기에서 파일 위치 열기."""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl as _QUrl
+        from pathlib import Path as _Path
+        try:
+            folder = str(_Path(self._file_path).resolve().parent)
+            QDesktopServices.openUrl(_QUrl.fromLocalFile(folder))
+        except Exception:
+            pass
 
 
 class MainWindow(QMainWindow):
@@ -1550,6 +1794,32 @@ class MainWindow(QMainWindow):
 
             QPushButton#SidebarMenuItem:pressed {
                 background: #e5e8eb;
+            }
+
+            /* 사이드바 좌하단 접기/펼치기 토글 — SidebarMenuItem과 톤 통일 */
+            QPushButton#SidebarCollapseButton {
+                background: transparent;
+                border: none;
+                color: #6b7684;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 10px 14px;
+                text-align: left;
+                min-height: 0px;
+                border-radius: 8px;
+            }
+            QPushButton#SidebarCollapseButton:hover {
+                background: #f2f4f6;
+                color: #191f28;
+            }
+            QPushButton#SidebarCollapseButton:pressed {
+                background: #eff6ff;
+                color: #1b64da;
+            }
+            QPushButton#SidebarCollapseButton[collapsed="true"] {
+                text-align: center;
+                padding: 10px 0px;
+                font-size: 14px;
             }
 
             QFrame#SidebarUserCard {
@@ -3342,14 +3612,92 @@ class MainWindow(QMainWindow):
         sites_btn.clicked.connect(self._emit_benchmark_manage)
         layout.addWidget(sites_btn)
 
+        # 보조 메뉴 위젯 보관 — 접힌 상태에서 hide 토글
+        self._sidebar_menu_buttons: list[QPushButton] = [history_btn, sites_btn]
+
         layout.addStretch(1)
 
+        # ─── 좌하단: 사이드바 접기/펼치기 토글 ───────────────────────
+        bottom_divider = QFrame(sidebar)
+        bottom_divider.setObjectName("SidebarDivider")
+        bottom_divider.setFixedHeight(1)
+        layout.addWidget(bottom_divider)
+        self._sidebar_bottom_divider = bottom_divider
+
+        self._sidebar_toggle_button = QPushButton("◀  접기", sidebar)
+        self._sidebar_toggle_button.setObjectName("SidebarCollapseButton")
+        self._sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sidebar_toggle_button.setToolTip("사이드바 접기")
+        self._sidebar_toggle_button.clicked.connect(self._toggle_sidebar)
+        layout.addWidget(self._sidebar_toggle_button)
+
         return sidebar
+
+    def _toggle_sidebar(self) -> None:
+        """좌측 사이드바 접기/펼치기 토글.
+
+        - 펼친 상태: 사이드바 240px (저장된 너비), 모든 텍스트/메뉴 노출
+        - 접힌 상태: 사이드바 56px (좁게 유지), 토글 버튼만 노출 → 다시 펼치기 가능
+        """
+        if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
+            return
+        is_collapsed = bool(getattr(self, "_sidebar_collapsed", False))
+
+        if not is_collapsed:
+            # 접기 — 현재 너비 저장
+            if hasattr(self, "_root_splitter"):
+                sizes = self._root_splitter.sizes()
+                if sizes and sizes[0] >= 180:
+                    self._sidebar_expanded_width = sizes[0]
+            self._set_sidebar_inner_visible(False)
+            self._sidebar_panel.setMinimumWidth(56)
+            self._sidebar_panel.setMaximumWidth(56)
+            if hasattr(self, "_root_splitter"):
+                total = sum(self._root_splitter.sizes())
+                self._root_splitter.setSizes([56, max(0, total - 56)])
+            if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setText("▶")
+                self._sidebar_toggle_button.setToolTip("사이드바 펼치기")
+                self._sidebar_toggle_button.setProperty("collapsed", True)
+                self._restyle(self._sidebar_toggle_button)
+            self._sidebar_collapsed = True
+        else:
+            # 펼치기 — 저장된 너비로 복원
+            restore = int(getattr(self, "_sidebar_expanded_width", 240))
+            restore = max(180, min(360, restore))
+            self._sidebar_panel.setMinimumWidth(180)
+            self._sidebar_panel.setMaximumWidth(360)
+            self._set_sidebar_inner_visible(True)
+            if hasattr(self, "_root_splitter"):
+                total = sum(self._root_splitter.sizes())
+                self._root_splitter.setSizes([restore, max(0, total - restore)])
+            if hasattr(self, "_sidebar_toggle_button"):
+                self._sidebar_toggle_button.setText("◀  접기")
+                self._sidebar_toggle_button.setToolTip("사이드바 접기")
+                self._sidebar_toggle_button.setProperty("collapsed", False)
+                self._restyle(self._sidebar_toggle_button)
+            self._sidebar_collapsed = False
+
+    def _set_sidebar_inner_visible(self, visible: bool) -> None:
+        """사이드바 내부의 토글 버튼을 제외한 모든 자식 위젯의 visibility 토글.
+
+        접힌 상태에서는 토글 버튼 + 좌하단 영역만 보이고, 브랜드/스텝/메뉴 모두 hide.
+        """
+        if not hasattr(self, "_sidebar_panel") or self._sidebar_panel is None:
+            return
+        toggle = getattr(self, "_sidebar_toggle_button", None)
+        divider = getattr(self, "_sidebar_bottom_divider", None)
+        for child in self._sidebar_panel.findChildren(QWidget):
+            if child is toggle or child is divider:
+                continue
+            if child.parent() is self._sidebar_panel:
+                child.setVisible(visible)
 
     def _create_sidebar_step(self, parent: QWidget, number: str, label: str) -> QFrame:
         row = QFrame(parent)
         row.setObjectName("SidebarStepRow")
         row.setProperty("state", "pending")
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(7, 6, 8, 6)
         row_layout.setSpacing(12)
@@ -3359,11 +3707,14 @@ class MainWindow(QMainWindow):
         dot.setFixedSize(28, 28)
         dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         dot.setProperty("state", "pending")
+        # 마우스 이벤트가 row로 전달되도록 transparent
+        dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         row_layout.addWidget(dot)
 
         text = QLabel(label, row)
         text.setObjectName("SidebarStepLabel")
         text.setProperty("state", "pending")
+        text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         row_layout.addWidget(text, stretch=1)
 
         # state 갱신을 위해 위젯 참조 저장
@@ -3372,7 +3723,53 @@ class MainWindow(QMainWindow):
         row._gaia_dot = dot       # type: ignore[attr-defined]
         row._gaia_label = text    # type: ignore[attr-defined]
         row._gaia_number = number # type: ignore[attr-defined]
+        # 클릭 핸들러 — number(1/2/3)를 step_index(0/1/2)로 변환하여 라우팅
+        step_index = int(number) - 1
+        row.mousePressEvent = lambda event, idx=step_index: self._on_sidebar_step_clicked(idx, event)  # type: ignore[assignment]
         return row
+
+    def _on_sidebar_step_clicked(self, step_index: int, event) -> None:
+        """사이드바 워크플로 스텝 클릭 핸들러.
+
+        - 평상시: 해당 스텝 페이지로 이동
+        - 테스트 진행 중(_is_busy): 확인 다이얼로그 → 진행 중단 + 페이지 이동
+        - step_index: 0=사이트, 1=테스트 케이스, 2=테스트 진행
+        """
+        from PySide6.QtWidgets import QMessageBox
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        # 현재 step에서 같은 step 클릭은 무시
+        current_step = {"site_selection": 0, "test_case": 1, "review": 2}.get(
+            getattr(self, "_workflow_stage", ""), -1
+        )
+        if step_index == current_step:
+            return
+
+        # 테스트 진행 중인 경우 — 확인 다이얼로그
+        is_busy = bool(getattr(self, "_is_busy", False))
+        if is_busy:
+            target_label = ["사이트 선택", "테스트 케이스 선택", "테스트 진행"][step_index]
+            reply = QMessageBox.question(
+                self,
+                "진행 중인 테스트 중단",
+                f"테스트가 실행 중입니다.\n진행을 중단하고 '{target_label}' 페이지로 이동하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            # 진행 중단 — cancelRequested 시그널 + busy 상태 해제
+            self.append_log("⏹️ 사용자 요청으로 테스트를 중단합니다.")
+            self.cancelRequested.emit()
+            self.set_busy(False)
+
+        # 페이지 이동
+        if step_index == 0:
+            self.show_site_selection_stage()
+        elif step_index == 1:
+            self.show_test_case_stage()
+        elif step_index == 2:
+            self.show_review_stage()
 
     def _create_sidebar_menu(self, parent: QWidget, icon: str, label: str) -> QPushButton:
         # 이모지 제거 — 깨끗한 텍스트만 표시 (icon 인자는 향후 SVG 확장용으로 시그니처 유지)
