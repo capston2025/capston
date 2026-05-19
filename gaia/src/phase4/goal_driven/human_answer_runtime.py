@@ -91,6 +91,15 @@ def is_goal_achievement_confirmation_request(request: Mapping[str, Any]) -> bool
     if fields:
         return False
 
+    if reason_code in {
+        "goal_completed_report",
+        "goal_completion_report",
+        "goal_evidence_report",
+        "goal_achieved_report",
+        "goal_achievement_report",
+    }:
+        return True
+
     question = re.sub(r"\s+", " ", str(request.get("question") or "").strip().lower())
     if not question:
         return False

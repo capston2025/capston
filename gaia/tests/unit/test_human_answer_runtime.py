@@ -85,6 +85,16 @@ def test_goal_achievement_confirmation_request_is_not_user_input() -> None:
     )
 
 
+def test_goal_completed_report_request_is_not_user_input() -> None:
+    assert is_goal_achievement_confirmation_request(
+        {
+            "question": "requests 프로젝트 화면에서 설치 명령과 최신 버전이 확인됩니다.",
+            "fields": [],
+            "reason_code": "goal_completed_report",
+        }
+    )
+
+
 def test_goal_achievement_confirmation_ignores_real_required_fields() -> None:
     assert not is_goal_achievement_confirmation_request(
         {
