@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 from gaia.src.phase4.goal_driven.goal_achievement_runtime import validate_goal_achievement_claim
 from gaia.src.phase4.goal_driven.goal_completion_helpers import (
+    evaluate_goal_target_completion,
+    evaluate_payment_presubmit_completion,
     evaluate_reasoning_only_wait_completion,
     evaluate_wait_goal_completion,
 )
@@ -104,6 +106,109 @@ def test_validate_goal_achievement_claim_accepts_wait_when_destination_row_is_vi
 
     assert ok is True
     assert reason is None
+
+
+def test_payment_presubmit_completion_accepts_checkout_page_with_final_payment_cta() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="결제 직전까지 검증",
+        description="상품을 장바구니에 담고 결제하기를 누르기 전 화면까지 도달한다.",
+        success_criteria=["주문/결제 화면에서 결제하기 버튼이 보이는지 확인"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="네이버페이 주문/결제",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="section",
+            role="region",
+            text="배송지 결제수단 총 결제금액 49,000원",
+            context_text="주문상품 배송 정보 결제 수단",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="결제하기",
+            context_text="최종 결제 실행",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_payment_presubmit_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is not None
+    assert "결제 직전" in reason
+    assert evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom) == reason
+
+
+def test_payment_presubmit_completion_rejects_cart_order_cta_before_checkout() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="결제 직전까지 검증",
+        description="장바구니에서 결제하기 직전 화면까지 도달한다.",
+        success_criteria=["결제하기 버튼이 보이는 주문/결제 화면"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="장바구니",
+            context_text="총 주문 예상 금액 49,000원",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="주문하기 1개의 상품",
+            context_text="장바구니 하단 버튼",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_payment_presubmit_completion(agent, goal=goal, dom_elements=dom) is None
+
+
+def test_payment_presubmit_completion_rejects_payment_completion_goal() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="결제 완료까지 진행",
+        description="결제 버튼을 눌러 결제 완료 상태까지 진행한다.",
+        success_criteria=["결제 완료"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="주문/결제",
+            context_text="배송지 결제수단 총 결제금액",
+            is_visible=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="결제하기",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_payment_presubmit_completion(agent, goal=goal, dom_elements=dom) is None
 
 
 def test_validate_goal_achievement_claim_accepts_wait_when_destination_anchor_and_row_action_are_separate():

@@ -19,6 +19,19 @@ from gaia.src.phase4.goal_driven import (
     TestGoal,
     sort_goals_by_priority,
 )
+from gaia.src.phase4.goal_driven.adaptive_qa_runtime import (
+    ADAPTIVE_QA_MODE,
+    DEEP_ADAPTIVE_QA_MODE,
+    adaptive_qa_enabled,
+    adaptive_qa_is_deep,
+    adaptive_qa_mode,
+    build_edge_goal,
+    filter_new_edge_cases,
+    generate_adaptive_qa_plan,
+    is_adaptive_edge_goal,
+    merge_adaptive_qa_plans,
+    summarize_adaptive_qa_report,
+)
 from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import close_participant_browser_contexts
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
@@ -121,6 +134,7 @@ class GoalDrivenWorker(QObject):
         last_reason = ""
         goal_summaries: list[dict[str, Any]] = []
         timeline_rows: list[dict[str, Any]] = []
+        adaptive_qa_reports: list[dict[str, Any]] = []
         try:
             if not self._goals:
                 self.progress.emit("ℹ️ 실행할 목표가 없습니다.")
@@ -190,17 +204,33 @@ class GoalDrivenWorker(QObject):
                     self.progress.emit(f"      이유: {result.final_reason}")
 
                 goal_timeline = _goal_step_timeline(result, goal_to_run.name)
-                goal_summaries.append(
-                    {
-                        "id": goal_to_run.id,
-                        "name": goal_to_run.name,
-                        "status": status,
-                        "reason": result.final_reason,
-                        "steps": int(result.total_steps or 0),
-                        "step_timeline": goal_timeline,
-                    }
-                )
+                goal_summary = {
+                    "id": goal_to_run.id,
+                    "name": goal_to_run.name,
+                    "status": status,
+                    "reason": result.final_reason,
+                    "steps": int(result.total_steps or 0),
+                    "step_timeline": goal_timeline,
+                }
                 timeline_rows.extend(goal_timeline)
+                if adaptive_qa_enabled(goal_to_run) and not is_adaptive_edge_goal(goal_to_run):
+                    adaptive_report = self._run_adaptive_qa_expansion(goal_to_run, result)
+                    if adaptive_report:
+                        adaptive_qa_reports.append(adaptive_report)
+                        goal_summary["adaptive_qa_report"] = adaptive_report
+                        for edge_result in list(adaptive_report.get("edge_results") or []):
+                            timeline_rows.append(
+                                {
+                                    "goal": str(edge_result.get("name") or ""),
+                                    "step": "edge",
+                                    "action": "adaptive_qa",
+                                    "duration_seconds": 0.0,
+                                    "reasoning": str(edge_result.get("reason") or ""),
+                                    "success": str(edge_result.get("status") or "").lower() == "pass",
+                                    "error": "",
+                                }
+                            )
+                goal_summaries.append(goal_summary)
                 self.scenario_finished.emit(goal_to_run.id)
 
             summary_status = "success"
@@ -211,7 +241,11 @@ class GoalDrivenWorker(QObject):
 
             self.result_ready.emit(
                 {
-                    "mode": "goal",
+                    "mode": (
+                        str(adaptive_qa_reports[0].get("mode") or ADAPTIVE_QA_MODE)
+                        if adaptive_qa_reports
+                        else "goal"
+                    ),
                     "status": summary_status,
                     "reason": last_reason or ("모든 목표가 완료되었습니다." if summary_status == "success" else "일부 목표가 실패했습니다."),
                     "total_goals": len(self._goals),
@@ -227,6 +261,7 @@ class GoalDrivenWorker(QObject):
                         for row in goal_summaries[-5:]
                         if isinstance(row, dict)
                     ],
+                    "adaptive_qa_reports": adaptive_qa_reports,
                 }
             )
         except Exception as exc:
@@ -257,6 +292,65 @@ class GoalDrivenWorker(QObject):
             except Exception:
                 pass
             self.finished.emit()
+
+    def _run_adaptive_qa_expansion(self, goal: TestGoal, primary_result: Any) -> dict[str, Any]:
+        mode = adaptive_qa_mode(goal) or ADAPTIVE_QA_MODE
+        label = "Deep QA" if mode == DEEP_ADAPTIVE_QA_MODE else "Adaptive QA"
+        self.progress.emit(f"🧪 {label}: 체크리스트와 안전 엣지 케이스를 생성합니다.")
+        is_deep = adaptive_qa_is_deep(goal)
+        plans: list[dict[str, Any]] = []
+        generated_edge_cases: list[dict[str, Any]] = []
+        seen_edge_fingerprints: set[str] = set()
+        edge_results: list[dict[str, Any]] = []
+        round_index = 1
+        while not self._cancel_requested:
+            dom = self._goal_agent._analyze_dom() or []
+            plan = generate_adaptive_qa_plan(
+                self._goal_agent,
+                goal=goal,
+                primary_result=primary_result,
+                dom_elements=dom,
+                previous_edge_cases=generated_edge_cases,
+                round_index=round_index,
+            )
+            plans.append(plan)
+            raw_edge_cases = list(plan.get("edge_cases") or []) if isinstance(plan, dict) else []
+            edge_cases = filter_new_edge_cases(raw_edge_cases, seen_edge_fingerprints)
+            if not primary_result.success or not edge_cases:
+                self.progress.emit(f"🧪 {label}: 새로 실행할 안전 엣지 케이스가 없습니다.")
+                break
+            self.progress.emit(
+                f"🧪 {label}: round {round_index} 안전 엣지 케이스 {len(edge_cases)}개 실행"
+            )
+            for edge_case in edge_cases:
+                if self._cancel_requested:
+                    break
+                generated_edge_cases.append(edge_case)
+                edge_goal = build_edge_goal(goal, edge_case, index=len(edge_results) + 1)
+                self.progress.emit(f"   [{len(edge_results) + 1}] {edge_goal.name}")
+                result = self._goal_agent.execute_goal(edge_goal)
+                edge_status = "PASS" if result.success else "FAIL"
+                edge_results.append(
+                    {
+                        "id": edge_goal.id,
+                        "name": edge_goal.name,
+                        "status": edge_status,
+                        "reason": result.final_reason,
+                        "steps": int(result.total_steps or 0),
+                    }
+                )
+                self.progress.emit(f"      {edge_status}: {result.final_reason}")
+            if not is_deep:
+                break
+            round_index += 1
+        merged_plan = merge_adaptive_qa_plans(plans)
+        merged_plan["edge_cases"] = generated_edge_cases
+        return summarize_adaptive_qa_report(
+            primary_goal=goal,
+            primary_result=primary_result,
+            plan=merged_plan,
+            edge_results=edge_results,
+        )
 
     def _on_progress(self, message: str) -> None:
         self.progress.emit(message)

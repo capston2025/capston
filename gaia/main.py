@@ -34,8 +34,8 @@ def _create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spec", help="Load spec PDF in advance")
     parser.add_argument(
         "--mode",
-        choices=("plan", "ai", "chat"),
-        help="GUI startup mode (plan/ai/chat)",
+        choices=("plan", "ai", "chat", "adaptive_qa", "deep_adaptive_qa"),
+        help="GUI startup mode (plan/ai/chat/adaptive_qa/deep_adaptive_qa)",
     )
     parser.add_argument(
         "--control",

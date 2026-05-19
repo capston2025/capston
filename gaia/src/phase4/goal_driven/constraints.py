@@ -75,6 +75,19 @@ def _looks_like_instructional_target_token(token: str) -> bool:
     return any(hint in value for hint in instructional_hints)
 
 
+def _strip_negated_action_clauses(text: str) -> str:
+    """Remove clauses that describe actions the user explicitly forbids."""
+
+    value = str(text or "")
+    if not value:
+        return ""
+    negation_pattern = re.compile(
+        r"[^.!?。;\n]*(?:하지\s*마|하지\s*말|하지마|하지말|절대\s*하지|금지|do\s+not|don't|never|must\s+not)[^.!?。;\n]*",
+        flags=re.IGNORECASE,
+    )
+    return negation_pattern.sub(" ", value)
+
+
 def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> Dict[str, Any]:
     text = normalize_text(goal_blob)
     if not text:
@@ -124,10 +137,11 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     increase_hints = ("증가", "늘", "담", "추가", "add", "append", "increase", "grow", "more")
     decrease_hints = ("감소", "줄", "제거", "삭제", "remove", "decrease", "less")
     clear_hints = ("비우", "비웠", "전체 삭제", "전부 삭제", "clear", "empty", "remove all")
+    mutation_text = _strip_negated_action_clauses(text)
     mutation_text = re.sub(
         r"추가\s*(?:인증|확인|보안|로그인|otp|2fa)",
         " ",
-        text,
+        mutation_text,
         flags=re.IGNORECASE,
     )
     has_increase = any(hint in mutation_text for hint in increase_hints)

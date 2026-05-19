@@ -791,6 +791,8 @@ CASE_MODE_PALETTE: dict[str, tuple[str, str, str]] = {
     "benchmark_all": ("▶",  "#eff6ff", "#3182f6"),
     "benchmark":     ("◉",  "#eff6ff", "#3182f6"),
     "quick":         ("⚡",  "#eff6ff", "#3182f6"),
+    "adaptive_qa":   ("▣",  "#eff6ff", "#3182f6"),
+    "deep_adaptive_qa": ("◆", "#eef2ff", "#4f46e5"),
     "ai":            ("✦",  "#eff6ff", "#3182f6"),
     "spec":          ("▤",  "#eff6ff", "#3182f6"),
     "bundle":        ("▦",  "#eff6ff", "#3182f6"),
@@ -832,6 +834,24 @@ DEFAULT_TEST_CASES: list[dict[str, Any]] = [
         "title": "빠른 목표 직접 입력",
         "desc": "AI가 직접 목표를 이해하고 수행합니다 (단일 실행).",
         "eta": "예상 소요 1~3분",
+        "recommended": False,
+    },
+    {
+        "id": "adaptive_qa_goal",
+        "mode": "adaptive_qa",
+        "icon_mode": "adaptive_qa",
+        "title": "QA 확장 실행",
+        "desc": "목표 수행 후 안전 엣지 케이스를 최대 5개 확장합니다.",
+        "eta": "예상 소요 5~10분",
+        "recommended": False,
+    },
+    {
+        "id": "deep_adaptive_qa_goal",
+        "mode": "deep_adaptive_qa",
+        "icon_mode": "deep_adaptive_qa",
+        "title": "Deep QA 확장 실행",
+        "desc": "새로운 안전 엣지 케이스가 더 이상 없을 때까지 계속 확장합니다.",
+        "eta": "예상 소요 가변",
         "recommended": False,
     },
     {
@@ -4578,7 +4598,7 @@ class MainWindow(QMainWindow):
 
         섹션 분리:
           - 섹션 1 (_case_rows_layout): mode in {benchmark, ai} → 등록된 테스트 케이스
-          - 섹션 2 (_freeform_rows_layout): mode in {quick, bundle} → AI 자율 실행
+          - 섹션 2 (_freeform_rows_layout): mode in {quick, adaptive_qa, deep_adaptive_qa, bundle} → AI 자율 실행
         """
         # 양쪽 컨테이너 초기화
         for layout in (self._case_rows_layout, getattr(self, "_freeform_rows_layout", None)):
@@ -4594,8 +4614,8 @@ class MainWindow(QMainWindow):
 
         for case in cases:
             mode = str(case.get("mode", "benchmark"))
-            # quick/bundle은 freeform 섹션, 나머지는 메인 섹션
-            is_freeform = mode in ("quick", "bundle")
+            # quick/adaptive/deep/bundle은 freeform 섹션, 나머지는 메인 섹션
+            is_freeform = mode in ("quick", "adaptive_qa", "deep_adaptive_qa", "bundle")
             target_parent = self._freeform_rows_container if is_freeform else self._case_rows_container
             target_layout = self._freeform_rows_layout if is_freeform else self._case_rows_layout
 
@@ -4712,6 +4732,26 @@ class MainWindow(QMainWindow):
                 "scenario_id": "",
             },
             {
+                "id": "adaptive_qa_goal",
+                "mode": "adaptive_qa",
+                "icon_mode": "adaptive_qa",
+                "title": "QA 확장 실행",
+                "desc": "목표 수행 후 안전 엣지 케이스를 최대 5개 확장합니다.",
+                "eta": "예상 소요 5~10분",
+                "recommended": False,
+                "scenario_id": "",
+            },
+            {
+                "id": "deep_adaptive_qa_goal",
+                "mode": "deep_adaptive_qa",
+                "icon_mode": "deep_adaptive_qa",
+                "title": "Deep QA 확장 실행",
+                "desc": "새로운 안전 엣지 케이스가 더 이상 없을 때까지 계속 확장합니다.",
+                "eta": "예상 소요 가변",
+                "recommended": False,
+                "scenario_id": "",
+            },
+            {
                 "id": "ai_explore",
                 "mode": "ai",
                 "icon_mode": "ai",
@@ -4795,7 +4835,7 @@ class MainWindow(QMainWindow):
                 title = row._title_label.text().lower()  # noqa: SLF001
                 cat_ok = False
                 if cat_sel == "기본":
-                    cat_ok = mode.startswith("benchmark") or mode == "quick"
+                    cat_ok = mode.startswith("benchmark") or mode in {"quick", "adaptive_qa", "deep_adaptive_qa"}
                 elif cat_sel == "검색":
                     cat_ok = "검색" in title or "search" in mode
                 elif cat_sel == "AI":
@@ -4821,7 +4861,7 @@ class MainWindow(QMainWindow):
         상호 배타 규칙:
         - "benchmark_all"(전체 시나리오) 선택 → 개별 시나리오 모두 해제
         - 개별 시나리오 선택 → "benchmark_all" 자동 해제
-        - 섹션 2(AI 자율 실행: quick/bundle)는 단일 선택 — 하나 선택 시 다른 모두 해제
+        - 섹션 2(AI 자율 실행: quick/adaptive_qa/deep_adaptive_qa/bundle)는 단일 선택 — 하나 선택 시 다른 모두 해제
         - 섹션 2 카드 선택 시 → 섹션 1(테스트 케이스) 모두 자동 해제 (모드 충돌 방지)
         - 섹션 1 카드 선택 시 → 섹션 2 모두 자동 해제
         """
@@ -4943,15 +4983,15 @@ class MainWindow(QMainWindow):
         # 기본: scenario_ids 초기화
         self._pending_scenario_ids = None
 
-        if mode == "quick":
-            # 빠른 목표 — 사용자 정의 QuickGoalInputDialog (multiline + 예시 + 카운터)
+        if mode in {"quick", "adaptive_qa", "deep_adaptive_qa"}:
+            # 빠른 목표 / QA 확장 — 사용자 정의 QuickGoalInputDialog (multiline + 예시 + 카운터)
             existing = self.get_feature_query().strip() if hasattr(self, "get_feature_query") else ""
             dlg = QuickGoalInputDialog(self, initial_text=existing)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return  # 사용자 취소
             goal = dlg.goal_text()
             if not goal:
-                NotificationDialog.info(self, "목표 필요", "빠른 목표 모드는 목표 텍스트가 필요합니다.")
+                NotificationDialog.info(self, "목표 필요", "목표 텍스트가 필요합니다.")
                 return
             self.set_feature_query(goal)
             self.startRequested.emit()
@@ -5111,6 +5151,20 @@ class MainWindow(QMainWindow):
         self._quick_mode_button.clicked.connect(lambda: self.set_selected_run_mode("quick"))
         self._run_mode_group.addButton(self._quick_mode_button)
         mode_row.addWidget(self._quick_mode_button)
+
+        self._adaptive_qa_mode_button = QPushButton("QA 확장", page)
+        self._adaptive_qa_mode_button.setCheckable(True)
+        self._adaptive_qa_mode_button.setProperty("modeButton", True)
+        self._adaptive_qa_mode_button.clicked.connect(lambda: self.set_selected_run_mode("adaptive_qa"))
+        self._run_mode_group.addButton(self._adaptive_qa_mode_button)
+        mode_row.addWidget(self._adaptive_qa_mode_button)
+
+        self._deep_adaptive_qa_mode_button = QPushButton("Deep QA", page)
+        self._deep_adaptive_qa_mode_button.setCheckable(True)
+        self._deep_adaptive_qa_mode_button.setProperty("modeButton", True)
+        self._deep_adaptive_qa_mode_button.clicked.connect(lambda: self.set_selected_run_mode("deep_adaptive_qa"))
+        self._run_mode_group.addButton(self._deep_adaptive_qa_mode_button)
+        mode_row.addWidget(self._deep_adaptive_qa_mode_button)
 
         self._ai_mode_button = QPushButton("완전 자율", page)
         self._ai_mode_button.setCheckable(True)
@@ -6572,7 +6626,7 @@ class MainWindow(QMainWindow):
             return
         self._feature_input.setText(query)
         self._current_feature_query = query.strip()
-        self._feature_input_container.setVisible(self._selected_run_mode == "quick")
+        self._feature_input_container.setVisible(self._selected_run_mode in {"quick", "adaptive_qa", "deep_adaptive_qa"})
 
     def set_benchmark_catalog(
         self,
@@ -7211,10 +7265,12 @@ class MainWindow(QMainWindow):
         self._emit_benchmark_manage()
 
     def set_selected_run_mode(self, mode: str) -> None:
-        normalized = mode if mode in {"quick", "ai", "bundle", "benchmark"} else "quick"
+        normalized = mode if mode in {"quick", "adaptive_qa", "deep_adaptive_qa", "ai", "bundle", "benchmark"} else "quick"
         self._selected_run_mode = normalized
         mapping = {
             "quick": getattr(self, "_quick_mode_button", None),
+            "adaptive_qa": getattr(self, "_adaptive_qa_mode_button", None),
+            "deep_adaptive_qa": getattr(self, "_deep_adaptive_qa_mode_button", None),
             "ai": getattr(self, "_ai_mode_button", None),
             "bundle": getattr(self, "_bundle_mode_button", None),
             "benchmark": getattr(self, "_benchmark_mode_button", None),
@@ -7228,7 +7284,7 @@ class MainWindow(QMainWindow):
             button.style().unpolish(button)
             button.style().polish(button)
         if hasattr(self, "_feature_input_container"):
-            self._feature_input_container.setVisible(normalized == "quick")
+            self._feature_input_container.setVisible(normalized in {"quick", "adaptive_qa", "deep_adaptive_qa"})
         if hasattr(self, "_standard_action_container"):
             self._standard_action_container.setVisible(normalized != "benchmark")
         # 신규 3단계 UX: mode 변경만으로 stage를 자동 전환하지 않음.

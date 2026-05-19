@@ -8,6 +8,18 @@ import time
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from gaia.src.phase4.goal_driven import ExplorationConfig, ExploratoryAgent, GoalDrivenAgent, TestGoal
+from gaia.src.phase4.goal_driven.adaptive_qa_runtime import (
+    ADAPTIVE_QA_MODE,
+    DEEP_ADAPTIVE_QA_MODE,
+    adaptive_qa_enabled,
+    adaptive_qa_is_deep,
+    adaptive_qa_mode,
+    build_edge_goal,
+    filter_new_edge_cases,
+    generate_adaptive_qa_plan,
+    merge_adaptive_qa_plans,
+    summarize_adaptive_qa_report,
+)
 from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import close_participant_browser_contexts
 from gaia.src.phase4.goal_driven.goal_verification_helpers import derive_achieved_signals
 from gaia.src.phase4.goal_driven.site_auth_store import load_site_credentials
@@ -29,6 +41,11 @@ def _extract_inline_test_data(query: str) -> tuple[str, Dict[str, str]]:
         "email": "email",
         "pw": "password",
         "password": "password",
+        "qa_mode": "qa_mode",
+        "mode": "qa_mode",
+        "adaptive_qa": ADAPTIVE_QA_MODE,
+        "deep_adaptive_qa": DEEP_ADAPTIVE_QA_MODE,
+        "deep_qa": DEEP_ADAPTIVE_QA_MODE,
     }
     for tok in tokens:
         if "=" not in tok:
@@ -56,6 +73,19 @@ def _build_test_goal(url: str, query: str) -> TestGoal:
     except Exception:
         max_steps = 20
     max_steps = max(1, max_steps)
+    if str(os.getenv("GAIA_ADAPTIVE_QA", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        inline_data.setdefault(ADAPTIVE_QA_MODE, {"enabled": True})
+    if str(os.getenv("GAIA_DEEP_ADAPTIVE_QA", "") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        inline_data.setdefault(DEEP_ADAPTIVE_QA_MODE, {"enabled": True})
+    qa_mode = str(inline_data.get("qa_mode") or "").strip().lower()
+    if qa_mode in {"deep", "deep_qa", "aggressive_qa", DEEP_ADAPTIVE_QA_MODE}:
+        inline_data.setdefault(DEEP_ADAPTIVE_QA_MODE, {"enabled": True})
+    if qa_mode in {"adaptive", ADAPTIVE_QA_MODE, "progressive_qa"}:
+        inline_data.setdefault(ADAPTIVE_QA_MODE, {"enabled": True})
+    if str(inline_data.get(ADAPTIVE_QA_MODE) or "").strip().lower() in {"1", "true", "yes", "on"}:
+        inline_data[ADAPTIVE_QA_MODE] = {"enabled": True}
+    if str(inline_data.get(DEEP_ADAPTIVE_QA_MODE) or "").strip().lower() in {"1", "true", "yes", "on"}:
+        inline_data[DEEP_ADAPTIVE_QA_MODE] = {"enabled": True}
     return TestGoal(
         id=f"CHAT_{ts}",
         name=(query_text[:40] or "chat test").strip(),
@@ -716,6 +746,64 @@ def _run_single_chat_goal(
         if not effective_success:
             _print_llm_failure_help(effective_reason)
 
+        adaptive_qa_report: Dict[str, Any] | None = None
+        if adaptive_qa_enabled(goal):
+            qa_mode_label = adaptive_qa_mode(goal) or ADAPTIVE_QA_MODE
+            print(f"\n🧪 {qa_mode_label} 확장 모드")
+            adaptive_primary_result = result.model_copy(
+                update={"success": bool(effective_success), "final_reason": effective_reason}
+            )
+            is_deep_qa = adaptive_qa_is_deep(goal)
+            plans: list[Dict[str, Any]] = []
+            generated_edge_cases: list[Dict[str, Any]] = []
+            seen_edge_fingerprints: set[str] = set()
+            edge_results: list[Dict[str, Any]] = []
+            round_index = 1
+            while True:
+                current_dom = agent._analyze_dom() or []
+                plan = generate_adaptive_qa_plan(
+                    agent,
+                    goal=goal,
+                    primary_result=adaptive_primary_result,
+                    dom_elements=current_dom,
+                    previous_edge_cases=generated_edge_cases,
+                    round_index=round_index,
+                )
+                plans.append(plan)
+                raw_edge_cases = list(plan.get("edge_cases") or []) if isinstance(plan, dict) else []
+                edge_cases = filter_new_edge_cases(raw_edge_cases, seen_edge_fingerprints)
+                if not edge_cases or not adaptive_primary_result.success:
+                    print("   새로 실행할 안전 엣지 케이스가 없습니다.")
+                    break
+                print(f"   round {round_index}: 안전 엣지 케이스 {len(edge_cases)}개 실행")
+                for edge_case in edge_cases:
+                    generated_edge_cases.append(edge_case)
+                    edge_goal = build_edge_goal(goal, edge_case, index=len(edge_results) + 1)
+                    print(f"   [{len(edge_results) + 1}] {edge_goal.name}")
+                    edge_result = agent.execute_goal(edge_goal)
+                    edge_status = "PASS" if edge_result.success else "FAIL"
+                    edge_results.append(
+                        {
+                            "id": edge_goal.id,
+                            "name": edge_goal.name,
+                            "status": edge_status,
+                            "reason": edge_result.final_reason,
+                            "steps": edge_result.total_steps,
+                        }
+                    )
+                    print(f"      {edge_status}: {edge_result.final_reason}")
+                if not is_deep_qa:
+                    break
+                round_index += 1
+            merged_plan = merge_adaptive_qa_plans(plans)
+            merged_plan["edge_cases"] = generated_edge_cases
+            adaptive_qa_report = summarize_adaptive_qa_report(
+                primary_goal=goal,
+                primary_result=adaptive_primary_result,
+                plan=merged_plan,
+                edge_results=edge_results,
+            )
+
         expected_signals = [
             str(item or "").strip().lower()
             for item in list(getattr(goal, "expected_signals", []) or [])
@@ -771,6 +859,8 @@ def _run_single_chat_goal(
             "validation_rail_artifacts": rail_artifacts,
             "attachments": summary_attachments,
         }
+        if adaptive_qa_report is not None:
+            summary["adaptive_qa_report"] = adaptive_qa_report
         if isinstance(evidence_attachment, dict) and evidence_attachment.get("kind") == "evidence_capture_error":
             summary["evidence_capture_error"] = str(evidence_attachment.get("reason") or "")
         summary["attachments"] = _limit_attachments_for_status(

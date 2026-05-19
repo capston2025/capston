@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from gaia import auth as gaia_auth
 from gaia.src.phase4.session import (
@@ -36,7 +36,37 @@ else:
 PROFILE_PATH = Path.home() / ".gaia" / "cli_profile.json"
 AUTH_CHOICES = ("reuse", "fresh")
 RUNTIME_CHOICES = ("gui", "terminal")
-MODE_CHOICES = ("chat", "ai", "plan")
+ADAPTIVE_QA_MODE = "adaptive_qa"
+DEEP_ADAPTIVE_QA_MODE = "deep_adaptive_qa"
+MODE_CHOICES = ("chat", "ai", "plan", ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE)
+QA_MODE_CHOICES = (
+    "off",
+    "adaptive",
+    "deep",
+    ADAPTIVE_QA_MODE,
+    "deep_qa",
+    DEEP_ADAPTIVE_QA_MODE,
+)
+QUICK_SPECIFIC_LABEL = "특정 기능 테스트"
+QUICK_ADAPTIVE_QA_LABEL = "QA 확장 테스트"
+QUICK_DEEP_QA_LABEL = "Deep QA 확장 테스트"
+QUICK_AUTONOMOUS_LABEL = "완전 자율"
+QUICK_RUN_MODE_CHOICES = (
+    QUICK_SPECIFIC_LABEL,
+    QUICK_ADAPTIVE_QA_LABEL,
+    QUICK_DEEP_QA_LABEL,
+    QUICK_AUTONOMOUS_LABEL,
+)
+QUICK_QA_MODE_BY_LABEL = {
+    QUICK_ADAPTIVE_QA_LABEL: ADAPTIVE_QA_MODE,
+    QUICK_DEEP_QA_LABEL: DEEP_ADAPTIVE_QA_MODE,
+}
+QUICK_PROFILE_KEY_BY_LABEL = {
+    QUICK_SPECIFIC_LABEL: "specific",
+    QUICK_ADAPTIVE_QA_LABEL: ADAPTIVE_QA_MODE,
+    QUICK_DEEP_QA_LABEL: DEEP_ADAPTIVE_QA_MODE,
+    QUICK_AUTONOMOUS_LABEL: "autonomous",
+}
 OPENAI_AUTH_METHOD_CHOICES = ("oauth", "manual")
 CONTROL_CHOICES = ("local", "telegram")
 TELEGRAM_MODE_CHOICES = ("polling", "webhook")
@@ -645,6 +675,40 @@ def _provider_model_priority(provider: str) -> Sequence[str]:
     return OLLAMA_MODEL_PRIORITY
 
 
+def _normalize_qa_mode(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "off", "none", "default", "false", "0"}:
+        return None
+    if raw in {"adaptive", ADAPTIVE_QA_MODE, "progressive_qa"}:
+        return ADAPTIVE_QA_MODE
+    if raw in {"deep", "deep_qa", "aggressive_qa", DEEP_ADAPTIVE_QA_MODE}:
+        return DEEP_ADAPTIVE_QA_MODE
+    return None
+
+
+def _run_with_qa_mode_env(qa_mode: str | None, runner: Callable[[], int]) -> int:
+    normalized = _normalize_qa_mode(qa_mode)
+    if not normalized:
+        return runner()
+
+    keys = ("GAIA_ADAPTIVE_QA", "GAIA_DEEP_ADAPTIVE_QA")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        if normalized == DEEP_ADAPTIVE_QA_MODE:
+            os.environ.pop("GAIA_ADAPTIVE_QA", None)
+            os.environ["GAIA_DEEP_ADAPTIVE_QA"] = "1"
+        else:
+            os.environ["GAIA_ADAPTIVE_QA"] = "1"
+            os.environ.pop("GAIA_DEEP_ADAPTIVE_QA", None)
+        return runner()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _resolve_runtime(parsed: argparse.Namespace, profile: dict[str, str], default: str = "gui") -> str:
     runtime = parsed.runtime or profile.get("last_runtime", default)
     if getattr(parsed, "gui", False):
@@ -1048,7 +1112,10 @@ def run_gui(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--plan")
     parser.add_argument("--bundle")
     parser.add_argument("--spec")
-    parser.add_argument("--mode", choices=("plan", "ai", "chat"))
+    parser.add_argument(
+        "--mode",
+        choices=("plan", "ai", "chat", ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE),
+    )
     parser.add_argument("--control", choices=CONTROL_CHOICES)
     parser.add_argument("--feature-query")
     parser.add_argument("--max-actions", type=int)
@@ -1098,20 +1165,25 @@ def _dispatch_chat(
     repl: bool,
     *,
     session_id: str,
+    qa_mode: str | None = None,
 ) -> int:
+    normalized_qa_mode = _normalize_qa_mode(qa_mode)
     if runtime == "gui":
-        forwarded = ["--mode", "chat", "--url", url]
+        forwarded = ["--mode", normalized_qa_mode or "chat", "--url", url]
         if feature_query:
             forwarded += ["--feature-query", feature_query]
         return run_gui(forwarded)
 
     from gaia.terminal import run_chat_terminal
 
-    return run_chat_terminal(
-        url=url,
-        initial_query=feature_query,
-        repl=repl,
-        session_id=session_id,
+    return _run_with_qa_mode_env(
+        normalized_qa_mode,
+        lambda: run_chat_terminal(
+            url=url,
+            initial_query=feature_query,
+            repl=repl,
+            session_id=session_id,
+        ),
     )
 
 
@@ -1178,6 +1250,7 @@ def _run_terminal_benchmark_mode(*, workspace_root: Path, push_metrics: bool = F
 def run_chat(argv: Sequence[str] | None = None) -> int:
     parser = _build_common_parser("gaia chat", "Run chat mode.")
     parser.add_argument("--feature-query")
+    parser.add_argument("--qa-mode", choices=QA_MODE_CHOICES, help="Enable adaptive QA expansion for this chat run.")
     parser.add_argument("--once", action="store_true", help="Run one test and exit in terminal mode.")
     args = parser.parse_args(list(argv or []))
 
@@ -1192,6 +1265,7 @@ def run_chat(argv: Sequence[str] | None = None) -> int:
         args.feature_query,
         repl=not args.once,
         session_id=mcp_session_id,
+        qa_mode=args.qa_mode,
     )
 
 
@@ -1480,6 +1554,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--spec")
     parser.add_argument("--resume")
     parser.add_argument("--feature-query")
+    parser.add_argument("--qa-mode", choices=QA_MODE_CHOICES)
     parser.add_argument("--max-actions", type=int, default=50)
     parser.add_argument("--time-budget-seconds", type=int)
     parser.add_argument("--control", choices=CONTROL_CHOICES)
@@ -1496,6 +1571,9 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         help="Benchmark terminal mode only: upload metrics to the configured monitoring server.",
     )
     args = parser.parse_args(list(argv or []))
+    requested_qa_mode = _normalize_qa_mode(getattr(args, "qa_mode", None))
+    if args.mode in {ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE}:
+        requested_qa_mode = args.mode
 
     configured = _configure_session(args, require_url=False)
     if not configured:
@@ -1556,6 +1634,8 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             forwarded += ["--resume", str(args.resume)]
         if args.mode:
             forwarded += ["--mode", str(args.mode)]
+        elif requested_qa_mode:
+            forwarded += ["--mode", requested_qa_mode]
         if args.feature_query:
             forwarded += ["--feature-query", str(args.feature_query)]
         if args.max_actions is not None:
@@ -1676,6 +1756,8 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 forwarded += ["--resume", str(args.resume)]
             if args.mode:
                 forwarded += ["--mode", str(args.mode)]
+            elif requested_qa_mode:
+                forwarded += ["--mode", requested_qa_mode]
             if args.feature_query:
                 forwarded += ["--feature-query", str(args.feature_query)]
             if args.max_actions is not None:
@@ -1748,6 +1830,35 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             ),
         )
 
+    if args.mode in {ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE} or requested_qa_mode:
+        feature_query = str(args.feature_query or "").strip()
+        if not feature_query and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+            feature_query = _prompt_non_empty("테스트할 기능/목표")
+        if not feature_query:
+            print("QA 확장 실행에는 테스트할 기능/목표가 필요합니다.", file=sys.stderr)
+            return 2
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel="local",
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
+        )
+        return _dispatch_chat(
+            runtime,
+            url,
+            feature_query,
+            repl=False,
+            session_id=mcp_session_id,
+            qa_mode=requested_qa_mode,
+        )
+
     if args.mode == "chat":
         _persist_profile(
             profile,
@@ -1816,26 +1927,29 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
 
     if control == "local" and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
         quick_mode_map = {
-            "specific": "특정 기능 테스트",
-            "autonomous": "완전 자율",
+            "specific": QUICK_SPECIFIC_LABEL,
+            ADAPTIVE_QA_MODE: QUICK_ADAPTIVE_QA_LABEL,
+            DEEP_ADAPTIVE_QA_MODE: QUICK_DEEP_QA_LABEL,
+            "autonomous": QUICK_AUTONOMOUS_LABEL,
         }
         default_quick = quick_mode_map.get(
             (profile.get("last_quick_mode") or "").strip().lower(),
-            "특정 기능 테스트",
+            QUICK_SPECIFIC_LABEL,
         )
         quick_selected = _prompt_select(
             "실행 방식을 선택하세요",
-            ("특정 기능 테스트", "완전 자율"),
+            QUICK_RUN_MODE_CHOICES,
             default=default_quick,
         )
 
-        if quick_selected == "특정 기능 테스트":
+        quick_qa_mode = QUICK_QA_MODE_BY_LABEL.get(quick_selected)
+        if quick_selected in {QUICK_SPECIFIC_LABEL, QUICK_ADAPTIVE_QA_LABEL, QUICK_DEEP_QA_LABEL}:
             feature_query = (
                 str(args.feature_query).strip()
                 if args.feature_query
                 else _prompt_non_empty("테스트할 기능/목표")
             )
-            profile["last_quick_mode"] = "specific"
+            profile["last_quick_mode"] = QUICK_PROFILE_KEY_BY_LABEL.get(quick_selected, "specific")
             _persist_profile(
                 profile,
                 provider=provider,
@@ -1856,6 +1970,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 feature_query,
                 repl=False,
                 session_id=mcp_session_id,
+                qa_mode=quick_qa_mode,
             )
 
         profile["last_quick_mode"] = "autonomous"
@@ -1956,7 +2071,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gaia start", description="Legacy alias for gaia launcher.")
     subparsers = parser.add_subparsers(dest="subcommand", required=False)
     gui = subparsers.add_parser("gui")
-    gui.add_argument("--mode", choices=("plan", "ai", "chat"), default="chat")
+    gui.add_argument("--mode", choices=MODE_CHOICES, default="chat")
     gui.add_argument("--url")
     gui.add_argument("--plan")
     gui.add_argument("--spec")
@@ -1971,7 +2086,7 @@ def _build_start_legacy_parser() -> argparse.ArgumentParser:
     gui.add_argument("--session")
     gui.add_argument("--new-session", action="store_true")
     terminal = subparsers.add_parser("terminal")
-    terminal.add_argument("--mode", choices=("plan", "ai", "chat"), default="chat")
+    terminal.add_argument("--mode", choices=MODE_CHOICES, default="chat")
     terminal.add_argument("--url")
     terminal.add_argument("--plan")
     terminal.add_argument("--spec")
@@ -2049,6 +2164,11 @@ def run_start(argv: Sequence[str] | None = None) -> int:
             if parsed.feature_query:
                 forwarded += ["--feature-query", parsed.feature_query]
             return run_plan(forwarded)
+        if parsed.mode in {ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE}:
+            forwarded += ["--mode", parsed.mode]
+            if parsed.feature_query:
+                forwarded += ["--feature-query", parsed.feature_query]
+            return run_launcher(forwarded)
         if parsed.feature_query:
             forwarded += ["--feature-query", parsed.feature_query]
         return run_chat(forwarded)
@@ -2082,6 +2202,11 @@ def run_start(argv: Sequence[str] | None = None) -> int:
             if parsed.feature_query:
                 forwarded += ["--feature-query", parsed.feature_query]
             return run_plan(forwarded)
+        if parsed.mode in {ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE}:
+            forwarded += ["--mode", parsed.mode]
+            if parsed.feature_query:
+                forwarded += ["--feature-query", parsed.feature_query]
+            return run_launcher(forwarded)
         if parsed.feature_query:
             forwarded += ["--feature-query", parsed.feature_query]
         return run_chat(forwarded)
