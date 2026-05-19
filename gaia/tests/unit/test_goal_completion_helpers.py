@@ -139,6 +139,59 @@ def test_goal_constraints_do_not_promote_ranking_counts_to_collect_min() -> None
     assert constraints.get("metric_label") is None
 
 
+def test_goal_constraints_ignore_forbidden_purchase_or_cart_actions() -> None:
+    goal = TestGoal(
+        id="shopping-readonly",
+        name="네이버 쇼핑 검색 결과 검증",
+        description=(
+            "네이버에 로그인한 상태에서 네이버 쇼핑으로 이동해 '노트북 파우치 13인치'를 검색한다. "
+            "검색 결과에서 필터 또는 정렬 affordance를 활용해 결과가 바뀌는지 확인하고, "
+            "상위 3개 상품 카드의 상품명, 가격, 판매처 또는 배송 정보가 정상 표시되는지 검증한다. "
+            "장바구니 담기, 구매, 결제, 유료 예약, 개인정보 변경은 절대 하지 마."
+        ),
+        success_criteria=[
+            "상위 3개 상품 카드의 상품명, 가격, 판매처 또는 배송 정보가 표시된다.",
+        ],
+    )
+
+    constraints = GoalDrivenAgent._derive_goal_constraints(goal)
+
+    assert constraints.get("mutation_direction") is None
+    assert "네이버에" not in constraints.get("target_terms", [])
+
+
+def test_goal_target_completion_skips_filter_control_visibility_shortcut() -> None:
+    agent = _CompletionAgent()
+    agent._goal_target_terms = lambda goal: ["N배송 빠르게 받기", "빠른배송 전체"]  # type: ignore[method-assign]
+    goal = TestGoal(
+        id="shipping-filter-edge",
+        name="N배송/빠른배송 필터 검증",
+        description=(
+            "화면에 보이는 'N배송 빠르게 받기' 또는 '빠른배송 전체' 버튼을 선택해 "
+            "결과가 배송 유형 기준으로 바뀌는지 확인하고, 상위 상품 카드에 배송 정보가 표시되는지 검증한다."
+        ),
+        success_criteria=[
+            "배송유형 필터 선택 상태가 보인다.",
+            "상위 카드에 빠른배송/N배송/오늘출발/도착 예정 중 하나가 표시된다.",
+        ],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="button",
+            role="button",
+            text="N배송 빠르게 받기",
+            context_text="배송 필터",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is None
+
+
 def test_goal_target_completion_skips_explicit_mail_send_submission_shortcut() -> None:
     agent = _CompletionAgent()
     agent._goal_constraints = {

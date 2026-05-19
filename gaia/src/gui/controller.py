@@ -22,6 +22,7 @@ from gaia.src.phase1.prd_ingest import ingest_prd_bundle
 from gaia.src.phase1.prd_bundle_repository import PRDBundleRepository
 from gaia.src.phase1.agent_client import AgentServiceClient
 from gaia.src.phase4.goal_driven import goals_from_scenarios, sort_goals_by_priority, TestGoal
+from gaia.src.phase4.goal_driven.adaptive_qa_runtime import ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.models import Assertion, TestScenario, TestStep
 from gaia.src.utils.plan_repository import PlanRepository
@@ -213,7 +214,7 @@ class AppController(QObject):
             normalized = "ai"
         elif mode == "chat":
             normalized = "quick"
-        elif mode in {"bundle", "ai", "quick", "benchmark"}:
+        elif mode in {"bundle", "ai", "quick", "benchmark", ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE}:
             normalized = mode
         self._startup_mode = normalized
         if normalized:
@@ -229,9 +230,14 @@ class AppController(QObject):
         else:
             self._bridge_status_timer.stop()
 
-    def _build_quick_goal(self, url: str, query: str) -> TestGoal:
+    def _build_quick_goal(self, url: str, query: str, *, qa_mode: str | None = None) -> TestGoal:
         query_text = str(query or "").strip()
         words = [word for word in query_text.replace("/", " ").split() if word.strip()]
+        test_data = {"steering_policy": dict(self._active_steering_policy)} if self._active_steering_policy else {}
+        if qa_mode == ADAPTIVE_QA_MODE:
+            test_data[ADAPTIVE_QA_MODE] = {"enabled": True, "max_edge_cases": 5}
+        elif qa_mode == DEEP_ADAPTIVE_QA_MODE:
+            test_data[DEEP_ADAPTIVE_QA_MODE] = {"enabled": True, "continuous": True}
         return TestGoal(
             id=f"GUI_{int(time.time())}",
             name=(query_text[:40] or "gui quick test").strip(),
@@ -241,7 +247,7 @@ class AppController(QObject):
             success_criteria=[query_text],
             max_steps=20,
             start_url=url,
-            test_data=({"steering_policy": dict(self._active_steering_policy)} if self._active_steering_policy else {}),
+            test_data=test_data,
         )
 
     def _resolve_analysis_base_url(self) -> str:
@@ -994,14 +1000,18 @@ class AppController(QObject):
             self._start_exploratory_worker(self._current_url, max_actions=self._max_actions)
             return
 
-        if selected_mode == "quick":
+        if selected_mode in {"quick", ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE}:
             if feature_query:
-                quick_goal = self._build_quick_goal(self._current_url, feature_query)
+                quick_goal = self._build_quick_goal(
+                    self._current_url,
+                    feature_query,
+                    qa_mode=selected_mode if selected_mode in {ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE} else None,
+                )
                 candidate_goals = [quick_goal]
                 self._window.show_scenarios(candidate_goals)
                 self._current_execution_goal = quick_goal.name
             elif not candidate_goals:
-                self._window.append_log("⚠️ 빠른 목표 실행을 위해 테스트할 기능을 입력해주세요.")
+                self._window.append_log("⚠️ 목표 실행을 위해 테스트할 기능을 입력해주세요.")
                 return
 
         if selected_mode == "bundle" and not candidate_goals:
@@ -1023,6 +1033,10 @@ class AppController(QObject):
             )
             self._window.append_log("   ✅ 우선순위 기반 목표 실행")
             self._window.append_log("   🔎 실패 시 탐색 모드로 보완")
+            if selected_mode == ADAPTIVE_QA_MODE:
+                self._window.append_log("   🧪 Adaptive QA: 체크리스트/엣지 케이스 확장")
+            elif selected_mode == DEEP_ADAPTIVE_QA_MODE:
+                self._window.append_log("   🧪 Deep QA: 엣지 케이스를 더 공격적으로 확장")
             self._window.set_busy(True, message="AI가 목표를 수행하는 중이에요…")
             self._start_goal_worker(self._current_url, candidate_goals)
             return

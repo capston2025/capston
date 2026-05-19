@@ -273,6 +273,48 @@ def requires_explicit_submission_completion(agent, goal: TestGoal) -> bool:
     )
 
 
+def requires_interactive_state_change_completion(agent, goal: TestGoal) -> bool:
+    """Visibility of the control itself is not enough for filter/sort/select goals."""
+
+    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+    if not goal_blob:
+        return False
+    action_tokens = (
+        "필터",
+        "정렬",
+        "선택",
+        "적용",
+        "전환",
+        "변경",
+        "바뀌",
+        "반영",
+        "옵션",
+        "filter",
+        "sort",
+        "select",
+        "apply",
+        "change",
+        "switch",
+    )
+    result_tokens = (
+        "결과",
+        "목록",
+        "리스트",
+        "상위",
+        "카드",
+        "표",
+        "순서",
+        "result",
+        "list",
+        "card",
+        "table",
+        "order",
+    )
+    return any(token in goal_blob for token in action_tokens) and any(
+        token in goal_blob for token in result_tokens
+    )
+
+
 def evaluate_readonly_visibility_completion(
     agent,
     *,
@@ -467,6 +509,8 @@ def evaluate_goal_target_completion(
     if is_readonly_visibility_goal(agent, goal):
         return None
     if requires_explicit_submission_completion(agent, goal):
+        return None
+    if requires_interactive_state_change_completion(agent, goal):
         return None
     direction = str(agent._goal_constraints.get("mutation_direction") or "").strip().lower()
     if direction not in {"increase", "decrease", "clear"}:
