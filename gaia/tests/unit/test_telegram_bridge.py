@@ -117,6 +117,68 @@ def test_compose_intervention_message_falls_back_when_llm_disabled(monkeypatch) 
     assert "manual_done" not in message
 
 
+def test_login_prompt_fallback_is_contextual_and_hides_internal_fields(monkeypatch) -> None:
+    monkeypatch.setenv("GAIA_TELEGRAM_LLM_INTERVENTION_MESSAGE", "0")
+
+    first = _TelegramBridge._compose_login_credentials_message(
+        payload={
+            "kind": "human_answer",
+            "goal_description": "대중매체속바이오테크놀로지 강의 12주차의 첫번째 강의를 누르고 재생 확인",
+        },
+        question="로그인 정보가 필요합니다.",
+        username_label="아이디",
+        stage="username",
+    )
+    second = _TelegramBridge._compose_login_credentials_message(
+        payload={"kind": "human_answer", "goal_description": "강의 재생 확인"},
+        question="로그인 정보가 필요합니다.",
+        username_label="아이디",
+        stage="password",
+    )
+
+    assert "대중매체속바이오테크놀로지" in first
+    assert "아이디만 먼저" in first
+    assert "비밀번호는 다음 메시지" in first
+    assert "username" not in first
+    assert "proceed" not in first
+    assert "/cancel" in first
+    assert "비밀번호만" in second
+    assert "아이디 받았어요" in second
+
+
+def test_login_prompt_can_use_llm_for_more_chatbot_like_message(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    class _FakeClient:
+        def analyze_text(self, prompt: str, max_completion_tokens: int, temperature: float):
+            seen["prompt"] = prompt
+            seen["max_completion_tokens"] = str(max_completion_tokens)
+            seen["temperature"] = str(temperature)
+            return json.dumps(
+                {
+                    "message": (
+                        "좋아요, 로그인만 도와주시면 제가 바로 이어서 확인할게요.\n"
+                        "아이디만 먼저 보내주세요.\n"
+                        "중단하려면 /cancel"
+                    )
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(chat_hub, "_get_chat_router_client", lambda: _FakeClient())
+
+    message = _TelegramBridge._compose_login_credentials_message(
+        payload={"kind": "human_answer", "goal_description": "강의 12주차 첫 번째 영상 재생 확인"},
+        question="로그인 정보가 필요합니다.",
+        username_label="아이디",
+        stage="username",
+    )
+
+    assert "아이디만 먼저" in message
+    assert "stage" in seen["prompt"]
+    assert "내부 필드명" in seen["prompt"]
+
+
 def test_fallback_human_answer_login_message_hides_internal_proceed() -> None:
     message = _TelegramBridge._fallback_intervention_message(
         "human_answer",
@@ -141,3 +203,109 @@ def test_login_credentials_are_collected_sequentially() -> None:
     assert _TelegramBridge._sequential_login_field(["email", "password"]) == "email"
     assert _TelegramBridge._sequential_login_field(["username", "password"]) == "username"
     assert not _TelegramBridge._should_collect_login_credentials("clarification", ["username", "password"])
+
+
+def test_casual_reply_is_not_treated_as_new_test_goal() -> None:
+    assert _TelegramBridge._looks_like_casual_reply("ㅎㅇ")
+    assert _TelegramBridge._looks_like_casual_reply("아니야 미안하지마")
+    assert _TelegramBridge._looks_like_casual_reply("고마워")
+    assert not _TelegramBridge._looks_like_casual_reply("202101681")
+    assert not _TelegramBridge._looks_like_casual_reply("12주차 첫 번째 강의를 재생 확인해줘")
+
+
+def test_freeform_intent_fallback_does_not_queue_short_non_action_message(monkeypatch) -> None:
+    monkeypatch.setenv("GAIA_TELEGRAM_LLM_MESSAGE_INTENT", "0")
+
+    assert _TelegramBridge._classify_freeform_message_intent("보이루") == "casual"
+    assert _TelegramBridge._classify_freeform_message_intent("이거 어떻게 쓰면 돼?") == "help"
+    assert _TelegramBridge._classify_freeform_message_intent("현재 화면") == "status"
+    assert (
+        _TelegramBridge._classify_freeform_message_intent(
+            "인천대 사이버캠퍼스에서 12주차 첫 번째 강의를 열고 재생 확인해줘"
+        )
+        == "goal"
+    )
+
+
+def test_freeform_intent_can_use_llm_to_avoid_false_goal_queue(monkeypatch) -> None:
+    seen: dict[str, str] = {}
+
+    class _FakeClient:
+        def analyze_text(self, prompt: str, max_completion_tokens: int, temperature: float):
+            seen["prompt"] = prompt
+            seen["max_completion_tokens"] = str(max_completion_tokens)
+            seen["temperature"] = str(temperature)
+            return json.dumps({"intent": "casual", "reason": "농담성 인사"}, ensure_ascii=False)
+
+    monkeypatch.setattr(chat_hub, "_get_chat_router_client", lambda: _FakeClient())
+
+    assert _TelegramBridge._classify_freeform_message_intent("부스에서 가볍게 인사 한번 해줘") == "casual"
+    assert "goal|help|status|casual" in seen["prompt"]
+
+
+def test_help_request_is_answered_without_queue_language() -> None:
+    bridge = _TelegramBridge(
+        hub_context=HubContext(
+            provider="openai",
+            model="gpt-5.5",
+            auth_strategy="reuse",
+            url="https://example.com",
+            runtime="terminal",
+            control_channel="telegram",
+        ),
+        config=TelegramConfig(),
+        memory_store=MemoryStore(enabled=False),
+    )
+
+    assert _TelegramBridge._looks_like_help_request("이거 어떻게 쓰면 돼?")
+    message = bridge._format_help_message(123)
+
+    assert "테스트 목표를 한 문장" in message
+    assert "현재 상태" in message
+    assert "대기열" not in message
+    assert "queued" not in message.lower()
+
+
+def test_current_screen_request_is_status_query_not_goal() -> None:
+    assert _TelegramBridge._looks_like_live_status_query("현재 화면")
+    assert _TelegramBridge._looks_like_live_status_query("스크린샷 보여줘")
+
+
+def test_help_request_during_pending_input_explains_needed_field() -> None:
+    context = HubContext(
+        provider="openai",
+        model="gpt-5.5",
+        auth_strategy="reuse",
+        url="https://example.com",
+        runtime="terminal",
+        control_channel="telegram",
+        pending_user_input={
+            "kind": "human_answer",
+            "question": "사이버캠퍼스 로그인이 필요합니다.",
+            "fields": ["proceed", "manual_done", "username", "password", "instruction"],
+        },
+    )
+    bridge = _TelegramBridge(
+        hub_context=context,
+        config=TelegramConfig(),
+        memory_store=MemoryStore(enabled=False),
+    )
+
+    message = bridge._format_help_message(123)
+
+    assert "사용자 입력을 기다리는 중" in message
+    assert "아이디" in message
+    assert "password" not in message
+    assert "proceed" not in message
+
+
+def test_command_received_message_hides_internal_queue_number() -> None:
+    message = _TelegramBridge._format_command_received_message(
+        "12주차 첫 번째 강의를 재생 확인해줘",
+        queued_ahead=0,
+    )
+
+    assert "실행해볼게요" in message
+    assert "queue" not in message.lower()
+    assert "대기열" not in message
+    assert "#1" not in message

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from gaia.cli import (
     DEEP_ADAPTIVE_QA_MODE,
+    TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL,
+    TERMINAL_PURPOSE_CHOICES,
     QUICK_DEEP_QA_LABEL,
     QUICK_RUN_MODE_CHOICES,
     _dispatch_chat,
+    _resolve_terminal_launch_purpose,
     run_launcher,
 )
 
@@ -68,6 +71,51 @@ def test_launcher_interactive_menu_can_select_deep_qa(monkeypatch) -> None:
     assert captured["feature_query"] == "네이버 쇼핑에서 배송 필터 검증"
     assert captured["repl"] is False
     assert profile["last_quick_mode"] == DEEP_ADAPTIVE_QA_MODE
+
+
+def test_terminal_purpose_menu_can_select_deep_qa_benchmark(monkeypatch) -> None:
+    profile: dict[str, str] = {}
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("gaia.cli.sys.stdin", _TTY())
+    monkeypatch.setattr("gaia.cli._save_profile", lambda payload: captured.setdefault("profile", dict(payload)))
+
+    def fake_select(prompt: str, options, default=None):
+        captured["prompt"] = prompt
+        captured["options"] = tuple(options)
+        captured["default"] = default
+        return TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL
+
+    monkeypatch.setattr("gaia.cli._prompt_select", fake_select)
+
+    selected = _resolve_terminal_launch_purpose(object(), profile, runtime="terminal")
+
+    assert selected == "deep_qa_benchmark"
+    assert captured["prompt"] == "테스트 용도 인가요?"
+    assert captured["options"] == TERMINAL_PURPOSE_CHOICES
+    assert profile["last_terminal_purpose"] == "deep_qa_benchmark"
+
+
+def test_launcher_routes_deep_qa_benchmark_to_benchmark_mode(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("gaia.cli._configure_session", lambda parsed, require_url: _stub_configured_terminal())
+    monkeypatch.setattr("gaia.cli.load_session_state", lambda session_key: None)
+    monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
+    monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "deep_qa_benchmark")
+
+    def fake_run_terminal_benchmark_mode(*, workspace_root, push_metrics=False, qa_mode=None):
+        captured["workspace_root"] = workspace_root
+        captured["push_metrics"] = push_metrics
+        captured["qa_mode"] = qa_mode
+        return 0
+
+    monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", fake_run_terminal_benchmark_mode)
+
+    assert run_launcher(["--terminal"]) == 0
+
+    assert captured["qa_mode"] == DEEP_ADAPTIVE_QA_MODE
+    assert captured["push_metrics"] is False
 
 
 def test_dispatch_chat_terminal_applies_deep_qa_env_for_run(monkeypatch) -> None:

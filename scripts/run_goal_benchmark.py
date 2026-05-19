@@ -40,6 +40,16 @@ _MIN_BENCHMARK_TIMEOUT_SEC = 600
 _MIN_CODEX_EXEC_TIMEOUT_SEC = 180
 _MAX_CODEX_EXEC_TIMEOUT_SEC = 300
 _BENCHMARK_CODEX_REASONING_EFFORT = "low"
+ADAPTIVE_QA_MODE = "adaptive_qa"
+DEEP_ADAPTIVE_QA_MODE = "deep_adaptive_qa"
+QA_MODE_CHOICES = (
+    "off",
+    "adaptive",
+    "deep",
+    ADAPTIVE_QA_MODE,
+    "deep_qa",
+    DEEP_ADAPTIVE_QA_MODE,
+)
 _LIVE_TRACE_MARKERS = (
     "🎯 목표 시작",
     "--- Step ",
@@ -119,8 +129,45 @@ def _tail_text(text: str, *, max_lines: int = 20, max_chars: int = 4000) -> str:
     return tail
 
 
-def _build_child_code(scenario: Dict[str, Any], session_id: str) -> str:
-    payload = json.dumps({"scenario": scenario, "session_id": session_id}, ensure_ascii=False)
+def _normalize_qa_mode(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "off", "none", "default", "false", "0"}:
+        return None
+    if raw in {"adaptive", ADAPTIVE_QA_MODE, "progressive_qa"}:
+        return ADAPTIVE_QA_MODE
+    if raw in {"deep", "deep_qa", "aggressive_qa", DEEP_ADAPTIVE_QA_MODE}:
+        return DEEP_ADAPTIVE_QA_MODE
+    return None
+
+
+def _benchmark_mode_label(qa_mode: str | None) -> str:
+    normalized = _normalize_qa_mode(qa_mode)
+    if normalized == DEEP_ADAPTIVE_QA_MODE:
+        return "deep_qa"
+    if normalized == ADAPTIVE_QA_MODE:
+        return "adaptive_qa"
+    return "standard"
+
+
+def _apply_qa_mode_env(env: Dict[str, str], qa_mode: str | None) -> None:
+    normalized = _normalize_qa_mode(qa_mode)
+    if normalized == DEEP_ADAPTIVE_QA_MODE:
+        env.pop("GAIA_ADAPTIVE_QA", None)
+        env["GAIA_DEEP_ADAPTIVE_QA"] = "1"
+    elif normalized == ADAPTIVE_QA_MODE:
+        env["GAIA_ADAPTIVE_QA"] = "1"
+        env.pop("GAIA_DEEP_ADAPTIVE_QA", None)
+
+
+def _build_child_code(scenario: Dict[str, Any], session_id: str, qa_mode: str | None = None) -> str:
+    payload = json.dumps(
+        {
+            "scenario": scenario,
+            "session_id": session_id,
+            "qa_mode": _normalize_qa_mode(qa_mode) or "",
+        },
+        ensure_ascii=False,
+    )
     return f"""
 import contextlib, io, json, sys
 import os
@@ -134,6 +181,7 @@ from gaia.terminal import _build_test_goal, run_chat_terminal_once
 payload = json.loads({payload!r})
 scenario = payload['scenario']
 session_id = payload['session_id']
+benchmark_qa_mode = str(payload.get('qa_mode') or '').strip()
 prepared_goal = _build_test_goal(url=scenario['url'], query=scenario['goal'])
 constraints = scenario.get('constraints') if isinstance(scenario.get('constraints'), dict) else {{}}
 expected_signals = scenario.get('expected_signals') if isinstance(scenario.get('expected_signals'), list) else []
@@ -141,6 +189,14 @@ goal_test_data = dict(getattr(prepared_goal, 'test_data', {{}}) or {{}})
 scenario_test_data = scenario.get('test_data') if isinstance(scenario.get('test_data'), dict) else {{}}
 if scenario_test_data:
     goal_test_data.update(scenario_test_data)
+if benchmark_qa_mode:
+    goal_test_data['qa_mode'] = benchmark_qa_mode
+    if benchmark_qa_mode == 'deep_adaptive_qa':
+        goal_test_data.pop('adaptive_qa', None)
+        goal_test_data['deep_adaptive_qa'] = {{'enabled': True}}
+    elif benchmark_qa_mode == 'adaptive_qa':
+        goal_test_data.pop('deep_adaptive_qa', None)
+        goal_test_data['adaptive_qa'] = {{'enabled': True}}
 prepared_goal.expected_signals = [str(item) for item in expected_signals if str(item).strip()]
 if prepared_goal.expected_signals:
     goal_test_data['harness_expected_signals'] = list(prepared_goal.expected_signals)
@@ -196,9 +252,10 @@ def _run_scenario_once(
     session_id: str,
     timeout_sec: int,
     env: Dict[str, str],
+    qa_mode: str | None = None,
 ) -> Dict[str, Any]:
     scenario_env = _prepare_scenario_env(env, timeout_sec)
-    code = _build_child_code(scenario, session_id)
+    code = _build_child_code(scenario, session_id, qa_mode=qa_mode)
     started = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -552,6 +609,12 @@ def main() -> int:
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")
     parser.add_argument(
+        "--qa-mode",
+        choices=QA_MODE_CHOICES,
+        default="off",
+        help="Run every scenario with adaptive QA expansion enabled; use deep/deep_adaptive_qa for human-comparison Deep QA benches.",
+    )
+    parser.add_argument(
         "--push-metrics",
         action="store_true",
         help="Upload benchmark metrics to the configured monitoring server after the run.",
@@ -565,6 +628,11 @@ def main() -> int:
         scenarios = scenarios[: int(args.limit)]
     repeats = max(1, int(args.repeats))
     timeout_cap = max(_MIN_BENCHMARK_TIMEOUT_SEC, int(args.timeout_cap))
+    requested_qa_mode = str(args.qa_mode or "").strip()
+    if not requested_qa_mode or requested_qa_mode.lower() in {"off", "none", "default", "false", "0"}:
+        requested_qa_mode = str(suite.get("qa_mode") or requested_qa_mode).strip()
+    normalized_qa_mode = _normalize_qa_mode(requested_qa_mode)
+    benchmark_mode = _benchmark_mode_label(normalized_qa_mode)
 
     started_at = datetime.now().astimezone()
     run_id = f"{Path(args.suite).stem}_{started_at.strftime('%Y%m%d_%H%M%S')}"
@@ -574,6 +642,7 @@ def main() -> int:
     env = os.environ.copy()
     runner_id = resolve_runner_id(args.runner_id, env)
     env["GAIA_RUNNER_ID"] = runner_id
+    _apply_qa_mode_env(env, normalized_qa_mode)
 
     provider = str(args.provider or "").strip().lower()
     if not provider:
@@ -597,6 +666,8 @@ def main() -> int:
             "provider": provider,
             "model": args.model,
             "runner_id": runner_id,
+            "qa_mode": normalized_qa_mode or "off",
+            "benchmark_mode": benchmark_mode,
             "metrics": empty_metrics,
             "kpi_metrics": empty_kpis,
             "status_counts": {},
@@ -613,6 +684,8 @@ def main() -> int:
             f"- provider: {provider or '-'}\n"
             f"- model: {args.model}\n"
             f"- runner_id: {runner_id}\n"
+            f"- qa_mode: {normalized_qa_mode or 'off'}\n"
+            f"- benchmark_mode: {benchmark_mode}\n"
             f"- fatal_error: {credential_error}\n",
             encoding="utf-8",
         )
@@ -637,11 +710,14 @@ def main() -> int:
                 session_id=sid,
                 timeout_sec=budget,
                 env=env,
+                qa_mode=normalized_qa_mode,
             )
             row["repeat"] = repeat_idx
             row["provider"] = provider
             row["model"] = str(args.model)
             row["runner_id"] = runner_id
+            row["qa_mode"] = normalized_qa_mode or "off"
+            row["benchmark_mode"] = benchmark_mode
             row["constraints"] = scenario.get("constraints") if isinstance(scenario.get("constraints"), dict) else {}
             row["expected_signals"] = scenario.get("expected_signals") if isinstance(scenario.get("expected_signals"), list) else []
             rows.append(row)
@@ -660,6 +736,8 @@ def main() -> int:
         "provider": provider,
         "model": args.model,
         "runner_id": runner_id,
+        "qa_mode": normalized_qa_mode or "off",
+        "benchmark_mode": benchmark_mode,
         "metrics": metrics,
         "kpi_metrics": kpi_metrics,
         "status_counts": dict(status_counts),
@@ -695,6 +773,8 @@ def main() -> int:
     md.write(f"- provider: {provider or '-'}\n")
     md.write(f"- model: {args.model}\n")
     md.write(f"- runner_id: {runner_id}\n")
+    md.write(f"- qa_mode: {normalized_qa_mode or 'off'}\n")
+    md.write(f"- benchmark_mode: {benchmark_mode}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")
     md.write(f"- primary_success_rate: {metrics['primary_success_rate']}\n")
     md.write(f"- avg_time_seconds: {metrics['avg_time_seconds']}\n")

@@ -71,7 +71,24 @@ OPENAI_AUTH_METHOD_CHOICES = ("oauth", "manual")
 CONTROL_CHOICES = ("local", "telegram")
 TELEGRAM_MODE_CHOICES = ("polling", "webhook")
 TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
-TERMINAL_PURPOSE_CHOICES = ("실제 사용 모드 실행", "벤치마크 용도 실행")
+TERMINAL_ACTUAL_PURPOSE_LABEL = "실제 사용 모드 실행"
+TERMINAL_BENCHMARK_PURPOSE_LABEL = "벤치마크 용도 실행"
+TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL = "Deep QA 전용 벤치마크 실행"
+TERMINAL_PURPOSE_CHOICES = (
+    TERMINAL_ACTUAL_PURPOSE_LABEL,
+    TERMINAL_BENCHMARK_PURPOSE_LABEL,
+    TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL,
+)
+TERMINAL_PURPOSE_BY_LABEL = {
+    TERMINAL_ACTUAL_PURPOSE_LABEL: "actual",
+    TERMINAL_BENCHMARK_PURPOSE_LABEL: "benchmark",
+    TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL: "deep_qa_benchmark",
+}
+TERMINAL_PURPOSE_PROFILE_LABEL = {
+    "actual": TERMINAL_ACTUAL_PURPOSE_LABEL,
+    "benchmark": TERMINAL_BENCHMARK_PURPOSE_LABEL,
+    "deep_qa_benchmark": TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL,
+}
 PROVIDER_CHOICES = ("openai", "gemini", "ollama")
 DEFAULT_TELEGRAM_TOKEN_FILE = str(Path.home() / ".gaia" / "telegram_bot_token")
 TELEGRAM_BRIDGE_PID_FILE = Path.home() / ".gaia" / "telegram_bridge.pid"
@@ -750,17 +767,17 @@ def _resolve_terminal_launch_purpose(
         return "actual"
     if not sys.stdin.isatty():
         return "actual"
-    default = TERMINAL_PURPOSE_CHOICES[0]
-    if str(profile.get("last_terminal_purpose") or "").strip().lower() == "benchmark":
-        default = TERMINAL_PURPOSE_CHOICES[1]
+    last_purpose = str(profile.get("last_terminal_purpose") or "").strip().lower()
+    default = TERMINAL_PURPOSE_PROFILE_LABEL.get(last_purpose, TERMINAL_ACTUAL_PURPOSE_LABEL)
     selected = _prompt_select(
         "테스트 용도 인가요?",
         TERMINAL_PURPOSE_CHOICES,
         default=default,
     )
-    profile["last_terminal_purpose"] = "benchmark" if selected == TERMINAL_PURPOSE_CHOICES[1] else "actual"
+    purpose = TERMINAL_PURPOSE_BY_LABEL.get(selected, "actual")
+    profile["last_terminal_purpose"] = purpose
     _save_profile(profile)
-    return "benchmark" if selected == TERMINAL_PURPOSE_CHOICES[1] else "actual"
+    return purpose
 
 
 def _resolve_telegram_setup_strategy(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
@@ -1234,7 +1251,12 @@ def _dispatch_plan(
     return run_gui(forwarded)
 
 
-def _run_terminal_benchmark_mode(*, workspace_root: Path, push_metrics: bool = False) -> int:
+def _run_terminal_benchmark_mode(
+    *,
+    workspace_root: Path,
+    push_metrics: bool = False,
+    qa_mode: str | None = None,
+) -> int:
     from gaia.src.terminal_benchmark_mode import run_terminal_benchmark_mode
 
     return run_terminal_benchmark_mode(
@@ -1244,6 +1266,7 @@ def _run_terminal_benchmark_mode(*, workspace_root: Path, push_metrics: bool = F
         prompt_non_empty=_prompt_non_empty,
         emit=print,
         push_metrics=push_metrics,
+        qa_mode=qa_mode,
     )
 
 
@@ -1593,11 +1616,14 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     pending_user_input = dict(saved_state.pending_user_input) if saved_state else {}
     profile = _load_profile()
     terminal_purpose = _resolve_terminal_launch_purpose(args, profile, runtime=runtime)
-    if terminal_purpose == "benchmark":
-        return _run_terminal_benchmark_mode(
-            workspace_root=Path(__file__).resolve().parent.parent,
-            push_metrics=bool(getattr(args, "push_metrics", False)),
-        )
+    if terminal_purpose in {"benchmark", "deep_qa_benchmark"}:
+        benchmark_kwargs = {
+            "workspace_root": Path(__file__).resolve().parent.parent,
+            "push_metrics": bool(getattr(args, "push_metrics", False)),
+        }
+        if terminal_purpose == "deep_qa_benchmark":
+            benchmark_kwargs["qa_mode"] = DEEP_ADAPTIVE_QA_MODE
+        return _run_terminal_benchmark_mode(**benchmark_kwargs)
 
     url = _resolve_url(args, profile, required=True)
     if not url:

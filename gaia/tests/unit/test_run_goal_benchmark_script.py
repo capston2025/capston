@@ -5,10 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.run_goal_benchmark import (
+    DEEP_ADAPTIVE_QA_MODE,
+    _apply_qa_mode_env,
     _build_child_code,
+    _benchmark_mode_label,
     _compute_kpi_metrics,
     _compute_metrics,
     _infer_provider_from_model,
+    _normalize_qa_mode,
     _prepare_scenario_env,
     _provider_credential_error,
     _run_scenario_once,
@@ -56,6 +60,33 @@ def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -
     assert "cta_visible" in code
     assert "_TeeWriter" in code
     assert "sys.__stdout__" in code
+
+
+def test_build_child_code_forces_deep_qa_mode_for_benchmark_runs() -> None:
+    scenario = {
+        "id": "DEEP_001",
+        "url": "https://example.com",
+        "goal": "상품 필터 동작을 검증한다",
+        "test_data": {"qa_mode": "adaptive"},
+    }
+
+    code = _build_child_code(scenario, "session-1", qa_mode="deep")
+
+    assert '"qa_mode": "deep_adaptive_qa"' in code
+    assert "goal_test_data['qa_mode'] = benchmark_qa_mode" in code
+    assert "goal_test_data['deep_adaptive_qa'] = {'enabled': True}" in code
+
+
+def test_qa_mode_helpers_normalize_and_apply_env() -> None:
+    env = {"GAIA_ADAPTIVE_QA": "1"}
+
+    assert _normalize_qa_mode("deep") == DEEP_ADAPTIVE_QA_MODE
+    assert _benchmark_mode_label(DEEP_ADAPTIVE_QA_MODE) == "deep_qa"
+
+    _apply_qa_mode_env(env, "deep")
+
+    assert "GAIA_ADAPTIVE_QA" not in env
+    assert env["GAIA_DEEP_ADAPTIVE_QA"] == "1"
 
 
 def test_timeout_floor_applies_by_default() -> None:

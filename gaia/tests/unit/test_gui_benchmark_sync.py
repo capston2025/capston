@@ -322,8 +322,8 @@ def test_benchmark_worker_supports_in_memory_suite_payload(tmp_path: Path, monke
     progress: list[str] = []
 
     class _FakeProcess:
-        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None):
-            del cwd, stdout, stderr, text, bufsize, env
+        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None, **kwargs):
+            del cwd, stdout, stderr, text, bufsize, env, kwargs
             output_dir = Path(cmd[cmd.index("--output-dir") + 1])
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "summary.json").write_text(
@@ -383,8 +383,8 @@ def test_benchmark_worker_appends_push_metrics_flag(tmp_path: Path, monkeypatch)
     captured_cmd: list[str] = []
 
     class _FakeProcess:
-        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None):
-            del cwd, stdout, stderr, text, bufsize, env
+        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None, **kwargs):
+            del cwd, stdout, stderr, text, bufsize, env, kwargs
             captured_cmd[:] = list(cmd)
             output_dir = Path(cmd[cmd.index("--output-dir") + 1])
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -436,7 +436,7 @@ def test_benchmark_worker_appends_push_metrics_flag(tmp_path: Path, monkeypatch)
     assert "--push-metrics" in captured_cmd
 
 
-def test_main_window_benchmark_mode_uses_dedicated_stage_and_emits_manager_open(monkeypatch) -> None:
+def test_main_window_benchmark_mode_emits_manager_open_without_auto_stage_jump(monkeypatch) -> None:
     _app()
     monkeypatch.setattr(MainWindow, "_setup_screencast", lambda self: None)
 
@@ -447,7 +447,7 @@ def test_main_window_benchmark_mode_uses_dedicated_stage_and_emits_manager_open(
     window._benchmark_mode_button.click()
 
     assert window.get_selected_run_mode() == "benchmark"
-    assert window._workflow_stack.currentWidget() is window._benchmark_page
+    assert window._standard_action_container.isVisible() is False
     assert emitted == [("", "")]
 
 

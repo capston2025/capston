@@ -51,6 +51,10 @@ from gaia.src.benchmark_suite_sharing import (
     merge_shared_suite_payload,
     upload_shared_suite,
 )
+from gaia.src.phase4.goal_driven.adaptive_qa_runtime import (
+    ADAPTIVE_QA_MODE,
+    DEEP_ADAPTIVE_QA_MODE,
+)
 from scripts.runner_identity import resolve_runner_id
 
 PromptSelectFn = Callable[[str, Sequence[str], str | None], str]
@@ -80,12 +84,46 @@ METRICS_BACK_OPTION = "이전으로"
 SHARE_TESTS_OPTION = "팀 테스트 공유"
 UPLOAD_SHARED_TESTS_OPTION = "내 테스트 올리기"
 PULL_SHARED_TESTS_OPTION = "팀 테스트 가져오기"
+BENCHMARK_QA_MODE_CHOICES = {
+    "adaptive": ADAPTIVE_QA_MODE,
+    ADAPTIVE_QA_MODE: ADAPTIVE_QA_MODE,
+    "progressive_qa": ADAPTIVE_QA_MODE,
+    "deep": DEEP_ADAPTIVE_QA_MODE,
+    "deep_qa": DEEP_ADAPTIVE_QA_MODE,
+    "aggressive_qa": DEEP_ADAPTIVE_QA_MODE,
+    DEEP_ADAPTIVE_QA_MODE: DEEP_ADAPTIVE_QA_MODE,
+}
 
 
 def build_terminal_benchmark_catalog(
     payload: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
     return build_benchmark_site_catalog(payload)
+
+
+def normalize_benchmark_qa_mode(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "off", "none", "default", "false", "0"}:
+        return None
+    return BENCHMARK_QA_MODE_CHOICES.get(raw)
+
+
+def benchmark_qa_mode_label(value: str | None) -> str:
+    normalized = normalize_benchmark_qa_mode(value)
+    if normalized == DEEP_ADAPTIVE_QA_MODE:
+        return "Deep QA"
+    if normalized == ADAPTIVE_QA_MODE:
+        return "QA 확장"
+    return "기본"
+
+
+def benchmark_qa_mode_run_tag(value: str | None, run_tag: str) -> str:
+    normalized = normalize_benchmark_qa_mode(value)
+    if normalized == DEEP_ADAPTIVE_QA_MODE:
+        return f"deep_qa_{run_tag}"
+    if normalized == ADAPTIVE_QA_MODE:
+        return f"adaptive_qa_{run_tag}"
+    return run_tag
 
 
 def prompt_scenario_fields(
@@ -652,17 +690,19 @@ def run_benchmark_suite(
     process_factory: ProcessFactory = subprocess.Popen,
     push_metrics: bool = False,
     runner_id: str = "",
+    qa_mode: str | None = None,
 ) -> dict[str, Any]:
     scenarios = [dict(row) for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
     if not scenarios:
         emit("등록된 테스트가 없습니다. 먼저 테스트를 추가해주세요.")
         return {"status": "empty", "summary": {}, "results": [], "output_dir": ""}
 
+    normalized_qa_mode = normalize_benchmark_qa_mode(qa_mode)
     overridden = override_suite_urls(suite_payload, target_url)
     started = int(time.time())
     tmp_root = workspace_root / "artifacts" / "tmp" / "terminal_benchmark_mode"
     tmp_root.mkdir(parents=True, exist_ok=True)
-    suite_slug = _slugify(run_tag)
+    suite_slug = _slugify(benchmark_qa_mode_run_tag(normalized_qa_mode, run_tag))
     tmp_suite_path = tmp_root / f"{preset.key}_{suite_slug}_{started}.json"
     tmp_suite_path.write_text(json.dumps(overridden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -681,6 +721,8 @@ def run_benchmark_suite(
         "--output-dir",
         str(output_dir),
     ]
+    if normalized_qa_mode:
+        cmd.extend(["--qa-mode", normalized_qa_mode])
     if push_metrics:
         cmd.append("--push-metrics")
     env = os.environ.copy()
@@ -697,6 +739,7 @@ def run_benchmark_suite(
     emit(f"   - target: {target_url}")
     emit(f"   - suite: {tmp_suite_path}")
     emit(f"   - runner_id: {resolved_runner_id}")
+    emit(f"   - qa_mode: {benchmark_qa_mode_label(normalized_qa_mode)}")
     if push_metrics:
         emit("   - metrics: upload enabled (--push-metrics)")
 
@@ -740,6 +783,7 @@ def run_benchmark_suite(
         "output_dir": str(output_dir),
         "cmd": cmd,
         "captured": captured,
+        "qa_mode": normalized_qa_mode or "off",
     }
 
 
@@ -754,12 +798,14 @@ def run_external_public_benchmark_pack(
     push_metrics: bool = True,
     runner_id: str = "",
     process_factory: ProcessFactory = subprocess.Popen,
+    qa_mode: str | None = None,
 ) -> dict[str, Any]:
     resolved_manifest = (workspace_root / manifest_path).resolve()
     if not resolved_manifest.exists():
         emit(f"전체 benchmark manifest를 찾지 못했습니다: {resolved_manifest}")
         return {"status": "missing_manifest", "summary": {}, "results": [], "output_dir": ""}
 
+    normalized_qa_mode = normalize_benchmark_qa_mode(qa_mode)
     env = os.environ.copy()
     resolved_runner_id = resolve_runner_id(runner_id, env)
     env["GAIA_RUNNER_ID"] = resolved_runner_id
@@ -784,6 +830,8 @@ def run_external_public_benchmark_pack(
         "--runner-id",
         resolved_runner_id,
     ]
+    if normalized_qa_mode:
+        cmd.extend(["--qa-mode", normalized_qa_mode])
     if push_metrics:
         cmd.append("--push-metrics")
 
@@ -791,6 +839,7 @@ def run_external_public_benchmark_pack(
     emit(f"   - manifest: {resolved_manifest}")
     emit(f"   - runner_id: {resolved_runner_id}")
     emit("   - headless: enabled")
+    emit(f"   - qa_mode: {benchmark_qa_mode_label(normalized_qa_mode)}")
     if push_metrics:
         emit("   - metrics: upload enabled (--push-metrics)")
 
@@ -841,6 +890,7 @@ def run_external_public_benchmark_pack(
         "output_dir": output_dir,
         "cmd": cmd,
         "captured": captured,
+        "qa_mode": normalized_qa_mode or "off",
     }
 
 
@@ -962,10 +1012,14 @@ def run_terminal_benchmark_mode(
     push_metrics: bool = False,
     monitoring_config_path: Path | None = None,
     auto_pull_shared_tests: bool = True,
+    qa_mode: str | None = None,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
     auto_pull_attempted: set[str] = set()
     runner_id = resolve_runner_id(env=os.environ)
+    normalized_qa_mode = normalize_benchmark_qa_mode(qa_mode)
+    if normalized_qa_mode:
+        emit(f"Deep QA 벤치마크 프로필: {benchmark_qa_mode_label(normalized_qa_mode)} 모드로 실행합니다.")
 
     while True:
         catalog, preset_map = build_terminal_benchmark_catalog(registry)
@@ -989,6 +1043,7 @@ def run_terminal_benchmark_mode(
                 run_pack_handler=run_pack_handler,
                 monitoring_config_path=monitoring_config_path,
                 runner_id=runner_id,
+                qa_mode=normalized_qa_mode,
             )
             continue
         if selected_site == SITE_EXIT_OPTION:
@@ -1143,6 +1198,7 @@ def run_terminal_benchmark_mode(
                         run_tag="full_suite",
                         push_metrics=push_metrics_for_run,
                         runner_id=runner_id,
+                        qa_mode=normalized_qa_mode,
                     )
                     continue
 
@@ -1171,6 +1227,7 @@ def run_terminal_benchmark_mode(
                     run_tag=scenario_id,
                     push_metrics=push_metrics_for_run,
                     runner_id=runner_id,
+                    qa_mode=normalized_qa_mode,
                 )
                 continue
 
@@ -1227,6 +1284,7 @@ def _handle_all_sites_all_cases_run(
     run_pack_handler: Callable[..., dict[str, Any]],
     monitoring_config_path: Path | None = None,
     runner_id: str = "",
+    qa_mode: str | None = None,
 ) -> None:
     if not _ensure_monitoring_connection_required(
         prompt_select=prompt_select,
@@ -1247,6 +1305,7 @@ def _handle_all_sites_all_cases_run(
         session_prefix="terminal-external-public",
         push_metrics=True,
         runner_id=runner_id,
+        qa_mode=qa_mode,
     )
 
 
