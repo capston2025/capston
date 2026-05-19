@@ -151,12 +151,12 @@ def _benchmark_mode_label(qa_mode: str | None) -> str:
 
 def _apply_qa_mode_env(env: Dict[str, str], qa_mode: str | None) -> None:
     normalized = _normalize_qa_mode(qa_mode)
+    env.pop("GAIA_ADAPTIVE_QA", None)
+    env.pop("GAIA_DEEP_ADAPTIVE_QA", None)
     if normalized == DEEP_ADAPTIVE_QA_MODE:
-        env.pop("GAIA_ADAPTIVE_QA", None)
         env["GAIA_DEEP_ADAPTIVE_QA"] = "1"
     elif normalized == ADAPTIVE_QA_MODE:
         env["GAIA_ADAPTIVE_QA"] = "1"
-        env.pop("GAIA_DEEP_ADAPTIVE_QA", None)
 
 
 def _build_child_code(scenario: Dict[str, Any], session_id: str, qa_mode: str | None = None) -> str:

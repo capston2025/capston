@@ -205,26 +205,12 @@ def test_login_credentials_are_collected_sequentially() -> None:
     assert not _TelegramBridge._should_collect_login_credentials("clarification", ["username", "password"])
 
 
-def test_casual_reply_is_not_treated_as_new_test_goal() -> None:
-    assert _TelegramBridge._looks_like_casual_reply("ㅎㅇ")
-    assert _TelegramBridge._looks_like_casual_reply("아니야 미안하지마")
-    assert _TelegramBridge._looks_like_casual_reply("고마워")
-    assert not _TelegramBridge._looks_like_casual_reply("202101681")
-    assert not _TelegramBridge._looks_like_casual_reply("12주차 첫 번째 강의를 재생 확인해줘")
-
-
-def test_freeform_intent_fallback_does_not_queue_short_non_action_message(monkeypatch) -> None:
+def test_freeform_intent_fallback_defaults_to_goal_without_heuristics(monkeypatch) -> None:
     monkeypatch.setenv("GAIA_TELEGRAM_LLM_MESSAGE_INTENT", "0")
 
-    assert _TelegramBridge._classify_freeform_message_intent("보이루") == "casual"
-    assert _TelegramBridge._classify_freeform_message_intent("이거 어떻게 쓰면 돼?") == "help"
-    assert _TelegramBridge._classify_freeform_message_intent("현재 화면") == "status"
-    assert (
-        _TelegramBridge._classify_freeform_message_intent(
-            "인천대 사이버캠퍼스에서 12주차 첫 번째 강의를 열고 재생 확인해줘"
-        )
-        == "goal"
-    )
+    assert _TelegramBridge._classify_freeform_message_intent("보이루") == "goal"
+    assert _TelegramBridge._classify_freeform_message_intent("로그인해줘") == "goal"
+    assert _TelegramBridge._classify_freeform_message_intent("재생해줘") == "goal"
 
 
 def test_freeform_intent_can_use_llm_to_avoid_false_goal_queue(monkeypatch) -> None:
@@ -240,7 +226,26 @@ def test_freeform_intent_can_use_llm_to_avoid_false_goal_queue(monkeypatch) -> N
     monkeypatch.setattr(chat_hub, "_get_chat_router_client", lambda: _FakeClient())
 
     assert _TelegramBridge._classify_freeform_message_intent("부스에서 가볍게 인사 한번 해줘") == "casual"
-    assert "goal|help|status|casual" in seen["prompt"]
+    assert "run_gaia_goal" in seen["prompt"]
+
+
+def test_freeform_intent_llm_keeps_search_goal_even_with_usage_word(monkeypatch) -> None:
+    class _FakeClient:
+        def analyze_text(self, prompt: str, max_completion_tokens: int, temperature: float):
+            assert "네이버에서 사용법 검색해줘" in prompt
+            return json.dumps(
+                {
+                    "intent": "goal",
+                    "skill": "run_gaia_goal",
+                    "confidence": 0.91,
+                    "goal_text": "네이버에서 챗GPT 사용법 검색해줘",
+                },
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(chat_hub, "_get_chat_router_client", lambda: _FakeClient())
+
+    assert _TelegramBridge._classify_freeform_message_intent("네이버에서 챗GPT 사용법 검색해줘") == "goal"
 
 
 def test_help_request_is_answered_without_queue_language() -> None:
@@ -257,7 +262,6 @@ def test_help_request_is_answered_without_queue_language() -> None:
         memory_store=MemoryStore(enabled=False),
     )
 
-    assert _TelegramBridge._looks_like_help_request("이거 어떻게 쓰면 돼?")
     message = bridge._format_help_message(123)
 
     assert "테스트 목표를 한 문장" in message
@@ -266,9 +270,18 @@ def test_help_request_is_answered_without_queue_language() -> None:
     assert "queued" not in message.lower()
 
 
-def test_current_screen_request_is_status_query_not_goal() -> None:
-    assert _TelegramBridge._looks_like_live_status_query("현재 화면")
-    assert _TelegramBridge._looks_like_live_status_query("스크린샷 보여줘")
+def test_current_screen_request_is_routed_by_llm_to_status(monkeypatch) -> None:
+    class _FakeClient:
+        def analyze_text(self, prompt: str, max_completion_tokens: int, temperature: float):
+            assert "현재 화면" in prompt
+            return json.dumps(
+                {"intent": "status", "skill": "show_status", "confidence": 0.95},
+                ensure_ascii=False,
+            )
+
+    monkeypatch.setattr(chat_hub, "_get_chat_router_client", lambda: _FakeClient())
+
+    assert _TelegramBridge._classify_freeform_message_intent("현재 화면") == "status"
 
 
 def test_help_request_during_pending_input_explains_needed_field() -> None:

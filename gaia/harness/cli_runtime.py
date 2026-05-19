@@ -10,11 +10,13 @@ from typing import Any, Mapping, Sequence
 from gaia.harness.registry import HarnessTask, TaskRegistry, load_builtin_registry, load_registry
 from gaia.harness.runner import (
     ARTIFACT_ROOT,
+    benchmark_mode_label,
     _grade_task_result,
     _latest_report_path,
     _summarize_grades,
     _summarize_results,
     _write_markdown,
+    normalize_harness_qa_mode,
     run_task,
 )
 
@@ -71,6 +73,12 @@ def build_harness_parser(prog: str = "gaia harness") -> argparse.ArgumentParser:
     run_parser.add_argument("--repeats", type=int, default=1, help="Run the selected tasks multiple times.")
     run_parser.add_argument("--timeout-sec", type=int, default=180)
     run_parser.add_argument("--session-prefix", default="harness")
+    run_parser.add_argument(
+        "--qa-mode",
+        choices=("off", "adaptive", "deep", "adaptive_qa", "deep_qa", "deep_adaptive_qa"),
+        default="off",
+        help="Run selected harness tasks with adaptive QA expansion.",
+    )
     run_parser.add_argument("--json", action="store_true", help="Emit JSON instead of a human-readable summary.")
 
     report_parser = subparsers.add_parser("report", help="Show a harness report.")
@@ -409,6 +417,7 @@ def _run_registry(
     timeout_sec: int = 1800,
     env: Mapping[str, str] | None = None,
     session_prefix: str = "harness",
+    qa_mode: str | None = None,
 ) -> dict[str, Any]:
     tasks = _select_tasks(
         registry,
@@ -421,6 +430,7 @@ def _run_registry(
     repeat_count = max(int(repeats), 1)
     results: list[dict[str, Any]] = []
     task_groups: dict[str, list[dict[str, Any]]] = {}
+    normalized_qa_mode = normalize_harness_qa_mode(qa_mode)
 
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     for repeat_index in range(1, repeat_count + 1):
@@ -432,6 +442,7 @@ def _run_registry(
                 timeout_sec=timeout_sec,
                 env=env,
                 session_id=session_id,
+                qa_mode=normalized_qa_mode,
             )
             grades = _grade_task_result(task, row)
             row["task_index"] = index
@@ -453,6 +464,8 @@ def _run_registry(
                 "suite_id": task.suite_id,
                 "goal": task.goal,
                 "url": task.url,
+                "qa_mode": normalized_qa_mode or "off",
+                "benchmark_mode": benchmark_mode_label(normalized_qa_mode),
                 "repeats": repeat_count,
                 "rows": task_rows,
                 "attempts": task_rows,
@@ -495,7 +508,10 @@ def _run_registry(
             "suite_ids": list(_normalize_values(suite_ids)),
             "tags": list(_normalize_values(tags)),
             "contains": list(_normalize_values(contains)),
+            "qa_mode": normalized_qa_mode or "off",
         },
+        "qa_mode": normalized_qa_mode or "off",
+        "benchmark_mode": benchmark_mode_label(normalized_qa_mode),
         "results": results,
         "tasks": task_reports,
         "summary": summary,
@@ -557,6 +573,7 @@ def run_harness_cli(argv: Sequence[str] | None = None) -> int:
             contains=getattr(parsed, "contains", None),
             timeout_sec=max(10, int(parsed.timeout_sec)),
             session_prefix=str(parsed.session_prefix or "harness"),
+            qa_mode=str(getattr(parsed, "qa_mode", "off") or "off"),
         )
         if parsed.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))

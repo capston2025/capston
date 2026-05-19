@@ -12,6 +12,7 @@ from scripts.run_kpi_benchmark_pack import (
     _benchmark_mode_label,
     _compute_pack_kpis,
     _effective_timeout_cap,
+    _run_harness,
     _is_blocked_user_action,
     _normalize_qa_mode,
     _load_suite_manifest,
@@ -96,6 +97,32 @@ def test_build_run_suite_command_forwards_deep_qa_mode(tmp_path: Path) -> None:
 
     assert _normalize_qa_mode("deep") == DEEP_ADAPTIVE_QA_MODE
     assert _benchmark_mode_label(DEEP_ADAPTIVE_QA_MODE) == "deep_qa"
+    assert cmd[cmd.index("--qa-mode") + 1] == DEEP_ADAPTIVE_QA_MODE
+
+
+def test_run_harness_forwards_deep_qa_mode(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"summary": {}}), stderr="")
+
+    monkeypatch.setattr(kpi_pack.subprocess, "run", fake_run)
+
+    payload = _run_harness(
+        task_ids=["TASK_001"],
+        suite_ids=[],
+        tags=[],
+        contains=[],
+        repeats=1,
+        timeout_sec=600,
+        env={},
+        qa_mode="deep",
+    )
+
+    cmd = captured["cmd"]
+    assert payload == {"summary": {}}
     assert cmd[cmd.index("--qa-mode") + 1] == DEEP_ADAPTIVE_QA_MODE
 
 

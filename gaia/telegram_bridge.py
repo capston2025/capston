@@ -1263,191 +1263,6 @@ class _TelegramBridge:
 
         return _callback
 
-    @staticmethod
-    def _looks_like_live_status_query(text: str) -> bool:
-        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
-        if not normalized:
-            return False
-        tokens = (
-            "지금뭐하고있어",
-            "뭐하고있어",
-            "현재뭐해",
-            "현재상태",
-            "현재화면",
-            "화면보여",
-            "스크린샷",
-            "진행상황",
-            "어디까지했어",
-            "상태어때",
-            "whatyoudoing",
-            "currentstatus",
-        )
-        return any(token in normalized for token in tokens)
-
-    @staticmethod
-    def _looks_like_casual_reply(text: str) -> bool:
-        raw = re.sub(r"\s+", " ", (text or "").strip())
-        normalized = re.sub(r"\s+", "", raw.lower())
-        if not normalized:
-            return False
-        exact = {
-            "ㅎㅇ",
-            "하이",
-            "안녕",
-            "안녕하세요",
-            "hi",
-            "hello",
-            "hey",
-            "ㅇㅋ",
-            "오키",
-            "오케이",
-            "ok",
-            "okay",
-            "고마워",
-            "감사",
-            "ㄱㅅ",
-            "괜찮아",
-            "괜찮습니다",
-            "아니야",
-            "아냐",
-            "미안",
-            "죄송",
-        }
-        if normalized in exact:
-            return True
-        if len(normalized) > 28:
-            return False
-        return any(
-            token in normalized
-            for token in (
-                "하이요",
-                "미안하지마",
-                "미안해하지마",
-                "괜찮",
-                "고마",
-                "수고",
-                "땡큐",
-                "thanks",
-                "thankyou",
-            )
-        )
-
-    @staticmethod
-    def _looks_like_greeting(text: str) -> bool:
-        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
-        if not normalized:
-            return False
-        return normalized in {
-            "ㅎㅇ",
-            "하이",
-            "안녕",
-            "안녕하세요",
-            "hi",
-            "hello",
-            "hey",
-        }
-
-    @staticmethod
-    def _looks_like_help_request(text: str) -> bool:
-        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
-        if not normalized:
-            return False
-        if normalized in {"help", "/help", "도움", "도움말", "사용법"}:
-            return True
-        return any(
-            token in normalized
-            for token in (
-                "어떻게써",
-                "어떻게쓰",
-                "어케써",
-                "뭐하면돼",
-                "뭘하면돼",
-                "사용방법",
-                "사용법",
-                "명령어",
-                "가이드",
-                "이거뭐야",
-                "이거어떻게",
-            )
-        )
-
-    @staticmethod
-    def _looks_like_actionable_goal(text: str) -> bool:
-        raw = re.sub(r"\s+", " ", str(text or "")).strip()
-        lowered = raw.lower()
-        if not raw:
-            return False
-        if re.search(r"https?://|www\.", lowered):
-            return True
-        action_tokens = (
-            "확인",
-            "검증",
-            "테스트",
-            "검색",
-            "클릭",
-            "눌러",
-            "누르고",
-            "선택",
-            "이동",
-            "들어가",
-            "접속",
-            "열어",
-            "재생",
-            "로그인",
-            "로그아웃",
-            "보내",
-            "작성",
-            "업로드",
-            "다운로드",
-            "결제",
-            "장바구니",
-            "필터",
-            "순위",
-            "표시",
-            "해줘",
-            "해봐",
-        )
-        target_tokens = (
-            "사이트",
-            "페이지",
-            "화면",
-            "브라우저",
-            "네이버",
-            "구글",
-            "인천대",
-            "사이버캠퍼스",
-            "강의",
-            "뉴스",
-            "쇼핑",
-            "메일",
-            "텔레그램",
-            "검색결과",
-            "카테고리",
-        )
-        has_action = any(token in lowered for token in action_tokens)
-        has_target = any(token in lowered for token in target_tokens)
-        return has_action and (has_target or len(raw) >= 12)
-
-    @classmethod
-    def _fallback_freeform_message_intent(cls, text: str) -> str:
-        raw = re.sub(r"\s+", " ", str(text or "")).strip()
-        normalized = re.sub(r"\s+", "", raw.lower())
-        if not normalized:
-            return "casual"
-        if cls._looks_like_live_status_query(raw):
-            return "status"
-        if cls._looks_like_help_request(raw):
-            return "help"
-        if cls._looks_like_casual_reply(raw):
-            return "casual"
-        if cls._looks_like_actionable_goal(raw):
-            return "goal"
-        if len(normalized) <= 10:
-            return "casual"
-        if "?" in raw or "？" in raw:
-            return "help"
-        return "goal"
-
     @classmethod
     def _normalize_freeform_intent(cls, value: Any) -> str:
         intent = str(value or "").strip().lower()
@@ -1457,49 +1272,154 @@ class _TelegramBridge:
             return "help"
         if intent in {"status", "screen", "progress", "current"}:
             return "status"
+        if intent in {"pending", "pending_response", "handoff", "handoff_reply", "answer"}:
+            return "pending_response"
+        if intent in {"cancel", "stop"}:
+            return "cancel"
         if intent in {"casual", "chat", "smalltalk", "greeting", "thanks"}:
             return "casual"
         return ""
 
     @classmethod
-    def _llm_classify_freeform_message_intent(cls, text: str) -> str:
+    def _fallback_chatbot_route(cls, text: str, *, pending: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        raw = re.sub(r"\s+", " ", str(text or "")).strip()
+        if pending:
+            return {
+                "intent": "pending_response",
+                "confidence": 0.0,
+                "reply": "",
+                "goal_text": "",
+                "pending_text": raw,
+                "skill": "answer_pending_input",
+            }
+        return {
+            "intent": "goal",
+            "confidence": 0.0,
+            "reply": "",
+            "goal_text": raw,
+            "pending_text": "",
+            "skill": "run_gaia_goal",
+        }
+
+    @classmethod
+    def _llm_route_telegram_message(
+        cls,
+        text: str,
+        *,
+        pending: Mapping[str, Any] | None = None,
+        active: bool = False,
+        queued: int = 0,
+    ) -> dict[str, Any]:
         if os.getenv("GAIA_TELEGRAM_LLM_MESSAGE_INTENT", "1").strip().lower() in {"0", "false", "off", "no"}:
-            return ""
+            return {}
         try:
             from gaia import chat_hub
 
             client = chat_hub._get_chat_router_client()
             if client is None or not hasattr(client, "analyze_text"):
-                return ""
+                return {}
+            pending_fields = []
+            pending_kind = ""
+            pending_question = ""
+            if isinstance(pending, Mapping):
+                pending_kind = str(pending.get("kind") or "").strip()
+                pending_question = str(pending.get("question") or "").strip()
+                fields = pending.get("fields")
+                if isinstance(fields, list):
+                    pending_fields = [str(item) for item in fields if str(item).strip()]
+            context_payload = {
+                "active_run": bool(active),
+                "queued_count": max(0, int(queued or 0)),
+                "pending": {
+                    "kind": pending_kind,
+                    "question": pending_question,
+                    "fields": pending_fields,
+                },
+            }
             prompt = (
-                "당신은 GAIA Telegram 봇의 입력 분류기입니다.\n"
-                "사용자 메시지가 실제 웹 테스트 실행 목표인지, 도움말 요청인지, 상태/화면 조회인지, 단순 대화인지 분류하세요.\n"
-                "반드시 JSON만 출력하세요: {\"intent\":\"goal|help|status|casual\",\"reason\":\"...\"}\n\n"
-                "분류 기준:\n"
-                "- goal: 사이트/화면/브라우저에서 수행하거나 검증할 구체적인 작업. 예: 강의 재생 확인, 뉴스 순위표 확인, 쇼핑 필터 검증.\n"
-                "- help: 사용법, 어떻게 쓰는지, 무엇을 보내야 하는지 묻는 메시지.\n"
-                "- status: 현재 상태, 현재 화면, 진행 상황, 스크린샷을 묻는 메시지.\n"
-                "- casual: 인사, 감사, 사과, 농담, 짧은 반응, 의미 없는 잡담. 예: ㅎㅇ, 고마워, 아니야 미안하지마.\n"
-                "- 짧고 실행 대상/행동이 없는 메시지는 goal로 분류하지 마세요.\n\n"
+                "당신은 GAIA Telegram 챗봇의 저지연 라우터입니다. reasoning은 low로, 빠르게 판단하세요.\n"
+                "사용자 메시지를 아래 skill 중 하나에 연결합니다. 반드시 JSON만 출력하세요.\n\n"
+                "사용 가능한 skill:\n"
+                "- run_gaia_goal: 사용자가 외부 사이트/브라우저에서 수행하거나 검증할 웹 QA 목표를 준 경우. "
+                "짧은 명령이라도 현재 화면에서 할 행동이면 이 skill입니다. 예: 로그인해줘, 재생해줘, 네이버에서 사용법 검색해줘.\n"
+                "- explain_gaia: 사용법, GAIA가 무엇인지, 어떤 문장을 보내야 하는지 설명해야 하는 경우.\n"
+                "- show_status: 현재 상태, 현재 화면, 진행 상황, 스크린샷을 묻는 경우.\n"
+                "- casual_chat: 인사, 감사, 사과, 농담, 짧은 반응처럼 실행할 목표가 없는 대화.\n"
+                "- answer_pending_input: pending이 있고 사용자가 필요한 값이나 답변을 보낸 경우. 숫자/아이디/비밀번호/OTP처럼 짧아도 이 skill입니다.\n"
+                "- cancel_run: 사용자가 취소/중단을 명확히 요청한 경우.\n\n"
+                "출력 스키마:\n"
+                "{\n"
+                '  "intent": "goal|help|status|casual|pending_response|cancel",\n'
+                '  "skill": "run_gaia_goal|explain_gaia|show_status|casual_chat|answer_pending_input|cancel_run",\n'
+                '  "confidence": 0.0,\n'
+                '  "reply": "",\n'
+                '  "goal_text": "",\n'
+                '  "pending_text": ""\n'
+                "}\n\n"
+                "규칙:\n"
+                "- goal이면 goal_text에 실행할 목표 문장을 넣습니다. 원문을 보존하되 필요하면 살짝 정리합니다.\n"
+                "- help/casual이면 reply를 한국어 Telegram 답장으로 짧게 작성합니다.\n"
+                "- status이면 reply는 비워도 됩니다. 시스템이 실제 상태를 붙입니다.\n"
+                "- pending_response이면 pending_text에 사용자가 보낸 값을 그대로 보존합니다. 내부 필드명은 만들지 않습니다.\n"
+                "- '사용법'이라는 단어가 있어도 '네이버에서 사용법 검색해줘'처럼 사이트 행동이면 goal입니다.\n"
+                "- pending이 있으면 잡담/도움말/상태 조회가 아닌 한 answer_pending_input을 우선합니다.\n\n"
+                f"현재 컨텍스트:\n{json.dumps(context_payload, ensure_ascii=False, indent=2)}\n\n"
                 f"사용자 메시지:\n{text}"
             )
-            response = client.analyze_text(prompt, max_completion_tokens=180, temperature=0.0)
+            reasoning_key = "GAIA_CODEX_REASONING_EFFORT"
+            previous_reasoning = os.environ.get(reasoning_key)
+            os.environ[reasoning_key] = str(
+                os.getenv("GAIA_TELEGRAM_CHATBOT_REASONING_EFFORT", "low") or "low"
+            )
+            try:
+                response = client.analyze_text(prompt, max_completion_tokens=360, temperature=0.0)
+            finally:
+                if previous_reasoning is None:
+                    os.environ.pop(reasoning_key, None)
+                else:
+                    os.environ[reasoning_key] = previous_reasoning
             data = json.loads(chat_hub._extract_json_object(str(response)))
             if isinstance(data, dict):
-                return cls._normalize_freeform_intent(data.get("intent"))
+                intent = cls._normalize_freeform_intent(data.get("intent"))
+                if not intent:
+                    return {}
+                try:
+                    confidence = float(data.get("confidence") or 0.0)
+                except Exception:
+                    confidence = 0.0
+                return {
+                    "intent": intent,
+                    "confidence": max(0.0, min(1.0, confidence)),
+                    "reply": str(data.get("reply") or "").strip(),
+                    "goal_text": str(data.get("goal_text") or "").strip(),
+                    "pending_text": str(data.get("pending_text") or "").strip(),
+                    "skill": str(data.get("skill") or "").strip(),
+                }
         except Exception:
-            return ""
-        return ""
+            return {}
+        return {}
+
+    def _route_telegram_message(
+        self,
+        text: str,
+        *,
+        chat_id: int,
+        pending: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._state_lock:
+            active = self._active_runs.get(chat_id) is not None
+            queued = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
+        route = self._llm_route_telegram_message(text, pending=pending, active=active, queued=queued)
+        if route:
+            return route
+        return self._fallback_chatbot_route(text, pending=pending)
 
     @classmethod
     def _classify_freeform_message_intent(cls, text: str) -> str:
-        heuristic = cls._fallback_freeform_message_intent(text)
-        if heuristic in {"help", "status", "casual"}:
-            return heuristic
-        llm_intent = cls._llm_classify_freeform_message_intent(text)
-        if llm_intent:
-            return llm_intent
-        return heuristic or "goal"
+        route = cls._llm_route_telegram_message(text)
+        if route:
+            return str(route.get("intent") or "goal")
+        return "goal"
 
     @staticmethod
     def _field_label(field: str) -> str:
@@ -1562,14 +1482,8 @@ class _TelegramBridge:
                 "좋아요, 앞선 요청이 있어서 순서대로 처리할게요.\n"
                 "새 테스트 목표를 보내면 그 다음 순서로 넣어둘게요."
             )
-        if self._looks_like_greeting(text):
-            return (
-                "안녕하세요! GAIA예요.\n"
-                "테스트 목표를 한 문장으로 보내주면 바로 실행 준비할게요.\n"
-                "사용법이 궁금하면 `이거 어떻게 써?`라고 물어봐도 돼요."
-            )
         return (
-            "괜찮아요 ㅎㅎ\n"
+            "안녕하세요! GAIA예요.\n"
             "새 테스트 목표를 문장으로 보내면 바로 실행 준비할게요.\n"
             "상태가 궁금하면 `현재 상태`라고 보내주세요."
         )
@@ -1964,29 +1878,53 @@ class _TelegramBridge:
         with self._pending_lock:
             pending = self._pending_interventions.get(chat_id)
         if pending is not None:
-            if self._looks_like_live_status_query(raw):
-                await message.reply_text(self._format_live_status(chat_id))
-                return
-            if self._looks_like_help_request(raw):
-                await message.reply_text(self._format_help_message(chat_id))
-                return
-            if self._looks_like_casual_reply(raw):
-                await message.reply_text(
-                    self._format_pending_help(
-                        pending.kind,
-                        pending.question,
-                        list(pending.fields or []),
-                    )
-                )
-                return
             lowered = raw.strip().lower()
+            if lowered in {"/cancel", "cancel", "취소"}:
+                pending.response_text = "cancel"
+                pending.event.set()
+                if pending.ack_text:
+                    await message.reply_text(pending.ack_text)
+                return
             if lowered.startswith("/pair"):
                 await message.reply_text("현재 실행이 추가 입력을 기다리는 중입니다. 응답 텍스트 또는 /cancel을 보내주세요.")
                 return
             if lowered.startswith("/") and lowered not in {"/cancel"}:
                 await message.reply_text("현재 실행이 추가 입력을 기다리는 중입니다. 응답 텍스트를 보내거나 /cancel을 입력하세요.")
                 return
-            pending.response_text = "cancel" if lowered in {"/cancel", "cancel", "취소"} else raw
+
+            pending_context = {
+                "kind": pending.kind,
+                "question": pending.question,
+                "fields": list(pending.fields or []),
+            }
+            route = self._route_telegram_message(raw, chat_id=chat_id, pending=pending_context)
+            intent = str(route.get("intent") or "pending_response")
+            if intent == "status":
+                await message.reply_text(self._format_live_status(chat_id))
+                return
+            if intent == "help":
+                await message.reply_text(str(route.get("reply") or "").strip() or self._format_help_message(chat_id))
+                return
+            if intent == "casual":
+                await message.reply_text(
+                    str(route.get("reply") or "").strip()
+                    or self._format_pending_help(
+                        pending.kind,
+                        pending.question,
+                        list(pending.fields or []),
+                    )
+                )
+                return
+            if intent == "cancel":
+                pending.response_text = "cancel"
+                pending.event.set()
+                if pending.ack_text:
+                    await message.reply_text(pending.ack_text)
+                return
+            pending.response_text = (
+                str(route.get("pending_text") or route.get("goal_text") or "").strip()
+                or raw
+            )
             pending.event.set()
             if pending.ack_text:
                 await message.reply_text(pending.ack_text)
@@ -2002,36 +1940,47 @@ class _TelegramBridge:
             )
             return
 
-        if self._looks_like_live_status_query(raw):
-            await message.reply_text(self._format_live_status(chat_id))
-            return
-
-        intent = self._classify_freeform_message_intent(raw)
-        if intent == "status":
-            await message.reply_text(self._format_live_status(chat_id))
-            return
-
-        if intent == "help":
-            await message.reply_text(self._format_help_message(chat_id))
-            return
-
         hub_pending = dict(getattr(self.hub_context, "pending_user_input", {}) or {})
+        route_pending = None
         if hub_pending:
             kind = str(hub_pending.get("kind") or "input").strip().lower()
             fields = hub_pending.get("fields")
             if not isinstance(fields, list):
                 fields = []
             normalized_fields = [str(item) for item in fields]
-            if self._looks_like_casual_reply(raw):
+            route_pending = {
+                "kind": kind,
+                "question": str(hub_pending.get("question") or "추가 입력이 필요합니다."),
+                "fields": normalized_fields,
+            }
+
+        route = self._route_telegram_message(raw, chat_id=chat_id, pending=route_pending)
+        intent = str(route.get("intent") or "goal")
+        if intent == "status":
+            await message.reply_text(self._format_live_status(chat_id))
+            return
+
+        if intent == "help":
+            await message.reply_text(str(route.get("reply") or "").strip() or self._format_help_message(chat_id))
+            return
+
+        if hub_pending:
+            kind = str(route_pending.get("kind") or "input") if isinstance(route_pending, dict) else "input"
+            normalized_fields = list(route_pending.get("fields") or []) if isinstance(route_pending, dict) else []
+            if intent == "casual":
                 await message.reply_text(
-                    self._format_pending_help(
+                    str(route.get("reply") or "").strip()
+                    or self._format_pending_help(
                         kind,
-                        str(hub_pending.get("question") or "추가 입력이 필요합니다."),
+                        str(route_pending.get("question") or "추가 입력이 필요합니다.") if isinstance(route_pending, dict) else "",
                         normalized_fields,
                     )
                 )
                 return
-            response = self._parse_intervention_response(kind, raw, fields=normalized_fields)
+            response_text = str(route.get("pending_text") or route.get("goal_text") or "").strip() or raw
+            if intent == "cancel":
+                response_text = "/cancel"
+            response = self._parse_intervention_response(kind, response_text, fields=normalized_fields)
             self.hub_context.pending_user_response = response
             self.hub_context.pending_user_input = {}
             if self.hub_context.on_session_update:
@@ -2043,21 +1992,22 @@ class _TelegramBridge:
             return
 
         if intent == "casual":
-            await message.reply_text(self._format_casual_reply(chat_id, raw))
+            await message.reply_text(str(route.get("reply") or "").strip() or self._format_casual_reply(chat_id, raw))
             return
 
         queued_ahead = self.queue.qsize()
+        command_text = str(route.get("goal_text") or "").strip() or raw
         with self._state_lock:
             queued_now = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
             self._queued_count_by_chat[chat_id] = queued_now + 1
         await self.queue.put(
             _CommandEnvelope(
                 chat_id=chat_id,
-                raw_command=raw,
+                raw_command=command_text,
                 reply_to_message_id=message.message_id,
             )
         )
-        await self._safe_reply_text(message, self._format_command_received_message(raw, queued_ahead=queued_ahead))
+        await self._safe_reply_text(message, self._format_command_received_message(command_text, queued_ahead=queued_ahead))
 
 
 def _split_text(text: str, limit: int = 3900) -> list[str]:

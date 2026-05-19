@@ -26,6 +26,28 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 ARTIFACT_ROOT = WORKSPACE_ROOT / "artifacts" / "harness"
+ADAPTIVE_QA_MODE = "adaptive_qa"
+DEEP_ADAPTIVE_QA_MODE = "deep_adaptive_qa"
+
+
+def normalize_harness_qa_mode(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "off", "none", "default", "false", "0"}:
+        return None
+    if raw in {"adaptive", ADAPTIVE_QA_MODE, "progressive_qa"}:
+        return ADAPTIVE_QA_MODE
+    if raw in {"deep", "deep_qa", "aggressive_qa", DEEP_ADAPTIVE_QA_MODE}:
+        return DEEP_ADAPTIVE_QA_MODE
+    return None
+
+
+def benchmark_mode_label(qa_mode: str | None) -> str:
+    normalized = normalize_harness_qa_mode(qa_mode)
+    if normalized == DEEP_ADAPTIVE_QA_MODE:
+        return "deep_qa"
+    if normalized == ADAPTIVE_QA_MODE:
+        return "adaptive_qa"
+    return "standard"
 
 
 def _normalize_status(summary: Mapping[str, Any], exit_code: int) -> str:
@@ -39,18 +61,34 @@ def _task_payload(task: HarnessTask) -> dict[str, Any]:
     return task.as_dict()
 
 
-def _build_child_code(task: Mapping[str, Any], session_id: str) -> str:
-    payload = json.dumps({"task": task, "session_id": session_id}, ensure_ascii=False)
+def _build_child_code(task: Mapping[str, Any], session_id: str, qa_mode: str | None = None) -> str:
+    payload = json.dumps(
+        {
+            "task": task,
+            "session_id": session_id,
+            "qa_mode": normalize_harness_qa_mode(qa_mode) or "",
+        },
+        ensure_ascii=False,
+    )
     return f"""
 import contextlib, io, json, os
 from gaia.terminal import _build_test_goal, run_chat_terminal_once
 payload = json.loads({payload!r})
 task = payload["task"]
 session_id = payload["session_id"]
+benchmark_qa_mode = str(payload.get("qa_mode") or "").strip()
 prepared_goal = _build_test_goal(url=task["url"], query=task["goal"])
 constraints = task.get("constraints") if isinstance(task.get("constraints"), dict) else {{}}
 expected_signals = task.get("expected_signals") if isinstance(task.get("expected_signals"), list) else []
 goal_test_data = dict(getattr(prepared_goal, "test_data", {{}}) or {{}})
+if benchmark_qa_mode:
+    goal_test_data["qa_mode"] = benchmark_qa_mode
+    if benchmark_qa_mode == "deep_adaptive_qa":
+        goal_test_data.pop("adaptive_qa", None)
+        goal_test_data["deep_adaptive_qa"] = {{"enabled": True}}
+    elif benchmark_qa_mode == "adaptive_qa":
+        goal_test_data.pop("deep_adaptive_qa", None)
+        goal_test_data["adaptive_qa"] = {{"enabled": True}}
 prepared_goal.expected_signals = [str(item) for item in expected_signals if str(item).strip()]
 if prepared_goal.expected_signals:
     goal_test_data["harness_expected_signals"] = list(prepared_goal.expected_signals)
@@ -90,13 +128,21 @@ def run_task(
     timeout_sec: int = 1800,
     env: Mapping[str, str] | None = None,
     session_id: str | None = None,
+    qa_mode: str | None = None,
 ) -> Dict[str, Any]:
     task_payload = _task_payload(task)
-    code = _build_child_code(task_payload, session_id or task.id)
+    normalized_qa_mode = normalize_harness_qa_mode(qa_mode)
+    code = _build_child_code(task_payload, session_id or task.id, qa_mode=normalized_qa_mode)
     started = time.monotonic()
     run_env = dict(os.environ)
     if env:
         run_env.update(env)
+    run_env.pop("GAIA_ADAPTIVE_QA", None)
+    run_env.pop("GAIA_DEEP_ADAPTIVE_QA", None)
+    if normalized_qa_mode == DEEP_ADAPTIVE_QA_MODE:
+        run_env["GAIA_DEEP_ADAPTIVE_QA"] = "1"
+    elif normalized_qa_mode == ADAPTIVE_QA_MODE:
+        run_env["GAIA_ADAPTIVE_QA"] = "1"
     run_env.setdefault("PYTHONUNBUFFERED", "1")
     try:
         proc = subprocess.run(
@@ -116,6 +162,8 @@ def run_task(
             "goal": task.goal,
             "url": task.url,
             "constraints": dict(task.constraints),
+            "qa_mode": normalized_qa_mode or "off",
+            "benchmark_mode": benchmark_mode_label(normalized_qa_mode),
             "status": "FAIL",
             "final_status": "FAIL",
             "reason": f"harness_timeout({timeout_sec}s)",
@@ -152,6 +200,8 @@ def run_task(
         "goal": task.goal,
         "url": task.url,
         "constraints": dict(task.constraints),
+        "qa_mode": normalized_qa_mode or "off",
+        "benchmark_mode": benchmark_mode_label(normalized_qa_mode),
         "status": status,
         "final_status": status,
         "reason": reason,
@@ -355,6 +405,8 @@ def _write_markdown(path: Path, payload: Mapping[str, Any]) -> None:
         f"- generated_at: {payload.get('generated_at')}",
         f"- task_count: {payload.get('task_count')}",
         f"- repeats: {payload.get('repeats')}",
+        f"- qa_mode: {payload.get('qa_mode', 'off')}",
+        f"- benchmark_mode: {payload.get('benchmark_mode', 'standard')}",
         "",
         "## Summary",
         "",
@@ -391,6 +443,7 @@ def run_registry(
     env: Mapping[str, str] | None = None,
     session_prefix: str = "harness",
     repeats: int = 1,
+    qa_mode: str | None = None,
 ) -> dict[str, Any]:
     tasks = _select_tasks(registry, task_id=task_id, limit=limit)
     if suite_id is not None:
@@ -400,6 +453,7 @@ def run_registry(
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     task_reports = []
     repeats = max(1, int(repeats))
+    normalized_qa_mode = normalize_harness_qa_mode(qa_mode)
     for index, task in enumerate(tasks, start=1):
         task_rows = []
         for attempt in range(1, repeats + 1):
@@ -410,6 +464,7 @@ def run_registry(
                 timeout_sec=timeout_sec,
                 env=env,
                 session_id=session_id,
+                qa_mode=normalized_qa_mode,
             )
             row["attempt"] = attempt
             row["attempt_index"] = attempt
@@ -432,6 +487,8 @@ def run_registry(
                 "suite_id": task.suite_id,
                 "goal": task.goal,
                 "url": task.url,
+                "qa_mode": normalized_qa_mode or "off",
+                "benchmark_mode": benchmark_mode_label(normalized_qa_mode),
                 "repeats": repeats,
                 "rows": task_rows,
                 "attempts": task_rows,
@@ -474,6 +531,8 @@ def run_registry(
         "registry": str(registry.source) if registry.source else None,
         "task_count": len(tasks),
         "repeats": repeats,
+        "qa_mode": normalized_qa_mode or "off",
+        "benchmark_mode": benchmark_mode_label(normalized_qa_mode),
         "results": results,
         "tasks": task_reports,
         "summary": summary,
@@ -492,6 +551,7 @@ __all__ = [
     "_latest_report_path",
     "load_builtin_registry",
     "load_registry",
+    "normalize_harness_qa_mode",
     "run_registry",
     "run_task",
 ]
