@@ -78,7 +78,7 @@ def test_build_child_code_forces_deep_qa_mode_for_benchmark_runs() -> None:
 
 
 def test_qa_mode_helpers_normalize_and_apply_env() -> None:
-    env = {"GAIA_ADAPTIVE_QA": "1"}
+    env = {"GAIA_ADAPTIVE_QA": "1", "GAIA_DEEP_ADAPTIVE_QA": "1"}
 
     assert _normalize_qa_mode("deep") == DEEP_ADAPTIVE_QA_MODE
     assert _benchmark_mode_label(DEEP_ADAPTIVE_QA_MODE) == "deep_qa"
@@ -87,6 +87,11 @@ def test_qa_mode_helpers_normalize_and_apply_env() -> None:
 
     assert "GAIA_ADAPTIVE_QA" not in env
     assert env["GAIA_DEEP_ADAPTIVE_QA"] == "1"
+
+    _apply_qa_mode_env(env, "off")
+
+    assert "GAIA_ADAPTIVE_QA" not in env
+    assert "GAIA_DEEP_ADAPTIVE_QA" not in env
 
 
 def test_timeout_floor_applies_by_default() -> None:

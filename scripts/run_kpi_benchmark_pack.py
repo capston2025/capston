@@ -332,7 +332,9 @@ def _run_harness(
     repeats: int,
     timeout_sec: int,
     env: Dict[str, str],
+    qa_mode: str | None = None,
 ) -> Dict[str, Any]:
+    normalized_qa_mode = _normalize_qa_mode(qa_mode)
     cmd = [
         sys.executable,
         "-m",
@@ -345,6 +347,8 @@ def _run_harness(
         "--timeout-sec",
         str(timeout_sec),
     ]
+    if normalized_qa_mode:
+        cmd.extend(["--qa-mode", normalized_qa_mode])
     for task_id in task_ids:
         cmd.extend(["--task-id", task_id])
     for suite_id in suite_ids:
@@ -545,6 +549,7 @@ def main() -> None:
             repeats=max(1, int(args.harness_repeats or args.repeats)),
             timeout_sec=_effective_timeout_cap(int(args.harness_timeout_sec or args.timeout_cap)),
             env=env,
+            qa_mode=normalized_qa_mode,
         )
         harness_report = {
             "run_id": harness_payload.get("run_id"),
