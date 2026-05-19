@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from gaia.chat_hub import HubContext, build_command_payload, dispatch_command
 from gaia.src.phase4.memory.store import MemoryStore
@@ -52,7 +52,7 @@ class _PendingIntervention:
     fields: list[str]
     event: threading.Event
     response_text: str = ""
-    ack_text: str = "응답을 받았습니다. 실행을 계속합니다."
+    ack_text: str = "좋아요, 이어서 진행해볼게요."
 
 
 @dataclass(slots=True)
@@ -854,6 +854,104 @@ class _TelegramBridge:
         return "\n".join([question, *helper_lines]).strip()
 
     @staticmethod
+    def _compact_goal_context(payload: Mapping[str, Any] | None, question: str = "") -> str:
+        source = payload if isinstance(payload, Mapping) else {}
+        candidates = (
+            source.get("goal_description"),
+            source.get("goal_name"),
+            source.get("reason"),
+            question,
+        )
+        for candidate in candidates:
+            text = re.sub(r"\s+", " ", str(candidate or "")).strip()
+            if not text:
+                continue
+            return text[:90] + ("…" if len(text) > 90 else "")
+        return ""
+
+    @classmethod
+    def _fallback_login_credentials_message(
+        cls,
+        *,
+        payload: Mapping[str, Any] | None,
+        question: str,
+        username_label: str,
+        stage: str,
+    ) -> str:
+        context = cls._compact_goal_context(payload, question)
+        if stage == "password":
+            lines = [
+                f"{username_label} 받았어요.",
+                "이제 비밀번호만 보내주시면 로그인 후 바로 이어서 진행할게요.",
+                "중단하려면 /cancel",
+            ]
+        else:
+            lines = [
+                "좋아요, 제가 이어서 진행해볼게요.",
+                (
+                    f"{context} 작업을 계속하려면 로그인이 필요해요."
+                    if context
+                    else "현재 화면에서 로그인이 필요해요."
+                ),
+                f"{username_label}만 먼저 보내주세요. 비밀번호는 다음 메시지에서 따로 받을게요.",
+                "중단하려면 /cancel",
+            ]
+        return "\n".join(line for line in lines if line).strip()
+
+    @classmethod
+    def _compose_login_credentials_message(
+        cls,
+        *,
+        payload: Mapping[str, Any] | None,
+        question: str,
+        username_label: str,
+        stage: str,
+    ) -> str:
+        fallback = cls._fallback_login_credentials_message(
+            payload=payload,
+            question=question,
+            username_label=username_label,
+            stage=stage,
+        )
+        if os.getenv("GAIA_TELEGRAM_LLM_INTERVENTION_MESSAGE", "1").strip().lower() in {"0", "false", "off", "no"}:
+            return fallback
+        try:
+            from gaia import chat_hub
+
+            client = chat_hub._get_chat_router_client()
+            if client is None or not hasattr(client, "analyze_text"):
+                return fallback
+            safe_payload = {
+                "stage": stage,
+                "username_label": username_label,
+                "question": question,
+                "goal_context": cls._compact_goal_context(payload, question),
+                "kind": str((payload or {}).get("kind") or "").strip(),
+                "reason_code": str((payload or {}).get("reason_code") or "").strip(),
+            }
+            prompt = (
+                "당신은 GAIA Telegram 봇의 로그인 도움말 메시지를 작성합니다.\n"
+                "사용자는 자연스럽게 답장하고 싶어합니다. 한국어로 짧고 친근하게 쓰세요.\n"
+                "반드시 JSON만 출력하세요: {\"message\":\"...\"}\n\n"
+                "작성 규칙:\n"
+                "- 지금 필요한 값 하나만 요청합니다.\n"
+                "- 내부 필드명(username, password, proceed, manual_done)은 쓰지 않습니다.\n"
+                "- 아이디 단계에서는 비밀번호를 한꺼번에 요구하지 말고 다음 메시지에서 받는다고 안내합니다.\n"
+                "- 비밀번호 단계에서는 받은 아이디 값을 반복하거나 노출하지 않습니다.\n"
+                "- /cancel 안내는 마지막 줄에 포함합니다.\n"
+                "- 500자 이하로 작성합니다.\n\n"
+                f"요청 payload:\n{json.dumps(safe_payload, ensure_ascii=False, indent=2)}"
+            )
+            response = client.analyze_text(prompt, max_completion_tokens=500, temperature=0.25)
+            data = json.loads(chat_hub._extract_json_object(str(response)))
+            message = str(data.get("message") or "").strip() if isinstance(data, dict) else ""
+            if message:
+                return message[:1200]
+        except Exception:
+            return fallback
+        return fallback
+
+    @staticmethod
     def _sequential_login_field(fields: list[str]) -> str:
         normalized = {str(field or "").strip().lower() for field in fields}
         if "email" in normalized and "username" not in normalized:
@@ -997,6 +1095,7 @@ class _TelegramBridge:
         question: str,
         fields: list[str],
         attachments: list[dict],
+        payload: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         username_field = self._sequential_login_field(fields)
         username_label = "이메일" if username_field == "email" else "아이디"
@@ -1008,7 +1107,12 @@ class _TelegramBridge:
             kind=kind,
             question=question,
             fields=[username_field],
-            prompt=f"로그인이 필요해요.\n먼저 {username_label}를 보내주세요.\n중단하려면 /cancel",
+            prompt=self._compose_login_credentials_message(
+                payload=payload,
+                question=question,
+                username_label=username_label,
+                stage="username",
+            ),
             attachments=attachments,
         )
         if status != "ok":
@@ -1032,7 +1136,12 @@ class _TelegramBridge:
             kind=kind,
             question=question,
             fields=["password"],
-            prompt=f"{username_label} 확인했습니다.\n이제 비밀번호를 보내주세요.\n중단하려면 /cancel",
+            prompt=self._compose_login_credentials_message(
+                payload=payload,
+                question=question,
+                username_label=username_label,
+                stage="password",
+            ),
         )
         if status != "ok":
             return {"action": "cancel", "proceed": False}
@@ -1093,6 +1202,7 @@ class _TelegramBridge:
                     question=question,
                     fields=normalized_fields,
                     attachments=attachment_items,
+                    payload=payload,
                 )
 
             text = self._compose_intervention_message(payload, normalized_fields)
@@ -1163,6 +1273,9 @@ class _TelegramBridge:
             "뭐하고있어",
             "현재뭐해",
             "현재상태",
+            "현재화면",
+            "화면보여",
+            "스크린샷",
             "진행상황",
             "어디까지했어",
             "상태어때",
@@ -1170,6 +1283,355 @@ class _TelegramBridge:
             "currentstatus",
         )
         return any(token in normalized for token in tokens)
+
+    @staticmethod
+    def _looks_like_casual_reply(text: str) -> bool:
+        raw = re.sub(r"\s+", " ", (text or "").strip())
+        normalized = re.sub(r"\s+", "", raw.lower())
+        if not normalized:
+            return False
+        exact = {
+            "ㅎㅇ",
+            "하이",
+            "안녕",
+            "안녕하세요",
+            "hi",
+            "hello",
+            "hey",
+            "ㅇㅋ",
+            "오키",
+            "오케이",
+            "ok",
+            "okay",
+            "고마워",
+            "감사",
+            "ㄱㅅ",
+            "괜찮아",
+            "괜찮습니다",
+            "아니야",
+            "아냐",
+            "미안",
+            "죄송",
+        }
+        if normalized in exact:
+            return True
+        if len(normalized) > 28:
+            return False
+        return any(
+            token in normalized
+            for token in (
+                "하이요",
+                "미안하지마",
+                "미안해하지마",
+                "괜찮",
+                "고마",
+                "수고",
+                "땡큐",
+                "thanks",
+                "thankyou",
+            )
+        )
+
+    @staticmethod
+    def _looks_like_greeting(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
+        if not normalized:
+            return False
+        return normalized in {
+            "ㅎㅇ",
+            "하이",
+            "안녕",
+            "안녕하세요",
+            "hi",
+            "hello",
+            "hey",
+        }
+
+    @staticmethod
+    def _looks_like_help_request(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
+        if not normalized:
+            return False
+        if normalized in {"help", "/help", "도움", "도움말", "사용법"}:
+            return True
+        return any(
+            token in normalized
+            for token in (
+                "어떻게써",
+                "어떻게쓰",
+                "어케써",
+                "뭐하면돼",
+                "뭘하면돼",
+                "사용방법",
+                "사용법",
+                "명령어",
+                "가이드",
+                "이거뭐야",
+                "이거어떻게",
+            )
+        )
+
+    @staticmethod
+    def _looks_like_actionable_goal(text: str) -> bool:
+        raw = re.sub(r"\s+", " ", str(text or "")).strip()
+        lowered = raw.lower()
+        if not raw:
+            return False
+        if re.search(r"https?://|www\.", lowered):
+            return True
+        action_tokens = (
+            "확인",
+            "검증",
+            "테스트",
+            "검색",
+            "클릭",
+            "눌러",
+            "누르고",
+            "선택",
+            "이동",
+            "들어가",
+            "접속",
+            "열어",
+            "재생",
+            "로그인",
+            "로그아웃",
+            "보내",
+            "작성",
+            "업로드",
+            "다운로드",
+            "결제",
+            "장바구니",
+            "필터",
+            "순위",
+            "표시",
+            "해줘",
+            "해봐",
+        )
+        target_tokens = (
+            "사이트",
+            "페이지",
+            "화면",
+            "브라우저",
+            "네이버",
+            "구글",
+            "인천대",
+            "사이버캠퍼스",
+            "강의",
+            "뉴스",
+            "쇼핑",
+            "메일",
+            "텔레그램",
+            "검색결과",
+            "카테고리",
+        )
+        has_action = any(token in lowered for token in action_tokens)
+        has_target = any(token in lowered for token in target_tokens)
+        return has_action and (has_target or len(raw) >= 12)
+
+    @classmethod
+    def _fallback_freeform_message_intent(cls, text: str) -> str:
+        raw = re.sub(r"\s+", " ", str(text or "")).strip()
+        normalized = re.sub(r"\s+", "", raw.lower())
+        if not normalized:
+            return "casual"
+        if cls._looks_like_live_status_query(raw):
+            return "status"
+        if cls._looks_like_help_request(raw):
+            return "help"
+        if cls._looks_like_casual_reply(raw):
+            return "casual"
+        if cls._looks_like_actionable_goal(raw):
+            return "goal"
+        if len(normalized) <= 10:
+            return "casual"
+        if "?" in raw or "？" in raw:
+            return "help"
+        return "goal"
+
+    @classmethod
+    def _normalize_freeform_intent(cls, value: Any) -> str:
+        intent = str(value or "").strip().lower()
+        if intent in {"goal", "run", "execute", "test", "task"}:
+            return "goal"
+        if intent in {"help", "usage", "guide", "howto"}:
+            return "help"
+        if intent in {"status", "screen", "progress", "current"}:
+            return "status"
+        if intent in {"casual", "chat", "smalltalk", "greeting", "thanks"}:
+            return "casual"
+        return ""
+
+    @classmethod
+    def _llm_classify_freeform_message_intent(cls, text: str) -> str:
+        if os.getenv("GAIA_TELEGRAM_LLM_MESSAGE_INTENT", "1").strip().lower() in {"0", "false", "off", "no"}:
+            return ""
+        try:
+            from gaia import chat_hub
+
+            client = chat_hub._get_chat_router_client()
+            if client is None or not hasattr(client, "analyze_text"):
+                return ""
+            prompt = (
+                "당신은 GAIA Telegram 봇의 입력 분류기입니다.\n"
+                "사용자 메시지가 실제 웹 테스트 실행 목표인지, 도움말 요청인지, 상태/화면 조회인지, 단순 대화인지 분류하세요.\n"
+                "반드시 JSON만 출력하세요: {\"intent\":\"goal|help|status|casual\",\"reason\":\"...\"}\n\n"
+                "분류 기준:\n"
+                "- goal: 사이트/화면/브라우저에서 수행하거나 검증할 구체적인 작업. 예: 강의 재생 확인, 뉴스 순위표 확인, 쇼핑 필터 검증.\n"
+                "- help: 사용법, 어떻게 쓰는지, 무엇을 보내야 하는지 묻는 메시지.\n"
+                "- status: 현재 상태, 현재 화면, 진행 상황, 스크린샷을 묻는 메시지.\n"
+                "- casual: 인사, 감사, 사과, 농담, 짧은 반응, 의미 없는 잡담. 예: ㅎㅇ, 고마워, 아니야 미안하지마.\n"
+                "- 짧고 실행 대상/행동이 없는 메시지는 goal로 분류하지 마세요.\n\n"
+                f"사용자 메시지:\n{text}"
+            )
+            response = client.analyze_text(prompt, max_completion_tokens=180, temperature=0.0)
+            data = json.loads(chat_hub._extract_json_object(str(response)))
+            if isinstance(data, dict):
+                return cls._normalize_freeform_intent(data.get("intent"))
+        except Exception:
+            return ""
+        return ""
+
+    @classmethod
+    def _classify_freeform_message_intent(cls, text: str) -> str:
+        heuristic = cls._fallback_freeform_message_intent(text)
+        if heuristic in {"help", "status", "casual"}:
+            return heuristic
+        llm_intent = cls._llm_classify_freeform_message_intent(text)
+        if llm_intent:
+            return llm_intent
+        return heuristic or "goal"
+
+    @staticmethod
+    def _field_label(field: str) -> str:
+        normalized = str(field or "").strip().lower()
+        labels = {
+            "username": "아이디",
+            "email": "이메일",
+            "password": "비밀번호",
+            "otp": "인증번호",
+            "captcha": "보안문자",
+            "answer": "정답",
+        }
+        return labels.get(normalized, normalized or "필요한 값")
+
+    @classmethod
+    def _format_pending_help(cls, kind: str, question: str, fields: list[str]) -> str:
+        visible_fields = [
+            str(field or "").strip()
+            for field in fields
+            if str(field or "").strip().lower()
+            not in {"action", "proceed", "manual_done", "instruction", "auth_mode", "return_credentials"}
+        ]
+        if visible_fields:
+            labels = [cls._field_label(field) for field in visible_fields]
+            if "password" in {field.lower() for field in visible_fields} and (
+                "username" in {field.lower() for field in visible_fields}
+                or "email" in {field.lower() for field in visible_fields}
+            ):
+                labels = [cls._field_label(cls._sequential_login_field(visible_fields))]
+            ask = ", ".join(labels)
+            return (
+                "지금은 실행을 잠깐 멈추고 사용자 입력을 기다리는 중이에요.\n"
+                f"필요한 것: {ask}\n"
+                "그 값만 답장으로 보내주시면 제가 이어서 처리할게요.\n"
+                "중단하려면 /cancel"
+            )
+        context = re.sub(r"\s+", " ", str(question or "")).strip()
+        return (
+            "지금은 추가 안내를 기다리는 중이에요.\n"
+            + (f"요청 내용: {context}\n" if context else "")
+            + "원하는 처리 방향을 한 문장으로 답장해 주세요.\n"
+            "중단하려면 /cancel"
+        )
+
+    def _format_casual_reply(self, chat_id: int, text: str) -> str:
+        with self._state_lock:
+            active = self._active_runs.get(chat_id)
+            queued = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
+        if active is not None:
+            cmd = (active.raw_command or "").strip()
+            if len(cmd) > 70:
+                cmd = cmd[:67] + "..."
+            return (
+                "괜찮아요. 지금 요청을 계속 처리하고 있어요.\n"
+                f"진행 중: {cmd or '현재 작업'}\n"
+                "상태가 궁금하면 `현재 상태`라고 보내주세요."
+            )
+        if queued > 0:
+            return (
+                "좋아요, 앞선 요청이 있어서 순서대로 처리할게요.\n"
+                "새 테스트 목표를 보내면 그 다음 순서로 넣어둘게요."
+            )
+        if self._looks_like_greeting(text):
+            return (
+                "안녕하세요! GAIA예요.\n"
+                "테스트 목표를 한 문장으로 보내주면 바로 실행 준비할게요.\n"
+                "사용법이 궁금하면 `이거 어떻게 써?`라고 물어봐도 돼요."
+            )
+        return (
+            "괜찮아요 ㅎㅎ\n"
+            "새 테스트 목표를 문장으로 보내면 바로 실행 준비할게요.\n"
+            "상태가 궁금하면 `현재 상태`라고 보내주세요."
+        )
+
+    def _format_help_message(self, chat_id: int) -> str:
+        with self._pending_lock:
+            pending = self._pending_interventions.get(chat_id)
+        if pending is not None:
+            return self._format_pending_help(
+                pending.kind,
+                pending.question,
+                list(pending.fields or []),
+            )
+        hub_pending = dict(getattr(self.hub_context, "pending_user_input", {}) or {})
+        if hub_pending:
+            fields = hub_pending.get("fields")
+            if not isinstance(fields, list):
+                fields = []
+            return self._format_pending_help(
+                str(hub_pending.get("kind") or "input"),
+                str(hub_pending.get("question") or "추가 입력이 필요합니다."),
+                [str(item) for item in fields],
+            )
+
+        with self._state_lock:
+            active = self._active_runs.get(chat_id)
+            queued = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
+        if active is not None:
+            return (
+                "지금은 요청을 실행 중이에요.\n"
+                "`현재 상태`라고 보내면 진행 상황을 볼 수 있고, 새 테스트 목표를 보내면 다음 작업으로 처리할게요.\n"
+                "로그인/인증이 필요하면 제가 그때 필요한 값만 물어볼게요."
+            )
+        if queued > 0:
+            return (
+                "앞선 요청이 있어서 순서대로 처리 중이에요.\n"
+                "`현재 상태`라고 보내면 대기/진행 상황을 볼 수 있어요.\n"
+                "새 테스트 목표는 한 문장으로 보내면 이어서 실행할게요."
+            )
+        return (
+            "GAIA에게는 테스트 목표를 한 문장으로 보내면 돼요.\n"
+            "예: 인천대 사이버캠퍼스에서 12주차 첫 번째 강의를 열고 재생되는지 확인해줘\n"
+            "예: 네이버 뉴스에서 스포츠 > 축구로 이동한 뒤 순위표 상위 3개 팀이 보이는지 확인해줘\n"
+            "실행 중에는 `현재 상태` 또는 `현재 화면`이라고 물어볼 수 있어요."
+        )
+
+    @staticmethod
+    def _format_command_received_message(raw: str, *, queued_ahead: int = 0) -> str:
+        preview = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if len(preview) > 90:
+            preview = preview[:89] + "…"
+        if queued_ahead > 0:
+            return (
+                "앞선 요청이 끝나면 이어서 실행할게요.\n"
+                + (f"다음 요청: {preview}\n" if preview else "")
+                + "진행 상황은 `현재 상태`라고 보내면 확인할 수 있어요."
+            )
+        return (
+            "좋아요, 실행해볼게요.\n"
+            + (f"요청: {preview}\n" if preview else "")
+            + "진행 중 궁금하면 `현재 상태`라고 보내주세요."
+        )
 
     def _format_live_status(self, chat_id: int) -> str:
         with self._pending_lock:
@@ -1505,6 +1967,18 @@ class _TelegramBridge:
             if self._looks_like_live_status_query(raw):
                 await message.reply_text(self._format_live_status(chat_id))
                 return
+            if self._looks_like_help_request(raw):
+                await message.reply_text(self._format_help_message(chat_id))
+                return
+            if self._looks_like_casual_reply(raw):
+                await message.reply_text(
+                    self._format_pending_help(
+                        pending.kind,
+                        pending.question,
+                        list(pending.fields or []),
+                    )
+                )
+                return
             lowered = raw.strip().lower()
             if lowered.startswith("/pair"):
                 await message.reply_text("현재 실행이 추가 입력을 기다리는 중입니다. 응답 텍스트 또는 /cancel을 보내주세요.")
@@ -1532,13 +2006,32 @@ class _TelegramBridge:
             await message.reply_text(self._format_live_status(chat_id))
             return
 
+        intent = self._classify_freeform_message_intent(raw)
+        if intent == "status":
+            await message.reply_text(self._format_live_status(chat_id))
+            return
+
+        if intent == "help":
+            await message.reply_text(self._format_help_message(chat_id))
+            return
+
         hub_pending = dict(getattr(self.hub_context, "pending_user_input", {}) or {})
         if hub_pending:
             kind = str(hub_pending.get("kind") or "input").strip().lower()
             fields = hub_pending.get("fields")
             if not isinstance(fields, list):
                 fields = []
-            response = self._parse_intervention_response(kind, raw, fields=[str(item) for item in fields])
+            normalized_fields = [str(item) for item in fields]
+            if self._looks_like_casual_reply(raw):
+                await message.reply_text(
+                    self._format_pending_help(
+                        kind,
+                        str(hub_pending.get("question") or "추가 입력이 필요합니다."),
+                        normalized_fields,
+                    )
+                )
+                return
+            response = self._parse_intervention_response(kind, raw, fields=normalized_fields)
             self.hub_context.pending_user_response = response
             self.hub_context.pending_user_input = {}
             if self.hub_context.on_session_update:
@@ -1546,10 +2039,14 @@ class _TelegramBridge:
                     self.hub_context.on_session_update(self.hub_context)
                 except Exception:
                     pass
-            await message.reply_text("응답을 받았습니다. 실행을 계속합니다.")
+            await message.reply_text("좋아요, 답장 받았어요. 이어서 진행해볼게요.")
             return
 
-        position = self.queue.qsize() + 1
+        if intent == "casual":
+            await message.reply_text(self._format_casual_reply(chat_id, raw))
+            return
+
+        queued_ahead = self.queue.qsize()
         with self._state_lock:
             queued_now = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
             self._queued_count_by_chat[chat_id] = queued_now + 1
@@ -1560,7 +2057,7 @@ class _TelegramBridge:
                 reply_to_message_id=message.message_id,
             )
         )
-        await self._safe_reply_text(message, f"queued #{position}: {raw[:120]}")
+        await self._safe_reply_text(message, self._format_command_received_message(raw, queued_ahead=queued_ahead))
 
 
 def _split_text(text: str, limit: int = 3900) -> list[str]:

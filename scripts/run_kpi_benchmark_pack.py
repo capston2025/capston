@@ -20,6 +20,16 @@ RUN_SINGLE = ROOT / "scripts" / "run_goal_benchmark.py"
 PUSH_METRICS = ROOT / "scripts" / "push_metrics.py"
 MONITORING_CONFIG = Path.home() / ".gaia" / "monitoring.json"
 MIN_BENCHMARK_TIMEOUT_SEC = 600
+ADAPTIVE_QA_MODE = "adaptive_qa"
+DEEP_ADAPTIVE_QA_MODE = "deep_adaptive_qa"
+QA_MODE_CHOICES = (
+    "off",
+    "adaptive",
+    "deep",
+    ADAPTIVE_QA_MODE,
+    "deep_qa",
+    DEEP_ADAPTIVE_QA_MODE,
+)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -29,6 +39,26 @@ from scripts.benchmark_blocking import (
     summary_reason_code_summary,
 )
 from scripts.runner_identity import resolve_runner_id
+
+
+def _normalize_qa_mode(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "off", "none", "default", "false", "0"}:
+        return None
+    if raw in {"adaptive", ADAPTIVE_QA_MODE, "progressive_qa"}:
+        return ADAPTIVE_QA_MODE
+    if raw in {"deep", "deep_qa", "aggressive_qa", DEEP_ADAPTIVE_QA_MODE}:
+        return DEEP_ADAPTIVE_QA_MODE
+    return None
+
+
+def _benchmark_mode_label(qa_mode: str | None) -> str:
+    normalized = _normalize_qa_mode(qa_mode)
+    if normalized == DEEP_ADAPTIVE_QA_MODE:
+        return "deep_qa"
+    if normalized == ADAPTIVE_QA_MODE:
+        return "adaptive_qa"
+    return "standard"
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
@@ -208,6 +238,7 @@ def _run_suite(
     push_metrics: bool,
     runner_id: str,
     env: Dict[str, str],
+    qa_mode: str | None = None,
 ) -> Dict[str, Any]:
     started = time.time()
     before = time.time()
@@ -218,6 +249,7 @@ def _run_suite(
         session_prefix=session_prefix,
         push_metrics=push_metrics,
         runner_id=runner_id,
+        qa_mode=qa_mode,
     )
     proc = subprocess.Popen(
         cmd,
@@ -267,7 +299,9 @@ def _build_run_suite_command(
     session_prefix: str,
     push_metrics: bool,
     runner_id: str = "",
+    qa_mode: str | None = None,
 ) -> List[str]:
+    normalized_qa_mode = _normalize_qa_mode(qa_mode)
     cmd = [
         sys.executable,
         str(RUN_SINGLE),
@@ -282,6 +316,8 @@ def _build_run_suite_command(
     ]
     if str(runner_id or "").strip():
         cmd.extend(["--runner-id", str(runner_id)])
+    if normalized_qa_mode:
+        cmd.extend(["--qa-mode", normalized_qa_mode])
     if push_metrics:
         cmd.append("--push-metrics")
     return cmd
@@ -341,6 +377,8 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines.append(f"- repeats: {report['repeats']}")
     lines.append(f"- timeout_cap: {report['timeout_cap']}")
     lines.append(f"- runner_id: {report.get('runner_id', 'unknown')}")
+    lines.append(f"- qa_mode: {report.get('qa_mode', 'off')}")
+    lines.append(f"- benchmark_mode: {report.get('benchmark_mode', 'standard')}")
     lines.append("")
     lines.append("## Overall KPI")
     lines.append("")
@@ -443,6 +481,12 @@ def main() -> None:
         default="",
         help="Human/team runner identifier recorded in artifacts and metrics. Defaults to GAIA_RUNNER_ID or user@host.",
     )
+    parser.add_argument(
+        "--qa-mode",
+        choices=QA_MODE_CHOICES,
+        default="off",
+        help="Forward adaptive QA mode to every suite run; deep/deep_adaptive_qa is the human-comparison Deep QA benchmark profile.",
+    )
     parser.add_argument("--push-metrics", action="store_true", help="Forward metrics upload to each suite run.")
     parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
     parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
@@ -455,6 +499,8 @@ def main() -> None:
     env = os.environ.copy()
     runner_id = resolve_runner_id(args.runner_id, env)
     env["GAIA_RUNNER_ID"] = runner_id
+    normalized_qa_mode = _normalize_qa_mode(str(args.qa_mode or ""))
+    benchmark_mode = _benchmark_mode_label(normalized_qa_mode)
     try:
         suite_paths = _resolve_suite_paths(suite_args=args.suite, suite_manifest=args.suite_manifest)
     except ValueError as exc:
@@ -475,6 +521,7 @@ def main() -> None:
             push_metrics=bool(args.push_metrics),
             runner_id=runner_id,
             env=env,
+            qa_mode=normalized_qa_mode,
         )
         suite_reports.append(suite_report)
         all_rows.extend(suite_report["rows"])
@@ -515,6 +562,8 @@ def main() -> None:
         "timeout_cap": _effective_timeout_cap(int(args.timeout_cap)),
         "push_metrics": bool(args.push_metrics),
         "runner_id": runner_id,
+        "qa_mode": normalized_qa_mode or "off",
+        "benchmark_mode": benchmark_mode,
         "suites": [
             {
                 "suite_id": suite["suite_id"],

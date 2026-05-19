@@ -519,6 +519,77 @@ def test_run_benchmark_suite_appends_push_metrics_flag_when_enabled(tmp_path: Pa
     assert "--push-metrics" in captured_cmd
 
 
+def test_run_benchmark_suite_forwards_deep_qa_mode_and_tags_artifact(tmp_path: Path) -> None:
+    preset = find_preset("inu_timetable")
+    assert preset is not None
+    captured_cmd: list[str] = []
+    emitted: list[str] = []
+
+    class _FakeProcess:
+        def __init__(self, cmd, **kwargs):
+            del kwargs
+            captured_cmd[:] = list(cmd)
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1},
+                        "qa_mode": "deep_adaptive_qa",
+                        "benchmark_mode": "deep_qa",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "scenario_id": "INUU_001_HOME_LOGIN_VISIBLE",
+                            "status": "SUCCESS",
+                            "qa_mode": "deep_adaptive_qa",
+                            "benchmark_mode": "deep_qa",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def wait(self):
+            return 0
+
+    result = run_benchmark_suite(
+        workspace_root=tmp_path,
+        preset=preset,
+        target_url="https://inuu-timetable.vercel.app/",
+        suite_payload={
+            "suite_id": "inu_timetable_public_v1",
+            "site": {"name": "INU TIMETABLE", "base_url": "https://inuu-timetable.vercel.app/"},
+            "scenarios": [
+                {
+                    "id": "INUU_001_HOME_LOGIN_VISIBLE",
+                    "url": "https://inuu-timetable.vercel.app/",
+                    "goal": "홈 화면 확인",
+                }
+            ],
+        },
+        emit=emitted.append,
+        run_tag="full_suite",
+        process_factory=_FakeProcess,
+        qa_mode="deep",
+    )
+
+    assert captured_cmd[captured_cmd.index("--qa-mode") + 1] == "deep_adaptive_qa"
+    output_dir = Path(captured_cmd[captured_cmd.index("--output-dir") + 1])
+    assert "deep_qa_full_suite" in output_dir.name
+    assert result["qa_mode"] == "deep_adaptive_qa"
+    assert any("qa_mode: Deep QA" in message for message in emitted)
+
+
 def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) -> None:
     script = _PromptScript(
         selections=[
@@ -551,6 +622,37 @@ def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) 
     assert len(calls) == 1
     assert calls[0]["run_tag"] == "INUU_001_HOME_LOGIN_VISIBLE"
     assert [row["id"] for row in calls[0]["suite_payload"]["scenarios"]] == ["INUU_001_HOME_LOGIN_VISIBLE"]
+
+
+def test_run_terminal_benchmark_mode_forwards_deep_qa_to_suite_runs(tmp_path: Path) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "로컬만 저장",
+            "이전으로",
+            "종료",
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    emitted: list[str] = []
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=lambda **kwargs: calls.append(kwargs) or {},
+        qa_mode="deep",
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["qa_mode"] == "deep_adaptive_qa"
+    assert any("Deep QA 벤치마크 프로필" in message for message in emitted)
 
 
 def test_run_terminal_benchmark_mode_recovers_missing_custom_suite_before_run(tmp_path: Path) -> None:

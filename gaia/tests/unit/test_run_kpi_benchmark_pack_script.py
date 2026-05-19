@@ -6,11 +6,14 @@ from pathlib import Path
 
 from scripts import run_kpi_benchmark_pack as kpi_pack
 from scripts.run_kpi_benchmark_pack import (
+    DEEP_ADAPTIVE_QA_MODE,
     MIN_BENCHMARK_TIMEOUT_SEC,
     _build_run_suite_command,
+    _benchmark_mode_label,
     _compute_pack_kpis,
     _effective_timeout_cap,
     _is_blocked_user_action,
+    _normalize_qa_mode,
     _load_suite_manifest,
     _resolve_suite_paths,
     _try_push_pack_metrics,
@@ -76,6 +79,24 @@ def test_build_run_suite_command_forwards_push_metrics(tmp_path: Path) -> None:
     assert "macmini" in without_push
     assert "--push-metrics" not in without_push
     assert with_push[-1] == "--push-metrics"
+
+
+def test_build_run_suite_command_forwards_deep_qa_mode(tmp_path: Path) -> None:
+    suite_path = tmp_path / "suite.json"
+
+    cmd = _build_run_suite_command(
+        suite_path,
+        repeats=1,
+        timeout_cap=600,
+        session_prefix="external-public",
+        push_metrics=False,
+        runner_id="macmini",
+        qa_mode="deep",
+    )
+
+    assert _normalize_qa_mode("deep") == DEEP_ADAPTIVE_QA_MODE
+    assert _benchmark_mode_label(DEEP_ADAPTIVE_QA_MODE) == "deep_qa"
+    assert cmd[cmd.index("--qa-mode") + 1] == DEEP_ADAPTIVE_QA_MODE
 
 
 def test_try_push_pack_metrics_uploads_final_pack_artifact(tmp_path: Path, monkeypatch) -> None:
