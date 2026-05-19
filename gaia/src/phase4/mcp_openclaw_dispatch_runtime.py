@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 
@@ -326,6 +326,10 @@ def _normalize_url(url: str | None) -> str:
     return str(url or "").strip()
 
 
+def _is_about_blank_url(url: str | None) -> bool:
+    return _normalize_url(url).lower() == "about:blank"
+
+
 def _session_state(session_id: str) -> Dict[str, Any]:
     with _SESSION_LOCK:
         return _SESSIONS.setdefault(
@@ -442,6 +446,90 @@ def _target_missing(status_code: int, data: Dict[str, Any], text: str) -> bool:
     )
 
 
+def _choose_existing_tab(
+    payload: Optional[Dict[str, Any]],
+    *,
+    allow_about_blank: bool = False,
+) -> Optional[Dict[str, Any]]:
+    descriptors = _extract_tab_descriptors(payload)
+    if not descriptors:
+        return None
+    candidates = [
+        item
+        for item in descriptors
+        if str(item.get("target_id") or "").strip()
+        and (allow_about_blank or not _is_about_blank_url(str(item.get("url") or "")))
+    ]
+    if not candidates:
+        return None
+    active = [item for item in candidates if bool(item.get("active"))]
+    return active[0] if active else candidates[0]
+
+
+def _adopt_existing_target(
+    *,
+    base_url: str,
+    state: Dict[str, Any],
+    profile: str,
+    timeout: Any,
+) -> bool:
+    tabs_payload = _tabs_payload_for_target(
+        base_url=base_url,
+        target_id="",
+        profile=profile,
+        timeout=timeout,
+    )
+    chosen = _choose_existing_tab(tabs_payload, allow_about_blank=False)
+    if not chosen:
+        return False
+    target_id = str(chosen.get("target_id") or "").strip()
+    current_url = _normalize_url(str(chosen.get("url") or ""))
+    if not target_id:
+        return False
+    state["target_id"] = target_id
+    state["current_url"] = current_url
+    _clear_snapshot_cache(state)
+    _clear_tabs_cache(state)
+    return True
+
+
+def _cleanup_about_blank_tabs(
+    *,
+    base_url: str,
+    profile: str,
+    timeout: Any,
+    keep_target_id: str = "",
+) -> None:
+    try:
+        tabs_payload = _tabs_payload_for_target(
+            base_url=base_url,
+            target_id=str(keep_target_id or "").strip(),
+            profile=profile,
+            timeout=timeout,
+        )
+    except Exception:
+        return
+    descriptors = _extract_tab_descriptors(tabs_payload)
+    if not any(not _is_about_blank_url(str(item.get("url") or "")) for item in descriptors):
+        return
+    for item in descriptors:
+        target_id = str(item.get("target_id") or "").strip()
+        if not target_id or target_id == str(keep_target_id or "").strip():
+            continue
+        if not _is_about_blank_url(str(item.get("url") or "")):
+            continue
+        try:
+            _request(
+                "DELETE",
+                base_url=base_url,
+                path=f"/tabs/{quote(target_id, safe='')}",
+                timeout=timeout,
+                params={"profile": profile},
+            )
+        except Exception:
+            pass
+
+
 def _ensure_target(
     *,
     base_url: str,
@@ -456,7 +544,31 @@ def _ensure_target(
     normalized_requested = _normalize_url(requested_url)
 
     if not target_id:
-        open_url = normalized_requested or current_url or "about:blank"
+        open_url = normalized_requested or ("" if _is_about_blank_url(current_url) else current_url)
+        if not open_url:
+            try:
+                adopted_existing_target = _adopt_existing_target(
+                    base_url=base_url,
+                    state=state,
+                    profile=profile,
+                    timeout=timeout,
+                )
+            except Exception:
+                adopted_existing_target = False
+            if adopted_existing_target:
+                _cleanup_about_blank_tabs(
+                    base_url=base_url,
+                    profile=profile,
+                    timeout=timeout,
+                    keep_target_id=str(state.get("target_id") or "").strip(),
+                )
+                return state
+            _cleanup_about_blank_tabs(
+                base_url=base_url,
+                profile=profile,
+                timeout=timeout,
+            )
+            return state
         status_code, data, text = _request(
             "POST",
             base_url=base_url,
@@ -474,6 +586,13 @@ def _ensure_target(
         _clear_snapshot_cache(state)
         _clear_tabs_cache(state)
         current_url = str(state.get("current_url") or "")
+        if not _is_about_blank_url(current_url):
+            _cleanup_about_blank_tabs(
+                base_url=base_url,
+                profile=profile,
+                timeout=timeout,
+                keep_target_id=target_id,
+            )
 
     if normalized_requested and normalized_requested != current_url:
         status_code, data, text = _request(
@@ -498,6 +617,13 @@ def _ensure_target(
         state["current_url"] = _normalize_url(data.get("url") or normalized_requested)
         _clear_snapshot_cache(state)
         _clear_tabs_cache(state)
+        if not _is_about_blank_url(str(state.get("current_url") or "")):
+            _cleanup_about_blank_tabs(
+                base_url=base_url,
+                profile=profile,
+                timeout=timeout,
+                keep_target_id=target_id,
+            )
 
     return state
 

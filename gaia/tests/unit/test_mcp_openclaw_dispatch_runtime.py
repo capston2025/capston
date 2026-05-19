@@ -271,6 +271,119 @@ def test_session_profile_change_invalidates_cached_snapshot() -> None:
     assert state["last_tabs_observed_at"] == 0.0
 
 
+def test_ensure_target_adopts_existing_non_blank_tab_and_cleans_blank_tabs(monkeypatch) -> None:
+    session_id = "adopt-existing-tab-s1"
+    state = _seed_session(session_id, target_id="", current_url="")
+    calls: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if method == "GET" and path == "/tabs":
+            return (
+                200,
+                {
+                    "running": True,
+                    "tabs": [
+                        {"targetId": "blank-tab", "url": "about:blank"},
+                        {"targetId": "tab-1", "url": _DEFAULT_URL, "active": True},
+                    ],
+                },
+                "",
+            )
+        if method == "DELETE" and path == "/tabs/blank-tab":
+            return 200, {"ok": True}, ""
+        raise AssertionError((method, path, params, payload))
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    result = runtime._ensure_target(
+        base_url="http://127.0.0.1:18791",
+        session_id=session_id,
+        requested_url="",
+        timeout=None,
+    )
+
+    assert result["target_id"] == "tab-1"
+    assert result["current_url"] == _DEFAULT_URL
+    assert not any(path == "/tabs/open" for _method, path, _params, _payload in calls)
+    assert ("DELETE", "/tabs/blank-tab", {"profile": "openclaw"}, {}) in calls
+    assert state["last_tabs_payload"] == {}
+
+
+def test_ensure_target_opens_requested_url_without_about_blank_and_cleans_blank_tabs(monkeypatch) -> None:
+    session_id = "open-real-url-s1"
+    state = _seed_session(session_id, target_id="", current_url="")
+    calls: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if method == "POST" and path == "/tabs/open":
+            assert payload == {"url": _DEFAULT_URL, "profile": "openclaw"}
+            return 200, {"targetId": "tab-1", "url": _DEFAULT_URL}, ""
+        if method == "GET" and path == "/tabs":
+            return (
+                200,
+                {
+                    "running": True,
+                    "tabs": [
+                        {"targetId": "blank-tab", "url": "about:blank"},
+                        {"targetId": "tab-1", "url": _DEFAULT_URL, "active": True},
+                    ],
+                },
+                "",
+            )
+        if method == "DELETE" and path == "/tabs/blank-tab":
+            return 200, {"ok": True}, ""
+        raise AssertionError((method, path, params, payload))
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    result = runtime._ensure_target(
+        base_url="http://127.0.0.1:18791",
+        session_id=session_id,
+        requested_url=_DEFAULT_URL,
+        timeout=None,
+    )
+
+    assert result["target_id"] == "tab-1"
+    assert result["current_url"] == _DEFAULT_URL
+    open_payloads = [payload for _method, path, _params, payload in calls if path == "/tabs/open"]
+    assert open_payloads == [{"url": _DEFAULT_URL, "profile": "openclaw"}]
+    assert all(payload.get("url") != "about:blank" for payload in open_payloads)
+    assert ("DELETE", "/tabs/blank-tab", {"profile": "openclaw"}, {}) in calls
+    assert state["last_tabs_payload"] == {}
+
+
+def test_ensure_target_does_not_open_about_blank_when_url_is_missing(monkeypatch) -> None:
+    session_id = "missing-url-s1"
+    state = _seed_session(session_id, target_id="", current_url="")
+    calls: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if method == "GET" and path == "/tabs":
+            return (
+                200,
+                {"running": True, "tabs": [{"targetId": "blank-tab", "url": "about:blank"}]},
+                "",
+            )
+        raise AssertionError((method, path, params, payload))
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    result = runtime._ensure_target(
+        base_url="http://127.0.0.1:18791",
+        session_id=session_id,
+        requested_url="",
+        timeout=None,
+    )
+
+    assert result["target_id"] == ""
+    assert result["current_url"] == ""
+    assert not any(path == "/tabs/open" for _method, path, _params, _payload in calls)
+    assert state["last_tabs_payload"] == {}
+
+
 def test_derive_state_change_from_snapshot_payloads_surfaces_new_page_evidence() -> None:
     before_payload = {
         "current_url": "https://cyber.inu.ac.kr/mod/page/view.php?id=123",

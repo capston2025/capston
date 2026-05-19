@@ -315,6 +315,164 @@ def requires_interactive_state_change_completion(agent, goal: TestGoal) -> bool:
     )
 
 
+def _goal_requests_payment_presubmit(agent, goal: TestGoal) -> bool:
+    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+    if not goal_blob:
+        return False
+    payment_tokens = (
+        "결제",
+        "결재",
+        "payment",
+        "pay",
+        "checkout",
+    )
+    boundary_tokens = (
+        "직전",
+        "전까지",
+        "전 단계",
+        "이전 단계",
+        "누르지",
+        "누르지 않",
+        "누르기 전",
+        "버튼이 보이",
+        "버튼 표시",
+        "결제창",
+        "결제 창",
+        "주문/결제 화면",
+        "주문 결제 화면",
+        "before payment",
+        "before paying",
+        "before checkout",
+        "payment page",
+        "checkout page",
+        "pre-submit",
+    )
+    completion_tokens = (
+        "결제 완료",
+        "결제 성공",
+        "결제를 완료",
+        "결제하기를 눌",
+        "결제 버튼을 눌",
+        "결제까지 완료",
+        "구매 완료",
+        "주문 완료",
+        "complete payment",
+        "payment complete",
+        "complete purchase",
+        "place order",
+    )
+    if any(token in goal_blob for token in completion_tokens) and not any(
+        token in goal_blob for token in boundary_tokens
+    ):
+        return False
+    return any(token in goal_blob for token in payment_tokens) and any(
+        token in goal_blob for token in boundary_tokens
+    )
+
+
+def _payment_presubmit_blob(agent, el: DOMElement) -> str:
+    labels = getattr(el, "group_action_labels", None) or []
+    label_blob = " ".join(str(item or "") for item in labels if str(item or "").strip()) if isinstance(labels, list) else ""
+    return agent._normalize_text(
+        " ".join(
+            [
+                str(getattr(el, "text", "") or ""),
+                str(getattr(el, "aria_label", "") or ""),
+                str(getattr(el, "title", "") or ""),
+                str(getattr(el, "role_ref_name", "") or ""),
+                str(getattr(el, "placeholder", "") or ""),
+                str(getattr(el, "container_name", "") or ""),
+                str(getattr(el, "container_role", "") or ""),
+                str(getattr(el, "context_text", "") or ""),
+                label_blob,
+            ]
+        )
+    )
+
+
+def evaluate_payment_presubmit_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> Optional[str]:
+    if not _goal_requests_payment_presubmit(agent, goal):
+        return None
+    if not dom_elements:
+        return None
+
+    visible_blobs: List[str] = []
+    payment_cta_blobs: List[str] = []
+    for el in list(dom_elements or [])[:220]:
+        if not bool(getattr(el, "is_visible", True)):
+            continue
+        blob = _payment_presubmit_blob(agent, el)
+        if not blob:
+            continue
+        visible_blobs.append(blob)
+        role = agent._normalize_text(getattr(el, "role", ""))
+        tag = agent._normalize_text(getattr(el, "tag", ""))
+        actionable = bool(getattr(el, "is_enabled", True)) and (
+            role in {"button", "link"} or tag in {"button", "a", "input"}
+        )
+        if actionable and any(
+            token in blob
+            for token in (
+                "결제하기",
+                "결제 하기",
+                "결제 버튼",
+                "pay now",
+                "make payment",
+                "submit payment",
+            )
+        ):
+            payment_cta_blobs.append(blob)
+
+    if not visible_blobs or not payment_cta_blobs:
+        return None
+    page_blob = " ".join(visible_blobs)
+    post_payment_tokens = (
+        "결제 완료",
+        "결제가 완료",
+        "주문 완료",
+        "구매 완료",
+        "결제 성공",
+        "영수증",
+        "receipt",
+        "payment complete",
+        "order complete",
+        "thank you for your order",
+    )
+    if any(token in page_blob for token in post_payment_tokens):
+        return None
+    checkout_surface_tokens = (
+        "주문/결제",
+        "주문 결제",
+        "주문서",
+        "주문 확인",
+        "네이버페이 주문",
+        "결제수단",
+        "결제 수단",
+        "배송지",
+        "배송 정보",
+        "주문상품",
+        "주문 상품",
+        "총 결제",
+        "결제금액",
+        "결제 금액",
+        "최종 결제",
+        "checkout",
+        "payment method",
+        "shipping",
+        "billing",
+        "order summary",
+        "order total",
+    )
+    if not any(token in page_blob for token in checkout_surface_tokens):
+        return None
+    return "최종 결제 실행 버튼이 보이는 주문/결제 화면에 도달해 결제 직전 상태로 목표를 완료로 판정했습니다."
+
+
 def evaluate_readonly_visibility_completion(
     agent,
     *,
@@ -506,6 +664,13 @@ def evaluate_goal_target_completion(
     policy_reason = agent._run_goal_policy_closer(goal=goal, dom_elements=dom_elements)
     if policy_reason:
         return policy_reason
+    payment_presubmit_reason = evaluate_payment_presubmit_completion(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+    )
+    if payment_presubmit_reason:
+        return payment_presubmit_reason
     if is_readonly_visibility_goal(agent, goal):
         return None
     if requires_explicit_submission_completion(agent, goal):
