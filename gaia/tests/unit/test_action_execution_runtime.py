@@ -4,6 +4,7 @@ from gaia.src.phase4.goal_driven.action_execution_runtime import (
     _find_rebound_element,
     _find_visible_text_ref_candidate,
     _is_stale_like_timeout,
+    _visual_find_label_candidates,
     _visual_find_label_is_safe,
 )
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
@@ -537,6 +538,16 @@ def test_visual_find_label_safety_blocks_destructive_targets() -> None:
     assert _visual_find_label_is_safe(agent, "결제하기") is False
 
 
+def test_visual_find_label_candidates_extracts_unquoted_year() -> None:
+    agent = _FakeAgent()
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        reasoning="스카이뷰가 활성화되어 있고 촬영 연도 목록에서 2008년 옵션을 클릭한다.",
+    )
+
+    assert "2008" in _visual_find_label_candidates(agent, decision, None)
+
+
 def test_coordinate_click_script_prioritizes_radio_left_offset_targets() -> None:
     script = _coordinate_click_script(796, 999)
 
@@ -635,6 +646,110 @@ def test_execute_decision_skips_same_ref_timeout_retry(monkeypatch) -> None:
     assert err is not None
     assert calls == ["e389"]
     assert "visible_ref_timeout_no_retry" in agent.reason_codes
+
+
+def test_execute_decision_uses_visual_fallback_after_same_ref_year_timeout(monkeypatch) -> None:
+    class _VisionLLM:
+        def find_element_coordinates(self, screenshot: str, description: str) -> dict[str, object]:
+            assert screenshot == "shot"
+            assert description == "2008"
+            return {"x": 512, "y": 380, "confidence": 0.94, "reasoning": "visible year option"}
+
+    class _SameRefCoordinateAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._browser_backend_name = "openclaw"
+            self.llm = _VisionLLM()
+            self._active_snapshot_id = "snap-year"
+            self._element_selectors = {88: "span.year-2008"}
+            self._element_full_selectors = {88: "div.skyview-years span.year-2008"}
+            self._element_ref_ids = {88: "e381"}
+            self._element_ref_meta_by_id = {
+                88: {
+                    "ref": "e381",
+                    "selector": "span.year-2008",
+                    "full_selector": "div.skyview-years span.year-2008",
+                    "text": "2008",
+                    "tag": "span",
+                    "role_ref_role": "radio",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 8,
+                    "container_name": "스카이뷰 촬영연도 2008",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {"e381": dict(self._element_ref_meta_by_id[88])}
+
+        def _analyze_dom(self):
+            self._active_snapshot_id = "snap-year"
+            self._element_selectors = {88: "span.year-2008"}
+            self._element_full_selectors = {88: "div.skyview-years span.year-2008"}
+            self._element_ref_ids = {88: "e381"}
+            self._element_ref_meta_by_id = {
+                88: {
+                    "ref": "e381",
+                    "selector": "span.year-2008",
+                    "full_selector": "div.skyview-years span.year-2008",
+                    "text": "2008",
+                    "tag": "span",
+                    "role_ref_role": "radio",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 8,
+                    "container_name": "스카이뷰 촬영연도 2008",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {"e381": dict(self._element_ref_meta_by_id[88])}
+            return [
+                DOMElement(
+                    id=88,
+                    tag="span",
+                    text="2008",
+                    ref_id="e381",
+                    role_ref_role="radio",
+                    role_ref_name="2008",
+                    role_ref_nth=8,
+                    container_name="스카이뷰 촬영연도 2008",
+                )
+            ]
+
+        def _capture_screenshot(self) -> str:
+            return "shot"
+
+        def _contains_next_pagination_hint(self, _field: object) -> bool:
+            return False
+
+        def _is_numeric_page_label(self, _field: object) -> bool:
+            return False
+
+    agent = _SameRefCoordinateAgent()
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="e381", reasoning="2008년 옵션을 클릭한다.")
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append({"action": action_name, "ref_id": ref_id, "value": value})
+        if action_name == "click":
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="action_timeout",
+                reason='TimeoutError: locator.click: Timeout 8000ms exceeded. Call log: waiting for locator("aria-ref=e381")',
+            )
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok", state_change={})
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [])
+
+    assert ok is True
+    assert err is None
+    assert [call["action"] for call in calls] == ["click", "evaluate"]
+    assert calls[0]["ref_id"] == "e381"
+    assert "elementFromPoint" in str(calls[1]["value"])
+    assert agent._last_exec_result is not None
+    assert agent._last_exec_result.state_change["visual_coordinate_fallback"] is True
+    assert agent._last_exec_result.state_change["backend_progress"] is True
+    assert agent._last_exec_result.state_change["visual_target_label"] == "2008"
+    assert "visible_ref_timeout_no_retry" in agent.reason_codes
+    assert "visual_coordinate_fallback" in agent.reason_codes
 
 
 def test_execute_decision_rejects_text_mismatched_resolved_ref(monkeypatch) -> None:

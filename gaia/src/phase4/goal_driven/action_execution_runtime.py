@@ -174,7 +174,72 @@ def _visual_find_label_candidates(
     reasoning = str(getattr(decision, "reasoning", "") or "")
     for match in re.findall(r"['\"“”‘’]([^'\"“”‘’]{1,60})['\"“”‘’]", reasoning):
         add(match)
+    for match in re.findall(r"(?<![A-Za-z0-9])(\d{2,4})(?:\s*년)?(?![A-Za-z0-9])", reasoning):
+        add(match)
     return candidates[:6]
+
+
+def _dom_element_from_ref_meta(ref_id: str, meta: object) -> Optional[DOMElement]:
+    if not isinstance(meta, dict):
+        return None
+    recovered_ref = str(meta.get("ref") or meta.get("ref_id") or ref_id or "").strip()
+    if not recovered_ref:
+        return None
+    try:
+        element_id = int(meta.get("id") or meta.get("element_id") or -1)
+    except Exception:
+        element_id = -1
+    try:
+        role_ref_nth = int(meta.get("role_ref_nth")) if meta.get("role_ref_nth") is not None else None
+    except Exception:
+        role_ref_nth = None
+    return DOMElement(
+        id=element_id,
+        tag=str(meta.get("tag") or meta.get("role_ref_role") or "div"),
+        text=str(meta.get("text") or meta.get("role_ref_name") or ""),
+        role=str(meta.get("role") or meta.get("role_ref_role") or "") or None,
+        type=str(meta.get("type") or "") or None,
+        placeholder=str(meta.get("placeholder") or "") or None,
+        aria_label=str(meta.get("aria_label") or meta.get("ariaLabel") or "") or None,
+        title=str(meta.get("title") or "") or None,
+        class_name=str(meta.get("class_name") or meta.get("class") or "") or None,
+        href=str(meta.get("href") or "") or None,
+        bounding_box=meta.get("bounding_box") if isinstance(meta.get("bounding_box"), dict) else None,
+        selected_value=str(meta.get("selected_value") or "") or None,
+        container_name=str(meta.get("container_name") or "") or None,
+        container_role=str(meta.get("container_role") or "") or None,
+        container_ref_id=str(meta.get("container_ref_id") or "") or None,
+        context_text=str(meta.get("context_text") or "") or None,
+        group_action_labels=meta.get("group_action_labels") if isinstance(meta.get("group_action_labels"), list) else None,
+        role_ref_role=str(meta.get("role_ref_role") or "") or None,
+        role_ref_name=str(meta.get("role_ref_name") or "") or None,
+        role_ref_nth=role_ref_nth,
+        ref_id=recovered_ref,
+        frame_ref_id=str(meta.get("frame_ref_id") or "") or None,
+        frame_selector=str(meta.get("frame_selector") or "") or None,
+        frame_descendant_selector=str(meta.get("frame_descendant_selector") or "") or None,
+        frame_scoped_selector=str(meta.get("frame_scoped_selector") or "") or None,
+        scope=meta.get("scope") if isinstance(meta.get("scope"), dict) else None,
+        is_visible=bool(meta.get("is_visible", True)),
+        is_enabled=bool(meta.get("is_enabled", True)),
+    )
+
+
+def _dom_element_from_agent_ref(agent, ref_id: Optional[str]) -> Optional[DOMElement]:
+    ref = str(ref_id or "").strip()
+    if not ref:
+        return None
+    elements_by_ref = getattr(agent, "_last_snapshot_elements_by_ref", {}) or {}
+    recovered = _dom_element_from_ref_meta(ref, elements_by_ref.get(ref))
+    if recovered is not None:
+        return recovered
+    for meta in (getattr(agent, "_element_ref_meta_by_id", {}) or {}).values():
+        if not isinstance(meta, dict):
+            continue
+        candidate_ref = str(meta.get("ref") or meta.get("ref_id") or "").strip()
+        if candidate_ref == ref:
+            return _dom_element_from_ref_meta(ref, meta)
+    return None
 
 
 def _visual_find_label_is_safe(agent, label: str) -> bool:
@@ -1292,6 +1357,8 @@ def execute_decision(
             selected_element = next((el for el in dom_elements if el.id == decision.element_id), None)
         except Exception:
             selected_element = None
+    if selected_element is None and ref_id:
+        selected_element = _dom_element_from_agent_ref(agent, ref_id)
     bound_element_id = (
         int(decision.element_id)
         if decision.element_id is not None
@@ -1610,6 +1677,7 @@ def execute_decision(
         if agent._last_exec_result.success and agent._last_exec_result.effective:
             state_change = dict(agent._last_exec_result.state_change or {})
             state_change["visual_coordinate_fallback"] = True
+            state_change.setdefault("backend_progress", True)
             state_change["visual_target_label"] = label
             state_change["visual_confidence"] = confidence
             agent._last_exec_result.state_change = state_change
