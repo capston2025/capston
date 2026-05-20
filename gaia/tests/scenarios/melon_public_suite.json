@@ -98,8 +98,8 @@
       "time_budget_sec": 600
     },
     {
-      "id": "MELON_007_2015_ERA_CHART_BANG_BANG_BANG",
-      "name": "CHART Pop Songs",
+      "id": "MELON_007_ERA_OVERSEAS_POP_CHART",
+      "name": "Era Overseas Pop Chart",
       "url": "https://www.melon.com/",
       "goal": "홈에서 멜론차트를 누른 뒤 시대 탭을 클릭하고, 해외로 바꾼 후에 차트바로 보기 눌렀을 때, 순위별로 팝송이 나오는지 확인해줘",
       "constraints": {

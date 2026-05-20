@@ -58,7 +58,7 @@
       "default_url": "https://www.melon.com/",
       "suite_path": "gaia/tests/scenarios/melon_public_suite.json",
       "host_aliases": ["melon.com", "www.melon.com"],
-      "allowed_scenarios": ["MELON_006_IU_FLOWER_BOOKMARK_THREE_TRACK", "MELON_007_2015_ERA_CHART_BANG_BANG_BANG"]
+      "allowed_scenarios": ["MELON_006_IU_FLOWER_BOOKMARK_THREE_TRACK", "MELON_007_ERA_OVERSEAS_POP_CHART"]
     },
     {
       "site_key": "jobkorea",
@@ -146,7 +146,7 @@
       "default_url": "https://www.naver.com/",
       "suite_path": "gaia/tests/scenarios/naver_search_public_suite.json",
       "host_aliases": ["naver.com", "www.naver.com"],
-      "allowed_scenarios": ["NAVER_006_WEBTOON", "NAVER_007_SHOPPING_PRICE_DESC"]
+      "allowed_scenarios": ["NAVER_006_WEBTOON", "NAVER_007_REAL_ESTATE_VILLA_FILTER"]
     },
     {
       "site_key": "starbucks_kr",
