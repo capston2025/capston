@@ -1,0 +1,56 @@
+{
+  "suite_id": "lotteworld_adventure_public_v1",
+  "site": {
+    "name": "롯데월드 어드벤처",
+    "base_url": "https://adventure.lotteworld.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "LOTTEWORLD_001_MAGICPASS_ATTRACTION_LIST",
+      "name": "매직패스 권종별 탑승 가능 어트랙션 확인",
+      "url": "https://adventure.lotteworld.com/",
+      "goal": "홈에서 요금/혜택 부분을 클릭한 후 티켓요금을 클릭한다. 이후 매직패스를 클릭해서 어트랙션 보러가기를 눌렀을 때 권종별 탑승 가능 어트랙션이 나오는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "요금/혜택",
+        "티켓요금",
+        "매직패스",
+        "어트랙션 보러가기",
+        "권종별",
+        "탑승 가능 어트랙션"
+      ],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "LOTTEWORLD_002_GROUP_RESERVATION_PRODUCT_COUNT",
+      "name": "단체예매 온라인 예약 상품 개수 확인",
+      "url": "https://adventure.lotteworld.com/",
+      "goal": "홈에서 예매하기를 누른 다음 방문예정일 날짜를 6월 3일로 선택해줘. 이후 문화누리카드 우대의 상세보기를 눌렀을 때 상세 안내가 잘 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "예매하기",
+        "6월 3일",
+        "문화누리카드 우대",
+        "상세보기",
+        "상세 안내"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

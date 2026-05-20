@@ -1,0 +1,42 @@
+{
+  "suite_id": "daangn_public_v1",
+  "site": {
+    "name": "당근마켓",
+    "base_url": "https://www.daangn.com/kr/",
+    "mode": "public_browse"
+  },
+  "grader_configs": {},
+  "scenarios": [
+    {
+      "id": "DAANGN_001_BENCHMARK",
+      "name": "당근마켓 맥미니 가격 필터",
+      "url": "https://www.daangn.com/kr/",
+      "goal": "맥미니 검색 후, 가격 필터 50만원에서 100만원으로 설정해서 50-100만원 사이 맥미니가 나오는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    },
+    {
+      "id": "DAANGN_002_IPHONE15_AVAILABLE_FILTER",
+      "name": "당근마켓 아이폰15 거래가능 필터 확인",
+      "url": "https://www.daangn.com/kr/",
+      "goal": "홈에서 아이폰15을 검색해줘. 그 다음 필터에서 거래가능만 보기를 눌렀을 때 판매중 필터가 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "time_budget_sec": 300,
+      "expected_signals": [
+        "아이폰 15",
+        "거래가능만 보기",
+        "판매중",
+        "필터"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "suite_id": "ikea_kr_public_v1",
+  "site": {
+    "name": "이케아",
+    "base_url": "https://www.ikea.com/kr/ko/",
+    "mode": "public_browse"
+  },
+  "grader_configs": {},
+  "scenarios": [
+    {
+      "id": "IKEA_001_GAIA_VS_HUMAN_V1",
+      "name": "Gaia_VS_Human_V1",
+      "url": "https://www.ikea.com/kr/ko/",
+        "goal": "이케아 홈에서 수납용품 영역을 통해 분리수거함 상품 목록으로 이동한다. 이후 반드시 \"베스트셀러\" 필터를 클릭해 필터가 적용된 상태로 만들고, 적용된 상품 목록에서 \"홀바르 휴지통\" 상품만 표시되는지 확인해줘. 필터를 클릭하기 전부터 홀바르 휴지통이 보이는 것만으로는 성공 처리하지 마.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": [
+        "수납용품",
+        "분리수거함",
+        "베스트셀러",
+        "필터",
+        "홀바르",
+        "휴지통"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "suite_id": "naver_map_public_v1",
+  "site": {
+    "name": "Naver Map",
+    "base_url": "https://map.naver.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "NAVERMAP_001_INU_WALK_ROUTE",
+      "name": "인천대입구역 출발 도보 경로 확인",
+      "url": "https://map.naver.com/",
+      "goal": "길찾기를 누른후에 출발지 입력에 인천대입구역 1호선, 도착지 입력에 인천대학교 송도캠퍼스 정보기술대학을 입력하고 길찾기 누른 후에, 도보 탭 눌렀을 때 시간, 거리, 걸음수가 잘 나타나는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "인천대입구역",
+        "출발",
+        "인천대학교 송도캠퍼스 정보기술대학",
+        "도보",
+        "걸음수",
+        "시간",
+        "거리"
+      ],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "NAVERMAP_002_MEGABOX_PAST_SHOWTIME_DISABLED",
+      "name": "메가박스 송도 지난 상영시간 비활성 확인",
+      "url": "https://map.naver.com/",
+      "goal": "홈에서 메가박스 송도를 검색하고 클릭한 다음 예매 버튼을 눌러줘. 5월 19일로 선택했을 때 현재시간보다 상영시간이 지난 영화의 시간이 클릭되지 않는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "메가박스 송도",
+        "예매",
+        "5월 19일",
+        "상영시간",
+        "클릭되지 않음"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

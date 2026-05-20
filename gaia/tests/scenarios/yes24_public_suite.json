@@ -77,6 +77,25 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "YES24_006_PROJECT_HAIL_MARY_SIZE_COMPARE",
+      "name": "프로젝트 헤일메리 사이즈 비교 확인",
+      "url": "https://www.yes24.com/Product/Search?query=%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8%20%ED%97%A4%EC%9D%BC%EB%A9%94%EB%A6%AC",
+      "goal": "YES24에서 프로젝트 헤일메리 도서 검색 결과를 열고 첫 번째 상품을 클릭한다. 이후 상세 화면에서 사이즈비교 버튼을 클릭했을 때 도서의 가로와 세로 사이즈 정보가 정상적으로 표시되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "프로젝트 헤일메리",
+        "사이즈비교",
+        "가로",
+        "세로",
+        "mm"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

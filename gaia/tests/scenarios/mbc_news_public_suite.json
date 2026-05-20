@@ -77,6 +77,26 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "MBCNEWS_006_RESERVE_FORCE_SEARCH_ACCURACY",
+      "name": "예비군 검색 정확도순 결과 확인",
+      "url": "https://imnews.imbc.com/pc_main.html",
+      "goal": "MBC 뉴스 홈 화면에서 검색창에 \"예비군\"을 입력하여 검색을 수행한다. 이후 검색 결과 페이지에서 정렬 기준을 \"정확도순\"으로 변경했을 때 검색 결과 리스트가 정상적으로 갱신되고, 기사 제목 및 썸네일이 정상 표시되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "예비군",
+        "정확도순",
+        "검색 결과",
+        "기사",
+        "제목",
+        "썸네일"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

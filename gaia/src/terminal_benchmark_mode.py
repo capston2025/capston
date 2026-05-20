@@ -65,11 +65,16 @@ ReportOpener = Callable[[str], bool]
 GrafanaOpener = Callable[[str], bool]
 ScenarioFormOpener = Callable[..., Mapping[str, Any] | None]
 RecordPruner = Callable[..., Mapping[str, Any]]
+CatalogOverride = (
+    tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]
+    | Callable[[Mapping[str, Any]], tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]]
+)
 
 ALL_SITES_ALL_CASES_OPTION = "전체사이트 전체케이스 실행"
 EXTERNAL_PUBLIC_MANIFEST_PATH = Path("gaia/tests/scenarios/external_public_manifest.json")
 DEEP_QA_ALL_CASES_OPTION = "Deep QA 전체케이스 실행"
 DEEP_QA_BENCHMARK_MANIFEST_PATH = Path("gaia/tests/scenarios/deep_qa_benchmark_manifest.json")
+HUMAN_VS_GAIA_MANIFEST_PATH = Path("gaia/tests/scenarios/gaia_vs_human_manifest.json")
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
 SITE_DELETE_OPTION = "사이트 삭제"
@@ -95,6 +100,8 @@ BENCHMARK_QA_MODE_CHOICES = {
     "aggressive_qa": DEEP_ADAPTIVE_QA_MODE,
     DEEP_ADAPTIVE_QA_MODE: DEEP_ADAPTIVE_QA_MODE,
 }
+HUMAN_VS_GAIA_RUN_ALL_OPTION = "전체 사이트 전체 테스트 실행"
+HUMAN_VS_GAIA_SKIP_SITE_KEYS = frozenset({"inu_lms_hvh"})
 
 
 def build_terminal_benchmark_catalog(
@@ -160,6 +167,95 @@ def build_deep_qa_benchmark_catalog(
             }
         )
     return catalog, preset_map
+
+
+def build_human_vs_gaia_catalog(
+    payload: Mapping[str, Any],
+    *,
+    workspace_root: Path,
+    manifest_path: Path | str = HUMAN_VS_GAIA_MANIFEST_PATH,
+) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset], dict[str, set[str]]]:
+    resolved_manifest = (workspace_root / Path(manifest_path)).resolve()
+    try:
+        manifest_payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [], {}, {}
+    if not isinstance(manifest_payload, Mapping):
+        return [], {}, {}
+    sites = payload.get("sites") if isinstance(payload.get("sites"), Mapping) else {}
+    catalog: list[dict[str, Any]] = []
+    preset_map: dict[str, BenchmarkPreset] = {}
+    scenario_filter_map: dict[str, set[str]] = {}
+
+    for raw in list(manifest_payload.get("sites") or []):
+        if not isinstance(raw, Mapping):
+            continue
+        site_key = str(raw.get("site_key") or "").strip()
+        label = str(raw.get("label") or "").strip()
+        default_url = str(raw.get("default_url") or "").strip()
+        suite_path = str(raw.get("suite_path") or "").strip()
+        allowed_scenarios = {
+            str(item).strip()
+            for item in list(raw.get("allowed_scenarios") or [])
+            if str(item).strip()
+        }
+        host_aliases = tuple(
+            str(item).strip().lower()
+            for item in list(raw.get("host_aliases") or [])
+            if str(item).strip()
+        )
+        if not site_key or not label or not default_url or not suite_path or not allowed_scenarios:
+            continue
+
+        current = sites.get(site_key) if isinstance(sites, Mapping) else {}
+        current = current if isinstance(current, Mapping) else {}
+        registry_urls = [str(current.get("default_url") or "").strip()]
+        registry_urls.extend(list(current.get("urls") or []))
+        urls = build_url_history(
+            {
+                "default_url": default_url,
+                "urls": registry_urls,
+            }
+        )
+
+        preset = BenchmarkPreset(
+            key=site_key,
+            label=label,
+            default_url=default_url,
+            suite_path=suite_path,
+            host_aliases=host_aliases or tuple(filter(None, (extract_url_host(default_url),))),
+        )
+        preset_map[site_key] = preset
+        scenario_filter_map[site_key] = allowed_scenarios
+        catalog.append(
+            {
+                "key": site_key,
+                "label": label,
+                "default_url": urls[0] if urls else default_url,
+                "urls": urls[:8],
+                "suite_path": suite_path,
+                "suite_available": True,
+                "status_text": f"GAIA_VS_HUMAN {len(allowed_scenarios)}개",
+                "is_custom": True,
+            }
+        )
+
+    return catalog, preset_map, scenario_filter_map
+
+
+def _filter_suite_payload_for_allowed_scenarios(
+    suite_payload: Mapping[str, Any],
+    allowed_scenarios: set[str] | None,
+) -> dict[str, Any]:
+    if not allowed_scenarios:
+        return dict(suite_payload)
+    filtered = dict(suite_payload)
+    filtered["scenarios"] = [
+        dict(row)
+        for row in list(suite_payload.get("scenarios") or [])
+        if isinstance(row, Mapping) and str(row.get("id") or "").strip() in allowed_scenarios
+    ]
+    return filtered
 
 
 def normalize_benchmark_qa_mode(value: str | None) -> str | None:
@@ -1076,6 +1172,16 @@ def run_terminal_benchmark_mode(
     qa_mode: str | None = None,
     dedicated_deep_qa: bool = False,
     deep_qa_manifest_path: Path | str = DEEP_QA_BENCHMARK_MANIFEST_PATH,
+    site_prompt_title: str = "벤치 사이트를 선택하세요",
+    site_action_options: Sequence[str] | None = None,
+    allow_site_management: bool = True,
+    allow_all_sites_option: bool = True,
+    site_exit_option: str = SITE_EXIT_OPTION,
+    site_exit_result: int = 0,
+    site_leading_options: Sequence[str] | None = None,
+    site_special_action_handlers: Mapping[str, Callable[[], None]] | None = None,
+    scenario_filter_map: Mapping[str, set[str]] | None = None,
+    catalog_override: CatalogOverride | None = None,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
     auto_pull_attempted: set[str] = set()
@@ -1086,6 +1192,10 @@ def run_terminal_benchmark_mode(
         emit(f"Deep QA 벤치마크 프로필: {benchmark_qa_mode_label(normalized_qa_mode)} 모드로 실행합니다.")
     if dedicated_deep_qa:
         emit("Deep QA 전용 벤치마크: 기존 benchmark catalog/external public 150개와 분리된 suite만 사용합니다.")
+    action_options = tuple(
+        site_action_options
+        or ("새로운 테스트 추가", "기존 테스트 실행", "테스트 편집", SHARE_TESTS_OPTION, "지표 확인", "이전으로")
+    )
 
     while True:
         if dedicated_deep_qa:
@@ -1093,21 +1203,47 @@ def run_terminal_benchmark_mode(
                 workspace_root=workspace_root,
                 manifest_path=deep_qa_manifest_path,
             )
-            site_options = (all_cases_option,) + tuple(item["label"] for item in catalog) + (SITE_EXIT_OPTION,)
-        else:
+            effective_all_cases_option = all_cases_option
+            effective_allow_all_sites_option = True
+            effective_allow_site_management = False
+            effective_site_exit_option = SITE_EXIT_OPTION
+        elif catalog_override is None:
             catalog, preset_map = build_terminal_benchmark_catalog(registry)
-            site_options = (all_cases_option,) + tuple(item["label"] for item in catalog) + (
-                SITE_ADD_OPTION,
-                SITE_EDIT_OPTION,
-                SITE_DELETE_OPTION,
-                SITE_EXIT_OPTION,
-            )
-        selected_site = prompt_select(
-            "벤치 사이트를 선택하세요",
-            site_options,
-            default=all_cases_option,
+        elif callable(catalog_override):
+            catalog, preset_map = catalog_override(registry)
+        else:
+            catalog, preset_map = catalog_override
+        if not dedicated_deep_qa:
+            effective_all_cases_option = ALL_SITES_ALL_CASES_OPTION
+            effective_allow_all_sites_option = allow_all_sites_option
+            effective_allow_site_management = allow_site_management
+            effective_site_exit_option = site_exit_option
+        site_labels = tuple(item["label"] for item in catalog)
+        tail_options: list[str] = []
+        if effective_allow_site_management:
+            tail_options.extend((SITE_ADD_OPTION, SITE_EDIT_OPTION, SITE_DELETE_OPTION))
+        tail_options.append(effective_site_exit_option)
+        site_options = (
+            tuple(site_leading_options or ())
+            +
+            ((effective_all_cases_option,) if effective_allow_all_sites_option else tuple())
+            + site_labels
+            + tuple(tail_options)
         )
-        if selected_site == all_cases_option:
+        default_site_option = (
+            effective_all_cases_option
+            if effective_allow_all_sites_option
+            else (
+                (tuple(site_leading_options or ())[0] if site_leading_options else None)
+                or (site_labels[0] if site_labels else effective_site_exit_option)
+            )
+        )
+        selected_site = prompt_select(
+            site_prompt_title,
+            site_options,
+            default=default_site_option,
+        )
+        if effective_allow_all_sites_option and selected_site == effective_all_cases_option:
             _handle_all_sites_all_cases_run(
                 workspace_root=workspace_root,
                 prompt_select=prompt_select,
@@ -1121,10 +1257,16 @@ def run_terminal_benchmark_mode(
                 session_prefix="terminal-deep-qa" if dedicated_deep_qa else "terminal-external-public",
             )
             continue
-        if selected_site == SITE_EXIT_OPTION:
-            emit("벤치마킹 모드를 종료합니다.")
-            return 0
-        if selected_site in {SITE_ADD_OPTION, SITE_EDIT_OPTION, SITE_DELETE_OPTION}:
+        if site_special_action_handlers and selected_site in site_special_action_handlers:
+            site_special_action_handlers[selected_site]()
+            continue
+        if selected_site == effective_site_exit_option:
+            if effective_site_exit_option == SITE_EXIT_OPTION:
+                emit("벤치마킹 모드를 종료합니다.")
+            else:
+                emit("이전 단계로 돌아갑니다.")
+            return int(site_exit_result)
+        if effective_allow_site_management and selected_site in {SITE_ADD_OPTION, SITE_EDIT_OPTION, SITE_DELETE_OPTION}:
             registry = manage_benchmark_sites(
                 workspace_root=workspace_root,
                 registry=registry,
@@ -1176,7 +1318,7 @@ def run_terminal_benchmark_mode(
         while True:
             action = prompt_select(
                 f"{preset.label} 작업을 선택하세요",
-                ("새로운 테스트 추가", "기존 테스트 실행", "테스트 편집", SHARE_TESTS_OPTION, "지표 확인", "이전으로"),
+                action_options,
                 default="기존 테스트 실행",
             )
             if action == "이전으로":
@@ -1208,6 +1350,10 @@ def run_terminal_benchmark_mode(
             )
             if suite_payload is None:
                 continue
+            suite_payload = _filter_suite_payload_for_allowed_scenarios(
+                suite_payload,
+                scenario_filter_map.get(preset.key) if scenario_filter_map else None,
+            )
 
             if action == SHARE_TESTS_OPTION:
                 _handle_team_suite_sharing(
@@ -1392,6 +1538,91 @@ def _handle_all_sites_all_cases_run(
     )
 
 
+def run_terminal_human_vs_gaia_mode(
+    *,
+    workspace_root: Path,
+    prompt_select: PromptSelectFn,
+    prompt: PromptTextFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn = print,
+    registry_path: Path | None = None,
+    run_suite_handler: Callable[..., dict[str, Any]] = run_benchmark_suite,
+    report_writer: Callable[..., Path] = write_benchmark_report_html,
+    report_opener: Callable[[Path], bool] = open_benchmark_report,
+    grafana_opener: GrafanaOpener = webbrowser.open_new_tab,
+    record_pruner: RecordPruner = prune_benchmark_reports,
+    scenario_form_opener: ScenarioFormOpener = open_scenario_form_gui,
+    push_metrics: bool = False,
+    monitoring_config_path: Path | None = None,
+    auto_pull_shared_tests: bool = False,
+) -> int:
+    registry = load_benchmark_registry(registry_path)
+
+    def _build_catalog(
+        current_registry: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset], dict[str, set[str]]]:
+        return build_human_vs_gaia_catalog(
+            current_registry,
+            workspace_root=workspace_root,
+        )
+
+    def _build_catalog_override(
+        current_registry: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
+        current_catalog, current_preset_map, _ = _build_catalog(current_registry)
+        return current_catalog, current_preset_map
+
+    _, _, scenario_filter_map = _build_catalog(registry)
+
+    def _run_all_sites() -> None:
+        current_registry = load_benchmark_registry(registry_path)
+        current_catalog, current_preset_map, current_scenario_filter_map = _build_catalog(current_registry)
+        _run_human_vs_gaia_all_sites(
+            workspace_root=workspace_root,
+            catalog=current_catalog,
+            preset_map=current_preset_map,
+            scenario_filter_map=current_scenario_filter_map,
+            prompt_select=prompt_select,
+            prompt_non_empty=prompt_non_empty,
+            emit=emit,
+            run_suite_handler=run_suite_handler,
+            push_metrics=push_metrics,
+            monitoring_config_path=monitoring_config_path,
+            runner_id=resolve_runner_id(env=os.environ),
+        )
+
+    site_special_action_handlers = {
+        HUMAN_VS_GAIA_RUN_ALL_OPTION: _run_all_sites
+    }
+    return run_terminal_benchmark_mode(
+        workspace_root=workspace_root,
+        prompt_select=prompt_select,
+        prompt=prompt,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        registry_path=registry_path,
+        run_suite_handler=run_suite_handler,
+        report_writer=report_writer,
+        report_opener=report_opener,
+        grafana_opener=grafana_opener,
+        record_pruner=record_pruner,
+        scenario_form_opener=scenario_form_opener,
+        push_metrics=push_metrics,
+        monitoring_config_path=monitoring_config_path,
+        auto_pull_shared_tests=auto_pull_shared_tests,
+        site_prompt_title="GAIA_VS_HUMAN 사이트를 선택하세요",
+        site_action_options=("기존 테스트 실행", "지표 확인", "이전으로"),
+        allow_site_management=False,
+        allow_all_sites_option=False,
+        site_exit_option="이전으로",
+        site_exit_result=130,
+        site_leading_options=(HUMAN_VS_GAIA_RUN_ALL_OPTION,),
+        site_special_action_handlers=site_special_action_handlers,
+        scenario_filter_map=scenario_filter_map,
+        catalog_override=_build_catalog_override,
+    )
+
+
 def _find_scenario(suite_payload: Mapping[str, Any], scenario_id: str) -> dict[str, Any] | None:
     target_id = str(scenario_id or "").strip()
     for raw in list(suite_payload.get("scenarios") or []):
@@ -1404,6 +1635,129 @@ def _find_scenario(suite_payload: Mapping[str, Any], scenario_id: str) -> dict[s
 
 def _suite_has_scenarios(suite_payload: Mapping[str, Any]) -> bool:
     return any(isinstance(row, Mapping) for row in list(suite_payload.get("scenarios") or []))
+
+
+def _run_human_vs_gaia_all_sites(
+    *,
+    workspace_root: Path,
+    catalog: Sequence[Mapping[str, Any]],
+    preset_map: Mapping[str, BenchmarkPreset],
+    scenario_filter_map: Mapping[str, set[str]],
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    run_suite_handler: Callable[..., dict[str, Any]],
+    push_metrics: bool,
+    monitoring_config_path: Path | None,
+    runner_id: str,
+) -> None:
+    runnable_entries: list[tuple[Mapping[str, Any], BenchmarkPreset]] = []
+    for site_entry in catalog:
+        site_key = str(site_entry.get("key") or "").strip()
+        if not site_key or site_key in HUMAN_VS_GAIA_SKIP_SITE_KEYS:
+            continue
+        preset = preset_map.get(site_key)
+        if preset is None:
+            continue
+        runnable_entries.append((site_entry, preset))
+
+    if not runnable_entries:
+        emit("실행할 수 있는 GAIA_VS_HUMAN 사이트가 없습니다.")
+        return
+
+    push_metrics_for_run = _resolve_push_metrics_for_run(
+        push_metrics=push_metrics,
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    total = len(runnable_entries)
+    total_case_count = sum(
+        max(0, len(scenario_filter_map.get(str(preset.key or "").strip(), set())))
+        for _, preset in runnable_entries
+    )
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    completed_case_count = 0
+
+    emit(
+        "GAIA_VS_HUMAN 전체 사이트 전체 테스트를 시작합니다. "
+        f"(LMS 제외, 총 {total}개 사이트 / {total_case_count}개 케이스)"
+    )
+
+    for index, (site_entry, preset) in enumerate(runnable_entries, 1):
+        planned_site_case_count = max(
+            0,
+            len(scenario_filter_map.get(str(preset.key or "").strip(), set())),
+        )
+        selected_url = str(site_entry.get("default_url") or preset.default_url or "").strip()
+        if not selected_url:
+            skipped_count += 1
+            completed_case_count += planned_site_case_count
+            emit(f"[{index}/{total}] {preset.label} - URL이 없어 건너뜁니다.")
+            continue
+
+        suite_payload = _load_terminal_suite_payload(
+            workspace_root=workspace_root,
+            preset=preset,
+            selected_url=selected_url,
+            site_entry=site_entry,
+            emit=emit,
+        )
+        if suite_payload is None:
+            failed_count += 1
+            completed_case_count += planned_site_case_count
+            emit(f"[{index}/{total}] {preset.label} - suite 로드 실패")
+            continue
+
+        suite_payload = _filter_suite_payload_for_allowed_scenarios(
+            suite_payload,
+            scenario_filter_map.get(preset.key),
+        )
+        site_case_count = len(suite_payload.get("scenarios", []))
+        if not _suite_has_scenarios(suite_payload):
+            skipped_count += 1
+            completed_case_count += planned_site_case_count
+            emit(f"[{index}/{total}] {preset.label} - 실행 가능한 시나리오가 없어 건너뜁니다.")
+            continue
+
+        case_start = completed_case_count + 1
+        case_end = completed_case_count + site_case_count
+        case_progress = (
+            f"{case_start}/{total_case_count}"
+            if case_start == case_end
+            else f"{case_start}-{case_end}/{total_case_count}"
+        )
+        emit(f"[사이트 {index}/{total} | 케이스 {case_progress}] {preset.label} 실행 중")
+        result = run_suite_handler(
+            workspace_root=workspace_root,
+            preset=preset,
+            target_url=selected_url,
+            suite_payload=suite_payload,
+            emit=emit,
+            run_tag="full_suite",
+            push_metrics=push_metrics_for_run,
+            runner_id=runner_id,
+        )
+        status = str(result.get("status") or "").strip().lower()
+        if status == "success":
+            success_count += 1
+        elif status in {"empty", "missing_suite", "missing_manifest"}:
+            skipped_count += 1
+        else:
+            failed_count += 1
+        completed_case_count += site_case_count
+
+    emit(
+        "GAIA_VS_HUMAN 전체 사이트 전체 테스트 완료"
+        f" | success={success_count}"
+        f" | failed={failed_count}"
+        f" | skipped={skipped_count}"
+    )
 
 
 def _load_terminal_suite_payload(

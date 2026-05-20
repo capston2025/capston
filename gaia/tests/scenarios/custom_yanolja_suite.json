@@ -1,0 +1,43 @@
+{
+  "suite_id": "yanolja_public_v1",
+  "site": {
+    "name": "야놀자",
+    "base_url": "https://nol.yanolja.com/",
+    "mode": "public_browse"
+  },
+  "grader_configs": {},
+  "scenarios": [
+    {
+      "id": "NOL_001_BENCHMARK",
+      "name": "야놀자 콘서트 티켓 좌석 정보 확인",
+      "url": "https://nol.yanolja.com/",
+      "goal": "홈에서 포스트 말론 내한공연 검색 후, 가격 클릭했을때 좌석에 따른 가격부분으로 이동하고, 가격 전체보기 눌러서 지정석에 따른 가격표가 나오는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    },
+    {
+      "id": "NOL_002_INCHEON_SONGDO_LOWEST_PRICE_SORT",
+      "name": "야놀자 인천 송도 호텔 낮은 가격순 정렬 확인",
+      "url": "https://nol.yanolja.com/",
+      "goal": "홈에서 호텔/리조트 클릭후에 지역은 인천 누르고 송도/소래포구 누른 뒤, 날짜 6/2일 클릭하고 적용하기 눌러줘 그 다음 정렬 눌러서 예약가 낮은 순으로 클릭한 뒤, 필터에 맞게 나타나는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "time_budget_sec": 300,
+      "expected_signals": [
+        "호텔/리조트",
+        "인천",
+        "송도/소래포구",
+        "적용하기",
+        "예약가 낮은 순"
+      ]
+    }
+  ]
+}

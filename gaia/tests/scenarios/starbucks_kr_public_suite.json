@@ -1,0 +1,55 @@
+{
+  "suite_id": "starbucks_kr_public_v1",
+  "site": {
+    "name": "Starbucks Korea",
+    "base_url": "https://www.starbucks.co.kr/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "STARBUCKS_001_STAINLESS_COLDCUP_PRODUCT_INFO",
+      "name": "스테인리스 텀블러 상품 상세 더보기 확인",
+      "url": "https://www.starbucks.co.kr/",
+      "goal": "홈에서 MENU를 누른 뒤 스테인리스 텀블러를 클릭하고, SS 시그니처 퀸텐 콜드컵 591ml 상품을 찾아 클릭해줘. 이후 더보기를 눌렀을 때 가려져 있던 상품 정보가 화면에 잘 보이는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "MENU",
+        "스테인리스 텀블러",
+        "SS 시그니처 퀸텐 콜드컵 591ml",
+        "더보기",
+        "상품 정보"
+      ],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "STARBUCKS_002_CAKE_PRODUCT_DETAIL_CONTENT",
+      "name": "케이크 상품 상세 내용 확인",
+      "url": "https://www.starbucks.co.kr/",
+      "goal": "홈에서 MENU를 누른 뒤 케이크를 클릭하고, 메뉴들 중 초코품은 부생카를 찾아 이미지로 된 상품을 클릭해줘. 이후 초코품은 부생카에 대한 내용이 화면에 잘 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "MENU",
+        "케이크",
+        "초코품은 부생카",
+        "상품",
+        "내용"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

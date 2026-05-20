@@ -126,6 +126,8 @@ class CodexAppServerClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=str(self._cwd),
         )

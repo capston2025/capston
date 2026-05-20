@@ -77,6 +77,39 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "NAVER_006_WEBTOON",
+      "name": "네이버에서 웹툰 이동 확인",
+      "url": "https://www.naver.com/",
+      "goal": "웹툰 클릭하고, 검색창에 취사병 전설이 되다 검색후, 해당 웹툰 탭 들어가서 최신화부터 필터 클릭 후 다시 1화부터 클릭했을때 1화,2화,3화 순으로 나타나는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    },
+    {
+      "id": "NAVER_007_REAL_ESTATE_VILLA_FILTER",
+      "name": "Real Estate Villa/House Filter",
+      "url": "https://www.naver.com/",
+      "goal": "홈에서 부동산을 클릭한 후 매물을 눌러줘. 검색에 송도를 입력하고, 검색결과에서 인천시 연수구 송도동을 클릭해줘. 이후 빌라주택을 눌렀을 때 빌라, 주택 필터의 결과만 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "time_budget_sec": 600,
+      "expected_signals": [
+        "부동산",
+        "매물",
+        "인천시 연수구 송도동",
+        "빌라주택",
+        "빌라",
+        "주택"
+      ]
     }
   ]
 }
