@@ -79,8 +79,8 @@ def test_benchmark_presets_include_shared_public_sites_and_exclude_mdn() -> None
     assert "jobkorea" in keys
     assert "seoul_culture" in keys
     assert "national_museum" in keys
+    assert "coupang" in keys
     assert "naver_shopping" not in keys
-    assert "coupang" not in keys
     assert "gmarket" not in keys
     assert "oliveyoung" not in keys
     assert "cgv" not in keys
