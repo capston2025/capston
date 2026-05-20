@@ -28,7 +28,7 @@ class LLMVisionClient:
         "openai": {
             "api_key_env": "OPENAI_API_KEY",
             "base_url_env": "OPENAI_BASE_URL",
-            "model_env": "",
+            "model_env": "OPENAI_MODEL",
             "default_base_url": "",
             "default_model": "gpt-5.5",
             "display_name": "OpenAI",
