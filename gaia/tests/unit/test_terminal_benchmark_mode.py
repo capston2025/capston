@@ -3,16 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, _run_terminal_benchmark_mode, main, run_launcher
+from gaia.src.benchmark_suite_sharing import SharedSuiteNotFound
 from gaia.src.benchmark_manager import BenchmarkPreset
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
     DEEP_QA_ALL_CASES_OPTION,
     DEEP_QA_BENCHMARK_MANIFEST_PATH,
     HUMAN_VS_GAIA_RUN_ALL_OPTION,
+    _run_human_vs_gaia_all_sites,
     _main,
     _grafana_url_from_monitoring_config,
     append_scenario_to_suite,
+    build_human_vs_gaia_catalog,
     build_single_scenario_suite_payload,
     build_deep_qa_benchmark_catalog,
     build_terminal_benchmark_catalog,
@@ -68,6 +73,18 @@ class _PromptScript:
         if self._non_empty:
             return self._non_empty.pop(0)
         return default or ""
+
+
+@pytest.fixture(autouse=True)
+def _disable_shared_suite_network(monkeypatch) -> None:
+    def _missing_shared_suite(*args, **kwargs):
+        del args, kwargs
+        raise SharedSuiteNotFound("disabled in unit tests")
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.download_shared_suite",
+        _missing_shared_suite,
+    )
 
 
 def _repo_root() -> Path:
@@ -349,6 +366,103 @@ def test_run_terminal_human_vs_gaia_mode_can_run_all_sites_except_lms(tmp_path: 
     assert [call["target_url"] for call in calls] == ["https://a.example", "https://b.example"]
 
 
+def test_build_human_vs_gaia_catalog_prefers_manifest_default_url(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "sites": [
+                    {
+                        "site_key": "site_a",
+                        "label": "Site A",
+                        "default_url": "https://manifest.example",
+                        "suite_path": "gaia/tests/scenarios/a.json",
+                        "allowed_scenarios": ["A_001"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    catalog, preset_map, _ = build_human_vs_gaia_catalog(
+        {
+            "sites": {
+                "site_a": {
+                    "default_url": "https://stale.example",
+                    "urls": ["https://older.example"],
+                }
+            }
+        },
+        workspace_root=tmp_path,
+        manifest_path=manifest_path,
+    )
+
+    assert catalog[0]["default_url"] == "https://manifest.example"
+    assert catalog[0]["urls"][0] == "https://manifest.example"
+    assert "https://stale.example" in catalog[0]["urls"]
+    assert preset_map["site_a"].default_url == "https://manifest.example"
+
+
+def test_human_vs_gaia_all_sites_advances_case_progress_for_skipped_sites(tmp_path: Path, monkeypatch) -> None:
+    catalog = [
+        {"key": "site_a", "label": "Site A", "default_url": "https://a.example"},
+        {"key": "site_b", "label": "Site B", "default_url": "https://b.example"},
+    ]
+    preset_map = {
+        "site_a": BenchmarkPreset(
+            key="site_a",
+            label="Site A",
+            default_url="https://a.example",
+            suite_path="gaia/tests/scenarios/a.json",
+            host_aliases=("a.example",),
+        ),
+        "site_b": BenchmarkPreset(
+            key="site_b",
+            label="Site B",
+            default_url="https://b.example",
+            suite_path="gaia/tests/scenarios/b.json",
+            host_aliases=("b.example",),
+        ),
+    }
+    scenario_filter_map = {"site_a": {"A_001", "A_002"}, "site_b": {"B_001"}}
+    emitted: list[str] = []
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._resolve_push_metrics_for_run",
+        lambda **kwargs: False,
+    )
+
+    def fake_load_suite_payload(**kwargs):
+        if kwargs["preset"].key == "site_a":
+            return {"suite_id": "a", "scenarios": []}
+        return {"suite_id": "b", "scenarios": [{"id": "B_001", "goal": "ok"}]}
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._load_terminal_suite_payload",
+        fake_load_suite_payload,
+    )
+
+    _run_human_vs_gaia_all_sites(
+        workspace_root=tmp_path,
+        catalog=catalog,
+        preset_map=preset_map,
+        scenario_filter_map=scenario_filter_map,
+        prompt_select=lambda *args, **kwargs: "",
+        prompt_non_empty=lambda *args, **kwargs: "",
+        emit=emitted.append,
+        run_suite_handler=lambda **kwargs: calls.append(kwargs) or {"status": "success"},
+        push_metrics=False,
+        monitoring_config_path=None,
+        runner_id="runner",
+    )
+
+    assert [call["preset"].key for call in calls] == ["site_b"]
+    assert any("3/3" in message for message in emitted)
+
+
 def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path) -> None:
     script = _PromptScript(selections=["종료"])
 
@@ -484,7 +598,7 @@ def test_run_terminal_benchmark_mode_connects_before_all_sites_all_cases(
         monitoring_config_path=monitoring_config_path,
     )
 
-    assert "scripts/gaia_monitor_connect.py" in captured_cmd[1]
+    assert Path(captured_cmd[1]).as_posix().endswith("scripts/gaia_monitor_connect.py")
     assert captured_cmd[-2:] == ["--token", "secret-token"]
     assert len(calls) == 1
     assert calls[0]["push_metrics"] is True
@@ -655,7 +769,7 @@ def test_run_terminal_benchmark_mode_can_connect_before_push_metrics(
         monitoring_config_path=monitoring_config_path,
     )
 
-    assert "scripts/gaia_monitor_connect.py" in captured_cmd[1]
+    assert Path(captured_cmd[1]).as_posix().endswith("scripts/gaia_monitor_connect.py")
     assert captured_cmd[-2:] == ["--token", "secret-token"]
     assert len(calls) == 1
     assert calls[0]["push_metrics"] is True

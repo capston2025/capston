@@ -2,7 +2,7 @@
   "manifest_id": "external_public_korea_focused_v2",
   "name": "Korea-focused external public benchmark",
   "site_count": 35,
-  "scenario_count": 155,
+  "scenario_count": 173,
   "selection_note": "35 external public sites, mostly Korea-facing services familiar to the presentation audience. CAPTCHA-heavy or bot-wall-prone sites are excluded from the primary curated pack.",
   "suites": [
     {

@@ -71,6 +71,10 @@ ReportOpener = Callable[[str], bool]
 GrafanaOpener = Callable[[str], bool]
 ScenarioFormOpener = Callable[..., Mapping[str, Any] | None]
 RecordPruner = Callable[..., Mapping[str, Any]]
+CatalogOverride = (
+    tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]
+    | Callable[[Mapping[str, Any]], tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]]
+)
 
 ALL_SITES_ALL_CASES_OPTION = "전체사이트 전체케이스 실행"
 EXTERNAL_PUBLIC_MANIFEST_PATH = Path("gaia/tests/scenarios/external_public_manifest.json")
@@ -206,10 +210,12 @@ def build_human_vs_gaia_catalog(
 
         current = sites.get(site_key) if isinstance(sites, Mapping) else {}
         current = current if isinstance(current, Mapping) else {}
+        registry_urls = [str(current.get("default_url") or "").strip()]
+        registry_urls.extend(list(current.get("urls") or []))
         urls = build_url_history(
             {
-                "default_url": str(current.get("default_url") or default_url).strip() or default_url,
-                "urls": list(current.get("urls") or []),
+                "default_url": default_url,
+                "urls": registry_urls,
             }
         )
 
@@ -1176,7 +1182,7 @@ def run_terminal_benchmark_mode(
     site_leading_options: Sequence[str] | None = None,
     site_special_action_handlers: Mapping[str, Callable[[], None]] | None = None,
     scenario_filter_map: Mapping[str, set[str]] | None = None,
-    catalog_override: tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]] | None = None,
+    catalog_override: CatalogOverride | None = None,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
     auto_pull_attempted: set[str] = set()
@@ -1204,6 +1210,8 @@ def run_terminal_benchmark_mode(
             effective_site_exit_option = SITE_EXIT_OPTION
         elif catalog_override is None:
             catalog, preset_map = build_terminal_benchmark_catalog(registry)
+        elif callable(catalog_override):
+            catalog, preset_map = catalog_override(registry)
         else:
             catalog, preset_map = catalog_override
         if not dedicated_deep_qa:
@@ -1550,16 +1558,31 @@ def run_terminal_human_vs_gaia_mode(
     auto_pull_shared_tests: bool = False,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
-    catalog, preset_map, scenario_filter_map = build_human_vs_gaia_catalog(
-        registry,
-        workspace_root=workspace_root,
-    )
-    site_special_action_handlers = {
-        HUMAN_VS_GAIA_RUN_ALL_OPTION: lambda: _run_human_vs_gaia_all_sites(
+
+    def _build_catalog(
+        current_registry: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset], dict[str, set[str]]]:
+        return build_human_vs_gaia_catalog(
+            current_registry,
             workspace_root=workspace_root,
-            catalog=catalog,
-            preset_map=preset_map,
-            scenario_filter_map=scenario_filter_map,
+        )
+
+    def _build_catalog_override(
+        current_registry: Mapping[str, Any],
+    ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
+        current_catalog, current_preset_map, _ = _build_catalog(current_registry)
+        return current_catalog, current_preset_map
+
+    _, _, scenario_filter_map = _build_catalog(registry)
+
+    def _run_all_sites() -> None:
+        current_registry = load_benchmark_registry(registry_path)
+        current_catalog, current_preset_map, current_scenario_filter_map = _build_catalog(current_registry)
+        _run_human_vs_gaia_all_sites(
+            workspace_root=workspace_root,
+            catalog=current_catalog,
+            preset_map=current_preset_map,
+            scenario_filter_map=current_scenario_filter_map,
             prompt_select=prompt_select,
             prompt_non_empty=prompt_non_empty,
             emit=emit,
@@ -1568,6 +1591,9 @@ def run_terminal_human_vs_gaia_mode(
             monitoring_config_path=monitoring_config_path,
             runner_id=resolve_runner_id(env=os.environ),
         )
+
+    site_special_action_handlers = {
+        HUMAN_VS_GAIA_RUN_ALL_OPTION: _run_all_sites
     }
     return run_terminal_benchmark_mode(
         workspace_root=workspace_root,
@@ -1594,7 +1620,7 @@ def run_terminal_human_vs_gaia_mode(
         site_leading_options=(HUMAN_VS_GAIA_RUN_ALL_OPTION,),
         site_special_action_handlers=site_special_action_handlers,
         scenario_filter_map=scenario_filter_map,
-        catalog_override=(catalog, preset_map),
+        catalog_override=_build_catalog_override,
     )
 
 
@@ -1665,9 +1691,14 @@ def _run_human_vs_gaia_all_sites(
     )
 
     for index, (site_entry, preset) in enumerate(runnable_entries, 1):
+        planned_site_case_count = max(
+            0,
+            len(scenario_filter_map.get(str(preset.key or "").strip(), set())),
+        )
         selected_url = str(site_entry.get("default_url") or preset.default_url or "").strip()
         if not selected_url:
             skipped_count += 1
+            completed_case_count += planned_site_case_count
             emit(f"[{index}/{total}] {preset.label} - URL이 없어 건너뜁니다.")
             continue
 
@@ -1680,6 +1711,7 @@ def _run_human_vs_gaia_all_sites(
         )
         if suite_payload is None:
             failed_count += 1
+            completed_case_count += planned_site_case_count
             emit(f"[{index}/{total}] {preset.label} - suite 로드 실패")
             continue
 
@@ -1692,6 +1724,7 @@ def _run_human_vs_gaia_all_sites(
         )
         if not _suite_has_scenarios(suite_payload):
             skipped_count += 1
+            completed_case_count += planned_site_case_count
             emit(f"[{index}/{total}] {preset.label} - 실행 가능한 시나리오가 없어 건너뜁니다.")
             continue
 
