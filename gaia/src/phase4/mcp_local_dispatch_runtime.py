@@ -12,6 +12,7 @@ from gaia.src.phase4.mcp_openclaw_dispatch_runtime import (
     dispatch_openclaw_console_logs,
     ensure_openclaw_profile,
     get_openclaw_session_url,
+    reset_openclaw_scenario_state,
 )
 
 _OPENCLAW_BROWSER_ACTIONS = {
@@ -59,6 +60,24 @@ def delete_browser_profile(
 ) -> DispatchResult:
     status_code, payload, text = delete_openclaw_profile(
         raw_base_url,
+        profile=profile,
+        timeout=timeout,
+    )
+    return DispatchResult(status_code=int(status_code), payload=payload, text=str(text or ""))
+
+
+def reset_browser_scenario_state(
+    raw_base_url: str | None,
+    *,
+    session_id: str,
+    url: str,
+    profile: str = "",
+    timeout: Any = None,
+) -> DispatchResult:
+    status_code, payload, text = reset_openclaw_scenario_state(
+        raw_base_url,
+        session_id=session_id,
+        url=url,
         profile=profile,
         timeout=timeout,
     )

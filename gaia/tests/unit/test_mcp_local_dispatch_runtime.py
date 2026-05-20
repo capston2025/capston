@@ -154,3 +154,25 @@ def test_close_mcp_session_routes_to_openclaw(monkeypatch) -> None:
     assert result.status_code == 200
     assert result.payload["reason_code"] == "ok"
     assert calls == ["s-close"]
+
+
+def test_reset_browser_scenario_state_routes_to_openclaw(monkeypatch) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_reset(raw_base_url, *, session_id, url, profile="", timeout=None):
+        del raw_base_url, timeout
+        calls.append((str(session_id), str(url), str(profile)))
+        return 200, {"success": True, "reason_code": "ok", "profile": profile}, ""
+
+    monkeypatch.setattr(runtime, "reset_openclaw_scenario_state", fake_reset)
+
+    result = runtime.reset_browser_scenario_state(
+        "http://127.0.0.1:8000",
+        session_id="bench-s1:reset",
+        url="https://example.test",
+        profile="openclaw",
+    )
+
+    assert result.status_code == 200
+    assert result.payload["reason_code"] == "ok"
+    assert calls == [("bench-s1:reset", "https://example.test", "openclaw")]

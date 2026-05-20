@@ -259,6 +259,47 @@ def test_delete_openclaw_profile_stops_and_deletes_profile(monkeypatch) -> None:
     ]
 
 
+def test_reset_openclaw_scenario_state_clears_storage_and_closes_reset_tab(monkeypatch) -> None:
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime, "_cleanup_about_blank_tabs", lambda **kwargs: None)
+    runtime._clear_session_target("bench-s1:reset")
+    calls: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        del base_url, timeout
+        calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if path == "/tabs/open":
+            return 200, {"targetId": "tab-reset", "url": payload["url"]}, ""
+        if path in {"/cookies/clear", "/storage/local/clear", "/storage/session/clear"}:
+            return 200, {"ok": True, "targetId": payload["targetId"]}, ""
+        if path == "/tabs/tab-reset":
+            return 200, {"ok": True}, ""
+        raise AssertionError(path)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.reset_openclaw_scenario_state(
+        None,
+        session_id="bench-s1:reset",
+        url="https://shop.example.test/product/1",
+        profile="openclaw",
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["targetId"] == "tab-reset"
+    assert [call[1] for call in calls] == [
+        "/tabs/open",
+        "/cookies/clear",
+        "/storage/local/clear",
+        "/storage/session/clear",
+        "/tabs/tab-reset",
+    ]
+    assert calls[0][3] == {"url": "https://shop.example.test/product/1", "profile": "openclaw"}
+    assert calls[1][3] == {"targetId": "tab-reset", "profile": "openclaw"}
+
+
 def test_dispatch_openclaw_goto_uses_session_profile(monkeypatch) -> None:
     monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
     runtime._clear_session_target("profile-s1")

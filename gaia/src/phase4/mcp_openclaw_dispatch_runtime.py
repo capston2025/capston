@@ -841,6 +841,95 @@ def delete_openclaw_profile(
     )
 
 
+def reset_openclaw_scenario_state(
+    raw_base_url: str | None,
+    *,
+    session_id: str,
+    url: str,
+    profile: str = "",
+    timeout: Any = None,
+) -> Tuple[int, Dict[str, Any], str]:
+    """Clear one scenario's browser state while keeping the OpenClaw process warm.
+
+    Cookies are browser-context wide. localStorage/sessionStorage are origin scoped,
+    so the reset tab first navigates to the scenario start URL before clearing them.
+    """
+
+    base_url = _resolve_base_url(raw_base_url)
+    reset_session_id = str(session_id or "benchmark-reset").strip() or "benchmark-reset"
+    profile_name = _session_profile(reset_session_id, profile)
+    target_id = ""
+    clear_results: List[Dict[str, Any]] = []
+    try:
+        state = _ensure_target(
+            base_url=base_url,
+            session_id=reset_session_id,
+            requested_url=_normalize_url(url) or "about:blank",
+            timeout=timeout,
+        )
+        target_id = str(state.get("target_id") or "").strip()
+        if not target_id:
+            return _normalize_failure(409, {"error": "openclaw_reset_target_missing"}, "")
+
+        for label, path in (
+            ("cookies", "/cookies/clear"),
+            ("localStorage", "/storage/local/clear"),
+            ("sessionStorage", "/storage/session/clear"),
+        ):
+            status_code, data, text = _request(
+                "POST",
+                base_url=base_url,
+                path=path,
+                timeout=timeout,
+                payload={"targetId": target_id, "profile": profile_name},
+            )
+            ok = status_code < 400 and bool((data or {}).get("ok", True))
+            clear_results.append(
+                {
+                    "kind": label,
+                    "ok": ok,
+                    "status_code": status_code,
+                    "reason": "" if ok else str((data or {}).get("error") or text or "clear_failed"),
+                }
+            )
+    except Exception as exc:
+        return _normalize_failure(500, {"error": f"openclaw_scenario_state_reset_failed: {exc}"}, "")
+    finally:
+        if target_id:
+            try:
+                _request(
+                    "DELETE",
+                    base_url=base_url,
+                    path=f"/tabs/{quote(target_id, safe='')}",
+                    timeout=timeout,
+                    params={"profile": profile_name},
+                )
+            except Exception:
+                pass
+        _clear_session_target(reset_session_id)
+
+    failed = [item for item in clear_results if not bool(item.get("ok"))]
+    if failed:
+        reason = "; ".join(
+            f"{item.get('kind')}: {item.get('reason') or item.get('status_code')}" for item in failed
+        )
+        return _normalize_failure(500, {"error": f"openclaw_scenario_state_reset_incomplete: {reason}"}, "")
+
+    return (
+        200,
+        {
+            "success": True,
+            "ok": True,
+            "reason_code": "ok",
+            "profile": profile_name,
+            "targetId": target_id,
+            "url": _normalize_url(url) or "about:blank",
+            "cleared": clear_results,
+        },
+        "",
+    )
+
+
 def _role_to_tag(role: str) -> str:
     return _ROLE_TO_TAG.get(str(role or "").strip().lower(), "div")
 

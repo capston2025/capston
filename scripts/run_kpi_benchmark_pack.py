@@ -38,6 +38,12 @@ from scripts.benchmark_blocking import (
     normalize_blocked_user_action_row,
     summary_reason_code_summary,
 )
+from scripts.run_goal_benchmark import (
+    RUNTIME_ISOLATION_CHOICES,
+    _build_runtime_policy,
+    _normalize_runtime_isolation,
+    _prewarm_benchmark_runtime,
+)
 from scripts.runner_identity import resolve_runner_id
 
 
@@ -239,6 +245,7 @@ def _run_suite(
     runner_id: str,
     env: Dict[str, str],
     qa_mode: str | None = None,
+    runtime_isolation: str | None = None,
 ) -> Dict[str, Any]:
     started = time.time()
     before = time.time()
@@ -250,6 +257,7 @@ def _run_suite(
         push_metrics=push_metrics,
         runner_id=runner_id,
         qa_mode=qa_mode,
+        runtime_isolation=runtime_isolation,
     )
     proc = subprocess.Popen(
         cmd,
@@ -300,8 +308,10 @@ def _build_run_suite_command(
     push_metrics: bool,
     runner_id: str = "",
     qa_mode: str | None = None,
+    runtime_isolation: str | None = None,
 ) -> List[str]:
     normalized_qa_mode = _normalize_qa_mode(qa_mode)
+    normalized_runtime_isolation = _normalize_runtime_isolation(runtime_isolation)
     cmd = [
         sys.executable,
         str(RUN_SINGLE),
@@ -318,6 +328,8 @@ def _build_run_suite_command(
         cmd.extend(["--runner-id", str(runner_id)])
     if normalized_qa_mode:
         cmd.extend(["--qa-mode", normalized_qa_mode])
+    if normalized_runtime_isolation:
+        cmd.extend(["--runtime-isolation", normalized_runtime_isolation])
     if push_metrics:
         cmd.append("--push-metrics")
     return cmd
@@ -383,6 +395,7 @@ def _write_markdown(path: Path, report: Dict[str, Any]) -> None:
     lines.append(f"- runner_id: {report.get('runner_id', 'unknown')}")
     lines.append(f"- qa_mode: {report.get('qa_mode', 'off')}")
     lines.append(f"- benchmark_mode: {report.get('benchmark_mode', 'standard')}")
+    lines.append(f"- runtime_isolation: {report.get('runtime_isolation', 'unknown')}")
     lines.append("")
     lines.append("## Overall KPI")
     lines.append("")
@@ -491,6 +504,12 @@ def main() -> None:
         default="off",
         help="Forward adaptive QA mode to every suite run; deep/deep_adaptive_qa is the human-comparison Deep QA benchmark profile.",
     )
+    parser.add_argument(
+        "--runtime-isolation",
+        choices=RUNTIME_ISOLATION_CHOICES,
+        default=os.getenv("GAIA_BENCHMARK_RUNTIME_ISOLATION", "warm-process-cold-state"),
+        help="Forward benchmark runtime isolation to every suite run.",
+    )
     parser.add_argument("--push-metrics", action="store_true", help="Forward metrics upload to each suite run.")
     parser.add_argument("--harness-task-id", action="append", default=[], dest="harness_task_ids")
     parser.add_argument("--harness-suite-id", action="append", default=[], dest="harness_suite_ids")
@@ -505,10 +524,14 @@ def main() -> None:
     env["GAIA_RUNNER_ID"] = runner_id
     normalized_qa_mode = _normalize_qa_mode(str(args.qa_mode or ""))
     benchmark_mode = _benchmark_mode_label(normalized_qa_mode)
+    runtime_isolation = _normalize_runtime_isolation(str(args.runtime_isolation or ""))
+    env["GAIA_BENCHMARK_RUNTIME_ISOLATION"] = runtime_isolation
+    runtime_policy = _build_runtime_policy(runtime_isolation)
     try:
         suite_paths = _resolve_suite_paths(suite_args=args.suite, suite_manifest=args.suite_manifest)
     except ValueError as exc:
         parser.error(str(exc))
+    runtime_policy = _prewarm_benchmark_runtime(runtime_isolation, env)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pack_id = f"kpi_pack_{timestamp}"
     out_dir = ARTIFACT_ROOT / pack_id
@@ -526,6 +549,7 @@ def main() -> None:
             runner_id=runner_id,
             env=env,
             qa_mode=normalized_qa_mode,
+            runtime_isolation=runtime_isolation,
         )
         suite_reports.append(suite_report)
         all_rows.extend(suite_report["rows"])
@@ -569,6 +593,8 @@ def main() -> None:
         "runner_id": runner_id,
         "qa_mode": normalized_qa_mode or "off",
         "benchmark_mode": benchmark_mode,
+        "runtime_isolation": runtime_isolation,
+        "runtime_policy": runtime_policy,
         "suites": [
             {
                 "suite_id": suite["suite_id"],

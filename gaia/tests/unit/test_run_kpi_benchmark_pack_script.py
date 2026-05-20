@@ -78,6 +78,7 @@ def test_build_run_suite_command_forwards_push_metrics(tmp_path: Path) -> None:
 
     assert "--runner-id" in without_push
     assert "macmini" in without_push
+    assert without_push[without_push.index("--runtime-isolation") + 1] == "warm-process-cold-state"
     assert "--push-metrics" not in without_push
     assert with_push[-1] == "--push-metrics"
 
@@ -98,6 +99,7 @@ def test_build_run_suite_command_forwards_deep_qa_mode(tmp_path: Path) -> None:
     assert _normalize_qa_mode("deep") == DEEP_ADAPTIVE_QA_MODE
     assert _benchmark_mode_label(DEEP_ADAPTIVE_QA_MODE) == "deep_qa"
     assert cmd[cmd.index("--qa-mode") + 1] == DEEP_ADAPTIVE_QA_MODE
+    assert cmd[cmd.index("--runtime-isolation") + 1] == "warm-process-cold-state"
 
 
 def test_run_harness_forwards_deep_qa_mode(monkeypatch) -> None:

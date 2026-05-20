@@ -5,16 +5,22 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.run_goal_benchmark import (
+    COLD_PROCESS_RUNTIME,
     DEEP_ADAPTIVE_QA_MODE,
+    WARM_PROCESS_COLD_STATE_RUNTIME,
+    WARM_PROCESS_WARM_STATE_RUNTIME,
     _apply_qa_mode_env,
     _build_child_code,
     _benchmark_mode_label,
     _compute_kpi_metrics,
     _compute_metrics,
     _infer_provider_from_model,
+    _normalize_runtime_isolation,
     _normalize_qa_mode,
     _prepare_scenario_env,
     _provider_credential_error,
+    _runtime_uses_cold_state,
+    _runtime_uses_warm_process,
     _run_scenario_once,
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
@@ -60,6 +66,7 @@ def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -
     assert "cta_visible" in code
     assert "_TeeWriter" in code
     assert "sys.__stdout__" in code
+    assert "reset_browser_scenario_state" in code
 
 
 def test_build_child_code_forces_deep_qa_mode_for_benchmark_runs() -> None:
@@ -75,6 +82,16 @@ def test_build_child_code_forces_deep_qa_mode_for_benchmark_runs() -> None:
     assert '"qa_mode": "deep_adaptive_qa"' in code
     assert "goal_test_data['qa_mode'] = benchmark_qa_mode" in code
     assert "goal_test_data['deep_adaptive_qa'] = {'enabled': True}" in code
+
+
+def test_runtime_isolation_helpers_normalize_warm_and_cold_modes() -> None:
+    assert _normalize_runtime_isolation("warm") == WARM_PROCESS_COLD_STATE_RUNTIME
+    assert _normalize_runtime_isolation("demo") == WARM_PROCESS_WARM_STATE_RUNTIME
+    assert _normalize_runtime_isolation("legacy") == COLD_PROCESS_RUNTIME
+    assert _runtime_uses_warm_process(WARM_PROCESS_COLD_STATE_RUNTIME) is True
+    assert _runtime_uses_warm_process(COLD_PROCESS_RUNTIME) is False
+    assert _runtime_uses_cold_state(WARM_PROCESS_COLD_STATE_RUNTIME) is True
+    assert _runtime_uses_cold_state(WARM_PROCESS_WARM_STATE_RUNTIME) is False
 
 
 def test_qa_mode_helpers_normalize_and_apply_env() -> None:

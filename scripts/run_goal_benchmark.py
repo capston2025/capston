@@ -50,6 +50,15 @@ QA_MODE_CHOICES = (
     "deep_qa",
     DEEP_ADAPTIVE_QA_MODE,
 )
+COLD_PROCESS_RUNTIME = "cold-process"
+WARM_PROCESS_COLD_STATE_RUNTIME = "warm-process-cold-state"
+WARM_PROCESS_WARM_STATE_RUNTIME = "warm-process-warm-state"
+RUNTIME_ISOLATION_CHOICES = (
+    COLD_PROCESS_RUNTIME,
+    WARM_PROCESS_COLD_STATE_RUNTIME,
+    WARM_PROCESS_WARM_STATE_RUNTIME,
+)
+_DEFAULT_RUNTIME_ISOLATION = WARM_PROCESS_COLD_STATE_RUNTIME
 _LIVE_TRACE_MARKERS = (
     "🎯 목표 시작",
     "--- Step ",
@@ -159,6 +168,85 @@ def _apply_qa_mode_env(env: Dict[str, str], qa_mode: str | None) -> None:
         env["GAIA_ADAPTIVE_QA"] = "1"
 
 
+def _normalize_runtime_isolation(value: str | None) -> str:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "": _DEFAULT_RUNTIME_ISOLATION,
+        "default": _DEFAULT_RUNTIME_ISOLATION,
+        "warm": WARM_PROCESS_COLD_STATE_RUNTIME,
+        "warm-process": WARM_PROCESS_COLD_STATE_RUNTIME,
+        "warm-cold": WARM_PROCESS_COLD_STATE_RUNTIME,
+        "cold-state": WARM_PROCESS_COLD_STATE_RUNTIME,
+        "warm-process-cold-state": WARM_PROCESS_COLD_STATE_RUNTIME,
+        "warm-state": WARM_PROCESS_WARM_STATE_RUNTIME,
+        "warm-process-warm-state": WARM_PROCESS_WARM_STATE_RUNTIME,
+        "demo": WARM_PROCESS_WARM_STATE_RUNTIME,
+        "cold": COLD_PROCESS_RUNTIME,
+        "cold-process": COLD_PROCESS_RUNTIME,
+        "legacy": COLD_PROCESS_RUNTIME,
+    }
+    return aliases.get(raw, _DEFAULT_RUNTIME_ISOLATION)
+
+
+def _runtime_uses_warm_process(runtime_isolation: str) -> bool:
+    return _normalize_runtime_isolation(runtime_isolation) in {
+        WARM_PROCESS_COLD_STATE_RUNTIME,
+        WARM_PROCESS_WARM_STATE_RUNTIME,
+    }
+
+
+def _runtime_uses_cold_state(runtime_isolation: str) -> bool:
+    return _normalize_runtime_isolation(runtime_isolation) == WARM_PROCESS_COLD_STATE_RUNTIME
+
+
+def _build_runtime_policy(runtime_isolation: str) -> Dict[str, Any]:
+    normalized = _normalize_runtime_isolation(runtime_isolation)
+    return {
+        "runtime_isolation": normalized,
+        "warm_process": _runtime_uses_warm_process(normalized),
+        "cold_state_reset": _runtime_uses_cold_state(normalized),
+        "openclaw": {
+            "prewarmed": False,
+            "base_url": "",
+            "warmup_ms": 0,
+            "error": "",
+        },
+    }
+
+
+def _prewarm_benchmark_runtime(runtime_isolation: str, env: Dict[str, str]) -> Dict[str, Any]:
+    policy = _build_runtime_policy(runtime_isolation)
+    env["GAIA_BENCHMARK_RUNTIME_ISOLATION"] = str(policy["runtime_isolation"])
+    env["GAIA_BENCHMARK_COLD_STATE_RESET"] = "1" if bool(policy["cold_state_reset"]) else "0"
+    if not bool(policy["warm_process"]):
+        return policy
+
+    started = time.monotonic()
+    try:
+        from gaia.src.phase4.embedded_openclaw_runtime import ensure_embedded_openclaw_base_url
+
+        base_url = ensure_embedded_openclaw_base_url()
+        warmup_ms = int((time.monotonic() - started) * 1000)
+        env["GAIA_OPENCLAW_BASE_URL"] = str(base_url)
+        env["GAIA_BENCHMARK_OPENCLAW_PREWARMED"] = "1"
+        policy["openclaw"] = {
+            "prewarmed": True,
+            "base_url": str(base_url),
+            "warmup_ms": warmup_ms,
+            "error": "",
+        }
+        print(f"🔥 warm runtime: OpenClaw ready at {base_url} ({warmup_ms}ms)", flush=True)
+    except Exception as exc:
+        policy["openclaw"] = {
+            "prewarmed": False,
+            "base_url": "",
+            "warmup_ms": int((time.monotonic() - started) * 1000),
+            "error": str(exc),
+        }
+        print(f"⚠️ warm runtime prewarm failed; child scenarios may fall back to cold start: {exc}", flush=True)
+    return policy
+
+
 def _build_child_code(scenario: Dict[str, Any], session_id: str, qa_mode: str | None = None) -> str:
     payload = json.dumps(
         {
@@ -212,6 +300,28 @@ if constraints.get('requires_test_credentials'):
         if email:
             goal_test_data['email'] = email
 prepared_goal.test_data = goal_test_data
+runtime_reset = {{}}
+def _reset_scenario_state_if_enabled():
+    if str(os.getenv('GAIA_BENCHMARK_COLD_STATE_RESET') or '').strip() != '1':
+        return {{}}
+    try:
+        from gaia.src.phase4.mcp_local_dispatch_runtime import reset_browser_scenario_state
+        result = reset_browser_scenario_state(
+            os.getenv('GAIA_OPENCLAW_BASE_URL') or os.getenv('MCP_HOST_URL') or '',
+            session_id=f"{{session_id}}:reset",
+            url=str(scenario.get('url') or ''),
+            timeout=(3, 20),
+        )
+        payload = dict(getattr(result, 'payload', {{}}) or {{}})
+        payload['status_code'] = int(getattr(result, 'status_code', 0) or 0)
+        return payload
+    except Exception as exc:
+        return {{
+            'success': False,
+            'ok': False,
+            'reason_code': 'scenario_state_reset_exception',
+            'reason': str(exc),
+        }}
 buf = io.StringIO()
 class _TeeWriter:
     def __init__(self, *writers):
@@ -230,16 +340,30 @@ class _TeeWriter:
 
 tee = _TeeWriter(sys.__stdout__, buf)
 with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
+    runtime_reset = _reset_scenario_state_if_enabled()
+    if runtime_reset:
+        print(
+            "🧊 scenario state reset: "
+            f"success={{bool(runtime_reset.get('success') or runtime_reset.get('ok'))}} "
+            f"profile={{runtime_reset.get('profile') or '-'}} "
+            f"target={{runtime_reset.get('targetId') or '-'}}",
+            flush=True,
+        )
     code, summary = run_chat_terminal_once(
         url=scenario['url'],
         query=scenario['goal'],
         session_id=session_id,
         prepared_goal=prepared_goal,
     )
+if isinstance(summary, dict) and runtime_reset:
+    runtime_meta = summary.setdefault('runtime', {{}})
+    if isinstance(runtime_meta, dict):
+        runtime_meta['scenario_state_reset'] = runtime_reset
 result = {{
     'exit_code': int(code),
     'summary': summary,
     'captured_log': buf.getvalue(),
+    'runtime_reset': runtime_reset,
 }}
 print(json.dumps(result, ensure_ascii=False))
 """
@@ -315,6 +439,7 @@ def _run_scenario_once(
             parse_error = str(exc)
             payload = {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    runtime_reset = payload.get("runtime_reset") if isinstance(payload.get("runtime_reset"), dict) else {}
     exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else return_code)
     status = _normalize_status(summary, exit_code)
     child_log = payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stdout
@@ -340,6 +465,7 @@ def _run_scenario_once(
         "exit_code": exit_code,
         "duration_seconds": duration,
         "summary": summary,
+        "runtime_reset": runtime_reset,
         "captured_log": child_log,
         "benchmark_policy": benchmark_policy,
     })
@@ -615,6 +741,15 @@ def main() -> int:
         help="Run every scenario with adaptive QA expansion enabled; use deep/deep_adaptive_qa for human-comparison Deep QA benches.",
     )
     parser.add_argument(
+        "--runtime-isolation",
+        choices=RUNTIME_ISOLATION_CHOICES,
+        default=os.getenv("GAIA_BENCHMARK_RUNTIME_ISOLATION", _DEFAULT_RUNTIME_ISOLATION),
+        help=(
+            "Benchmark runtime isolation policy. Default keeps OpenClaw warm across a suite "
+            "but clears cookies/localStorage/sessionStorage per scenario."
+        ),
+    )
+    parser.add_argument(
         "--push-metrics",
         action="store_true",
         help="Upload benchmark metrics to the configured monitoring server after the run.",
@@ -633,6 +768,8 @@ def main() -> int:
         requested_qa_mode = str(suite.get("qa_mode") or requested_qa_mode).strip()
     normalized_qa_mode = _normalize_qa_mode(requested_qa_mode)
     benchmark_mode = _benchmark_mode_label(normalized_qa_mode)
+    runtime_isolation = _normalize_runtime_isolation(args.runtime_isolation)
+    runtime_policy = _build_runtime_policy(runtime_isolation)
 
     started_at = datetime.now().astimezone()
     run_id = f"{Path(args.suite).stem}_{started_at.strftime('%Y%m%d_%H%M%S')}"
@@ -651,6 +788,8 @@ def main() -> int:
         env.setdefault("GAIA_LLM_PROVIDER", provider)
     env.setdefault("GAIA_LLM_MODEL", str(args.model))
     env.setdefault("GAIA_RAIL_ENABLED", "0")
+    env["GAIA_BENCHMARK_RUNTIME_ISOLATION"] = runtime_isolation
+    env["GAIA_BENCHMARK_COLD_STATE_RESET"] = "1" if _runtime_uses_cold_state(runtime_isolation) else "0"
     _populate_provider_credentials(env, provider)
     credential_error = _provider_credential_error(provider, env)
     if credential_error:
@@ -668,6 +807,8 @@ def main() -> int:
             "runner_id": runner_id,
             "qa_mode": normalized_qa_mode or "off",
             "benchmark_mode": benchmark_mode,
+            "runtime_isolation": runtime_isolation,
+            "runtime_policy": runtime_policy,
             "metrics": empty_metrics,
             "kpi_metrics": empty_kpis,
             "status_counts": {},
@@ -686,12 +827,15 @@ def main() -> int:
             f"- runner_id: {runner_id}\n"
             f"- qa_mode: {normalized_qa_mode or 'off'}\n"
             f"- benchmark_mode: {benchmark_mode}\n"
+            f"- runtime_isolation: {runtime_isolation}\n"
             f"- fatal_error: {credential_error}\n",
             encoding="utf-8",
         )
         print(credential_error, file=sys.stderr, flush=True)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 2
+
+    runtime_policy = _prewarm_benchmark_runtime(runtime_isolation, env)
 
     rows: List[Dict[str, Any]] = []
     for repeat_idx in range(1, repeats + 1):
@@ -718,6 +862,14 @@ def main() -> int:
             row["runner_id"] = runner_id
             row["qa_mode"] = normalized_qa_mode or "off"
             row["benchmark_mode"] = benchmark_mode
+            row["runtime_isolation"] = runtime_isolation
+            row["runtime_policy"] = {
+                "warm_process": bool(runtime_policy.get("warm_process")),
+                "cold_state_reset": bool(runtime_policy.get("cold_state_reset")),
+                "openclaw_prewarmed": bool((runtime_policy.get("openclaw") or {}).get("prewarmed"))
+                if isinstance(runtime_policy.get("openclaw"), dict)
+                else False,
+            }
             row["constraints"] = scenario.get("constraints") if isinstance(scenario.get("constraints"), dict) else {}
             row["expected_signals"] = scenario.get("expected_signals") if isinstance(scenario.get("expected_signals"), list) else []
             rows.append(row)
@@ -738,6 +890,8 @@ def main() -> int:
         "runner_id": runner_id,
         "qa_mode": normalized_qa_mode or "off",
         "benchmark_mode": benchmark_mode,
+        "runtime_isolation": runtime_isolation,
+        "runtime_policy": runtime_policy,
         "metrics": metrics,
         "kpi_metrics": kpi_metrics,
         "status_counts": dict(status_counts),
@@ -775,6 +929,9 @@ def main() -> int:
     md.write(f"- runner_id: {runner_id}\n")
     md.write(f"- qa_mode: {normalized_qa_mode or 'off'}\n")
     md.write(f"- benchmark_mode: {benchmark_mode}\n")
+    md.write(f"- runtime_isolation: {runtime_isolation}\n")
+    md.write(f"- warm_process: {runtime_policy.get('warm_process')}\n")
+    md.write(f"- cold_state_reset: {runtime_policy.get('cold_state_reset')}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")
     md.write(f"- primary_success_rate: {metrics['primary_success_rate']}\n")
     md.write(f"- avg_time_seconds: {metrics['avg_time_seconds']}\n")
