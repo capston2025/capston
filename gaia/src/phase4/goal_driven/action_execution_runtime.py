@@ -239,6 +239,19 @@ def _find_visible_text_ref_candidate(
     return best_element
 
 
+def _click_recovery_candidate_matches_visible_label(
+    agent,
+    labels: List[str],
+    element: Optional[DOMElement],
+) -> bool:
+    if element is None:
+        return False
+    safe_labels = [label for label in labels if _visual_find_label_is_safe(agent, label)]
+    if not safe_labels:
+        return True
+    return max(_element_visual_find_score(agent, label, element) for label in safe_labels) >= 70.0
+
+
 def _force_analyze_dom_for_visual_find(agent) -> List[DOMElement]:
     try:
         return list(agent._analyze_dom(force_refresh=True) or [])
@@ -479,17 +492,86 @@ def _coordinate_click_script(x: int, y: int) -> str:
     return (
         "() => {"
         f" const x = {int(x)}; const y = {int(y)};"
-        " const el = document.elementFromPoint(x, y);"
-        " if (!el) return { clicked: false, reason: 'no_element', x, y };"
-        " const before = 0;"
-        " try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, clientX:x, clientY:y})); } catch (_) {}"
-        " try { el.click(); } catch (_) {"
-        "   el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, clientX:x, clientY:y}));"
-        "   el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, clientX:x, clientY:y}));"
-        "   el.dispatchEvent(new MouseEvent('click', {bubbles:true, clientX:x, clientY:y}));"
+        " const compact = (v) => String(v || '').replace(/\\s+/g, ' ').trim();"
+        " const visible = (el) => {"
+        "   if (!el || el.nodeType !== 1) return false;"
+        "   const st = getComputedStyle(el);"
+        "   if (!st || st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;"
+        "   const r = el.getBoundingClientRect();"
+        "   return r.width > 0 && r.height > 0;"
+        " };"
+        " const interactiveSelector = 'input, label, button, a, select, textarea, [role=\"radio\"], [role=\"option\"], [role=\"button\"], [role=\"menuitem\"], [onclick], [tabindex]:not([tabindex=\"-1\"])';"
+        " const clickableTarget = (el) => {"
+        "   if (!el || el.nodeType !== 1) return null;"
+        "   const label = el.closest && el.closest('label');"
+        "   if (label && visible(label)) {"
+        "     const nestedInput = label.querySelector('input:not([type=\"hidden\"])');"
+        "     if (nestedInput && visible(nestedInput) && !nestedInput.disabled) return nestedInput;"
+        "     return label;"
+        "   }"
+        "   const direct = el.closest && el.closest(interactiveSelector);"
+        "   if (direct && visible(direct)) return direct;"
+        "   return el;"
+        " };"
+        " const scoreTarget = (target) => {"
+        "   if (!target || target.nodeType !== 1) return 0;"
+        "   const tag = String(target.tagName || '').toLowerCase();"
+        "   const role = String(target.getAttribute('role') || '').toLowerCase();"
+        "   const type = String(target.getAttribute('type') || '').toLowerCase();"
+        "   if (tag === 'input' && ['radio', 'checkbox'].includes(type)) return 100;"
+        "   if (tag === 'label') return 90;"
+        "   if (['radio', 'checkbox', 'option', 'button', 'menuitem'].includes(role)) return 85;"
+        "   if (['button', 'a', 'select', 'textarea', 'input'].includes(tag)) return 75;"
+        "   if (target.hasAttribute('onclick') || (target.hasAttribute('tabindex') && target.getAttribute('tabindex') !== '-1')) return 65;"
+        "   return 10;"
+        " };"
+        " const clickOne = (target, px, py, reason) => {"
+        "   if (!target || !visible(target)) return { clicked: false, reason: 'target_not_visible' };"
+        "   try { target.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}"
+        "   try { target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: px, clientY: py })); } catch (_) {}"
+        "   try { target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: px, clientY: py })); } catch (_) {}"
+        "   try { target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: px, clientY: py })); } catch (_) {}"
+        "   try { target.click(); } catch (_) {}"
+        "   try { target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, clientX: px, clientY: py })); } catch (_) {}"
+        "   try { target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: px, clientY: py })); } catch (_) {}"
+        "   try { target.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: px, clientY: py })); } catch (_) {}"
+        "   return { clicked: true, reason, x: px, y: py, tag: target.tagName, role: target.getAttribute('role') || '', text: compact(target.innerText || target.textContent).slice(0, 80) };"
+        " };"
+        " const viewport = { w: window.innerWidth || 0, h: window.innerHeight || 0 };"
+        " const clamp = (v, max) => Math.max(1, Math.min(Math.max(1, max - 1), Math.round(v)));"
+        " const points = [[x, y], [x - 24, y], [x - 40, y], [x - 56, y], [x - 72, y], [x + 24, y]]"
+        "   .map(([px, py]) => [clamp(px, viewport.w || 99999), clamp(py, viewport.h || 99999)]);"
+        " const firstEl = document.elementFromPoint(clamp(x, viewport.w || 99999), clamp(y, viewport.h || 99999));"
+        " const firstText = compact(firstEl && (firstEl.innerText || firstEl.textContent));"
+        " const candidates = [];"
+        " for (const [px, py] of points) {"
+        "   const hit = document.elementFromPoint(px, py);"
+        "   const target = clickableTarget(hit);"
+        "   if (target) candidates.push({ target, x: px, y: py, reason: 'point_or_left_offset', score: scoreTarget(target) });"
         " }"
-        " return { clicked: true, before, after: 1, x, y,"
-        "   tag: el.tagName, text: (el.innerText || el.textContent || '').slice(0, 80) };"
+        " if (firstText) {"
+        "   const targetNodes = Array.from(document.querySelectorAll('label, [role=\"radio\"], [role=\"option\"], button, a, li, span, div'))"
+        "     .filter((el) => visible(el) && compact(el.innerText || el.textContent) === firstText)"
+        "     .map((el) => ({ el, rect: el.getBoundingClientRect() }))"
+        "     .filter((item) => Math.abs((item.rect.y + item.rect.height / 2) - y) <= 48)"
+        "     .sort((a, b) => Math.abs((a.rect.x + a.rect.width / 2) - x) - Math.abs((b.rect.x + b.rect.width / 2) - x));"
+        "   for (const item of targetNodes.slice(0, 4)) {"
+        "     const target = clickableTarget(item.el);"
+        "     if (target) {"
+        "       const r = target.getBoundingClientRect();"
+        "       candidates.push({ target, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), reason: 'same_visible_text_target', score: scoreTarget(target) });"
+        "     }"
+        "   }"
+        " }"
+        " candidates.sort((a, b) => (b.score - a.score) || Math.abs(a.x - x) - Math.abs(b.x - x));"
+        " const seen = new Set();"
+        " for (const item of candidates) {"
+        "   if (!item.target || seen.has(item.target)) continue;"
+        "   seen.add(item.target);"
+        "   const result = clickOne(item.target, item.x, item.y, item.reason);"
+        "   if (result.clicked) return { ...result, targetScore: item.score, requestedX: x, requestedY: y, originalTag: firstEl && firstEl.tagName || '', originalText: firstText.slice(0, 80) };"
+        " }"
+        " return { clicked: false, reason: 'no_clickable_target', x, y, originalTag: firstEl && firstEl.tagName || '', originalText: firstText.slice(0, 80) };"
         "}"
     )
 
@@ -1357,6 +1439,14 @@ def execute_decision(
                     if recovered_selector and candidate_selector == recovered_selector:
                         rebound_element = candidate
                         break
+        if rebound_element is not None and decision.action == ActionType.CLICK:
+            visual_labels = _visual_find_label_candidates(agent, decision, selected_element)
+            if not _click_recovery_candidate_matches_visible_label(agent, visual_labels, rebound_element):
+                rebound_element = None
+                try:
+                    agent._record_reason_code("ref_recovery_text_mismatch")
+                except Exception:
+                    pass
         if rebound_element is None:
             rebound_element = _find_rebound_element(agent, selected_element, refreshed_dom)
         if (
@@ -1428,11 +1518,24 @@ def execute_decision(
                 or _is_stale_like_timeout(agent._last_exec_result)
             )
         )
+        stale_like_timeout = _is_stale_like_timeout(agent._last_exec_result)
         if should_retry:
             prev_snapshot = agent._active_snapshot_id
             prev_ref = ref_id or ""
             _refresh_ref_binding()
-            if ref_id and agent._active_snapshot_id:
+            same_ref_timeout_retry = (
+                action_name == "click"
+                and stale_like_timeout
+                and prev_ref
+                and ref_id == prev_ref
+                and prev_snapshot == agent._active_snapshot_id
+            )
+            if same_ref_timeout_retry:
+                try:
+                    agent._record_reason_code("visible_ref_timeout_no_retry")
+                except Exception:
+                    pass
+            if ref_id and agent._active_snapshot_id and not same_ref_timeout_retry:
                 agent._last_exec_result = execute_action(
                     agent,
                     action_name,

@@ -1,0 +1,27 @@
+{
+  "suite_id": "deep_qa_kakao_map_v1",
+  "qa_mode": "deep_adaptive_qa",
+  "site": {
+    "name": "Deep QA Kakao Map",
+    "base_url": "https://map.kakao.com/",
+    "mode": "public_readonly"
+  },
+  "scenarios": [
+    {
+      "id": "DEEPQA_KAKAOMAP_001_SKYVIEW_YEAR_SELECTION",
+      "name": "스카이뷰 연도 선택 상호작용 확장 검증",
+      "url": "https://map.kakao.com/",
+      "goal": "카카오맵 검색창에 인천대학교 송도캠퍼스를 입력해 검색 결과를 선택한다. 지도를 스카이뷰로 전환한 뒤 촬영 연도 목록에서 2008년을 선택하고, Deep QA 확장으로 다른 연도 선택이나 선택 상태 유지처럼 관찰 가능한 연도 선택 엣지 케이스를 추가 검증한다.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "스카이뷰",
+        "2008"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

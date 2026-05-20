@@ -104,17 +104,19 @@ def test_launcher_routes_deep_qa_benchmark_to_benchmark_mode(monkeypatch) -> Non
     monkeypatch.setattr("gaia.cli._load_profile", lambda: {})
     monkeypatch.setattr("gaia.cli._resolve_terminal_launch_purpose", lambda *args, **kwargs: "deep_qa_benchmark")
 
-    def fake_run_terminal_benchmark_mode(*, workspace_root, push_metrics=False, qa_mode=None):
+    def fake_run_terminal_deep_qa_benchmark_mode(*, workspace_root, push_metrics=False, qa_mode=None, dedicated_deep_qa=False):
         captured["workspace_root"] = workspace_root
         captured["push_metrics"] = push_metrics
         captured["qa_mode"] = qa_mode
+        captured["dedicated_deep_qa"] = dedicated_deep_qa
         return 0
 
-    monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", fake_run_terminal_benchmark_mode)
+    monkeypatch.setattr("gaia.cli._run_terminal_benchmark_mode", fake_run_terminal_deep_qa_benchmark_mode)
 
     assert run_launcher(["--terminal"]) == 0
 
     assert captured["qa_mode"] == DEEP_ADAPTIVE_QA_MODE
+    assert captured["dedicated_deep_qa"] is True
     assert captured["push_metrics"] is False
 
 

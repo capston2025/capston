@@ -23,6 +23,9 @@ from gaia.src.phase4.memory.models import MemorySummaryRecord
 from gaia.src.phase4.memory.store import MemoryStore
 from gaia.src.phase4.session import WORKSPACE_DEFAULT, allocate_session_id, load_session_state
 
+ADAPTIVE_QA_MODE = "adaptive_qa"
+DEEP_ADAPTIVE_QA_MODE = "deep_adaptive_qa"
+
 
 @dataclass(slots=True)
 class HubContext:
@@ -32,6 +35,7 @@ class HubContext:
     url: str
     runtime: str = "gui"
     control_channel: str = "local"
+    qa_mode: str = ""
     stop_requested: bool = False
     memory_enabled: bool = True
     workspace: str = WORKSPACE_DEFAULT
@@ -72,6 +76,17 @@ class TerminalSink:
 
 
 _CHAT_ROUTER_CLIENT: Any | None = None
+
+
+def _normalize_qa_mode(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"", "off", "none", "default", "false", "0"}:
+        return ""
+    if raw in {"adaptive", ADAPTIVE_QA_MODE, "progressive_qa"}:
+        return ADAPTIVE_QA_MODE
+    if raw in {"deep", "deep_qa", "aggressive_qa", DEEP_ADAPTIVE_QA_MODE}:
+        return DEEP_ADAPTIVE_QA_MODE
+    return ""
 
 
 def _help_text() -> str:
@@ -1059,11 +1074,13 @@ def _run_test(
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
 ) -> tuple[int, dict]:
     runtime = context.runtime
+    qa_mode = _normalize_qa_mode(context.qa_mode)
 
     if runtime == "gui":
+        gui_mode = qa_mode or "chat"
         code = _run_gui(
             "--mode",
-            "chat",
+            gui_mode,
             "--url",
             context.url,
             "--feature-query",
@@ -1095,10 +1112,18 @@ def _run_test(
             cb = _build_hub_intervention_callback(context, sink)
     prev_provider = os.getenv("GAIA_LLM_PROVIDER")
     prev_model = os.getenv("GAIA_LLM_MODEL")
+    prev_adaptive = os.getenv("GAIA_ADAPTIVE_QA")
+    prev_deep = os.getenv("GAIA_DEEP_ADAPTIVE_QA")
     if str(context.provider or "").strip():
         os.environ["GAIA_LLM_PROVIDER"] = str(context.provider).strip()
     if str(context.model or "").strip():
         os.environ["GAIA_LLM_MODEL"] = str(context.model).strip()
+    if qa_mode == DEEP_ADAPTIVE_QA_MODE:
+        os.environ.pop("GAIA_ADAPTIVE_QA", None)
+        os.environ["GAIA_DEEP_ADAPTIVE_QA"] = "1"
+    elif qa_mode == ADAPTIVE_QA_MODE:
+        os.environ["GAIA_ADAPTIVE_QA"] = "1"
+        os.environ.pop("GAIA_DEEP_ADAPTIVE_QA", None)
     try:
         code, summary = run_chat_terminal_once(
             url=context.url,
@@ -1116,6 +1141,14 @@ def _run_test(
             os.environ.pop("GAIA_LLM_MODEL", None)
         else:
             os.environ["GAIA_LLM_MODEL"] = prev_model
+        if prev_adaptive is None:
+            os.environ.pop("GAIA_ADAPTIVE_QA", None)
+        else:
+            os.environ["GAIA_ADAPTIVE_QA"] = prev_adaptive
+        if prev_deep is None:
+            os.environ.pop("GAIA_DEEP_ADAPTIVE_QA", None)
+        else:
+            os.environ["GAIA_DEEP_ADAPTIVE_QA"] = prev_deep
     if isinstance(context.steering_policy, dict) and context.steering_policy:
         try:
             steps_used = int(summary.get("steps") or 0) if isinstance(summary, dict) else 0

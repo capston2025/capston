@@ -68,6 +68,8 @@ RecordPruner = Callable[..., Mapping[str, Any]]
 
 ALL_SITES_ALL_CASES_OPTION = "전체사이트 전체케이스 실행"
 EXTERNAL_PUBLIC_MANIFEST_PATH = Path("gaia/tests/scenarios/external_public_manifest.json")
+DEEP_QA_ALL_CASES_OPTION = "Deep QA 전체케이스 실행"
+DEEP_QA_BENCHMARK_MANIFEST_PATH = Path("gaia/tests/scenarios/deep_qa_benchmark_manifest.json")
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
 SITE_DELETE_OPTION = "사이트 삭제"
@@ -99,6 +101,65 @@ def build_terminal_benchmark_catalog(
     payload: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
     return build_benchmark_site_catalog(payload)
+
+
+def build_deep_qa_benchmark_catalog(
+    *,
+    workspace_root: Path,
+    manifest_path: Path | str = DEEP_QA_BENCHMARK_MANIFEST_PATH,
+) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]]:
+    resolved = (workspace_root / manifest_path).resolve()
+    try:
+        manifest = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception:
+        return [], {}
+    suites = manifest.get("suites") if isinstance(manifest, Mapping) else []
+    if not isinstance(suites, list):
+        return [], {}
+
+    catalog: list[dict[str, Any]] = []
+    preset_map: dict[str, BenchmarkPreset] = {}
+    for index, raw in enumerate(suites, start=1):
+        if not isinstance(raw, Mapping):
+            continue
+        suite_path = str(raw.get("suite_path") or "").strip()
+        if not suite_path:
+            continue
+        site_key = str(raw.get("site_key") or raw.get("key") or "").strip()
+        if not site_key:
+            site_key = f"deep_qa_{index:02d}"
+        label = str(raw.get("label") or raw.get("name") or site_key).strip()
+        base_url = str(raw.get("base_url") or "").strip()
+        host_aliases = tuple(
+            str(item).strip().lower()
+            for item in list(raw.get("host_aliases") or [])
+            if str(item).strip()
+        )
+        if not host_aliases:
+            host = extract_url_host(base_url)
+            host_aliases = tuple(filter(None, (host,)))
+        preset = BenchmarkPreset(
+            key=site_key,
+            label=label,
+            default_url=base_url,
+            suite_path=suite_path,
+            host_aliases=host_aliases,
+        )
+        preset_map[site_key] = preset
+        catalog.append(
+            {
+                "key": site_key,
+                "label": label,
+                "default_url": base_url,
+                "urls": [base_url] if base_url else [],
+                "suite_path": suite_path,
+                "suite_available": bool((workspace_root / suite_path).exists()),
+                "status_text": "Deep QA 전용",
+                "is_custom": False,
+                "is_deep_qa": True,
+            }
+        )
+    return catalog, preset_map
 
 
 def normalize_benchmark_qa_mode(value: str | None) -> str | None:
@@ -1013,28 +1074,40 @@ def run_terminal_benchmark_mode(
     monitoring_config_path: Path | None = None,
     auto_pull_shared_tests: bool = True,
     qa_mode: str | None = None,
+    dedicated_deep_qa: bool = False,
+    deep_qa_manifest_path: Path | str = DEEP_QA_BENCHMARK_MANIFEST_PATH,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
     auto_pull_attempted: set[str] = set()
     runner_id = resolve_runner_id(env=os.environ)
-    normalized_qa_mode = normalize_benchmark_qa_mode(qa_mode)
+    normalized_qa_mode = DEEP_ADAPTIVE_QA_MODE if dedicated_deep_qa else normalize_benchmark_qa_mode(qa_mode)
+    all_cases_option = DEEP_QA_ALL_CASES_OPTION if dedicated_deep_qa else ALL_SITES_ALL_CASES_OPTION
     if normalized_qa_mode:
         emit(f"Deep QA 벤치마크 프로필: {benchmark_qa_mode_label(normalized_qa_mode)} 모드로 실행합니다.")
+    if dedicated_deep_qa:
+        emit("Deep QA 전용 벤치마크: 기존 benchmark catalog/external public 150개와 분리된 suite만 사용합니다.")
 
     while True:
-        catalog, preset_map = build_terminal_benchmark_catalog(registry)
-        site_options = (ALL_SITES_ALL_CASES_OPTION,) + tuple(item["label"] for item in catalog) + (
-            SITE_ADD_OPTION,
-            SITE_EDIT_OPTION,
-            SITE_DELETE_OPTION,
-            SITE_EXIT_OPTION,
-        )
+        if dedicated_deep_qa:
+            catalog, preset_map = build_deep_qa_benchmark_catalog(
+                workspace_root=workspace_root,
+                manifest_path=deep_qa_manifest_path,
+            )
+            site_options = (all_cases_option,) + tuple(item["label"] for item in catalog) + (SITE_EXIT_OPTION,)
+        else:
+            catalog, preset_map = build_terminal_benchmark_catalog(registry)
+            site_options = (all_cases_option,) + tuple(item["label"] for item in catalog) + (
+                SITE_ADD_OPTION,
+                SITE_EDIT_OPTION,
+                SITE_DELETE_OPTION,
+                SITE_EXIT_OPTION,
+            )
         selected_site = prompt_select(
             "벤치 사이트를 선택하세요",
             site_options,
-            default=ALL_SITES_ALL_CASES_OPTION,
+            default=all_cases_option,
         )
-        if selected_site == ALL_SITES_ALL_CASES_OPTION:
+        if selected_site == all_cases_option:
             _handle_all_sites_all_cases_run(
                 workspace_root=workspace_root,
                 prompt_select=prompt_select,
@@ -1044,6 +1117,8 @@ def run_terminal_benchmark_mode(
                 monitoring_config_path=monitoring_config_path,
                 runner_id=runner_id,
                 qa_mode=normalized_qa_mode,
+                manifest_path=deep_qa_manifest_path if dedicated_deep_qa else EXTERNAL_PUBLIC_MANIFEST_PATH,
+                session_prefix="terminal-deep-qa" if dedicated_deep_qa else "terminal-external-public",
             )
             continue
         if selected_site == SITE_EXIT_OPTION:
@@ -1071,17 +1146,23 @@ def run_terminal_benchmark_mode(
             emit("선택한 사이트 preset을 찾지 못했습니다.")
             continue
 
-        selected_url, registry = _select_benchmark_url(
-            registry=registry,
-            site_entry=site_entry,
-            preset=preset,
-            prompt_select=prompt_select,
-            prompt_non_empty=prompt_non_empty,
-        )
-        if not selected_url:
-            continue
-        save_benchmark_registry(registry, registry_path)
-        if auto_pull_shared_tests and preset.key not in auto_pull_attempted:
+        if dedicated_deep_qa:
+            selected_url = str(preset.default_url or site_entry.get("default_url") or "").strip()
+            if not selected_url:
+                emit("Deep QA suite의 base_url이 비어 있어 실행할 수 없습니다.")
+                continue
+        else:
+            selected_url, registry = _select_benchmark_url(
+                registry=registry,
+                site_entry=site_entry,
+                preset=preset,
+                prompt_select=prompt_select,
+                prompt_non_empty=prompt_non_empty,
+            )
+            if not selected_url:
+                continue
+            save_benchmark_registry(registry, registry_path)
+        if not dedicated_deep_qa and auto_pull_shared_tests and preset.key not in auto_pull_attempted:
             auto_pull_attempted.add(preset.key)
             _try_auto_pull_shared_suite(
                 workspace_root=workspace_root,
@@ -1285,6 +1366,8 @@ def _handle_all_sites_all_cases_run(
     monitoring_config_path: Path | None = None,
     runner_id: str = "",
     qa_mode: str | None = None,
+    manifest_path: Path | str = EXTERNAL_PUBLIC_MANIFEST_PATH,
+    session_prefix: str = "terminal-external-public",
 ) -> None:
     if not _ensure_monitoring_connection_required(
         prompt_select=prompt_select,
@@ -1299,10 +1382,10 @@ def _handle_all_sites_all_cases_run(
     run_pack_handler(
         workspace_root=workspace_root,
         emit=emit,
-        manifest_path=EXTERNAL_PUBLIC_MANIFEST_PATH,
+        manifest_path=manifest_path,
         repeats=1,
         timeout_cap=600,
-        session_prefix="terminal-external-public",
+        session_prefix=session_prefix,
         push_metrics=True,
         runner_id=runner_id,
         qa_mode=qa_mode,

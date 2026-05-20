@@ -195,6 +195,7 @@ def _run_telegram_bridge_bg_entry() -> int:
     auth_strategy = str(os.getenv("GAIA_BG_AUTH_STRATEGY") or "reuse").strip() or "reuse"
     url = str(os.getenv("GAIA_BG_URL") or "").strip()
     runtime = str(os.getenv("GAIA_BG_RUNTIME") or "gui").strip() or "gui"
+    qa_mode = _normalize_qa_mode(os.getenv("GAIA_BG_QA_MODE"))
     session_key = str(os.getenv("GAIA_BG_SESSION_KEY") or WORKSPACE_DEFAULT).strip() or WORKSPACE_DEFAULT
     session_id = str(os.getenv("GAIA_BG_MCP_SESSION_ID") or session_key).strip() or session_key
     session_new = str(os.getenv("GAIA_BG_SESSION_NEW") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -217,6 +218,7 @@ def _run_telegram_bridge_bg_entry() -> int:
             session_key=session_key,
             session_id=session_id,
             session_new=session_new,
+            qa_mode=qa_mode or "",
             last_snapshot_id="",
             pending_user_input={},
             on_session_update=None,
@@ -238,6 +240,7 @@ def _launch_telegram_bridge_background(
     auth_strategy: str,
     url: str,
     runtime: str,
+    qa_mode: str | None,
     session_key: str,
     mcp_session_id: str,
     session_new: bool,
@@ -277,6 +280,7 @@ def _launch_telegram_bridge_background(
             "GAIA_BG_AUTH_STRATEGY": auth_strategy,
             "GAIA_BG_URL": url,
             "GAIA_BG_RUNTIME": runtime,
+            "GAIA_BG_QA_MODE": _normalize_qa_mode(qa_mode) or "",
             "GAIA_BG_SESSION_KEY": session_key,
             "GAIA_BG_MCP_SESSION_ID": mcp_session_id,
             "GAIA_BG_SESSION_NEW": "1" if session_new else "0",
@@ -1260,6 +1264,7 @@ def _run_terminal_benchmark_mode(
     workspace_root: Path,
     push_metrics: bool = False,
     qa_mode: str | None = None,
+    dedicated_deep_qa: bool = False,
 ) -> int:
     from gaia.src.terminal_benchmark_mode import run_terminal_benchmark_mode
 
@@ -1271,6 +1276,7 @@ def _run_terminal_benchmark_mode(
         emit=print,
         push_metrics=push_metrics,
         qa_mode=qa_mode,
+        dedicated_deep_qa=dedicated_deep_qa,
     )
 
 
@@ -1627,6 +1633,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         }
         if terminal_purpose == "deep_qa_benchmark":
             benchmark_kwargs["qa_mode"] = DEEP_ADAPTIVE_QA_MODE
+            benchmark_kwargs["dedicated_deep_qa"] = True
         return _run_terminal_benchmark_mode(**benchmark_kwargs)
 
     url = _resolve_url(args, profile, required=True)
@@ -1763,6 +1770,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 auth_strategy=auth_strategy,
                 url=url,
                 runtime=runtime,
+                qa_mode=requested_qa_mode,
                 session_key=session_key,
                 mcp_session_id=mcp_session_id,
                 session_new=session_new,
@@ -1841,6 +1849,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 auth_strategy=auth_strategy,
                 url=url,
                 runtime=runtime,
+                qa_mode=requested_qa_mode,
                 control_channel="telegram",
                 memory_enabled=True,
                 workspace=session_key,
@@ -2085,6 +2094,7 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
             url=url,
             runtime=runtime,
             control_channel="local",
+            qa_mode=requested_qa_mode or "",
             memory_enabled=True,
             workspace=session_key,
             session_key=session_key,
