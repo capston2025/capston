@@ -53,3 +53,10 @@ python scripts/run_kpi_benchmark_pack.py \
   --runner-id macmini-team-a \
   --push-metrics
 ```
+
+## Deep QA 전용 벤치마크
+
+- Manifest: `gaia/tests/scenarios/deep_qa_benchmark_manifest.json`
+- 범위: 사람 비교/Deep QA 검증용 케이스만 별도로 관리한다.
+- 원칙: `external_public_manifest.json`의 30개 사이트/150개 표준 벤치와 섞지 않는다.
+- 실행: CLI에서 `Deep QA 전용 벤치마크 실행`을 선택하면 이 manifest만 사용한다.

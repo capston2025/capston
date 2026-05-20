@@ -68,6 +68,48 @@ def test_dispatch_command_preserves_inline_credentials_when_router_rewrites_goal
     assert "password=secret" in captured["query"]
 
 
+def test_run_test_applies_context_deep_qa_env(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("GAIA_ADAPTIVE_QA", "old")
+    monkeypatch.delenv("GAIA_DEEP_ADAPTIVE_QA", raising=False)
+    monkeypatch.setattr(chat_hub, "allocate_session_id", lambda workspace: "session-deep")
+
+    def fake_run_chat_terminal_once(**kwargs):
+        import os
+
+        captured["kwargs"] = kwargs
+        captured["adaptive_env"] = os.environ.get("GAIA_ADAPTIVE_QA")
+        captured["deep_env"] = os.environ.get("GAIA_DEEP_ADAPTIVE_QA")
+        return 0, {
+            "goal": kwargs["query"],
+            "status": "success",
+            "final_status": "SUCCESS",
+            "steps": 1,
+            "duration_seconds": 1.0,
+        }
+
+    monkeypatch.setattr("gaia.terminal.run_chat_terminal_once", fake_run_chat_terminal_once)
+    context = HubContext(
+        provider="openai",
+        model="gpt-5.5",
+        auth_strategy="reuse",
+        url="https://example.com",
+        runtime="terminal",
+        qa_mode="deep",
+    )
+
+    code, summary = chat_hub._run_test(context, "필터 동작을 깊게 검증해줘", chat_hub.TerminalSink())
+
+    assert code == 0
+    assert summary["final_status"] == "SUCCESS"
+    assert captured["deep_env"] == "1"
+    assert captured["adaptive_env"] is None
+    import os
+
+    assert os.environ.get("GAIA_ADAPTIVE_QA") == "old"
+    assert os.environ.get("GAIA_DEEP_ADAPTIVE_QA") is None
+
+
 def test_telegram_intervention_callback_waits_for_pending_response(monkeypatch) -> None:
     class _Sink:
         def __init__(self) -> None:

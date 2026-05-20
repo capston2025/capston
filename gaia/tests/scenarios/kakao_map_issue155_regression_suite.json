@@ -1,0 +1,26 @@
+{
+  "suite_id": "kakao_map_issue155_regression",
+  "site": {
+    "name": "Kakao Map",
+    "base_url": "https://map.kakao.com/",
+    "mode": "public_readonly"
+  },
+  "scenarios": [
+    {
+      "id": "KAKAOMAP_006_INU_TRANSIT_ROUTE_TIME",
+      "name": "스카이뷰 촬영 연도 선택 확인",
+      "url": "https://map.kakao.com/",
+      "goal": "카카오맵 검색창에 인천대학교 송도캠퍼스를 입력해 검색 결과를 선택한다. 이후 지도를 스카이뷰로 바꾸고 연도를 2008년으로 설정했을 때 지도가 스카이뷰로 정상 표시되는지 확인한다.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "2008",
+        "스카이뷰"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "manifest_id": "deep_qa_human_comparison_v1",
+  "description": "Deep QA 전용 벤치마크 manifest. external_public_manifest의 30개/150개 표준 벤치와 분리해서 관리한다.",
+  "site_count": 1,
+  "scenario_count": 1,
+  "suites": [
+    {
+      "site_key": "deep_qa_kakao_map",
+      "label": "Deep QA Kakao Map",
+      "category": "deep_qa",
+      "base_url": "https://map.kakao.com/",
+      "suite_path": "gaia/tests/scenarios/deep_qa_kakao_map_suite.json",
+      "host_aliases": [
+        "map.kakao.com"
+      ]
+    }
+  ]
+}

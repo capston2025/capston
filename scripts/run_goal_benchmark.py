@@ -640,22 +640,25 @@ def _infer_provider_from_model(model_name: str) -> str:
 
 
 def _read_workspace_env_file_assignments() -> Dict[str, str]:
-    env_path = WORKSPACE_ROOT / ".env"
-    if not env_path.exists():
-        return {}
     assignments: Dict[str, str] = {}
-    try:
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    for env_path in (WORKSPACE_ROOT / ".env", WORKSPACE_ROOT / ".env.gemini.local"):
+        if not env_path.exists():
+            continue
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for raw_line in lines:
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
             key, value = line.split("=", 1)
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
                 value = value[1:-1]
             assignments[key.strip()] = value
-    except Exception:
-        return {}
     return assignments
 
 
@@ -697,6 +700,42 @@ def _populate_provider_credentials(env: Dict[str, str], provider: str) -> None:
     elif normalized == "gemini":
         if not str(env.get("GEMINI_API_KEY") or "").strip() and str(dotenv.get("GEMINI_API_KEY") or "").strip():
             env["GEMINI_API_KEY"] = str(dotenv["GEMINI_API_KEY"]).strip()
+        for key in (
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GAIA_GEMINI_BACKEND",
+        ):
+            if not str(env.get(key) or "").strip() and str(dotenv.get(key) or "").strip():
+                env[key] = str(dotenv[key]).strip()
+
+
+def _truthy_env(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _gemini_vertex_requested(env: Dict[str, str]) -> bool:
+    backend = str(env.get("GAIA_GEMINI_BACKEND") or "").strip().lower()
+    return _truthy_env(env.get("GOOGLE_GENAI_USE_VERTEXAI")) or backend in {
+        "vertex",
+        "vertex_ai",
+        "vertexai",
+    }
+
+
+def _gemini_vertex_configured(env: Dict[str, str]) -> bool:
+    if not _gemini_vertex_requested(env):
+        return False
+    if not str(env.get("GOOGLE_CLOUD_PROJECT") or "").strip():
+        return False
+    if not str(env.get("GOOGLE_CLOUD_LOCATION") or "").strip():
+        return False
+    credentials = str(env.get("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if credentials and Path(credentials).expanduser().exists():
+        return True
+    adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    return adc_path.exists()
 
 
 def _provider_credential_error(provider: str, env: Dict[str, str]) -> str:
@@ -710,8 +749,25 @@ def _provider_credential_error(provider: str, env: Dict[str, str]) -> str:
             "on this machine before running benchmarks."
         )
     if normalized == "gemini" and not str(env.get("GEMINI_API_KEY") or "").strip():
-        return "missing_provider_credentials: provider=gemini requires GEMINI_API_KEY."
+        if _gemini_vertex_configured(env):
+            return ""
+        if _gemini_vertex_requested(env):
+            return (
+                "missing_provider_credentials: provider=gemini Vertex AI requires "
+                "GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and GOOGLE_APPLICATION_CREDENTIALS "
+                "or gcloud application-default credentials."
+            )
+        return "missing_provider_credentials: provider=gemini requires GEMINI_API_KEY or Vertex AI credentials."
     return ""
+
+
+def _apply_provider_model_env(env: Dict[str, str], provider: str, model: str) -> None:
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider:
+        env["GAIA_LLM_PROVIDER"] = normalized_provider
+    normalized_model = str(model or "").strip()
+    if normalized_model:
+        env["GAIA_LLM_MODEL"] = normalized_model
 
 
 def _should_push_metrics(args: Any) -> bool:
@@ -784,9 +840,7 @@ def main() -> int:
     provider = str(args.provider or "").strip().lower()
     if not provider:
         provider = _infer_provider_from_model(str(args.model or ""))
-    if provider:
-        env.setdefault("GAIA_LLM_PROVIDER", provider)
-    env.setdefault("GAIA_LLM_MODEL", str(args.model))
+    _apply_provider_model_env(env, provider, str(args.model))
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env["GAIA_BENCHMARK_RUNTIME_ISOLATION"] = runtime_isolation
     env["GAIA_BENCHMARK_COLD_STATE_RESET"] = "1" if _runtime_uses_cold_state(runtime_isolation) else "0"

@@ -265,6 +265,16 @@ class ExploratoryAgent:
                 "LLM 호출 중단: OpenAI API quota/billing 부족 "
                 "(429 insufficient_quota)."
             )
+        if (
+            "resource_exhausted" in text
+            or "quota exceeded" in text
+            or "generate_content_free_tier_requests" in text
+            or "generaterequestsperminute" in text
+        ):
+            return (
+                "LLM 호출 중단: Gemini API rate limit/quota 초과 "
+                "(429 RESOURCE_EXHAUSTED). 잠시 후 다시 시도하거나 billing/quota를 확인하세요."
+            )
         if "invalid_api_key" in text or "incorrect api key" in text:
             return "LLM 호출 중단: API 키가 유효하지 않습니다."
         if "authentication" in text or "unauthorized" in text or "401" in text:

@@ -10,6 +10,7 @@ from scripts.run_goal_benchmark import (
     WARM_PROCESS_COLD_STATE_RUNTIME,
     WARM_PROCESS_WARM_STATE_RUNTIME,
     _apply_qa_mode_env,
+    _apply_provider_model_env,
     _build_child_code,
     _benchmark_mode_label,
     _compute_kpi_metrics,
@@ -160,6 +161,28 @@ def test_provider_credential_error_fails_fast_for_missing_openai_key(monkeypatch
     assert _provider_credential_error("ollama", {}) == ""
 
 
+def test_provider_credential_error_accepts_gemini_vertex_credentials(tmp_path) -> None:
+    credentials = tmp_path / "vertex-service-account.json"
+    credentials.write_text("{}", encoding="utf-8")
+    env = {
+        "GOOGLE_GENAI_USE_VERTEXAI": "true",
+        "GOOGLE_CLOUD_PROJECT": "project-test",
+        "GOOGLE_CLOUD_LOCATION": "global",
+        "GOOGLE_APPLICATION_CREDENTIALS": str(credentials),
+    }
+
+    assert _provider_credential_error("gemini", env) == ""
+
+
+def test_provider_credential_error_reports_incomplete_gemini_vertex_env() -> None:
+    env = {
+        "GOOGLE_GENAI_USE_VERTEXAI": "true",
+        "GOOGLE_CLOUD_PROJECT": "project-test",
+    }
+
+    assert "Vertex AI requires" in _provider_credential_error("gemini", env)
+
+
 def test_provider_credential_error_accepts_codex_cli_auth(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     auth_dir = tmp_path / ".codex"
     auth_dir.mkdir()
@@ -172,6 +195,20 @@ def test_provider_credential_error_accepts_codex_cli_auth(monkeypatch: pytest.Mo
     monkeypatch.setattr("scripts.run_goal_benchmark.shutil.which", lambda name: "/opt/homebrew/bin/codex" if name == "codex" else None)
 
     assert _provider_credential_error("openai", {}) == ""
+
+
+def test_apply_provider_model_env_overrides_stale_shell_provider() -> None:
+    env = {
+        "GAIA_LLM_PROVIDER": "gemini",
+        "GAIA_LLM_MODEL": "gemini-3.5-flash",
+        "VISION_PROVIDER": "gemini",
+    }
+
+    _apply_provider_model_env(env, "openai", "gpt-5.5")
+
+    assert env["GAIA_LLM_PROVIDER"] == "openai"
+    assert env["GAIA_LLM_MODEL"] == "gpt-5.5"
+    assert env["VISION_PROVIDER"] == "gemini"
 
 
 def test_should_emit_live_trace_line_filters_to_step_level_messages() -> None:

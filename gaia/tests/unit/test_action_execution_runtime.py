@@ -1,5 +1,6 @@
 from gaia.src.phase4.goal_driven import action_execution_runtime as runtime
 from gaia.src.phase4.goal_driven.action_execution_runtime import (
+    _coordinate_click_script,
     _find_rebound_element,
     _find_visible_text_ref_candidate,
     _is_stale_like_timeout,
@@ -64,6 +65,7 @@ class _FakeAgent:
         self._last_exec_result = None
         self._recent_signal_history = []
         self._persistent_state_memory = []
+        self.reason_codes: list[str] = []
 
     def _normalize_text(self, value: object) -> str:
         return str(value or "").strip().lower()
@@ -118,6 +120,9 @@ class _FakeAgent:
 
     def _log(self, message: str) -> None:
         self.logs.append(message)
+
+    def _record_reason_code(self, reason_code: str) -> None:
+        self.reason_codes.append(reason_code)
 
 
 def test_find_rebound_element_matches_by_role_ref_and_container() -> None:
@@ -530,6 +535,243 @@ def test_visual_find_label_safety_blocks_destructive_targets() -> None:
 
     assert _visual_find_label_is_safe(agent, "낮은 가격순") is True
     assert _visual_find_label_is_safe(agent, "결제하기") is False
+
+
+def test_coordinate_click_script_prioritizes_radio_left_offset_targets() -> None:
+    script = _coordinate_click_script(796, 999)
+
+    assert "[x - 24, y]" in script
+    assert "[role=\"radio\"]" in script
+    assert "closest('label')" in script
+    assert "scoreTarget" in script
+    assert "targetScore" in script
+    assert "PointerEvent('pointerdown'" in script
+
+
+def test_execute_decision_skips_same_ref_timeout_retry(monkeypatch) -> None:
+    class _SameRefAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._element_selectors = {88: "span.year-2008"}
+            self._element_full_selectors = {88: "div.skyview-years span.year-2008"}
+            self._element_ref_ids = {88: "e389"}
+            self._element_ref_meta_by_id = {
+                88: {
+                    "ref": "e389",
+                    "selector": "span.year-2008",
+                    "full_selector": "div.skyview-years span.year-2008",
+                    "text": "2008",
+                    "tag": "span",
+                    "role_ref_role": "radio",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 8,
+                    "container_name": "스카이뷰 촬영연도 2008",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {"e389": dict(self._element_ref_meta_by_id[88])}
+
+        def _analyze_dom(self):
+            self._active_snapshot_id = "snap-1"
+            self._element_selectors = {88: "span.year-2008"}
+            self._element_full_selectors = {88: "div.skyview-years span.year-2008"}
+            self._element_ref_ids = {88: "e389"}
+            self._element_ref_meta_by_id = {
+                88: {
+                    "ref": "e389",
+                    "selector": "span.year-2008",
+                    "full_selector": "div.skyview-years span.year-2008",
+                    "text": "2008",
+                    "tag": "span",
+                    "role_ref_role": "radio",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 8,
+                    "container_name": "스카이뷰 촬영연도 2008",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {"e389": dict(self._element_ref_meta_by_id[88])}
+            return [
+                DOMElement(
+                    id=88,
+                    tag="span",
+                    text="2008",
+                    ref_id="e389",
+                    role_ref_role="radio",
+                    role_ref_name="2008",
+                    role_ref_nth=8,
+                    container_name="스카이뷰 촬영연도 2008",
+                )
+            ]
+
+    agent = _SameRefAgent()
+    dom_elements = [
+        DOMElement(
+            id=88,
+            tag="span",
+            text="2008",
+            ref_id="e389",
+            role_ref_role="radio",
+            role_ref_name="2008",
+            role_ref_nth=8,
+            container_name="스카이뷰 촬영연도 2008",
+        )
+    ]
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="e389", reasoning="2008년 옵션을 클릭한다.")
+    calls: list[str] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append(str(ref_id or ""))
+        return ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="action_timeout",
+            reason='TimeoutError: locator.click: Timeout 8000ms exceeded. Call log: waiting for locator("aria-ref=e389")',
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is False
+    assert err is not None
+    assert calls == ["e389"]
+    assert "visible_ref_timeout_no_retry" in agent.reason_codes
+
+
+def test_execute_decision_rejects_text_mismatched_resolved_ref(monkeypatch) -> None:
+    class _YearAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._active_snapshot_id = "snap-year-1"
+            self._element_selectors = {
+                2: "a.skip",
+                88: "a.year-2008",
+            }
+            self._element_full_selectors = {
+                2: "body a.skip",
+                88: "div.skyview-years a.year-2008",
+            }
+            self._element_ref_ids = {
+                2: "e2",
+                88: "e389",
+            }
+            self._element_ref_meta_by_id = {
+                88: {
+                    "ref": "e389",
+                    "selector": "a.year-2008",
+                    "full_selector": "div.skyview-years a.year-2008",
+                    "text": "2008",
+                    "tag": "a",
+                    "role_ref_role": "link",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 14,
+                }
+            }
+            self._last_snapshot_elements_by_ref = {"e389": dict(self._element_ref_meta_by_id[88])}
+
+        def _analyze_dom(self):
+            self._active_snapshot_id = "snap-year-2"
+            self._element_selectors = {
+                2: "a.skip",
+                88: "a.year-2008",
+            }
+            self._element_full_selectors = {
+                2: "body a.skip",
+                88: "div.skyview-years a.year-2008",
+            }
+            self._element_ref_ids = {
+                2: "e2",
+                88: "e389",
+            }
+            self._element_ref_meta_by_id = {
+                2: {
+                    "ref": "e2",
+                    "selector": "a.skip",
+                    "full_selector": "body a.skip",
+                    "text": "본문 바로가기",
+                    "tag": "a",
+                    "role_ref_role": "link",
+                    "role_ref_name": "본문 바로가기",
+                    "role_ref_nth": 1,
+                },
+                88: {
+                    "ref": "e389",
+                    "selector": "a.year-2008",
+                    "full_selector": "div.skyview-years a.year-2008",
+                    "text": "2008",
+                    "tag": "a",
+                    "role_ref_role": "link",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 14,
+                },
+            }
+            self._last_snapshot_elements_by_ref = {
+                "e2": dict(self._element_ref_meta_by_id[2]),
+                "e389": dict(self._element_ref_meta_by_id[88]),
+            }
+            return [
+                DOMElement(
+                    id=2,
+                    tag="a",
+                    text="본문 바로가기",
+                    ref_id="e2",
+                    role_ref_role="link",
+                    role_ref_name="본문 바로가기",
+                    role_ref_nth=1,
+                ),
+                DOMElement(
+                    id=88,
+                    tag="a",
+                    text="2008",
+                    ref_id="e389",
+                    role_ref_role="link",
+                    role_ref_name="2008",
+                    role_ref_nth=14,
+                ),
+            ]
+
+    agent = _YearAgent()
+    dom_elements = [
+        DOMElement(
+            id=88,
+            tag="a",
+            text="2008",
+            ref_id="e389",
+            role_ref_role="link",
+            role_ref_name="2008",
+            role_ref_nth=14,
+        )
+    ]
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="e389", reasoning="2008년 항목을 클릭한다.")
+    calls: list[str] = []
+
+    def fake_resolve_stale_ref(_previous_meta, _fresh_snapshot_payload):
+        return {
+            "ref": "e2",
+            "selector": "a.skip",
+            "full_selector": "body a.skip",
+            "text": "본문 바로가기",
+        }
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append(str(ref_id or ""))
+        if len(calls) == 1:
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="action_timeout",
+                reason='TimeoutError: locator.click: Timeout 8000ms exceeded. Call log: waiting for locator("aria-ref=e389")',
+            )
+        return ActionExecResult(success=True, effective=True, reason_code="ok", reason="ok")
+
+    monkeypatch.setattr(runtime, "resolve_stale_ref", fake_resolve_stale_ref)
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == ["e389", "e389"]
+    assert "ref_recovery_text_mismatch" in agent.reason_codes
 
 
 def test_execute_decision_keeps_rebound_live_ref_over_generic_selector_map(monkeypatch) -> None:

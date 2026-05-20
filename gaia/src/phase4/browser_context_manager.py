@@ -12,6 +12,20 @@ from typing import Any, Mapping
 
 
 AUTO_FOLLOW_ENV = "GAIA_OPENCLAW_AUTO_FOLLOW_NEW_TABS"
+NON_DOCUMENT_SURFACE_TOKENS = (
+    "serviceworker",
+    "sharedworker",
+    "webworker",
+    "worker",
+    "worklet",
+)
+NON_DOCUMENT_URL_SUFFIXES = (
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".wasm",
+    ".map",
+)
 
 
 def auto_follow_new_tabs_enabled() -> bool:
@@ -19,11 +33,38 @@ def auto_follow_new_tabs_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def looks_like_non_document_surface(page: Mapping[str, Any]) -> bool:
+    """Detect browser targets that are not human-facing task surfaces."""
+
+    url = str(page.get("url") or "").strip().lower()
+    title = str(page.get("title") or "").strip().lower()
+    kind = str(page.get("kind_guess") or "").strip().lower()
+    target_type = str(
+        page.get("target_type")
+        or page.get("targetType")
+        or page.get("type")
+        or page.get("target_kind")
+        or ""
+    ).strip().lower()
+    blob = " ".join(item for item in (url, title, kind, target_type) if item)
+
+    if target_type in NON_DOCUMENT_SURFACE_TOKENS:
+        return True
+    if url.startswith(("blob:", "data:", "devtools:", "chrome:", "chrome-extension:")):
+        return True
+    if any(token in blob for token in NON_DOCUMENT_SURFACE_TOKENS):
+        return True
+
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    return any(path.endswith(suffix) for suffix in NON_DOCUMENT_URL_SUFFIXES)
+
+
 def choose_auto_follow_tab(new_page_evidence: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Pick a safe newly opened tab to follow automatically.
 
     We only follow tabs that are likely to continue the current task:
-    same-origin tabs, or viewer/player-like tabs. Ad/help-like tabs are ignored.
+    same-origin tabs, or viewer/player-like tabs. Non-document worker/script
+    targets and ad/help-like tabs are ignored.
     """
 
     if not isinstance(new_page_evidence, Mapping):
@@ -39,6 +80,8 @@ def choose_auto_follow_tab(new_page_evidence: Mapping[str, Any] | None) -> dict[
         page = dict(raw_page)
         kind = str(page.get("kind_guess") or "").strip().lower()
         if kind in {"ad_like", "help_like"}:
+            continue
+        if looks_like_non_document_surface(page):
             continue
         target_id = str(page.get("target_id") or page.get("tab_id") or "").strip()
         url = str(page.get("url") or "").strip()

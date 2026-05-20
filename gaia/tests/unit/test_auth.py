@@ -17,6 +17,14 @@ def test_get_token_source_reads_gemini_env_file(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setenv("GAIA_GEMINI_ENV_FILE", str(env_file))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    for key in (
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GAIA_GEMINI_BACKEND",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(gaia_auth, "AUTH_DIR", tmp_path / "auth")
     monkeypatch.setattr(gaia_auth, "AUTH_FILE", tmp_path / "auth" / "profiles.json")
 
@@ -24,6 +32,46 @@ def test_get_token_source_reads_gemini_env_file(tmp_path, monkeypatch) -> None:
 
     assert token == "AIza-reuse"
     assert source == f"envfile:{env_file}"
+
+
+def test_get_token_source_accepts_gemini_vertex_env_file(tmp_path, monkeypatch) -> None:
+    credentials = tmp_path / "vertex-service-account.json"
+    credentials.write_text("{}", encoding="utf-8")
+    env_file = tmp_path / ".env.gemini.local"
+    env_file.write_text(
+        "\n".join(
+            [
+                'GOOGLE_GENAI_USE_VERTEXAI="true"',
+                'GOOGLE_CLOUD_PROJECT="project-test"',
+                'GOOGLE_CLOUD_LOCATION="global"',
+                f'GOOGLE_APPLICATION_CREDENTIALS="{credentials}"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("GAIA_GEMINI_ENV_FILE", str(env_file))
+    for key in (
+        "GEMINI_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GAIA_GEMINI_BACKEND",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(gaia_auth, "AUTH_DIR", tmp_path / "auth")
+    monkeypatch.setattr(gaia_auth, "AUTH_FILE", tmp_path / "auth" / "profiles.json")
+
+    token, source = gaia_auth.resolve_auth(provider="gemini", strategy="reuse")
+
+    assert token == gaia_auth.GEMINI_VERTEX_TOKEN_SENTINEL
+    assert source == f"vertex_ai:{env_file}"
+    assert gaia_auth.os.environ["GOOGLE_GENAI_USE_VERTEXAI"] == "true"
+    assert gaia_auth.os.environ["GOOGLE_CLOUD_PROJECT"] == "project-test"
+    assert gaia_auth.os.environ["GOOGLE_CLOUD_LOCATION"] == "global"
+    assert gaia_auth.os.environ["GOOGLE_APPLICATION_CREDENTIALS"] == str(credentials)
 
 
 def test_get_token_source_refreshes_expired_codex_oauth_profile(tmp_path, monkeypatch) -> None:
@@ -141,6 +189,14 @@ def test_resolve_auth_reuse_uses_gemini_env_file_and_exports_env(tmp_path, monke
 
     monkeypatch.setenv("GAIA_GEMINI_ENV_FILE", str(env_file))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    for key in (
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GAIA_GEMINI_BACKEND",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(gaia_auth, "AUTH_DIR", tmp_path / "auth")
     monkeypatch.setattr(gaia_auth, "AUTH_FILE", tmp_path / "auth" / "profiles.json")
 

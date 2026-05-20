@@ -6,10 +6,13 @@ from pathlib import Path
 from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, main, run_launcher
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
+    DEEP_QA_ALL_CASES_OPTION,
+    DEEP_QA_BENCHMARK_MANIFEST_PATH,
     _main,
     _grafana_url_from_monitoring_config,
     append_scenario_to_suite,
     build_single_scenario_suite_payload,
+    build_deep_qa_benchmark_catalog,
     build_terminal_benchmark_catalog,
     build_url_history,
     create_custom_site_definition,
@@ -210,6 +213,51 @@ def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path)
     assert "사이트 추가" in first_prompt[1]
     assert "사이트 수정" in first_prompt[1]
     assert "사이트 삭제" in first_prompt[1]
+
+
+def test_deep_qa_benchmark_catalog_uses_dedicated_manifest() -> None:
+    catalog, preset_map = build_deep_qa_benchmark_catalog(
+        workspace_root=_repo_root(),
+        manifest_path=DEEP_QA_BENCHMARK_MANIFEST_PATH,
+    )
+
+    labels = {item["label"] for item in catalog}
+    assert "Deep QA Kakao Map" in labels
+    assert "INU TIMETABLE" not in labels
+    assert preset_map["deep_qa_kakao_map"].suite_path == "gaia/tests/scenarios/deep_qa_kakao_map_suite.json"
+
+
+def test_run_terminal_deep_qa_benchmark_mode_uses_dedicated_manifest(tmp_path: Path) -> None:
+    monitoring_config_path = tmp_path / "monitoring.json"
+    monitoring_config_path.write_text(
+        json.dumps({"server": "http://monitor.example:9091", "token": "team-token"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    script = _PromptScript(selections=[DEEP_QA_ALL_CASES_OPTION, "종료"])
+    calls: list[dict[str, object]] = []
+    emitted: list[str] = []
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_pack_handler=lambda **kwargs: calls.append(kwargs) or {},
+        monitoring_config_path=monitoring_config_path,
+        dedicated_deep_qa=True,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["manifest_path"] == DEEP_QA_BENCHMARK_MANIFEST_PATH
+    assert calls[0]["qa_mode"] == "deep_adaptive_qa"
+    assert calls[0]["session_prefix"] == "terminal-deep-qa"
+    first_prompt = script.select_calls[0]
+    assert first_prompt[1][0] == DEEP_QA_ALL_CASES_OPTION
+    assert "INU TIMETABLE" not in first_prompt[1]
+    assert "사이트 추가" not in first_prompt[1]
+    assert any("기존 benchmark catalog" in message for message in emitted)
 
 
 def test_run_terminal_benchmark_mode_dispatches_all_sites_all_cases_with_grafana_config(tmp_path: Path) -> None:
