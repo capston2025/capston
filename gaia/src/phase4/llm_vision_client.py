@@ -27,7 +27,7 @@ class LLMVisionClient:
     _OPENAI_COMPATIBLE_PROVIDER_CONFIG = {
         "openai": {
             "api_key_env": "OPENAI_API_KEY",
-            "base_url_env": "",
+            "base_url_env": "OPENAI_BASE_URL",
             "model_env": "",
             "default_base_url": "",
             "default_model": "gpt-5.5",
