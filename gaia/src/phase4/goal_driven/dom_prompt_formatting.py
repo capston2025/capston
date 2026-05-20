@@ -618,11 +618,105 @@ def _compute_delta_snapshot(
     return delta_lines, change_ratio
 
 
+_READING_SURFACE_TOKENS = (
+    "댓글",
+    "답글",
+    "리뷰",
+    "후기",
+    "상품평",
+    "상품의견",
+    "상품 의견",
+    "의견/리뷰",
+    "게시판",
+    "게시글",
+    "본문",
+    "기사",
+    "comment",
+    "comments",
+    "reply",
+    "replies",
+    "review",
+    "reviews",
+    "opinion",
+    "opinions",
+    "post",
+    "posts",
+    "board",
+    "article",
+)
+
+_READING_ACTION_TOKENS = (
+    "읽",
+    "확인",
+    "찾",
+    "세",
+    "몇 건",
+    "몇개",
+    "몇 개",
+    "개수",
+    "건수",
+    "최근",
+    "상위",
+    "latest",
+    "recent",
+    "read",
+    "check",
+    "count",
+    "collect",
+    "find",
+)
+
+
+def _stringify_goal_constraints(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(
+            _stringify_goal_constraints(item)
+            for pair in value.items()
+            for item in pair
+        )
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_stringify_goal_constraints(item) for item in value)
+    return str(value or "")
+
+
+def _goal_is_reading_surface_goal(agent: Any, goal_constraints: Dict[str, Any]) -> bool:
+    try:
+        enabled = str(os.getenv("GAIA_OPENCLAW_READING_FULL_RAW", "1")).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+    except Exception:
+        enabled = True
+    if not enabled:
+        return False
+
+    normalize = getattr(agent, "_normalize_text", None)
+    if not callable(normalize):
+        normalize = lambda value: str(value or "").strip().lower()
+    blob = normalize(
+        " ".join(
+            [
+                str(getattr(agent, "_active_goal_text", "") or ""),
+                _stringify_goal_constraints(goal_constraints),
+            ]
+        )
+    )
+    if not blob:
+        return False
+    has_surface = any(normalize(token) in blob for token in _READING_SURFACE_TOKENS)
+    has_read_action = any(normalize(token) in blob for token in _READING_ACTION_TOKENS)
+    return bool(has_surface and has_read_action)
+
+
 def _goal_requires_full_raw_snapshot(agent: Any) -> bool:
     """수집/변경형 goal은 delta보다 현재 full raw snapshot이 안전하다."""
     goal_constraints = getattr(agent, "_goal_constraints", {}) or {}
     if not isinstance(goal_constraints, dict):
         return False
+    if _goal_is_reading_surface_goal(agent, goal_constraints):
+        return True
 
     mutation_direction = str(goal_constraints.get("mutation_direction") or "").strip().lower()
     if mutation_direction in {"increase", "decrease", "clear"}:

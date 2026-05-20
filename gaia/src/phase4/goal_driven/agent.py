@@ -73,6 +73,10 @@ from .failure_runtime import (
     record_reason_code as record_reason_code_impl,
 )
 from .llm_decision_runtime import decide_next_action as decide_next_action_impl
+from .vision_policy_runtime import (
+    looks_like_wait_needs_visual_context as looks_like_wait_needs_visual_context_impl,
+    should_capture_decision_screenshot as should_capture_decision_screenshot_impl,
+)
 from .post_action_runtime import handle_post_action_runtime
 from .run_history_runtime import record_run_history_decision as record_run_history_decision_impl
 from .action_execution_runtime import (
@@ -243,6 +247,7 @@ class GoalDrivenAgent:
         # 실행 기록
         self._action_history: List[str] = []
         self._action_feedback: List[str] = []
+        self._last_vision_policy_trace: Dict[str, Any] = {}
         self._run_history_enabled: Optional[bool] = None
         self._run_history_run_id: str = ""
         self._run_history_dir: str = ""
@@ -1538,10 +1543,26 @@ class GoalDrivenAgent:
                     reason=str(login_intervention.get("reason") or "로그인 개입 요청이 거부되어 중단했습니다."),
                 )
 
-            use_screenshot = not self._is_readonly_visibility_goal(goal)
+            vision_policy = should_capture_decision_screenshot_impl(
+                goal=goal,
+                dom_elements=dom_elements,
+                readonly_visibility_goal=self._is_readonly_visibility_goal(goal),
+                no_progress_counter=self._no_progress_counter,
+                ineffective_action_streak=ineffective_action_streak,
+                last_auth_submit_at=float(getattr(self, "_last_auth_submit_at", 0.0) or 0.0),
+            )
+            self._last_vision_policy_trace = vision_policy.as_trace()
+            if str(os.getenv("GAIA_BROWSER_BACKEND", "") or "").strip().lower() == "openclaw":
+                mode = "vision" if vision_policy.use_screenshot else "text_only"
+                self._log(
+                    "🧪 vision policy: "
+                    f"path={mode} reason={vision_policy.reason} "
+                    f"labels={vision_policy.labeled_elements}/{vision_policy.visible_elements} "
+                    f"chars={vision_policy.semantic_chars}"
+                )
 
-            # 2. 스크린샷 캡처
-            screenshot = self._capture_screenshot() if use_screenshot else None
+            # 2. 필요할 때만 스크린샷 캡처. DOM이 충분하면 text-only 판단으로 먼저 간다.
+            screenshot = self._capture_screenshot() if vision_policy.use_screenshot else None
 
             captcha_observer_result = run_captcha_observer_impl(
                 self,
@@ -2288,9 +2309,11 @@ class GoalDrivenAgent:
             return decision, dom_elements, screenshot, False
         visual_dom_mismatch = GoalDrivenAgent._looks_like_visual_dom_ref_mismatch(decision.reasoning)
         stale_dom_wait = GoalDrivenAgent._looks_like_stale_dom_wait_needing_resnapshot(decision.reasoning)
-        if not visual_dom_mismatch and not stale_dom_wait:
-            return decision, dom_elements, screenshot, False
-        if visual_dom_mismatch and not screenshot:
+        text_only_visual_escalation = (
+            not screenshot
+            and looks_like_wait_needs_visual_context_impl(decision.reasoning)
+        )
+        if not visual_dom_mismatch and not stale_dom_wait and not text_only_visual_escalation:
             return decision, dom_elements, screenshot, False
 
         delay_ms_raw = str(os.getenv("GAIA_VISUAL_DOM_MISMATCH_DELAY_MS", "350") or "350").strip()
@@ -2300,10 +2323,19 @@ class GoalDrivenAgent:
             delay_ms = 350
         delay_ms = max(300, min(delay_ms, 500))
 
-        refresh_reason = "stale_dom_wait" if stale_dom_wait else "visual_dom_ref_mismatch"
+        if stale_dom_wait:
+            refresh_reason = "stale_dom_wait"
+        elif text_only_visual_escalation:
+            refresh_reason = "text_only_visual_escalation"
+        else:
+            refresh_reason = "visual_dom_ref_mismatch"
         if stale_dom_wait:
             self._log(
                 f"🕒 stale DOM wait 감지: {delay_ms}ms 대기 후 DOM을 강제로 다시 수집합니다."
+            )
+        elif text_only_visual_escalation:
+            self._log(
+                f"🕒 DOM-first 판단이 화면 컨텍스트를 요청했습니다: {delay_ms}ms 대기 후 DOM/스크린샷을 다시 수집합니다."
             )
         else:
             self._log(

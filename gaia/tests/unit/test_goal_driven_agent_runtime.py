@@ -114,6 +114,66 @@ def test_retry_decision_after_visual_dom_ref_mismatch_redecides_once(monkeypatch
     assert any("재수집했습니다" in message for message in agent._action_feedback)
 
 
+def test_retry_decision_after_text_only_visual_escalation_captures_screenshot(monkeypatch) -> None:
+    monkeypatch.setattr("gaia.src.phase4.goal_driven.agent.time.sleep", lambda sec: None)
+
+    class _FakeAgent:
+        def __init__(self) -> None:
+            self._action_feedback: list[str] = []
+            self.logs: list[str] = []
+            self.capture_count = 0
+            self.decide_screenshots: list[str] = []
+            self._dom_cache_generation = 1
+            self._dom_analyze_cache = {"key": (1, "s1", "", ""), "elements": ["old-dom"]}
+            self._prev_raw_snapshot_text = "old snapshot"
+            self.reason_codes: list[str] = []
+
+        def _log(self, message: str) -> None:
+            self.logs.append(message)
+
+        def _record_reason_code(self, code: str) -> None:
+            self.reason_codes.append(code)
+
+        def _analyze_dom(self, *, force_refresh: bool = False):
+            assert force_refresh is True
+            return ["fresh-dom"]
+
+        def _capture_screenshot(self):
+            self.capture_count += 1
+            return "fresh-shot"
+
+        def _decide_next_action(self, *, dom_elements, goal, screenshot, memory_context):
+            self.decide_screenshots.append(screenshot)
+            return ActionDecision(
+                action=ActionType.CLICK,
+                ref_id="e9",
+                reasoning="화면 확인 후 다음 버튼 ref를 찾았습니다.",
+            )
+
+    agent = _FakeAgent()
+    original = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="DOM 정보만으로는 진행 버튼이 보이는지 확인할 수 없어 화면을 다시 확인하기 위해 대기합니다.",
+    )
+
+    decision, dom_elements, screenshot, retried = GoalDrivenAgent._retry_decision_after_visual_dom_ref_mismatch(
+        agent,
+        decision=original,
+        dom_elements=["old-dom"],
+        goal=SimpleNamespace(),
+        screenshot=None,
+        memory_context="memory",
+    )
+
+    assert retried is True
+    assert decision.action == ActionType.CLICK
+    assert dom_elements == ["fresh-dom"]
+    assert screenshot == "fresh-shot"
+    assert agent.capture_count == 1
+    assert agent.decide_screenshots == ["fresh-shot"]
+    assert agent.reason_codes == ["dom_force_resnapshot_text_only_visual_escalation"]
+
+
 def test_retry_decision_after_stale_dom_wait_forces_resnapshot(monkeypatch) -> None:
     sleep_calls: list[float] = []
     monkeypatch.setattr("gaia.src.phase4.goal_driven.agent.time.sleep", lambda sec: sleep_calls.append(sec))

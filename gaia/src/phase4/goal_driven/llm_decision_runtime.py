@@ -577,6 +577,7 @@ def decide_next_action(
         "used_llm": False,
         "llm_ms": 0,
         "path": "agentic_wrapper",
+        "vision_policy": dict(getattr(agent, "_last_vision_policy_trace", {}) or {}),
         "owner": "gaia_pre_llm",
     }
     current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
@@ -666,6 +667,16 @@ def decide_next_action(
 - 같은 이름 CTA가 여러 개면 `ref`, 트리 위치, 같은 row/section 주변 raw line으로 구분하세요.
 """ if backend_name == "openclaw" else ""
     browser_action_rules_block = build_browser_action_rules_for_agent(agent)
+    visual_input_block = (
+        "## 시각 입력 상태\n- screenshot: 제공됨. DOM/ref와 함께 현재 화면 증거로 사용하세요."
+        if screenshot
+        else (
+            "## 시각 입력 상태\n"
+            "- screenshot: 제공되지 않음. 현재 판단은 DOM/role tree와 실행 피드백만으로 수행하세요.\n"
+            "- DOM만으로 다음 ref/action을 확정할 수 없고 실제 화면 확인이 필요하면 추측하지 말고 wait로 "
+            "화면 컨텍스트 필요성을 reasoning에 명시하세요."
+        )
+    )
     prompt = f"""당신은 OpenClaw 스타일의 웹 작업 에이전트입니다.
 현재 화면과 직전 결과를 다시 읽고, 다음 한 단계만 결정하세요.
 
@@ -674,6 +685,8 @@ def decide_next_action(
 - 설명: {goal.description}
 - 성공 조건: {', '.join(goal.success_criteria)}
 - 실패 조건: {', '.join(goal.failure_criteria) if goal.failure_criteria else '없음'}
+
+{visual_input_block}
 
 ## 사용 가능한 테스트 데이터
 {json.dumps(prompt_test_data, ensure_ascii=False, indent=2)}
@@ -816,6 +829,7 @@ JSON 응답:"""
             "used_llm": True,
             "llm_ms": int((time.perf_counter() - llm_started) * 1000),
             "path": "vision" if screenshot else "text_only",
+            "vision_policy": dict(getattr(agent, "_last_vision_policy_trace", {}) or {}),
             "owner": "llm",
         }
         agent._log(f"🧪 llm trace: {agent._last_llm_trace}")
@@ -880,6 +894,7 @@ JSON 응답:"""
             "used_llm": True,
             "llm_ms": int((time.perf_counter() - llm_started) * 1000) if "llm_started" in locals() else 0,
             "path": "exception",
+            "vision_policy": dict(getattr(agent, "_last_vision_policy_trace", {}) or {}),
             "owner": "llm",
         }
         agent._log(f"🧪 llm trace: {agent._last_llm_trace}")

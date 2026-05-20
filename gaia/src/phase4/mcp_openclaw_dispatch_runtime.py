@@ -192,6 +192,38 @@ _CUSTOM_OPTION_DANGEROUS_TOKENS = (
 )
 
 
+def _openclaw_snapshot_max_chars_param() -> int:
+    """Return the OpenClaw snapshot maxChars query value.
+
+    OpenClaw's route treats an explicit non-positive ``maxChars`` as no cap.
+    Defaulting to 0 keeps long reading surfaces, such as reviews/comments,
+    available to the LLM instead of silently trimming them at the host default.
+    """
+    raw_value = str(os.getenv("GAIA_OPENCLAW_SNAPSHOT_MAX_CHARS", "0") or "0").strip()
+    try:
+        value = int(raw_value)
+    except Exception:
+        return 0
+    return max(0, value)
+
+
+def _openclaw_dom_text_evidence_enabled() -> bool:
+    try:
+        raw_value = str(os.getenv("GAIA_OPENCLAW_DOM_TEXT_EVIDENCE", "1")).strip().lower()
+    except Exception:
+        raw_value = "1"
+    return raw_value not in {"0", "false", "no", "off"}
+
+
+def _openclaw_dom_text_block_limit() -> int:
+    raw_value = str(os.getenv("GAIA_OPENCLAW_DOM_TEXT_BLOCK_LIMIT", "80") or "80").strip()
+    try:
+        value = int(raw_value)
+    except Exception:
+        return 80
+    return max(0, min(value, 200))
+
+
 def _resolve_base_url(raw_base_url: str | None) -> str:
     explicit_base_url = str(os.getenv("GAIA_OPENCLAW_BASE_URL", "") or "").strip()
     base_url = explicit_base_url or str(raw_base_url or "").strip()
@@ -2076,6 +2108,96 @@ def _synthesize_snapshot_evidence(elements: List[Dict[str, Any]]) -> Dict[str, A
     }
 
 
+def _normalize_dom_text_blocks(raw_blocks: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_blocks, list):
+        return []
+    blocks: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_blocks:
+        if not isinstance(raw, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(raw.get("text") or "").strip())
+        if len(text) < 8:
+            continue
+        normalized = _normalize_hint_text(text)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            score = int(raw.get("score") or 0)
+        except Exception:
+            score = 0
+        block = {
+            "text": text[:1200],
+            "tag": str(raw.get("tag") or "").strip().lower()[:32],
+            "role": str(raw.get("role") or "").strip().lower()[:64],
+            "selector": str(raw.get("selector") or "").strip()[:240],
+            "section": re.sub(r"\s+", " ", str(raw.get("section") or "").strip())[:240],
+            "score": score,
+            "in_viewport": bool(raw.get("inViewport")),
+        }
+        blocks.append(block)
+        if len(blocks) >= _openclaw_dom_text_block_limit():
+            break
+    return blocks
+
+
+def _dom_text_evidence_lines(dom_text_blocks: List[Dict[str, Any]]) -> List[str]:
+    if not dom_text_blocks:
+        return []
+    lines = ["", "[DOM text evidence]"]
+    for index, block in enumerate(dom_text_blocks, start=1):
+        text = re.sub(r"\s+", " ", str(block.get("text") or "").strip())
+        if not text:
+            continue
+        tag = str(block.get("tag") or "").strip() or "node"
+        section = str(block.get("section") or "").strip()
+        selector = str(block.get("selector") or "").strip()
+        meta_parts = [f"tag={tag}"]
+        if section:
+            meta_parts.append(f"section={section}")
+        if selector:
+            meta_parts.append(f"selector={selector}")
+        lines.append(f"- dom_text {index}: {text[:900]} [{'; '.join(meta_parts)}]")
+    return lines
+
+
+def _merge_dom_text_evidence(
+    *,
+    role_snapshot: Dict[str, Any],
+    evidence: Dict[str, Any],
+    dom_text_blocks: Optional[List[Dict[str, Any]]],
+) -> None:
+    blocks = _normalize_dom_text_blocks(dom_text_blocks)
+    if not blocks:
+        return
+    role_snapshot["dom_text_blocks"] = blocks
+    role_snapshot["dom_text_block_count"] = len(blocks)
+    snapshot = str(role_snapshot.get("snapshot") or "").strip()
+    extra_lines = _dom_text_evidence_lines(blocks)
+    if extra_lines:
+        role_snapshot["snapshot"] = "\n".join([snapshot, *extra_lines]).strip()
+        role_snapshot["stats"] = _role_snapshot_stats(
+            str(role_snapshot.get("snapshot") or ""),
+            role_snapshot.get("refs") if isinstance(role_snapshot.get("refs"), dict) else {},
+        )
+
+    existing_digest = str(evidence.get("text_digest") or "").strip()
+    digest_parts = [existing_digest] if existing_digest else []
+    live_texts = list(evidence.get("live_texts") or [])
+    for block in blocks:
+        text = re.sub(r"\s+", " ", str(block.get("text") or "").strip())
+        if not text:
+            continue
+        digest_parts.append(text[:500])
+        if len(text) >= 12 and text[:240] not in live_texts:
+            live_texts.append(text[:240])
+    evidence["text_digest"] = " ".join(digest_parts).strip()[:8000]
+    evidence["live_texts"] = live_texts[:40]
+    evidence["dom_text_blocks"] = blocks
+    evidence["dom_text_block_count"] = len(blocks)
+
+
 def _apply_scope_to_elements(
     elements: List[Dict[str, Any]],
     requested_scope_ref_id: str,
@@ -2105,11 +2227,13 @@ def _build_snapshot_payload(
     raw_snapshot: Dict[str, Any],
     state: Dict[str, Any],
     frame_descriptors: Optional[List[Dict[str, Any]]] = None,
+    dom_text_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     snapshot = str(raw_snapshot.get("snapshot") or "")
     refs = raw_snapshot.get("refs") if isinstance(raw_snapshot.get("refs"), dict) else {}
     elements, role_snapshot = _pseudo_elements_from_role_snapshot(snapshot, refs, frame_descriptors)
     evidence = _synthesize_snapshot_evidence(elements)
+    _merge_dom_text_evidence(role_snapshot=role_snapshot, evidence=evidence, dom_text_blocks=dom_text_blocks)
     frame_texts = _frame_evidence_texts(frame_descriptors)
     if frame_texts:
         evidence["frame_texts"] = frame_texts
@@ -2124,6 +2248,11 @@ def _build_snapshot_payload(
     effective_role_snapshot = dict(role_snapshot or {})
     if scope_applied:
         scoped_role_snapshot = _build_role_snapshot_from_elements(scoped_elements)
+        _merge_dom_text_evidence(
+            role_snapshot=scoped_role_snapshot,
+            evidence={"text_digest": "", "live_texts": []},
+            dom_text_blocks=dom_text_blocks,
+        )
         effective_role_snapshot["scoped_snapshot"] = str(scoped_role_snapshot.get("snapshot") or "")
         effective_role_snapshot["scoped_tree"] = list(scoped_role_snapshot.get("tree") or [])
         effective_role_snapshot["scoped_refs"] = dict(scoped_role_snapshot.get("refs") or {})
@@ -2184,6 +2313,7 @@ def _snapshot_payload_for_target(
         "targetId": target_id,
         "format": "role",
         "refs": "aria",
+        "maxChars": _openclaw_snapshot_max_chars_param(),
     }
     if profile:
         params["profile"] = profile
@@ -2206,6 +2336,12 @@ def _snapshot_payload_for_target(
         if _snapshot_may_contain_iframe(data)
         else []
     )
+    dom_text_blocks = _fetch_dom_text_blocks_for_target(
+        base_url=base_url,
+        target_id=target_id,
+        profile=profile,
+        timeout=timeout,
+    )
     return _build_snapshot_payload(
         session_id=session_id,
         target_id=target_id,
@@ -2214,6 +2350,7 @@ def _snapshot_payload_for_target(
         raw_snapshot=data,
         state=state,
         frame_descriptors=frame_descriptors,
+        dom_text_blocks=dom_text_blocks,
     )
 
 
@@ -2275,6 +2412,183 @@ _FRAME_DESCRIPTOR_SCRIPT = r"""() => {
 }"""
 
 
+_DOM_TEXT_EVIDENCE_SCRIPT = r"""() => {
+  const READ_HINT_RE = /(comment|comments|reply|replies|review|reviews|opinion|opinions|post|posts|board|cmt|qna|댓글|답글|리뷰|후기|상품평|상품의견|의견)/i;
+  const BLOCK_TAGS = new Set(['article', 'li', 'p', 'blockquote', 'dd', 'dt', 'td', 'th', 'figcaption']);
+  const BLOCK_ROLES = new Set(['article', 'listitem', 'row', 'cell', 'gridcell', 'paragraph']);
+  const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template', 'svg', 'path', 'canvas']);
+  const MAX_NODES = 20000;
+  const MAX_RESULTS = 120;
+
+  function clean(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function visible(el) {
+    try {
+      const style = window.getComputedStyle(el);
+      if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) {
+        return false;
+      }
+      const rect = el.getBoundingClientRect();
+      return Boolean(el.getClientRects().length && rect.width >= 1 && rect.height >= 1);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function classIdRoleBlob(el) {
+    const attrs = [
+      el.id || '',
+      el.className && typeof el.className === 'string' ? el.className : '',
+      el.getAttribute('role') || '',
+      el.getAttribute('aria-label') || '',
+      el.getAttribute('data-testid') || '',
+    ];
+    return clean(attrs.join(' '));
+  }
+
+  function ancestorHint(el) {
+    const parts = [];
+    let cur = el;
+    for (let depth = 0; cur && depth < 6; depth += 1, cur = cur.parentElement) {
+      const blob = classIdRoleBlob(cur);
+      if (blob && READ_HINT_RE.test(blob)) {
+        parts.push(blob);
+      }
+    }
+    return clean(parts.join(' > ')).slice(0, 240);
+  }
+
+  function nearestHeading(el) {
+    let cur = el;
+    for (let depth = 0; cur && depth < 5; depth += 1, cur = cur.parentElement) {
+      const heading = cur.querySelector && cur.querySelector('h1,h2,h3,h4,[role="heading"]');
+      const text = clean(heading && heading.innerText);
+      if (text && text.length <= 120) {
+        return text;
+      }
+    }
+    return '';
+  }
+
+  function selectorFor(el) {
+    const parts = [];
+    let cur = el;
+    for (let depth = 0; cur && cur.nodeType === 1 && depth < 5; depth += 1, cur = cur.parentElement) {
+      const tag = String(cur.tagName || '').toLowerCase();
+      if (!tag) {
+        break;
+      }
+      if (cur.id) {
+        parts.unshift(`${tag}#${String(cur.id).slice(0, 64)}`);
+        break;
+      }
+      let part = tag;
+      const cls = clean(cur.className && typeof cur.className === 'string' ? cur.className : '')
+        .split(' ')
+        .filter(Boolean)
+        .slice(0, 2)
+        .join('.');
+      if (cls) {
+        part += `.${cls.slice(0, 80)}`;
+      }
+      const parent = cur.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((item) => item.tagName === cur.tagName);
+        if (siblings.length > 1) {
+          part += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
+        }
+      }
+      parts.unshift(part);
+    }
+    return parts.join(' > ');
+  }
+
+  const nodes = Array.from(document.body ? document.body.querySelectorAll('*') : []).slice(0, MAX_NODES);
+  const candidates = [];
+  for (let order = 0; order < nodes.length; order += 1) {
+    const el = nodes[order];
+    const tag = String(el.tagName || '').toLowerCase();
+    if (!tag || SKIP_TAGS.has(tag) || !visible(el)) {
+      continue;
+    }
+    const role = String(el.getAttribute('role') || '').toLowerCase();
+    const hint = ancestorHint(el);
+    const selfHint = classIdRoleBlob(el);
+    const hasReadHint = READ_HINT_RE.test(`${hint} ${selfHint}`);
+    const isBlock = BLOCK_TAGS.has(tag) || BLOCK_ROLES.has(role);
+    if (!isBlock && !hasReadHint) {
+      continue;
+    }
+
+    const text = clean(el.innerText || el.textContent || '');
+    if (text.length < 12) {
+      continue;
+    }
+    if (text.length > 1800 && !hasReadHint) {
+      continue;
+    }
+    const childCount = el.children ? el.children.length : 0;
+    if (childCount > 18 && !hasReadHint) {
+      continue;
+    }
+    const rect = el.getBoundingClientRect();
+    const inViewport = rect.bottom >= 0 && rect.top <= window.innerHeight;
+    let score = 0;
+    if (hasReadHint) score += 40;
+    if (tag === 'li' || role === 'listitem') score += 16;
+    if (tag === 'article' || role === 'article') score += 12;
+    if (tag === 'p' || role === 'paragraph') score += 8;
+    if (inViewport) score += 8;
+    if (text.length >= 40 && text.length <= 700) score += 10;
+    if (text.length > 1200) score -= 10;
+    if (childCount > 12) score -= 12;
+    if (READ_HINT_RE.test(text)) score += 4;
+    candidates.push({
+      order,
+      score,
+      text: text.slice(0, 1200),
+      tag,
+      role,
+      selector: selectorFor(el),
+      section: hint || nearestHeading(el),
+      inViewport,
+    });
+  }
+
+  candidates.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+  const out = [];
+  const seen = new Set();
+  for (const item of candidates) {
+    const normalized = clean(item.text).toLowerCase();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    let duplicate = false;
+    for (const existing of seen) {
+      if (normalized.length > 80 && existing.includes(normalized)) {
+        duplicate = true;
+        break;
+      }
+      if (existing.length > 80 && normalized.includes(existing)) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      continue;
+    }
+    seen.add(normalized);
+    out.push(item);
+    if (out.length >= MAX_RESULTS) {
+      break;
+    }
+  }
+  return out;
+}"""
+
+
 def _fetch_frame_descriptors_for_target(
     *,
     base_url: str,
@@ -2311,6 +2625,39 @@ def _fetch_frame_descriptors_for_target(
         if isinstance(item, dict) and str(item.get("selector") or "").strip():
             descriptors.append(dict(item))
     return descriptors[:50]
+
+
+def _fetch_dom_text_blocks_for_target(
+    *,
+    base_url: str,
+    target_id: str,
+    profile: str,
+    timeout: Any,
+) -> List[Dict[str, Any]]:
+    if not _openclaw_dom_text_evidence_enabled() or _openclaw_dom_text_block_limit() <= 0:
+        return []
+    if not str(target_id or "").strip():
+        return []
+    payload: Dict[str, Any] = {
+        "kind": "evaluate",
+        "targetId": target_id,
+        "fn": _DOM_TEXT_EVIDENCE_SCRIPT,
+    }
+    if profile:
+        payload["profile"] = profile
+    try:
+        status_code, data, _ = _request(
+            "POST",
+            base_url=base_url,
+            path="/act",
+            timeout=timeout,
+            payload=payload,
+        )
+    except Exception:
+        return []
+    if status_code >= 400 or not isinstance(data, dict):
+        return []
+    return _normalize_dom_text_blocks(data.get("result"))
 
 
 def _snapshot_may_contain_iframe(raw_snapshot: Dict[str, Any]) -> bool:
@@ -2900,6 +3247,7 @@ def dispatch_openclaw_action(
                 "format": "role",
                 "refs": "aria",
                 "profile": profile_name,
+                "maxChars": _openclaw_snapshot_max_chars_param(),
             },
         )
         if status_code >= 400 and _target_missing(status_code, data, text):
@@ -2922,6 +3270,7 @@ def dispatch_openclaw_action(
                     "format": "role",
                     "refs": "aria",
                     "profile": profile_name,
+                    "maxChars": _openclaw_snapshot_max_chars_param(),
                 },
             )
         if status_code >= 400:
@@ -2936,6 +3285,12 @@ def dispatch_openclaw_action(
             if _snapshot_may_contain_iframe(data)
             else []
         )
+        dom_text_blocks = _fetch_dom_text_blocks_for_target(
+            base_url=base_url,
+            target_id=target_id,
+            profile=profile_name,
+            timeout=timeout,
+        )
         payload = _build_snapshot_payload(
             session_id=session_id,
             target_id=target_id,
@@ -2944,6 +3299,7 @@ def dispatch_openclaw_action(
             raw_snapshot=data,
             state=state,
             frame_descriptors=frame_descriptors,
+            dom_text_blocks=dom_text_blocks,
         )
         return 200, payload, ""
 

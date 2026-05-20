@@ -11,6 +11,51 @@ from gaia.src.phase4.browser_context_manager import choose_auto_follow_tab
 _DEFAULT_URL = "https://example.com/app"
 
 
+def test_openclaw_snapshot_max_chars_defaults_to_full(monkeypatch):
+    monkeypatch.delenv("GAIA_OPENCLAW_SNAPSHOT_MAX_CHARS", raising=False)
+
+    assert runtime._openclaw_snapshot_max_chars_param() == 0
+
+
+def test_openclaw_snapshot_max_chars_accepts_explicit_cap(monkeypatch):
+    monkeypatch.setenv("GAIA_OPENCLAW_SNAPSHOT_MAX_CHARS", "120000")
+
+    assert runtime._openclaw_snapshot_max_chars_param() == 120000
+
+
+def test_build_snapshot_payload_merges_dom_text_evidence():
+    state = _seed_session("dom-text-session")
+
+    payload = runtime._build_snapshot_payload(
+        session_id="dom-text-session",
+        target_id="tab-1",
+        current_url=_DEFAULT_URL,
+        requested_scope_ref_id="",
+        raw_snapshot={
+            "snapshot": '- link "의견/리뷰 1,402" [ref=e1]',
+            "refs": {"e1": {"role": "link", "name": "의견/리뷰 1,402"}},
+        },
+        state=state,
+        dom_text_blocks=[
+            {
+                "text": "청소기가 좀 시끄러워요. 밤에는 돌리기 어려운 편입니다.",
+                "tag": "li",
+                "selector": ".post_comments .cmt_list > li:nth-of-type(1)",
+                "section": "post_comments cmt_list",
+                "score": 72,
+            }
+        ],
+    )
+
+    role_snapshot = payload["role_snapshot"]
+    evidence = payload["evidence"]
+    assert "[DOM text evidence]" in role_snapshot["snapshot"]
+    assert "청소기가 좀 시끄러워요" in role_snapshot["snapshot"]
+    assert evidence["dom_text_block_count"] == 1
+    assert "청소기가 좀 시끄러워요" in evidence["text_digest"]
+    assert any("밤에는 돌리기 어려운 편" in text for text in evidence["live_texts"])
+
+
 def _evidence(text: str, *, live_texts: list[str] | None = None, logout_visible: bool = False) -> dict[str, object]:
     return {
         "text_digest": text,

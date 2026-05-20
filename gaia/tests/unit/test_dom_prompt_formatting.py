@@ -964,6 +964,17 @@ def test_goal_requires_full_raw_snapshot_for_collect_goal():
     assert _goal_requires_full_raw_snapshot(agent) is True
 
 
+def test_goal_requires_full_raw_snapshot_for_reading_surface_goal():
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._active_goal_text = (
+        "상품 의견 게시판으로 이동해서 최근 등록된 댓글 3개를 읽고 "
+        "소음 혹은 시끄럽다는 단어가 포함된 불만 댓글이 몇 건인지 세어줘"
+    )
+
+    assert _goal_requires_full_raw_snapshot(agent) is True
+
+
 def test_render_openclaw_raw_tree_collect_goal_disables_delta():
     """수집/변경형 goal은 둘째 턴 이후에도 full raw를 유지한다."""
     agent = _FakeAgent()
