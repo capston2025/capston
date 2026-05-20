@@ -77,6 +77,26 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "JOBKOREA_006_ONEPICK_HIGH_SALARY_FILTER",
+      "name": "합격축하금 통큰 연봉 필터 확인",
+      "url": "https://www.jobkorea.co.kr/",
+      "goal": "잡코리아에서 합격축하금 채용공고 페이지로 이동한 후 \"통큰 연봉\" 필터를 적용한다. 이후 채용공고 리스트에서 기업명과 연봉 정보가 정상적으로 표시되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "합격축하금",
+        "통큰 연봉",
+        "채용공고",
+        "기업명",
+        "연봉",
+        "만원"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

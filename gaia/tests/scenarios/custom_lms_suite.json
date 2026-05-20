@@ -1,0 +1,24 @@
+{
+  "suite_id": "lms_public_v1",
+  "site": {
+    "name": "인천대학교 LMS",
+    "base_url": "https://cyber.inu.ac.kr/",
+    "mode": "public_browse"
+  },
+  "grader_configs": {},
+  "scenarios": [
+    {
+      "id": "CYBER_001_LSM_LOGIN_AND_CHAT",
+      "name": "LSM_LOGIN_AND_CHAT",
+      "url": "https://cyber.inu.ac.kr/",
+      "goal": "s",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "time_budget_sec": 300,
+      "expected_signals": []
+    }
+  ]
+}

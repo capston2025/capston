@@ -1,0 +1,36 @@
+{
+  "suite_id": "grafana_public_v1",
+  "site": {
+    "name": "Grafana",
+    "base_url": "http://15.164.24.65:3000/?orgId=1&from=now-6h&to=now&timezone=browser",
+    "mode": "public_browse"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "GRAFANA_001_LOGIN_AND_BENCHMARK_DASHBOARD",
+      "name": "admin 로그인 후 GAIA Benchmark Result 확인",
+      "url": "http://15.164.24.65:3000/?orgId=1&from=now-6h&to=now&timezone=browser",
+      "goal": "Grafana에서 id는 admin, 비밀번호는 changeme를 입력해 로그인한 뒤 Dashboards를 클릭하고 GAIA Benchmark Result 대시보드를 열어, 시나리오 성공률과 설명 정보가 화면에 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "admin",
+        "Dashboards",
+        "GAIA Benchmark Result",
+        "성공률",
+        "설명"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

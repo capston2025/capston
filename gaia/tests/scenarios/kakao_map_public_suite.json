@@ -77,6 +77,25 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "KAKAOMAP_006_INU_TRANSIT_ROUTE_TIME",
+      "name": "인천대학교 송도캠퍼스 2008년 스카이뷰 확인",
+      "url": "https://map.kakao.com/",
+      "goal": "카카오맵 검색창에 \"인천대학교 송도캠퍼스\"를 입력해 검색 결과를 선택한다. 이후 지도를 스카이뷰로 바꾸고 년도를 2008년으로 설정했을 때 지도가 스카이뷰로 정상 표시되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "인천대학교 송도캠퍼스",
+        "스카이뷰",
+        "2008년",
+        "지도",
+        "항공사진"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

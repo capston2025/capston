@@ -77,6 +77,25 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "APPLE_006_IPAD_PENCIL_FEATURES_MODEL",
+      "name": "iPad Apple Pencil 특징 모델 선택 확인",
+      "url": "https://www.apple.com/kr/",
+      "goal": "Apple Korea 홈에서 iPad를 선택한 후 Apple Pencil 페이지로 이동한다. 이후 'Apple Pencil 특징 모두 보기'를 클릭하고 스크롤을 내려 iPad 모델이 iPad Pro 11로 선택되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "iPad",
+        "Apple Pencil",
+        "특징 모두 보기",
+        "iPad Pro 11",
+        "모델"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

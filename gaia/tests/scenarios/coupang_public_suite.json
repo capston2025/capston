@@ -1,0 +1,35 @@
+{
+  "suite_id": "coupang_public_v1",
+  "site": {
+    "name": "Coupang",
+    "base_url": "https://www.coupang.com/",
+    "mode": "public_readonly"
+  },
+  "grader_configs": {
+    "reason_codes": {
+      "forbidden_reason_codes": [
+        "user_intervention_missing"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "COUPANG_001_ZERO_COLA_BESTSELLING_SORT",
+      "name": "Zero Cola Bestselling Sort",
+      "url": "https://www.coupang.com/",
+      "goal": "제로콜라 검색 후에 판매량순 필터 클릭하고 순서대로 정렬되어 제품이 나타나는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "제로콜라",
+        "판매량순",
+        "정렬",
+        "제품"
+      ],
+      "time_budget_sec": 600
+    }
+  ]
+}

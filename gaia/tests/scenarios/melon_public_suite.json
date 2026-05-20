@@ -15,9 +15,9 @@
   "scenarios": [
     {
       "id": "MELON_001_HOME_MUSIC",
-      "name": "음악 서비스 홈 확인",
+      "name": "Home Music Navigation",
       "url": "https://www.melon.com/",
-      "goal": "멜론 홈에서 검색 입력, 차트, 최신 음악 또는 장르 메뉴 중 두 가지를 확인해줘.",
+      "goal": "멜론 홈에서 검색 입력, 차트, 최신 음악 또는 장르 메뉴 중 두 가지 이상이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -28,9 +28,9 @@
     },
     {
       "id": "MELON_002_CHART_LIST",
-      "name": "차트 목록 확인",
+      "name": "Chart List Overview",
       "url": "https://www.melon.com/chart/index.htm",
-      "goal": "멜론 차트 화면에서 순위, 곡명, 아티스트명 또는 앨범 이미지 중 두 가지를 확인해줘.",
+      "goal": "멜론 차트 화면에서 순위, 곡명, 아티스트명 또는 앨범 이미지 중 두 가지 이상이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -41,9 +41,9 @@
     },
     {
       "id": "MELON_003_SEARCH_RESULTS",
-      "name": "음악 검색 결과 확인",
+      "name": "Search Results For IU",
       "url": "https://www.melon.com/search/total/index.htm?q=%EC%95%84%EC%9D%B4%EC%9C%A0",
-      "goal": "아이유 검색 결과에서 곡, 앨범, 아티스트 결과 중 두 가지를 확인해줘.",
+      "goal": "아이유 검색 결과에서 곡, 앨범, 아티스트 결과 중 두 가지 이상이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -54,9 +54,9 @@
     },
     {
       "id": "MELON_004_GENRE_BROWSE",
-      "name": "장르 목록 확인",
+      "name": "Genre Song List",
       "url": "https://www.melon.com/genre/song_list.htm?gnrCode=GN0100",
-      "goal": "장르 음악 목록에서 곡명, 아티스트명, 앨범 정보 또는 정렬 영역을 확인해줘.",
+      "goal": "장르 음악 목록에서 곡명, 아티스트명, 앨범 정보 또는 정렬 영역이 보이는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
@@ -67,15 +67,53 @@
     },
     {
       "id": "MELON_005_CHART_TAB",
-      "name": "차트 탭 전환 확인",
+      "name": "Chart Tab Switch",
       "url": "https://www.melon.com/chart/index.htm",
-      "goal": "차트 화면에서 일간, 주간, 장르 같은 탭을 선택해 곡 목록 표시가 바뀌는지 확인해줘.",
+      "goal": "차트 화면에서 다른 차트 탭을 선택했을 때 목록 표시가 바뀌는지 확인해줘.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "expected_signals": [],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MELON_006_IU_FLOWER_BOOKMARK_THREE_TRACK",
+      "name": "IU Flower Bookmark Three Track",
+      "url": "https://www.melon.com/",
+      "goal": "멜론에서 \"꽃갈피 셋\"을 검색하고, 검색 결과에서 아티스트가 아이유인 앨범 상세 페이지로 이동한다. 이후 수록곡 목록에 \"Never Ending Story\"가 포함되어 있는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "꽃갈피 셋",
+        "아이유",
+        "앨범",
+        "수록곡",
+        "Never Ending Story"
+      ],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "MELON_007_2015_ERA_CHART_BANG_BANG_BANG",
+      "name": "CHART Pop Songs",
+      "url": "https://www.melon.com/",
+      "goal": "홈에서 멜론차트를 누른 뒤 시대 탭을 클릭하고, 해외로 바꾼 후에 차트바로 보기 눌렀을 때, 순위별로 팝송이 나오는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "멜론차트",
+        "시대",
+        "해외",
+        "차트바로 보기",
+        "팝송"
+      ],
       "time_budget_sec": 600
     }
   ]

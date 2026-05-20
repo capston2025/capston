@@ -77,6 +77,44 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "YOUTUBE_006_GAIA_HUMAN_TEST_V1",
+      "name": "인천대 임베디드시스템 홍보영상 검색 결과 확인",
+      "url": "https://www.youtube.com/results?search_query=%EC%9D%B8%EC%B2%9C%EB%8C%80%20%EC%9E%84%EB%B2%A0%EB%94%94%EB%93%9C%EC%8B%9C%EC%8A%A4%ED%85%9C%20%ED%99%8D%EB%B3%B4%EC%98%81%EC%83%81",
+      "goal": "유튜브에서 인천대 임베디드시스템 홍보영상 검색 결과 화면을 열고, 영상 제목 목록과 채널명, 썸네일이 모두 표시되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": false
+      },
+      "expected_signals": [
+        "인천대",
+        "임베디드시스템",
+        "홍보영상",
+        "영상",
+        "채널",
+        "썸네일"
+      ],
+      "time_budget_sec": 600
+    },
+    {
+      "id": "YOUTUBE_007_GAIA_HUMAN_TEST_V1_2",
+      "name": "Short test 확인",
+      "url": "https://www.youtube.com/",
+      "goal": "Shorts 탭으로 이동한 뒤 현재 제목/채널명을 확인하고, 다음 동영상으로 한번만 넘겨줘. 이후 제목과 채널명이 정상적으로 이전과 달라졌는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "Shorts",
+        "채널명",
+        "제목",
+        "변경"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

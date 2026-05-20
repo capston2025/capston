@@ -1,9 +1,9 @@
 {
   "manifest_id": "external_public_korea_focused_v2",
   "name": "Korea-focused external public benchmark",
-  "site_count": 30,
-  "scenario_count": 150,
-  "selection_note": "30 external public sites, mostly Korea-facing services familiar to the presentation audience. CAPTCHA-heavy or bot-wall-prone sites are excluded from the primary curated pack.",
+  "site_count": 35,
+  "scenario_count": 155,
+  "selection_note": "35 external public sites, mostly Korea-facing services familiar to the presentation audience. CAPTCHA-heavy or bot-wall-prone sites are excluded from the primary curated pack.",
   "suites": [
     {
       "site_key": "wikipedia",
@@ -244,6 +244,46 @@
       "volatility": "medium",
       "base_url": "https://culture.seoul.go.kr/",
       "suite_path": "gaia/tests/scenarios/seoul_culture_public_suite.json"
+    },
+    {
+      "site_key": "namu_wiki",
+      "label": "나무위키",
+      "category": "knowledge_reference",
+      "volatility": "high",
+      "base_url": "https://namu.wiki/",
+      "suite_path": "gaia/tests/scenarios/namu_wiki_public_suite.json"
+    },
+    {
+      "site_key": "lotteworld_adventure",
+      "label": "롯데월드 어드벤처",
+      "category": "culture_public",
+      "volatility": "medium",
+      "base_url": "https://adventure.lotteworld.com/",
+      "suite_path": "gaia/tests/scenarios/lotteworld_adventure_public_suite.json"
+    },
+    {
+      "site_key": "starbucks_kr",
+      "label": "Starbucks Korea",
+      "category": "commerce_product",
+      "volatility": "medium",
+      "base_url": "https://www.starbucks.co.kr/",
+      "suite_path": "gaia/tests/scenarios/starbucks_kr_public_suite.json"
+    },
+    {
+      "site_key": "naver_map",
+      "label": "Naver Map",
+      "category": "public_data_service",
+      "volatility": "medium",
+      "base_url": "https://map.naver.com/",
+      "suite_path": "gaia/tests/scenarios/naver_map_public_suite.json"
+    },
+    {
+      "site_key": "coupang",
+      "label": "Coupang",
+      "category": "commerce_product",
+      "volatility": "high",
+      "base_url": "https://www.coupang.com/",
+      "suite_path": "gaia/tests/scenarios/coupang_public_suite.json"
     }
   ]
 }

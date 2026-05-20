@@ -74,6 +74,7 @@ TELEGRAM_SETUP_CHOICES = ("reuse", "fresh")
 TERMINAL_ACTUAL_PURPOSE_LABEL = "실제 사용 모드 실행"
 TERMINAL_BENCHMARK_PURPOSE_LABEL = "벤치마크 용도 실행"
 TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL = "Deep QA 전용 벤치마크 실행"
+TERMINAL_BENCHMARK_BACK_CODE = 130
 TERMINAL_PURPOSE_CHOICES = (
     TERMINAL_ACTUAL_PURPOSE_LABEL,
     TERMINAL_BENCHMARK_PURPOSE_LABEL,
@@ -1266,18 +1267,37 @@ def _run_terminal_benchmark_mode(
     qa_mode: str | None = None,
     dedicated_deep_qa: bool = False,
 ) -> int:
-    from gaia.src.terminal_benchmark_mode import run_terminal_benchmark_mode
-
-    return run_terminal_benchmark_mode(
-        workspace_root=workspace_root,
-        prompt_select=_prompt_select,
-        prompt=_prompt,
-        prompt_non_empty=_prompt_non_empty,
-        emit=print,
-        push_metrics=push_metrics,
-        qa_mode=qa_mode,
-        dedicated_deep_qa=dedicated_deep_qa,
+    from gaia.src.terminal_benchmark_mode import (
+        run_terminal_benchmark_mode,
+        run_terminal_human_vs_gaia_mode,
     )
+
+    common_kwargs = {
+        "workspace_root": workspace_root,
+        "prompt_select": _prompt_select,
+        "prompt": _prompt,
+        "prompt_non_empty": _prompt_non_empty,
+        "emit": print,
+        "push_metrics": push_metrics,
+    }
+    if dedicated_deep_qa:
+        return run_terminal_benchmark_mode(
+            **common_kwargs,
+            qa_mode=qa_mode,
+            dedicated_deep_qa=dedicated_deep_qa,
+        )
+
+    mode = _prompt_select(
+        "실행할 벤치 모드를 선택하세요",
+        ("일반 벤치마크", "GAIA_VS_HUMAN", "취소"),
+        default="일반 벤치마크",
+    )
+    if mode == "GAIA_VS_HUMAN":
+        return run_terminal_human_vs_gaia_mode(**common_kwargs)
+    if mode == "취소":
+        print("벤치마킹 모드를 취소합니다.")
+        return 0
+    return run_terminal_benchmark_mode(**common_kwargs)
 
 
 def run_chat(argv: Sequence[str] | None = None) -> int:
@@ -1625,8 +1645,10 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
     last_snapshot_id = str(saved_state.last_snapshot_id or "") if saved_state else ""
     pending_user_input = dict(saved_state.pending_user_input) if saved_state else {}
     profile = _load_profile()
-    terminal_purpose = _resolve_terminal_launch_purpose(args, profile, runtime=runtime)
-    if terminal_purpose in {"benchmark", "deep_qa_benchmark"}:
+    while True:
+        terminal_purpose = _resolve_terminal_launch_purpose(args, profile, runtime=runtime)
+        if terminal_purpose not in {"benchmark", "deep_qa_benchmark"}:
+            break
         benchmark_kwargs = {
             "workspace_root": Path(__file__).resolve().parent.parent,
             "push_metrics": bool(getattr(args, "push_metrics", False)),
@@ -1634,7 +1656,10 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         if terminal_purpose == "deep_qa_benchmark":
             benchmark_kwargs["qa_mode"] = DEEP_ADAPTIVE_QA_MODE
             benchmark_kwargs["dedicated_deep_qa"] = True
-        return _run_terminal_benchmark_mode(**benchmark_kwargs)
+        benchmark_result = _run_terminal_benchmark_mode(**benchmark_kwargs)
+        if benchmark_result == TERMINAL_BENCHMARK_BACK_CODE:
+            continue
+        return benchmark_result
 
     url = _resolve_url(args, profile, required=True)
     if not url:

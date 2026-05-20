@@ -240,6 +240,48 @@ BENCHMARK_PRESETS: tuple[BenchmarkPreset, ...] = (
         suite_path="gaia/tests/scenarios/seoul_culture_public_suite.json",
         host_aliases=("culture.seoul.go.kr",),
     ),
+    BenchmarkPreset(
+        key="grafana",
+        label="Grafana",
+        default_url="http://15.164.24.65:3000/?orgId=1&from=now-6h&to=now&timezone=browser",
+        suite_path="gaia/tests/scenarios/grafana_public_suite.json",
+        host_aliases=("15.164.24.65:3000", "15.164.24.65"),
+    ),
+    BenchmarkPreset(
+        key="namu_wiki",
+        label="나무위키",
+        default_url="https://namu.wiki/",
+        suite_path="gaia/tests/scenarios/namu_wiki_public_suite.json",
+        host_aliases=("namu.wiki", "www.namu.wiki"),
+    ),
+    BenchmarkPreset(
+        key="lotteworld_adventure",
+        label="롯데월드 어드벤처",
+        default_url="https://adventure.lotteworld.com/",
+        suite_path="gaia/tests/scenarios/lotteworld_adventure_public_suite.json",
+        host_aliases=("adventure.lotteworld.com", "lotteworld.com"),
+    ),
+    BenchmarkPreset(
+        key="starbucks_kr",
+        label="Starbucks Korea",
+        default_url="https://www.starbucks.co.kr/",
+        suite_path="gaia/tests/scenarios/starbucks_kr_public_suite.json",
+        host_aliases=("www.starbucks.co.kr", "starbucks.co.kr"),
+    ),
+    BenchmarkPreset(
+        key="naver_map",
+        label="Naver Map",
+        default_url="https://map.naver.com/",
+        suite_path="gaia/tests/scenarios/naver_map_public_suite.json",
+        host_aliases=("map.naver.com",),
+    ),
+    BenchmarkPreset(
+        key="coupang",
+        label="Coupang",
+        default_url="https://www.coupang.com/",
+        suite_path="gaia/tests/scenarios/coupang_public_suite.json",
+        host_aliases=("www.coupang.com", "coupang.com"),
+    ),
 )
 
 
@@ -667,6 +709,8 @@ def _remap_suite_url(original_url: str, old_base_url: str, target_url: str) -> s
     target = str(target_url or "").strip()
     if not source or not target:
         return source or target
+    if source.rstrip("/") == target.rstrip("/"):
+        return target
     if not old_base:
         return target
     normalized_base = old_base.rstrip("/")

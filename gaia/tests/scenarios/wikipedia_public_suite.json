@@ -77,6 +77,24 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "WIKI_006_GAIA_HUMAN_TEST_V1",
+      "name": "사용자 모임 경유 K-pop 포털 정보 확인",
+      "url": "https://ko.wikipedia.org/wiki/위키백과:대문",
+      "goal": "위키백과에서 사용자 모임을 클릭한 뒤, 포털 영역에서 K-pop을 선택했을 때 오늘의 아티스트나 오늘의 그림 같은 정보가 화면에 나타나는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "사용자 모임",
+        "K-pop",
+        "오늘의 아티스트",
+        "오늘의 그림"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

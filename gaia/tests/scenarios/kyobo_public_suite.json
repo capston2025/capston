@@ -77,6 +77,24 @@
       },
       "expected_signals": [],
       "time_budget_sec": 600
+    },
+    {
+      "id": "KYOBO_006_REVIEW_LIKE_SORT",
+      "name": "자몽살구클럽 리뷰 좋아요순 확인",
+      "url": "https://www.kyobobook.co.kr/",
+      "goal": "검색에 자몽살구클럽을 검색한 다음, 세 번째로 뜨는 상품을 클릭해줘. 이후 리뷰를 누른 다음 좋아요 순을 눌렀을 때 좋아요 순으로 댓글이 정렬되는지 확인해줘.",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "자몽살구클럽",
+        "리뷰",
+        "좋아요 순",
+        "댓글"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

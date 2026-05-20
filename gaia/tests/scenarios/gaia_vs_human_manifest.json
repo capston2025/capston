@@ -1,0 +1,184 @@
+{
+  "manifest_id": "gaia_vs_human_v1",
+  "name": "GAIA vs Human shortlisted scenarios",
+  "site_count": 22,
+  "scenario_count": 30,
+  "sites": [
+    {
+      "site_key": "apple_store",
+      "label": "Apple Store",
+      "default_url": "https://www.apple.com/kr/",
+      "suite_path": "gaia/tests/scenarios/apple_store_public_suite.json",
+      "host_aliases": ["apple.com", "www.apple.com"],
+      "allowed_scenarios": ["APPLE_006_IPAD_PENCIL_FEATURES_MODEL"]
+    },
+    {
+      "site_key": "naver_news",
+      "label": "네이버 뉴스",
+      "default_url": "https://news.naver.com/",
+      "suite_path": "gaia/tests/scenarios/naver_news_public_suite.json",
+      "host_aliases": ["news.naver.com"],
+      "allowed_scenarios": ["NAVERNEWS_006_GAIA_HUMAN_V1"]
+    },
+    {
+      "site_key": "youtube",
+      "label": "YouTube Korea",
+      "default_url": "https://www.youtube.com/",
+      "suite_path": "gaia/tests/scenarios/youtube_public_suite.json",
+      "host_aliases": ["youtube.com", "www.youtube.com"],
+      "allowed_scenarios": ["YOUTUBE_006_GAIA_HUMAN_TEST_V1", "YOUTUBE_007_GAIA_HUMAN_TEST_V1_2"]
+    },
+    {
+      "site_key": "yes24",
+      "label": "YES24",
+      "default_url": "https://www.yes24.com/",
+      "suite_path": "gaia/tests/scenarios/yes24_public_suite.json",
+      "host_aliases": ["yes24.com", "www.yes24.com"],
+      "allowed_scenarios": ["YES24_006_PROJECT_HAIL_MARY_SIZE_COMPARE"]
+    },
+    {
+      "site_key": "ikea_kr_hvh",
+      "label": "IKEA Korea",
+      "default_url": "https://www.ikea.com/kr/ko/",
+      "suite_path": "gaia/tests/scenarios/custom_ikea_kr_suite.json",
+      "host_aliases": ["ikea.com", "www.ikea.com"],
+      "allowed_scenarios": ["IKEA_001_GAIA_VS_HUMAN_V1"]
+    },
+    {
+      "site_key": "chatgpt_hvh",
+      "label": "ChatGPT",
+      "default_url": "https://chatgpt.com/",
+      "suite_path": "gaia/tests/scenarios/custom_chat_gpt_suite.json",
+      "host_aliases": ["chatgpt.com"],
+      "allowed_scenarios": ["CHATGPT_001_GAIA_VS_HUMAN_V1"]
+    },
+    {
+      "site_key": "melon",
+      "label": "Melon",
+      "default_url": "https://www.melon.com/",
+      "suite_path": "gaia/tests/scenarios/melon_public_suite.json",
+      "host_aliases": ["melon.com", "www.melon.com"],
+      "allowed_scenarios": ["MELON_006_IU_FLOWER_BOOKMARK_THREE_TRACK", "MELON_007_2015_ERA_CHART_BANG_BANG_BANG"]
+    },
+    {
+      "site_key": "jobkorea",
+      "label": "잡코리아",
+      "default_url": "https://www.jobkorea.co.kr/",
+      "suite_path": "gaia/tests/scenarios/jobkorea_public_suite.json",
+      "host_aliases": ["jobkorea.co.kr", "www.jobkorea.co.kr"],
+      "allowed_scenarios": ["JOBKOREA_006_ONEPICK_HIGH_SALARY_FILTER"]
+    },
+    {
+      "site_key": "kakao_map",
+      "label": "카카오맵",
+      "default_url": "https://map.kakao.com/",
+      "suite_path": "gaia/tests/scenarios/kakao_map_public_suite.json",
+      "host_aliases": ["map.kakao.com"],
+      "allowed_scenarios": ["KAKAOMAP_006_INU_TRANSIT_ROUTE_TIME"]
+    },
+    {
+      "site_key": "mbc_news",
+      "label": "MBC News",
+      "default_url": "https://imnews.imbc.com/",
+      "suite_path": "gaia/tests/scenarios/mbc_news_public_suite.json",
+      "host_aliases": ["imnews.imbc.com"],
+      "allowed_scenarios": ["MBCNEWS_006_RESERVE_FORCE_SEARCH_ACCURACY"]
+    },
+    {
+      "site_key": "wikipedia",
+      "label": "Wikipedia Korea",
+      "default_url": "https://ko.wikipedia.org/",
+      "suite_path": "gaia/tests/scenarios/wikipedia_public_suite.json",
+      "host_aliases": ["ko.wikipedia.org"],
+      "allowed_scenarios": ["WIKI_006_GAIA_HUMAN_TEST_V1"]
+    },
+    {
+      "site_key": "grafana",
+      "label": "Grafana",
+      "default_url": "http://15.164.24.65:3000/?orgId=1&from=now-6h&to=now&timezone=browser",
+      "suite_path": "gaia/tests/scenarios/grafana_public_suite.json",
+      "host_aliases": ["15.164.24.65", "15.164.24.65:3000"],
+      "allowed_scenarios": ["GRAFANA_001_LOGIN_AND_BENCHMARK_DASHBOARD"]
+    },
+    {
+      "site_key": "namu_wiki",
+      "label": "나무위키",
+      "default_url": "https://namu.wiki/",
+      "suite_path": "gaia/tests/scenarios/namu_wiki_public_suite.json",
+      "host_aliases": ["namu.wiki", "www.namu.wiki"],
+      "allowed_scenarios": ["NAMU_001_REALTIME_TOP5_ARTICLE_STRUCTURE"]
+    },
+    {
+      "site_key": "lotteworld_adventure",
+      "label": "롯데월드 어드벤처",
+      "default_url": "https://adventure.lotteworld.com/",
+      "suite_path": "gaia/tests/scenarios/lotteworld_adventure_public_suite.json",
+      "host_aliases": ["adventure.lotteworld.com", "lotteworld.com"],
+      "allowed_scenarios": ["LOTTEWORLD_001_MAGICPASS_ATTRACTION_LIST", "LOTTEWORLD_002_GROUP_RESERVATION_PRODUCT_COUNT"]
+    },
+    {
+      "site_key": "daangn_hvh",
+      "label": "당근마켓",
+      "default_url": "https://www.daangn.com/kr/",
+      "suite_path": "gaia/tests/scenarios/custom_daangn_suite.json",
+      "host_aliases": ["daangn.com", "www.daangn.com"],
+      "allowed_scenarios": ["DAANGN_001_BENCHMARK", "DAANGN_002_IPHONE15_AVAILABLE_FILTER"]
+    },
+    {
+      "site_key": "yanolja_hvh",
+      "label": "야놀자",
+      "default_url": "https://nol.yanolja.com/",
+      "suite_path": "gaia/tests/scenarios/custom_yanolja_suite.json",
+      "host_aliases": ["nol.yanolja.com", "yanolja.com"],
+      "allowed_scenarios": ["NOL_001_BENCHMARK", "NOL_002_INCHEON_SONGDO_LOWEST_PRICE_SORT"]
+    },
+    {
+      "site_key": "inu_lms_hvh",
+      "label": "인천대학교 LMS",
+      "default_url": "https://cyber.inu.ac.kr/",
+      "suite_path": "gaia/tests/scenarios/custom_lms_suite.json",
+      "host_aliases": ["cyber.inu.ac.kr"],
+      "allowed_scenarios": ["CYBER_001_LSM_LOGIN_AND_CHAT"]
+    },
+    {
+      "site_key": "naver_search",
+      "label": "네이버",
+      "default_url": "https://www.naver.com/",
+      "suite_path": "gaia/tests/scenarios/naver_search_public_suite.json",
+      "host_aliases": ["naver.com", "www.naver.com"],
+      "allowed_scenarios": ["NAVER_006_WEBTOON", "NAVER_007_SHOPPING_PRICE_DESC"]
+    },
+    {
+      "site_key": "starbucks_kr",
+      "label": "Starbucks Korea",
+      "default_url": "https://www.starbucks.co.kr/",
+      "suite_path": "gaia/tests/scenarios/starbucks_kr_public_suite.json",
+      "host_aliases": ["starbucks.co.kr", "www.starbucks.co.kr"],
+      "allowed_scenarios": ["STARBUCKS_001_STAINLESS_COLDCUP_PRODUCT_INFO", "STARBUCKS_002_CAKE_PRODUCT_DETAIL_CONTENT"]
+    },
+    {
+      "site_key": "kyobo",
+      "label": "교보문고",
+      "default_url": "https://www.kyobobook.co.kr/",
+      "suite_path": "gaia/tests/scenarios/kyobo_public_suite.json",
+      "host_aliases": ["kyobobook.co.kr", "www.kyobobook.co.kr"],
+      "allowed_scenarios": ["KYOBO_006_REVIEW_LIKE_SORT"]
+    },
+    {
+      "site_key": "naver_map",
+      "label": "Naver Map",
+      "default_url": "https://map.naver.com/",
+      "suite_path": "gaia/tests/scenarios/naver_map_public_suite.json",
+      "host_aliases": ["map.naver.com"],
+      "allowed_scenarios": ["NAVERMAP_001_INU_WALK_ROUTE", "NAVERMAP_002_MEGABOX_PAST_SHOWTIME_DISABLED"]
+    },
+    {
+      "site_key": "coupang",
+      "label": "Coupang",
+      "default_url": "https://www.coupang.com/",
+      "suite_path": "gaia/tests/scenarios/coupang_public_suite.json",
+      "host_aliases": ["coupang.com", "www.coupang.com"],
+      "allowed_scenarios": ["COUPANG_001_ZERO_COLA_BESTSELLING_SORT"]
+    }
+  ]
+}

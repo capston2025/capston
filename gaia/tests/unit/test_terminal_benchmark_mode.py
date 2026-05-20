@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, main, run_launcher
+from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, _run_terminal_benchmark_mode, main, run_launcher
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
     DEEP_QA_ALL_CASES_OPTION,
@@ -187,6 +187,62 @@ def test_python_module_entry_routes_root_options_to_launcher(monkeypatch) -> Non
     assert result == 0
     assert called["workspace_root"] == _repo_root()
     assert called["push_metrics"] is True
+
+
+def test_cli_terminal_benchmark_mode_dispatches_general_mode(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr("gaia.cli._prompt_select", lambda *args, **kwargs: "일반 벤치마크")
+    monkeypatch.setattr("gaia.cli._prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("gaia.cli._prompt_non_empty", lambda *args, **kwargs: "")
+
+    def _fake_runner(**kwargs):
+        called["runner"] = "general"
+        called["kwargs"] = kwargs
+        return 11
+
+    def _fake_hvh_runner(**kwargs):
+        called["runner"] = "human_vs_gaia"
+        called["kwargs"] = kwargs
+        return 22
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.run_terminal_benchmark_mode", _fake_runner)
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.run_terminal_human_vs_gaia_mode", _fake_hvh_runner)
+
+    result = _run_terminal_benchmark_mode(workspace_root=_repo_root(), push_metrics=True)
+
+    assert result == 11
+    assert called["runner"] == "general"
+    assert called["kwargs"]["workspace_root"] == _repo_root()
+    assert called["kwargs"]["push_metrics"] is True
+
+
+def test_cli_terminal_benchmark_mode_dispatches_human_vs_gaia(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr("gaia.cli._prompt_select", lambda *args, **kwargs: "GAIA_VS_HUMAN")
+    monkeypatch.setattr("gaia.cli._prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("gaia.cli._prompt_non_empty", lambda *args, **kwargs: "")
+
+    def _fake_runner(**kwargs):
+        called["runner"] = "general"
+        called["kwargs"] = kwargs
+        return 11
+
+    def _fake_hvh_runner(**kwargs):
+        called["runner"] = "human_vs_gaia"
+        called["kwargs"] = kwargs
+        return 22
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.run_terminal_benchmark_mode", _fake_runner)
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode.run_terminal_human_vs_gaia_mode", _fake_hvh_runner)
+
+    result = _run_terminal_benchmark_mode(workspace_root=_repo_root(), push_metrics=False)
+
+    assert result == 22
+    assert called["runner"] == "human_vs_gaia"
+    assert called["kwargs"]["workspace_root"] == _repo_root()
+    assert called["kwargs"]["push_metrics"] is False
 
 
 def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path) -> None:
