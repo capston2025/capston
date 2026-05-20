@@ -30,6 +30,26 @@
         "제품"
       ],
       "time_budget_sec": 600
+    },
+    {
+      "id": "COUPANG_002_PROTEIN_SHAKE_36_COUNT_VARIANT_COMPARE",
+      "name": "Protein Shake 36 Count Variant Compare",
+      "url": "https://www.coupang.com/",
+      "goal": "단백질 쉐이크 검색한뒤 2등 상품 클릭해주고, 18개입 클릭했을때 대표이미지랑 가격이 2등 상품인 36개입짜리랑 달라지는지 확인해줘",
+      "constraints": {
+        "allow_navigation": true,
+        "require_ref_only": true,
+        "require_state_change": true
+      },
+      "expected_signals": [
+        "단백질 쉐이크",
+        "2등",
+        "18개",
+        "36개입",
+        "대표이미지",
+        "가격"
+      ],
+      "time_budget_sec": 600
     }
   ]
 }

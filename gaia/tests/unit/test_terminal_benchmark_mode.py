@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 
 from gaia.cli import DEFAULT_OPENAI_MODEL, _default_model, _run_terminal_benchmark_mode, main, run_launcher
+from gaia.src.benchmark_manager import BenchmarkPreset
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
     DEEP_QA_ALL_CASES_OPTION,
     DEEP_QA_BENCHMARK_MANIFEST_PATH,
+    HUMAN_VS_GAIA_RUN_ALL_OPTION,
     _main,
     _grafana_url_from_monitoring_config,
     append_scenario_to_suite,
@@ -28,6 +30,7 @@ from gaia.src.terminal_benchmark_mode import (
     replace_scenario_in_suite,
     run_benchmark_suite,
     run_terminal_benchmark_mode,
+    run_terminal_human_vs_gaia_mode,
     save_suite_payload,
     upsert_custom_benchmark_site,
     write_benchmark_report_html,
@@ -243,6 +246,107 @@ def test_cli_terminal_benchmark_mode_dispatches_human_vs_gaia(monkeypatch) -> No
     assert called["runner"] == "human_vs_gaia"
     assert called["kwargs"]["workspace_root"] == _repo_root()
     assert called["kwargs"]["push_metrics"] is False
+
+
+def test_run_terminal_human_vs_gaia_mode_can_run_all_sites_except_lms(tmp_path: Path, monkeypatch) -> None:
+    script = _PromptScript(selections=[HUMAN_VS_GAIA_RUN_ALL_OPTION, "이전으로"])
+    calls: list[dict[str, object]] = []
+
+    catalog = [
+        {
+            "key": "site_a",
+            "label": "Site A",
+            "default_url": "https://a.example",
+            "urls": ["https://a.example"],
+            "suite_path": "gaia/tests/scenarios/a.json",
+            "suite_available": True,
+            "status_text": "GAIA_VS_HUMAN 1개",
+            "is_custom": True,
+        },
+        {
+            "key": "inu_lms_hvh",
+            "label": "LMS",
+            "default_url": "https://lms.example",
+            "urls": ["https://lms.example"],
+            "suite_path": "gaia/tests/scenarios/lms.json",
+            "suite_available": True,
+            "status_text": "GAIA_VS_HUMAN 1개",
+            "is_custom": True,
+        },
+        {
+            "key": "site_b",
+            "label": "Site B",
+            "default_url": "https://b.example",
+            "urls": ["https://b.example"],
+            "suite_path": "gaia/tests/scenarios/b.json",
+            "suite_available": True,
+            "status_text": "GAIA_VS_HUMAN 1개",
+            "is_custom": True,
+        },
+    ]
+    preset_map = {
+        "site_a": BenchmarkPreset(
+            key="site_a",
+            label="Site A",
+            default_url="https://a.example",
+            suite_path="gaia/tests/scenarios/a.json",
+            host_aliases=("a.example",),
+        ),
+        "inu_lms_hvh": BenchmarkPreset(
+            key="inu_lms_hvh",
+            label="LMS",
+            default_url="https://lms.example",
+            suite_path="gaia/tests/scenarios/lms.json",
+            host_aliases=("lms.example",),
+        ),
+        "site_b": BenchmarkPreset(
+            key="site_b",
+            label="Site B",
+            default_url="https://b.example",
+            suite_path="gaia/tests/scenarios/b.json",
+            host_aliases=("b.example",),
+        ),
+    }
+    scenario_filter_map = {
+        "site_a": {"A_001"},
+        "inu_lms_hvh": {"LMS_001"},
+        "site_b": {"B_001"},
+    }
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.build_human_vs_gaia_catalog",
+        lambda *args, **kwargs: (catalog, preset_map, scenario_filter_map),
+    )
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._resolve_push_metrics_for_run",
+        lambda **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._load_terminal_suite_payload",
+        lambda **kwargs: {
+            "suite_id": "demo",
+            "scenarios": [{"id": next(iter(scenario_filter_map[kwargs["preset"].key])), "goal": "ok"}],
+        },
+    )
+
+    def fake_run_suite_handler(**kwargs):
+        calls.append(kwargs)
+        return {"status": "success", "summary": {}, "results": [], "output_dir": "/tmp/out"}
+
+    result = run_terminal_human_vs_gaia_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=fake_run_suite_handler,
+    )
+
+    assert result == 130
+    assert script.select_calls[0][1][0] == HUMAN_VS_GAIA_RUN_ALL_OPTION
+    assert [call["preset"].key for call in calls] == ["site_a", "site_b"]
+    assert [call["target_url"] for call in calls] == ["https://a.example", "https://b.example"]
 
 
 def test_run_terminal_benchmark_mode_site_menu_lists_all_presets(tmp_path: Path) -> None:

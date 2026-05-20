@@ -2,7 +2,7 @@
   "manifest_id": "gaia_vs_human_v1",
   "name": "GAIA vs Human shortlisted scenarios",
   "site_count": 22,
-  "scenario_count": 30,
+  "scenario_count": 31,
   "sites": [
     {
       "site_key": "apple_store",
@@ -178,7 +178,10 @@
       "default_url": "https://www.coupang.com/",
       "suite_path": "gaia/tests/scenarios/coupang_public_suite.json",
       "host_aliases": ["coupang.com", "www.coupang.com"],
-      "allowed_scenarios": ["COUPANG_001_ZERO_COLA_BESTSELLING_SORT"]
+      "allowed_scenarios": [
+        "COUPANG_001_ZERO_COLA_BESTSELLING_SORT",
+        "COUPANG_002_PROTEIN_SHAKE_36_COUNT_VARIANT_COMPARE"
+      ]
     }
   ]
 }

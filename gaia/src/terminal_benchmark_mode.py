@@ -102,6 +102,8 @@ BENCHMARK_QA_MODE_CHOICES = {
     "aggressive_qa": DEEP_ADAPTIVE_QA_MODE,
     DEEP_ADAPTIVE_QA_MODE: DEEP_ADAPTIVE_QA_MODE,
 }
+HUMAN_VS_GAIA_RUN_ALL_OPTION = "전체 사이트 전체 테스트 실행"
+HUMAN_VS_GAIA_SKIP_SITE_KEYS = frozenset({"inu_lms_hvh"})
 
 
 def build_terminal_benchmark_catalog(
@@ -1171,6 +1173,8 @@ def run_terminal_benchmark_mode(
     allow_all_sites_option: bool = True,
     site_exit_option: str = SITE_EXIT_OPTION,
     site_exit_result: int = 0,
+    site_leading_options: Sequence[str] | None = None,
+    site_special_action_handlers: Mapping[str, Callable[[], None]] | None = None,
     scenario_filter_map: Mapping[str, set[str]] | None = None,
     catalog_override: tuple[list[dict[str, Any]], dict[str, BenchmarkPreset]] | None = None,
 ) -> int:
@@ -1213,18 +1217,24 @@ def run_terminal_benchmark_mode(
             tail_options.extend((SITE_ADD_OPTION, SITE_EDIT_OPTION, SITE_DELETE_OPTION))
         tail_options.append(effective_site_exit_option)
         site_options = (
+            tuple(site_leading_options or ())
+            +
             ((effective_all_cases_option,) if effective_allow_all_sites_option else tuple())
             + site_labels
             + tuple(tail_options)
         )
+        default_site_option = (
+            effective_all_cases_option
+            if effective_allow_all_sites_option
+            else (
+                (tuple(site_leading_options or ())[0] if site_leading_options else None)
+                or (site_labels[0] if site_labels else effective_site_exit_option)
+            )
+        )
         selected_site = prompt_select(
             site_prompt_title,
             site_options,
-            default=(
-                effective_all_cases_option
-                if effective_allow_all_sites_option
-                else (site_labels[0] if site_labels else effective_site_exit_option)
-            ),
+            default=default_site_option,
         )
         if effective_allow_all_sites_option and selected_site == effective_all_cases_option:
             _handle_all_sites_all_cases_run(
@@ -1239,6 +1249,9 @@ def run_terminal_benchmark_mode(
                 manifest_path=deep_qa_manifest_path if dedicated_deep_qa else EXTERNAL_PUBLIC_MANIFEST_PATH,
                 session_prefix="terminal-deep-qa" if dedicated_deep_qa else "terminal-external-public",
             )
+            continue
+        if site_special_action_handlers and selected_site in site_special_action_handlers:
+            site_special_action_handlers[selected_site]()
             continue
         if selected_site == effective_site_exit_option:
             if effective_site_exit_option == SITE_EXIT_OPTION:
@@ -1541,6 +1554,21 @@ def run_terminal_human_vs_gaia_mode(
         registry,
         workspace_root=workspace_root,
     )
+    site_special_action_handlers = {
+        HUMAN_VS_GAIA_RUN_ALL_OPTION: lambda: _run_human_vs_gaia_all_sites(
+            workspace_root=workspace_root,
+            catalog=catalog,
+            preset_map=preset_map,
+            scenario_filter_map=scenario_filter_map,
+            prompt_select=prompt_select,
+            prompt_non_empty=prompt_non_empty,
+            emit=emit,
+            run_suite_handler=run_suite_handler,
+            push_metrics=push_metrics,
+            monitoring_config_path=monitoring_config_path,
+            runner_id=resolve_runner_id(env=os.environ),
+        )
+    }
     return run_terminal_benchmark_mode(
         workspace_root=workspace_root,
         prompt_select=prompt_select,
@@ -1563,6 +1591,8 @@ def run_terminal_human_vs_gaia_mode(
         allow_all_sites_option=False,
         site_exit_option="이전으로",
         site_exit_result=130,
+        site_leading_options=(HUMAN_VS_GAIA_RUN_ALL_OPTION,),
+        site_special_action_handlers=site_special_action_handlers,
         scenario_filter_map=scenario_filter_map,
         catalog_override=(catalog, preset_map),
     )
@@ -1580,6 +1610,124 @@ def _find_scenario(suite_payload: Mapping[str, Any], scenario_id: str) -> dict[s
 
 def _suite_has_scenarios(suite_payload: Mapping[str, Any]) -> bool:
     return any(isinstance(row, Mapping) for row in list(suite_payload.get("scenarios") or []))
+
+
+def _run_human_vs_gaia_all_sites(
+    *,
+    workspace_root: Path,
+    catalog: Sequence[Mapping[str, Any]],
+    preset_map: Mapping[str, BenchmarkPreset],
+    scenario_filter_map: Mapping[str, set[str]],
+    prompt_select: PromptSelectFn,
+    prompt_non_empty: PromptTextFn,
+    emit: OutputFn,
+    run_suite_handler: Callable[..., dict[str, Any]],
+    push_metrics: bool,
+    monitoring_config_path: Path | None,
+    runner_id: str,
+) -> None:
+    runnable_entries: list[tuple[Mapping[str, Any], BenchmarkPreset]] = []
+    for site_entry in catalog:
+        site_key = str(site_entry.get("key") or "").strip()
+        if not site_key or site_key in HUMAN_VS_GAIA_SKIP_SITE_KEYS:
+            continue
+        preset = preset_map.get(site_key)
+        if preset is None:
+            continue
+        runnable_entries.append((site_entry, preset))
+
+    if not runnable_entries:
+        emit("실행할 수 있는 GAIA_VS_HUMAN 사이트가 없습니다.")
+        return
+
+    push_metrics_for_run = _resolve_push_metrics_for_run(
+        push_metrics=push_metrics,
+        prompt_select=prompt_select,
+        prompt_non_empty=prompt_non_empty,
+        emit=emit,
+        workspace_root=workspace_root,
+        monitoring_config_path=monitoring_config_path,
+    )
+
+    total = len(runnable_entries)
+    total_case_count = sum(
+        max(0, len(scenario_filter_map.get(str(preset.key or "").strip(), set())))
+        for _, preset in runnable_entries
+    )
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    completed_case_count = 0
+
+    emit(
+        "GAIA_VS_HUMAN 전체 사이트 전체 테스트를 시작합니다. "
+        f"(LMS 제외, 총 {total}개 사이트 / {total_case_count}개 케이스)"
+    )
+
+    for index, (site_entry, preset) in enumerate(runnable_entries, 1):
+        selected_url = str(site_entry.get("default_url") or preset.default_url or "").strip()
+        if not selected_url:
+            skipped_count += 1
+            emit(f"[{index}/{total}] {preset.label} - URL이 없어 건너뜁니다.")
+            continue
+
+        suite_payload = _load_terminal_suite_payload(
+            workspace_root=workspace_root,
+            preset=preset,
+            selected_url=selected_url,
+            site_entry=site_entry,
+            emit=emit,
+        )
+        if suite_payload is None:
+            failed_count += 1
+            emit(f"[{index}/{total}] {preset.label} - suite 로드 실패")
+            continue
+
+        suite_payload = _filter_suite_payload_for_allowed_scenarios(
+            suite_payload,
+            scenario_filter_map.get(preset.key),
+        )
+        site_case_count = len(
+            [row for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
+        )
+        if not _suite_has_scenarios(suite_payload):
+            skipped_count += 1
+            emit(f"[{index}/{total}] {preset.label} - 실행 가능한 시나리오가 없어 건너뜁니다.")
+            continue
+
+        case_start = completed_case_count + 1
+        case_end = completed_case_count + site_case_count
+        case_progress = (
+            f"{case_start}/{total_case_count}"
+            if case_start == case_end
+            else f"{case_start}-{case_end}/{total_case_count}"
+        )
+        emit(f"[사이트 {index}/{total} | 케이스 {case_progress}] {preset.label} 실행 중")
+        result = run_suite_handler(
+            workspace_root=workspace_root,
+            preset=preset,
+            target_url=selected_url,
+            suite_payload=suite_payload,
+            emit=emit,
+            run_tag="full_suite",
+            push_metrics=push_metrics_for_run,
+            runner_id=runner_id,
+        )
+        status = str(result.get("status") or "").strip().lower()
+        if status == "success":
+            success_count += 1
+        elif status in {"empty", "missing_suite", "missing_manifest"}:
+            skipped_count += 1
+        else:
+            failed_count += 1
+        completed_case_count += site_case_count
+
+    emit(
+        "GAIA_VS_HUMAN 전체 사이트 전체 테스트 완료"
+        f" | success={success_count}"
+        f" | failed={failed_count}"
+        f" | skipped={skipped_count}"
+    )
 
 
 def _load_terminal_suite_payload(
