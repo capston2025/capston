@@ -405,6 +405,33 @@ def test_build_human_vs_gaia_catalog_prefers_manifest_default_url(tmp_path: Path
     assert preset_map["site_a"].default_url == "https://manifest.example"
 
 
+def test_build_human_vs_gaia_catalog_returns_empty_for_missing_manifest(tmp_path: Path) -> None:
+    catalog, preset_map, scenario_filter_map = build_human_vs_gaia_catalog(
+        {"sites": {}},
+        workspace_root=tmp_path,
+        manifest_path=tmp_path / "missing.json",
+    )
+
+    assert catalog == []
+    assert preset_map == {}
+    assert scenario_filter_map == {}
+
+
+def test_build_human_vs_gaia_catalog_returns_empty_for_invalid_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text("{not valid json", encoding="utf-8")
+
+    catalog, preset_map, scenario_filter_map = build_human_vs_gaia_catalog(
+        {"sites": {}},
+        workspace_root=tmp_path,
+        manifest_path=manifest_path,
+    )
+
+    assert catalog == []
+    assert preset_map == {}
+    assert scenario_filter_map == {}
+
+
 def test_human_vs_gaia_all_sites_advances_case_progress_for_skipped_sites(tmp_path: Path, monkeypatch) -> None:
     catalog = [
         {"key": "site_a", "label": "Site A", "default_url": "https://a.example"},

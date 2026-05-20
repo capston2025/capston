@@ -55,13 +55,7 @@ from gaia.src.phase4.goal_driven.adaptive_qa_runtime import (
     ADAPTIVE_QA_MODE,
     DEEP_ADAPTIVE_QA_MODE,
 )
-try:
-    from scripts.runner_identity import resolve_runner_id
-except ModuleNotFoundError:
-    _REPO_ROOT = Path(__file__).resolve().parents[2]
-    if str(_REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(_REPO_ROOT))
-    from scripts.runner_identity import resolve_runner_id
+from scripts.runner_identity import resolve_runner_id
 
 PromptSelectFn = Callable[[str, Sequence[str], str | None], str]
 PromptTextFn = Callable[[str, str | None], str]
@@ -182,7 +176,12 @@ def build_human_vs_gaia_catalog(
     manifest_path: Path | str = HUMAN_VS_GAIA_MANIFEST_PATH,
 ) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset], dict[str, set[str]]]:
     resolved_manifest = (workspace_root / Path(manifest_path)).resolve()
-    manifest_payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    try:
+        manifest_payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [], {}, {}
+    if not isinstance(manifest_payload, Mapping):
+        return [], {}, {}
     sites = payload.get("sites") if isinstance(payload.get("sites"), Mapping) else {}
     catalog: list[dict[str, Any]] = []
     preset_map: dict[str, BenchmarkPreset] = {}
@@ -1719,9 +1718,7 @@ def _run_human_vs_gaia_all_sites(
             suite_payload,
             scenario_filter_map.get(preset.key),
         )
-        site_case_count = len(
-            [row for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
-        )
+        site_case_count = len(suite_payload.get("scenarios", []))
         if not _suite_has_scenarios(suite_payload):
             skipped_count += 1
             completed_case_count += planned_site_case_count
