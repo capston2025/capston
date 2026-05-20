@@ -31,6 +31,14 @@ AUTH_DIR = Path.home() / ".gaia" / "auth"
 AUTH_FILE = AUTH_DIR / "profiles.json"
 GEMINI_ENV_FILE_NAME = ".env.gemini.local"
 GEMINI_ENV_DEFAULT_MODEL = "gemini-2.5-pro"
+GEMINI_VERTEX_TOKEN_SENTINEL = "__gaia_vertex_ai__"
+GEMINI_VERTEX_ENV_KEYS = (
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GAIA_GEMINI_BACKEND",
+)
 
 PROVIDER_ENV_MAP = {
     "openai": "OPENAI_API_KEY",
@@ -127,18 +135,74 @@ def _parse_env_assignments(text: str) -> dict[str, str]:
     return assignments
 
 
-def _read_gemini_env_token() -> tuple[str | None, Path | None]:
+def _read_gemini_env_assignments() -> tuple[dict[str, str], Path | None]:
     path = _resolve_gemini_env_file()
     if not path.exists():
-        return None, None
+        return {}, None
     try:
         assignments = _parse_env_assignments(path.read_text(encoding="utf-8"))
     except Exception:
-        return None, path
+        return {}, path
+    return assignments, path
+
+
+def _read_gemini_env_token() -> tuple[str | None, Path | None]:
+    assignments, path = _read_gemini_env_assignments()
+    if path is None:
+        return None, None
     token = str(assignments.get("GEMINI_API_KEY") or "").strip()
     if not token:
         return None, path
     return token, path
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _gemini_vertex_source(*, export: bool = False) -> str | None:
+    assignments, path = _read_gemini_env_assignments()
+    merged = dict(assignments)
+    for key in GEMINI_VERTEX_ENV_KEYS:
+        env_value = str(os.getenv(key) or "").strip()
+        if env_value:
+            merged[key] = env_value
+
+    backend = str(merged.get("GAIA_GEMINI_BACKEND") or "").strip().lower()
+    vertex_requested = _truthy(merged.get("GOOGLE_GENAI_USE_VERTEXAI")) or backend in {
+        "vertex",
+        "vertex_ai",
+        "vertexai",
+    }
+    if not vertex_requested:
+        return None
+
+    project = str(merged.get("GOOGLE_CLOUD_PROJECT") or "").strip()
+    location = str(merged.get("GOOGLE_CLOUD_LOCATION") or "").strip()
+    if not project or not location:
+        return None
+
+    credentials_path = str(merged.get("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if credentials_path:
+        expanded = Path(credentials_path).expanduser()
+        if not expanded.exists():
+            return None
+        merged["GOOGLE_APPLICATION_CREDENTIALS"] = str(expanded)
+    else:
+        adc_path = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+        if not adc_path.exists():
+            return None
+
+    if export:
+        for key in ("GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS"):
+            value = str(merged.get(key) or "").strip()
+            if value and not str(os.getenv(key) or "").strip():
+                os.environ[key] = value
+        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
+
+    if path is not None:
+        return f"vertex_ai:{path}"
+    return "vertex_ai:env"
 
 
 def _write_gemini_env_token(token: str) -> Path:
@@ -462,6 +526,11 @@ def get_stored_token(provider: str) -> str | None:
 
 
 def get_token_source(provider: str) -> tuple[str | None, str | None]:
+    if provider == "gemini":
+        vertex_source = _gemini_vertex_source()
+        if vertex_source:
+            return GEMINI_VERTEX_TOKEN_SENTINEL, vertex_source
+
     env_key = PROVIDER_ENV_MAP.get(provider, "")
     env_token = os.getenv(env_key, "") if env_key else ""
     if env_token:
@@ -877,6 +946,10 @@ def write_env_if_set(provider: str, token: str | None) -> None:
     env_key = PROVIDER_ENV_MAP.get(provider)
     if not env_key:
         return
+    if provider == "gemini" and token == GEMINI_VERTEX_TOKEN_SENTINEL:
+        _gemini_vertex_source(export=True)
+        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        return
     if provider == "ollama" and not token:
         os.environ.setdefault(env_key, "ollama")
         return
@@ -891,9 +964,10 @@ def list_status() -> dict[str, dict[str, str]]:
     for provider, env_key in PROVIDER_ENV_MAP.items():
         token, source = get_token_source(provider)
         if token:
+            mask = "vertex-ai" if token == GEMINI_VERTEX_TOKEN_SENTINEL else mask_token(token)
             result[provider] = {
                 "status": "configured",
-                "mask": mask_token(token),
+                "mask": mask,
                 "source": source or "unknown",
                 "env_key": env_key,
             }

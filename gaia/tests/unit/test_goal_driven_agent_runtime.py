@@ -16,6 +16,18 @@ def test_fatal_llm_reason_prefers_codex_timeout_message() -> None:
     assert "실행 인자/버전 오류" not in reason
 
 
+def test_fatal_llm_reason_detects_gemini_resource_exhausted() -> None:
+    reason = GoalDrivenAgent._fatal_llm_reason(
+        "LLM 오류: 429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+        "generativelanguage.googleapis.com/generate_content_free_tier_requests, "
+        "quotaId=GenerateRequestsPerMinutePerProjectPerModel-FreeTier"
+    )
+
+    assert reason is not None
+    assert "Gemini API rate limit/quota 초과" in reason
+    assert "RESOURCE_EXHAUSTED" in reason
+
+
 def test_looks_like_visual_dom_ref_mismatch_detects_wait_reasoning() -> None:
     reasoning = (
         "스크린샷에서는 좋아요 버튼이 명확하게 보이지만, DOM 정보에는 해당 ref_id가 없습니다. "

@@ -5,7 +5,10 @@ import base64
 import requests
 
 from gaia.src.phase4 import mcp_openclaw_dispatch_runtime as runtime
-from gaia.src.phase4.browser_context_manager import choose_auto_follow_tab
+from gaia.src.phase4.browser_context_manager import (
+    choose_auto_follow_tab,
+    looks_like_non_document_surface,
+)
 
 
 _DEFAULT_URL = "https://example.com/app"
@@ -783,6 +786,53 @@ def test_choose_auto_follow_tab_prefers_viewer_and_ignores_ads() -> None:
 
     assert chosen is not None
     assert chosen["target_id"] == "viewer-tab"
+
+
+def test_choose_auto_follow_tab_ignores_worker_surfaces() -> None:
+    evidence = {
+        "new_pages": [
+            {
+                "target_id": "pow-worker",
+                "url": "https://www.daangn.com/kr/pow.worker.js",
+                "title": "pow.worker",
+                "kind_guess": "unknown",
+                "same_origin": True,
+                "active": True,
+            },
+            {
+                "target_id": "worker-target",
+                "url": "https://www.daangn.com/kr/",
+                "title": "",
+                "target_type": "service_worker",
+                "kind_guess": "unknown",
+                "same_origin": True,
+            },
+        ]
+    }
+
+    assert choose_auto_follow_tab(evidence) is None
+    assert looks_like_non_document_surface(evidence["new_pages"][0]) is True
+    assert looks_like_non_document_surface(evidence["new_pages"][1]) is True
+
+
+def test_choose_auto_follow_tab_keeps_same_origin_document_page() -> None:
+    chosen = choose_auto_follow_tab(
+        {
+            "new_pages": [
+                {
+                    "target_id": "result-tab",
+                    "url": "https://www.daangn.com/kr/buy-sell/s/?search=%EC%95%84%EC%9D%B4%ED%8F%B015",
+                    "title": "아이폰15 검색 결과",
+                    "kind_guess": "unknown",
+                    "same_origin": True,
+                    "active": True,
+                }
+            ]
+        }
+    )
+
+    assert chosen is not None
+    assert chosen["target_id"] == "result-tab"
 
 
 def test_dispatch_openclaw_action_auto_follows_same_origin_viewer_new_tab(monkeypatch) -> None:

@@ -115,6 +115,7 @@ OPENAI_MODEL_CHOICES = (
 )
 
 GEMINI_MODEL_CHOICES = (
+    "gemini-3.5-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -146,6 +147,7 @@ OPENAI_MODEL_PRIORITY = (
 )
 
 GEMINI_MODEL_PRIORITY = (
+    "gemini-3.5-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
@@ -668,6 +670,8 @@ def _fetch_gemini_models(token: str) -> list[str]:
 
 def _resolve_account_model_choices(provider: str, token: str | None) -> list[str]:
     if not token:
+        return []
+    if provider == "gemini" and token == getattr(gaia_auth, "GEMINI_VERTEX_TOKEN_SENTINEL", ""):
         return []
     if provider == "openai":
         return _fetch_openai_models(token)

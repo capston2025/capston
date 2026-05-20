@@ -19,6 +19,72 @@ from google.genai import types
 from gaia.src.utils.models import DomElement
 
 
+_LOCAL_ENV_FILES = (".env", ".env.gemini.local")
+_VERTEX_ENV_KEYS = (
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
+
+
+def _parse_env_assignments(path: Path) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return assignments
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        assignments[key] = value
+    return assignments
+
+
+def _load_local_env_vars() -> dict[str, str]:
+    root = Path(__file__).parent.parent.parent.parent
+    env_vars: dict[str, str] = {}
+    for name in _LOCAL_ENV_FILES:
+        env_vars.update(_parse_env_assignments(root / name))
+    return env_vars
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _uses_vertex_ai(env_vars: dict[str, str]) -> bool:
+    backend = (
+        os.getenv("GAIA_GEMINI_BACKEND")
+        or env_vars.get("GAIA_GEMINI_BACKEND")
+        or ""
+    ).strip().lower()
+    return _truthy(os.getenv("GOOGLE_GENAI_USE_VERTEXAI") or env_vars.get("GOOGLE_GENAI_USE_VERTEXAI")) or backend in {
+        "vertex",
+        "vertex_ai",
+        "vertexai",
+    }
+
+
+def _export_vertex_env_defaults(env_vars: dict[str, str]) -> None:
+    for key in _VERTEX_ENV_KEYS:
+        value = str(env_vars.get(key) or "").strip()
+        if value and not str(os.getenv(key) or "").strip():
+            os.environ[key] = value
+
+
 class GeminiVisionClient:
     """Client for Gemini-powered vision analysis of web pages."""
 
@@ -29,27 +95,49 @@ class GeminiVisionClient:
         Args:
             api_key: Gemini API key (if None, reads from GEMINI_API_KEY env var or .env file)
         """
-        # Load .env file if it exists
-        env_file = Path(__file__).parent.parent.parent.parent / ".env"
-        env_vars = {}
-        if env_file.exists():
-            with open(env_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if "=" in line and not line.startswith("#"):
-                        key, value = line.split("=", 1)
-                        env_vars[key.strip()] = value.strip()
+        env_vars = _load_local_env_vars()
+        _export_vertex_env_defaults(env_vars)
+        uses_vertex_ai = _uses_vertex_ai(env_vars)
+        api_version = (
+            os.getenv("GAIA_GEMINI_API_VERSION")
+            or env_vars.get("GAIA_GEMINI_API_VERSION")
+            or ("v1" if uses_vertex_ai else "v1alpha")
+        ).strip()
 
-        gemini_key = (
-            api_key or os.getenv("GEMINI_API_KEY") or env_vars.get("GEMINI_API_KEY")
-        )
-        if not gemini_key:
-            raise ValueError("GEMINI_API_KEY is required")
+        if uses_vertex_ai:
+            project = (
+                os.getenv("GOOGLE_CLOUD_PROJECT")
+                or env_vars.get("GOOGLE_CLOUD_PROJECT")
+                or ""
+            ).strip()
+            location = (
+                os.getenv("GOOGLE_CLOUD_LOCATION")
+                or env_vars.get("GOOGLE_CLOUD_LOCATION")
+                or ""
+            ).strip()
+            if not project:
+                raise ValueError("GOOGLE_CLOUD_PROJECT is required for Gemini Vertex AI")
+            if not location:
+                raise ValueError("GOOGLE_CLOUD_LOCATION is required for Gemini Vertex AI")
+            self.client = genai.Client(
+                vertexai=True,
+                project=project,
+                location=location,
+                http_options={"api_version": api_version},
+            )
+            self.auth_backend = "vertex_ai"
+        else:
+            gemini_key = (
+                api_key or os.getenv("GEMINI_API_KEY") or env_vars.get("GEMINI_API_KEY")
+            )
+            if not gemini_key:
+                raise ValueError("GEMINI_API_KEY is required")
 
-        # v1alpha API version required for media_resolution parameter
-        self.client = genai.Client(
-            api_key=gemini_key, http_options={"api_version": "v1alpha"}
-        )
+            # v1alpha API version required for media_resolution parameter on the Developer API path.
+            self.client = genai.Client(
+                api_key=gemini_key, http_options={"api_version": api_version}
+            )
+            self.auth_backend = "developer_api"
         configured_model = (
             os.getenv("GAIA_LLM_MODEL")
             or os.getenv("VISION_MODEL")
@@ -58,7 +146,7 @@ class GeminiVisionClient:
         if configured_model.lower().startswith("gpt-"):
             configured_model = "gemini-2.5-flash"
         self.model = configured_model
-        print(f"🤖 Vision AI: Using Gemini ({self.model})")
+        print(f"🤖 Vision AI: Using Gemini ({self.model}, {self.auth_backend})")
 
     def analyze_with_vision(
         self,
@@ -102,7 +190,7 @@ class GeminiVisionClient:
         """텍스트 전용 분석."""
         response = self.client.models.generate_content(
             model=self.model,
-            contents=[types.Content(parts=[types.Part(text=prompt)])],
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
             config=types.GenerateContentConfig(
                 max_output_tokens=max_completion_tokens,
                 temperature=temperature,
@@ -132,7 +220,7 @@ class GeminiVisionClient:
         try:
             response = self.client.models.generate_content(
                 model=self.model,
-                contents=[types.Content(parts=parts)],
+                contents=[types.Content(role="user", parts=parts)],
                 config=types.GenerateContentConfig(
                     max_output_tokens=max_tokens, temperature=0.1
                 ),
