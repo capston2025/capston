@@ -26,6 +26,7 @@ _RUNTIME_STATE: Dict[str, Any] = {
 _SERVER_READY_TIMEOUT_S = 45.0
 _INSTALL_TIMEOUT_S = 900.0
 _DEFAULT_BROWSER_COLOR = "#FF4500"
+_PROFILE_START_RETRY_DELAYS_S = (0.5, 1.0)
 
 _CHROME_EXECUTABLE_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -284,19 +285,24 @@ def _bootstrap_env(*, gateway_port: int, config_path: Path) -> Dict[str, str]:
 
 
 def _ensure_browser_profile_started(base_url: str) -> None:
-    response = requests.post(
-        f"{base_url.rstrip('/')}/start",
-        params={"profile": "openclaw"},
-        timeout=(2.0, 12.0),
-    )
-    try:
-        data = response.json()
-    except Exception:
-        data = {"error": response.text or "invalid_json_response"}
-    if response.status_code >= 400:
-        raise RuntimeError(str(data.get("error") or response.text or "openclaw profile start failed"))
-    if isinstance(data, dict) and data.get("ok") is False:
-        raise RuntimeError(str(data.get("error") or "openclaw profile start failed"))
+    last_error = ""
+    attempts = len(_PROFILE_START_RETRY_DELAYS_S) + 1
+    for attempt in range(attempts):
+        response = requests.post(
+            f"{base_url.rstrip('/')}/start",
+            params={"profile": "openclaw"},
+            timeout=(2.0, 20.0),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"error": response.text or "invalid_json_response"}
+        if response.status_code < 400 and not (isinstance(data, dict) and data.get("ok") is False):
+            return
+        last_error = str(data.get("error") or response.text or "openclaw profile start failed")
+        if attempt < len(_PROFILE_START_RETRY_DELAYS_S):
+            time.sleep(float(_PROFILE_START_RETRY_DELAYS_S[attempt]))
+    raise RuntimeError(last_error)
 
 
 def _browser_server_ready(base_url: str) -> bool:

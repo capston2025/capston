@@ -223,6 +223,7 @@ def test_ensure_browser_profile_started_raises_on_error(monkeypatch) -> None:
             return {"error": self.text}
 
     monkeypatch.setattr(runtime.requests, "post", lambda *args, **kwargs: _Response())
+    monkeypatch.setattr(runtime.time, "sleep", lambda _: None)
 
     try:
         runtime._ensure_browser_profile_started("http://127.0.0.1:18791")
@@ -230,6 +231,35 @@ def test_ensure_browser_profile_started_raises_on_error(monkeypatch) -> None:
         assert "Failed to start Chrome CDP" in str(exc)
     else:
         raise AssertionError("expected RuntimeError when /start returns failure")
+
+
+def test_ensure_browser_profile_started_retries_transient_start_failure(monkeypatch) -> None:
+    class _Response:
+        def __init__(self, status_code: int, payload: dict[str, object], text: str = "") -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    responses = [
+        _Response(500, {"error": 'Failed to start Chrome CDP on port 18800 for profile "openclaw".'}),
+        _Response(200, {"ok": True}),
+    ]
+    sleeps: list[float] = []
+
+    def fake_post(*args, **kwargs):
+        del args, kwargs
+        return responses.pop(0)
+
+    monkeypatch.setattr(runtime.requests, "post", fake_post)
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: sleeps.append(float(seconds)))
+
+    runtime._ensure_browser_profile_started("http://127.0.0.1:18791")
+
+    assert sleeps == [0.5]
+    assert responses == []
 
 
 def test_ensure_embedded_openclaw_base_url_requires_profile_start(monkeypatch, tmp_path) -> None:
