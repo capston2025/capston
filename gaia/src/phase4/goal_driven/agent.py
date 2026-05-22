@@ -352,6 +352,8 @@ class GoalDrivenAgent:
         self._steering_policy: Dict[str, Any] = {}
         self._steering_remaining_steps: int = 0
         self._steering_infeasible_block: bool = False
+        self._live_user_instruction_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None
+        self._last_live_user_instruction_seq: str = ""
         self._reason_code_counts: Dict[str, int] = {}
         self._recovery_retry_streaks: Dict[str, int] = {}
         self._overlay_intercept_pending: bool = False
@@ -572,10 +574,15 @@ class GoalDrivenAgent:
 
     @classmethod
     def _derive_goal_constraints(cls, goal: TestGoal) -> Dict[str, Any]:
-        return derive_goal_constraints_impl(
+        constraints = derive_goal_constraints_impl(
             cls._goal_text_blob(goal),
             cls._normalize_text,
         )
+        test_data = getattr(goal, "test_data", None)
+        explicit = test_data.get("goal_constraints") if isinstance(test_data, dict) else None
+        if isinstance(explicit, dict):
+            constraints.update({str(key): value for key, value in explicit.items() if str(key).strip()})
+        return constraints
 
     @classmethod
     def _extract_metric_values_from_text(cls, value: str, metric_terms: List[str]) -> List[int]:
@@ -1680,6 +1687,37 @@ class GoalDrivenAgent:
                 decision = deterministic_preplan
                 self._log(f"규칙 기반 선결정: {decision.action.value} - {decision.reasoning}")
             else:
+                live_provider = getattr(self, "_live_user_instruction_provider", None)
+                if callable(live_provider):
+                    try:
+                        live_payload = live_provider()
+                    except Exception:
+                        live_payload = None
+                    if isinstance(live_payload, dict):
+                        instruction = str(live_payload.get("instruction") or "").strip()
+                        seq = str(
+                            live_payload.get("seq")
+                            or live_payload.get("received_at")
+                            or instruction
+                        ).strip()
+                        if instruction and seq != str(getattr(self, "_last_live_user_instruction_seq", "") or ""):
+                            self._last_live_user_instruction_seq = seq
+                            self._action_feedback.append(f"사용자 실시간 개입: {instruction}")
+                            if len(self._action_feedback) > 10:
+                                self._action_feedback = self._action_feedback[-10:]
+                            policy = live_payload.get("steering_policy")
+                            if isinstance(policy, dict):
+                                rules = policy.get("rules") if isinstance(policy.get("rules"), list) else []
+                                assertions = (
+                                    policy.get("assertions")
+                                    if isinstance(policy.get("assertions"), list)
+                                    else []
+                                )
+                                if rules or assertions:
+                                    if not isinstance(goal.test_data, dict):
+                                        goal.test_data = {}
+                                    goal.test_data["steering_policy"] = dict(policy)
+                                    self._activate_steering_policy(goal)
                 # 3. LLM에게 다음 액션 결정 요청 (OpenClaw 철학 정렬: 계획은 LLM, 실행은 ref-only)
                 memory_context = self._build_memory_context(goal)
                 decision = self._decide_next_action(
@@ -1975,24 +2013,30 @@ class GoalDrivenAgent:
                         }
                     )
                 else:
-                    self._log(f"✅ 목표 달성! 이유: {decision.goal_achievement_reason}")
-                    result = GoalResult(
-                        goal_id=goal.id,
-                        goal_name=goal.name,
-                        success=True,
-                        steps_taken=steps,
-                        total_steps=step_count,
-                        final_reason=decision.goal_achievement_reason or "목표 달성됨",
-                        duration_seconds=time.time() - start_time,
-                    )
-                    self._record_goal_summary(
-                        goal=goal,
-                        status="success",
-                        reason=result.final_reason,
-                        step_count=step_count,
-                        duration_seconds=result.duration_seconds,
-                    )
-                    return result
+                    if decision.action != ActionType.WAIT:
+                        self._record_reason_code("goal_achievement_deferred_until_action")
+                        self._log(
+                            "⏳ 목표 달성 판정 보류: 마지막 실행 액션은 먼저 실제로 수행한 뒤 완료 처리합니다."
+                        )
+                    else:
+                        self._log(f"✅ 목표 달성! 이유: {decision.goal_achievement_reason}")
+                        result = GoalResult(
+                            goal_id=goal.id,
+                            goal_name=goal.name,
+                            success=True,
+                            steps_taken=steps,
+                            total_steps=step_count,
+                            final_reason=decision.goal_achievement_reason or "목표 달성됨",
+                            duration_seconds=time.time() - start_time,
+                        )
+                        self._record_goal_summary(
+                            goal=goal,
+                            status="success",
+                            reason=result.final_reason,
+                            step_count=step_count,
+                            duration_seconds=result.duration_seconds,
+                        )
+                        return result
 
             signature = self._decision_signature(decision)
             orchestrator.record_llm_decision(

@@ -15,6 +15,7 @@ from gaia.src.phase4.goal_driven.adaptive_qa_runtime import (
     adaptive_qa_is_deep,
     adaptive_qa_mode,
     build_edge_goal,
+    classify_adaptive_edge_status,
     filter_new_edge_cases,
     generate_adaptive_qa_plan,
     merge_adaptive_qa_plans,
@@ -551,8 +552,20 @@ def _run_single_chat_goal(
     session_id: str = WORKSPACE_DEFAULT,
     steering_policy: Optional[Dict[str, Any]] = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    live_intervention_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
     prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
+    def _emit_progress(kind: str, **payload: Any) -> None:
+        if progress_callback is None:
+            return
+        try:
+            event = {"kind": kind, "ts": time.time()}
+            event.update(payload)
+            progress_callback(event)
+        except Exception:
+            pass
+
     def _default_intervention_callback(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         kind = str((payload or {}).get("kind") or "").strip().lower()
         if kind in {"clarification", "no_progress"}:
@@ -656,6 +669,11 @@ def _run_single_chat_goal(
         screenshot_callback=_on_screenshot,
         intervention_callback=intervention_callback,
     )
+    if live_intervention_provider is not None:
+        try:
+            agent._live_user_instruction_provider = live_intervention_provider
+        except Exception:
+            pass
 
     # ── GUI live preview ─────────────────────────────────────────────────
     # OpenClaw MCP runtime은 동시 capture_screenshot 요청을 처리할 free port가 없어서
@@ -679,6 +697,7 @@ def _run_single_chat_goal(
 
     try:
         print(f"목표 실행: {goal.description}")
+        _emit_progress("goal_started", goal=goal.description, url=url)
         result = agent.execute_goal(goal)
         validation_report = _build_validation_report(
             goal.description,
@@ -745,11 +764,21 @@ def _run_single_chat_goal(
         print(f"duration: {result.duration_seconds:.2f}s")
         if not effective_success:
             _print_llm_failure_help(effective_reason)
+        _emit_progress(
+            "goal_finished",
+            goal=result.goal_name,
+            status=final_status,
+            success=bool(effective_success),
+            reason=effective_reason,
+            steps=result.total_steps,
+            duration_seconds=round(float(result.duration_seconds), 2),
+        )
 
         adaptive_qa_report: Dict[str, Any] | None = None
         if adaptive_qa_enabled(goal):
             qa_mode_label = adaptive_qa_mode(goal) or ADAPTIVE_QA_MODE
             print(f"\n🧪 {qa_mode_label} 확장 모드")
+            _emit_progress("adaptive_started", mode=qa_mode_label)
             adaptive_primary_result = result.model_copy(
                 update={"success": bool(effective_success), "final_reason": effective_reason}
             )
@@ -774,14 +803,33 @@ def _run_single_chat_goal(
                 edge_cases = filter_new_edge_cases(raw_edge_cases, seen_edge_fingerprints)
                 if not edge_cases or not adaptive_primary_result.success:
                     print("   새로 실행할 안전 엣지 케이스가 없습니다.")
+                    _emit_progress(
+                        "adaptive_done",
+                        reason="새로 실행할 안전 엣지 케이스가 없습니다.",
+                        round=round_index,
+                        executed=len(edge_results),
+                    )
                     break
                 print(f"   round {round_index}: 안전 엣지 케이스 {len(edge_cases)}개 실행")
+                _emit_progress(
+                    "adaptive_round_started",
+                    mode=qa_mode_label,
+                    round=round_index,
+                    count=len(edge_cases),
+                )
                 for edge_case in edge_cases:
                     generated_edge_cases.append(edge_case)
                     edge_goal = build_edge_goal(goal, edge_case, index=len(edge_results) + 1)
                     print(f"   [{len(edge_results) + 1}] {edge_goal.name}")
+                    edge_index = len(edge_results) + 1
+                    _emit_progress(
+                        "edge_started",
+                        index=edge_index,
+                        name=edge_goal.name,
+                        description=edge_goal.description,
+                    )
                     edge_result = agent.execute_goal(edge_goal)
-                    edge_status = "PASS" if edge_result.success else "FAIL"
+                    edge_status = classify_adaptive_edge_status(edge_case, edge_result)
                     edge_results.append(
                         {
                             "id": edge_goal.id,
@@ -792,6 +840,14 @@ def _run_single_chat_goal(
                         }
                     )
                     print(f"      {edge_status}: {edge_result.final_reason}")
+                    _emit_progress(
+                        "edge_finished",
+                        index=edge_index,
+                        name=edge_goal.name,
+                        status=edge_status,
+                        reason=edge_result.final_reason,
+                        steps=edge_result.total_steps,
+                    )
                 if not is_deep_qa:
                     break
                 round_index += 1
@@ -802,6 +858,11 @@ def _run_single_chat_goal(
                 primary_result=adaptive_primary_result,
                 plan=merged_plan,
                 edge_results=edge_results,
+            )
+            _emit_progress(
+                "adaptive_finished",
+                mode=qa_mode_label,
+                summary=adaptive_qa_report.get("summary", {}) if isinstance(adaptive_qa_report, dict) else {},
             )
 
         expected_signals = [
@@ -906,6 +967,8 @@ def run_chat_terminal_once(
     session_id: str = WORKSPACE_DEFAULT,
     steering_policy: Optional[Dict[str, Any]] = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    live_intervention_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
     prepared_goal: Optional[TestGoal] = None,
 ) -> Tuple[int, Dict[str, Any]]:
     return _run_single_chat_goal(
@@ -914,6 +977,8 @@ def run_chat_terminal_once(
         session_id=session_id,
         steering_policy=steering_policy,
         intervention_callback=intervention_callback,
+        progress_callback=progress_callback,
+        live_intervention_provider=live_intervention_provider,
         prepared_goal=prepared_goal,
     )
 

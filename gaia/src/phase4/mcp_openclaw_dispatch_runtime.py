@@ -562,6 +562,61 @@ def _cleanup_about_blank_tabs(
             pass
 
 
+def _close_profile_tabs(
+    *,
+    base_url: str,
+    profile: str,
+    timeout: Any,
+    keep_target_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Close existing tabs in the dedicated OpenClaw profile.
+
+    Benchmark cold-state isolation keeps the browser process warm but should not
+    keep scenario tabs warm. Closing profile tabs before a reset prevents old
+    pages from piling up while preserving the server/browser process itself.
+    """
+
+    try:
+        tabs_payload = _tabs_payload_for_target(
+            base_url=base_url,
+            target_id=str(keep_target_id or "").strip(),
+            profile=profile,
+            timeout=timeout,
+        )
+    except Exception:
+        return []
+    closed: List[Dict[str, Any]] = []
+    keep = str(keep_target_id or "").strip()
+    for item in _extract_tab_descriptors(tabs_payload):
+        target_id = str(item.get("target_id") or "").strip()
+        if not target_id or target_id == keep:
+            continue
+        status_code = 0
+        reason = ""
+        try:
+            status_code, data, text = _request(
+                "DELETE",
+                base_url=base_url,
+                path=f"/tabs/{quote(target_id, safe='')}",
+                timeout=timeout,
+                params={"profile": profile},
+            )
+            if status_code >= 400:
+                reason = str((data or {}).get("error") or text or status_code)
+        except Exception as exc:
+            reason = str(exc)
+        closed.append(
+            {
+                "targetId": target_id,
+                "url": str(item.get("url") or ""),
+                "ok": status_code > 0 and status_code < 400 and not reason,
+                "status_code": status_code,
+                "reason": reason,
+            }
+        )
+    return closed
+
+
 def _ensure_target(
     *,
     base_url: str,
@@ -859,8 +914,14 @@ def reset_openclaw_scenario_state(
     reset_session_id = str(session_id or "benchmark-reset").strip() or "benchmark-reset"
     profile_name = _session_profile(reset_session_id, profile)
     target_id = ""
+    closed_stale_tabs: List[Dict[str, Any]] = []
     clear_results: List[Dict[str, Any]] = []
     try:
+        closed_stale_tabs = _close_profile_tabs(
+            base_url=base_url,
+            profile=profile_name,
+            timeout=timeout,
+        )
         state = _ensure_target(
             base_url=base_url,
             session_id=reset_session_id,
@@ -925,6 +986,8 @@ def reset_openclaw_scenario_state(
             "targetId": target_id,
             "url": _normalize_url(url) or "about:blank",
             "cleared": clear_results,
+            "closed_stale_tabs": closed_stale_tabs,
+            "closed_stale_tab_count": len(closed_stale_tabs),
         },
         "",
     )

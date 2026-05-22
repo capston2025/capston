@@ -9,7 +9,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -60,6 +60,11 @@ class _ActiveRun:
     chat_id: int
     raw_command: str
     started_at: float
+    current: str = ""
+    next_action: str = ""
+    completed: list[str] = field(default_factory=list)
+    last_user_note: str = ""
+    progress_events: int = 0
 
 
 class _BufferedSink:
@@ -230,7 +235,12 @@ class _TelegramBridge:
         self._pending_lock = threading.Lock()
         self._active_runs: dict[int, _ActiveRun] = {}
         self._queued_count_by_chat: dict[int, int] = {}
+        self._tracking_enabled: set[int] = set()
+        self._tracking_last_signature: dict[int, str] = {}
+        self._live_interventions: dict[int, Dict[str, Any]] = {}
         self._state_lock = threading.Lock()
+        self._chatbot_client: Any | None = None
+        self._chatbot_client_key: tuple[str, str] = ("", "")
         self.pairing = _PairingState(
             path=Path(config.pairing_file),
             configured_admins=config.allowlist,
@@ -501,12 +511,67 @@ class _TelegramBridge:
                 break
         return compact
 
+    @staticmethod
+    def _compact_adaptive_qa_rows(rows: Any, limit: int = 50) -> list[Dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        compact: list[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            compact.append(
+                {
+                    "id": row.get("id"),
+                    "name": row.get("name") or row.get("title"),
+                    "title": row.get("title") or row.get("name"),
+                    "status": row.get("status"),
+                    "reason": row.get("reason") or row.get("evidence") or "",
+                    "steps": row.get("steps"),
+                }
+            )
+            if len(compact) >= limit:
+                break
+        return compact
+
+    @classmethod
+    def _compact_adaptive_qa_report(cls, report: Any, limit: int = 50) -> Dict[str, Any]:
+        if not isinstance(report, dict):
+            return {}
+        summary = report.get("summary")
+        checks = cls._compact_adaptive_qa_rows(report.get("checks"), limit=limit)
+        edge_results = cls._compact_adaptive_qa_rows(report.get("edge_results"), limit=limit)
+        failed_edge_results = [
+            row
+            for row in edge_results
+            if str(row.get("status") or "").strip().lower() in {"fail", "failed", "error"}
+        ]
+        skipped_edge_results = [
+            row
+            for row in edge_results
+            if str(row.get("status") or "").strip().lower() in {"skip", "skipped", "not_applicable"}
+        ]
+        unsupported_edge_results = [
+            row
+            for row in edge_results
+            if str(row.get("status") or "").strip().lower() in {"unsupported", "blocked_unsupported"}
+        ]
+        return {
+            "mode": report.get("mode"),
+            "summary": summary if isinstance(summary, dict) else {},
+            "checks": checks,
+            "edge_results": edge_results,
+            "failed_edge_results": failed_edge_results,
+            "skipped_edge_results": skipped_edge_results,
+            "unsupported_edge_results": unsupported_edge_results,
+        }
+
     @classmethod
     def _build_compact_report_payload(cls, payload_obj: Dict[str, Any]) -> Dict[str, Any]:
         payload = payload_obj if isinstance(payload_obj, dict) else {}
         validation_summary = payload.get("validation_summary")
         validation_rail_summary = payload.get("validation_rail_summary")
         validation_rail_cases = payload.get("validation_rail_cases")
+        adaptive_qa_report = cls._compact_adaptive_qa_report(payload.get("adaptive_qa_report"))
         checks = cls._compact_validation_checks(payload.get("validation_checks"), limit=50)
         step_timeline = cls._compact_step_timeline(payload.get("step_timeline"), limit=20)
         reason_codes = payload.get("reason_code_summary")
@@ -543,6 +608,7 @@ class _TelegramBridge:
                     else []
                 ),
             },
+            "adaptive_qa": adaptive_qa_report,
             "diagnostics": {
                 "reason_code_summary": reason_codes if isinstance(reason_codes, dict) else {},
                 "url": payload.get("url"),
@@ -559,6 +625,70 @@ class _TelegramBridge:
             compact["diagnostics"]["failed_checks"] = failed_checks[:10]
 
         return compact
+
+    @classmethod
+    def _format_adaptive_qa_lines(cls, report: Any) -> list[str]:
+        if not isinstance(report, dict) or not report:
+            return []
+        summary = report.get("summary")
+        summary = summary if isinstance(summary, dict) else {}
+        edge_results = report.get("edge_results")
+        edge_results = edge_results if isinstance(edge_results, list) else []
+
+        def _int_value(value: Any, fallback: int = 0) -> int:
+            try:
+                return int(value)
+            except Exception:
+                return fallback
+
+        generated = _int_value(summary.get("generated_edge_case_count"), len(edge_results))
+        executed = _int_value(summary.get("executed_edge_case_count"), len(edge_results))
+        passed = _int_value(
+            summary.get("passed_edge_case_count"),
+            sum(1 for row in edge_results if str((row or {}).get("status") or "").lower() == "pass"),
+        )
+        failed = _int_value(
+            summary.get("failed_edge_case_count"),
+            sum(1 for row in edge_results if str((row or {}).get("status") or "").lower() == "fail"),
+        )
+        skipped = _int_value(
+            summary.get("skipped_edge_case_count"),
+            sum(1 for row in edge_results if str((row or {}).get("status") or "").lower() == "skip"),
+        )
+        unsupported = _int_value(
+            summary.get("unsupported_edge_case_count"),
+            sum(1 for row in edge_results if str((row or {}).get("status") or "").lower() == "unsupported"),
+        )
+        score = summary.get("score")
+        score_text = "-"
+        try:
+            score_text = f"{float(score) * 100:.1f}%"
+        except Exception:
+            pass
+        mode = cls._truncate(report.get("mode"), 40)
+        lines = [
+            "",
+            "  Deep QA 확장 결과",
+            f"    - 모드 {mode}",
+            f"    - 생성 {generated}건 / 실행 {executed}건",
+            f"    - 성공 {passed}건 / 실패 {failed}건",
+            f"    - 스킵 {skipped}건 / 미지원 {unsupported}건",
+            f"    - 점수 {score_text}",
+        ]
+        failed_edges = [
+            row for row in edge_results
+            if isinstance(row, dict)
+            and str(row.get("status") or "").strip().lower() in {"fail", "failed", "error", "unsupported"}
+        ][:5]
+        if failed_edges:
+            lines.append("    - 실패 케이스")
+            for row in failed_edges:
+                title = cls._truncate(row.get("name") or row.get("title") or row.get("id"), 72)
+                reason = cls._truncate(row.get("reason") or row.get("evidence"), 90)
+                lines.append(f"      · {title}")
+                if reason != "-":
+                    lines.append(f"        {reason}")
+        return lines
 
     @classmethod
     def _format_payload_text(cls, payload: Dict[str, Any], *, mode: str = "summary_with_json") -> str:
@@ -669,6 +799,7 @@ class _TelegramBridge:
                     lines.append("    - 실패 케이스 상위 3개")
                     for row in top_failed:
                         lines.append(f"      · {cls._truncate(row.get('title') or row.get('id'), 80)}")
+        lines.extend(cls._format_adaptive_qa_lines(payload.get("adaptive_qa_report")))
         if mode == "summary_with_json":
             lines.extend(
                 [
@@ -1278,6 +1409,8 @@ class _TelegramBridge:
             return "cancel"
         if intent in {"casual", "chat", "smalltalk", "greeting", "thanks"}:
             return "casual"
+        if intent in {"clarify", "unknown", "ambiguous", "not_goal"}:
+            return "clarify"
         return ""
 
     @classmethod
@@ -1293,13 +1426,25 @@ class _TelegramBridge:
                 "skill": "answer_pending_input",
             }
         return {
-            "intent": "goal",
+            "intent": "clarify",
             "confidence": 0.0,
-            "reply": "",
-            "goal_text": raw,
+            "reply": "챗봇 판단을 못 했어요. 실행할 테스트 목표라면 한 문장으로 다시 보내주세요.",
+            "goal_text": "",
             "pending_text": "",
-            "skill": "run_gaia_goal",
+            "skill": "ask_clarification",
         }
+
+    @staticmethod
+    def _chatbot_route_token_budget(provider: str) -> int:
+        raw = str(os.getenv("GAIA_TELEGRAM_CHATBOT_MAX_TOKENS") or "").strip()
+        if raw:
+            try:
+                return max(256, int(raw))
+            except Exception:
+                pass
+        if str(provider or "").strip().lower() == "gemini":
+            return 2048
+        return 512
 
     @classmethod
     def _llm_route_telegram_message(
@@ -1309,13 +1454,19 @@ class _TelegramBridge:
         pending: Mapping[str, Any] | None = None,
         active: bool = False,
         queued: int = 0,
+        client: Any | None = None,
+        provider: str = "",
+        model: str = "",
+        target_url: str = "",
+        qa_mode: str = "",
     ) -> dict[str, Any]:
         if os.getenv("GAIA_TELEGRAM_LLM_MESSAGE_INTENT", "1").strip().lower() in {"0", "false", "off", "no"}:
             return {}
         try:
             from gaia import chat_hub
 
-            client = chat_hub._get_chat_router_client()
+            if client is None:
+                client = chat_hub._get_chat_router_client()
             if client is None or not hasattr(client, "analyze_text"):
                 return {}
             pending_fields = []
@@ -1330,6 +1481,8 @@ class _TelegramBridge:
             context_payload = {
                 "active_run": bool(active),
                 "queued_count": max(0, int(queued or 0)),
+                "target_url": str(target_url or "").strip(),
+                "qa_mode": str(qa_mode or "").strip(),
                 "pending": {
                     "kind": pending_kind,
                     "question": pending_question,
@@ -1347,10 +1500,11 @@ class _TelegramBridge:
                 "- casual_chat: 인사, 감사, 사과, 농담, 짧은 반응처럼 실행할 목표가 없는 대화.\n"
                 "- answer_pending_input: pending이 있고 사용자가 필요한 값이나 답변을 보낸 경우. 숫자/아이디/비밀번호/OTP처럼 짧아도 이 skill입니다.\n"
                 "- cancel_run: 사용자가 취소/중단을 명확히 요청한 경우.\n\n"
+                "- ask_clarification: 실행할 웹 QA 목표인지 애매해서 한 문장 목표를 다시 물어야 하는 경우.\n\n"
                 "출력 스키마:\n"
                 "{\n"
-                '  "intent": "goal|help|status|casual|pending_response|cancel",\n'
-                '  "skill": "run_gaia_goal|explain_gaia|show_status|casual_chat|answer_pending_input|cancel_run",\n'
+                '  "intent": "goal|help|status|casual|pending_response|cancel|clarify",\n'
+                '  "skill": "run_gaia_goal|explain_gaia|show_status|casual_chat|answer_pending_input|cancel_run|ask_clarification",\n'
                 '  "confidence": 0.0,\n'
                 '  "reply": "",\n'
                 '  "goal_text": "",\n'
@@ -1359,6 +1513,8 @@ class _TelegramBridge:
                 "규칙:\n"
                 "- goal이면 goal_text에 실행할 목표 문장을 넣습니다. 원문을 보존하되 필요하면 살짝 정리합니다.\n"
                 "- help/casual이면 reply를 한국어 Telegram 답장으로 짧게 작성합니다.\n"
+                "- 짧은 인사, 오타 섞인 인사, 실행 동사가 없는 잡담은 goal이 아니라 casual 또는 clarify입니다.\n"
+                "- goal은 브라우저에서 수행할 행동이나 확인 대상이 명확할 때만 선택합니다.\n"
                 "- status이면 reply는 비워도 됩니다. 시스템이 실제 상태를 붙입니다.\n"
                 "- pending_response이면 pending_text에 사용자가 보낸 값을 그대로 보존합니다. 내부 필드명은 만들지 않습니다.\n"
                 "- '사용법'이라는 단어가 있어도 '네이버에서 사용법 검색해줘'처럼 사이트 행동이면 goal입니다.\n"
@@ -1366,18 +1522,14 @@ class _TelegramBridge:
                 f"현재 컨텍스트:\n{json.dumps(context_payload, ensure_ascii=False, indent=2)}\n\n"
                 f"사용자 메시지:\n{text}"
             )
-            reasoning_key = "GAIA_CODEX_REASONING_EFFORT"
-            previous_reasoning = os.environ.get(reasoning_key)
-            os.environ[reasoning_key] = str(
-                os.getenv("GAIA_TELEGRAM_CHATBOT_REASONING_EFFORT", "low") or "low"
-            )
-            try:
-                response = client.analyze_text(prompt, max_completion_tokens=360, temperature=0.0)
-            finally:
-                if previous_reasoning is None:
-                    os.environ.pop(reasoning_key, None)
-                else:
-                    os.environ[reasoning_key] = previous_reasoning
+            max_tokens = cls._chatbot_route_token_budget(provider)
+            response = client.analyze_text(prompt, max_completion_tokens=max_tokens, temperature=0.0)
+            if not str(response or "").strip() and str(provider or "").strip().lower() == "gemini":
+                response = client.analyze_text(
+                    prompt,
+                    max_completion_tokens=max(max_tokens * 2, 4096),
+                    temperature=0.0,
+                )
             data = json.loads(chat_hub._extract_json_object(str(response)))
             if isinstance(data, dict):
                 intent = cls._normalize_freeform_intent(data.get("intent"))
@@ -1399,6 +1551,33 @@ class _TelegramBridge:
             return {}
         return {}
 
+    def _get_chatbot_client(self) -> Any | None:
+        provider = str(getattr(self.hub_context, "provider", "") or "").strip().lower() or "openai"
+        model = str(getattr(self.hub_context, "model", "") or "").strip()
+        cache_key = (provider, model)
+        if self._chatbot_client is not None and self._chatbot_client_key == cache_key:
+            return self._chatbot_client
+        try:
+            if provider == "gemini":
+                from gaia.src.phase4.llm_vision_client_gemini import GeminiVisionClient
+
+                self._chatbot_client = GeminiVisionClient(model=model or None)
+            else:
+                from gaia.src.phase4.llm_vision_client import LLMVisionClient
+
+                reasoning_effort = str(os.getenv("GAIA_TELEGRAM_CHATBOT_REASONING_EFFORT", "low") or "low")
+                self._chatbot_client = LLMVisionClient(
+                    provider=provider,
+                    model=model or None,
+                    reasoning_effort=reasoning_effort if provider == "openai" else None,
+                )
+            self._chatbot_client_key = cache_key
+            return self._chatbot_client
+        except Exception:
+            self._chatbot_client = None
+            self._chatbot_client_key = ("", "")
+            return None
+
     def _route_telegram_message(
         self,
         text: str,
@@ -1409,7 +1588,17 @@ class _TelegramBridge:
         with self._state_lock:
             active = self._active_runs.get(chat_id) is not None
             queued = int(self._queued_count_by_chat.get(chat_id, 0) or 0)
-        route = self._llm_route_telegram_message(text, pending=pending, active=active, queued=queued)
+        route = self._llm_route_telegram_message(
+            text,
+            pending=pending,
+            active=active,
+            queued=queued,
+            client=self._get_chatbot_client(),
+            provider=str(getattr(self.hub_context, "provider", "") or "").strip(),
+            model=str(getattr(self.hub_context, "model", "") or "").strip(),
+            target_url=str(getattr(self.hub_context, "url", "") or "").strip(),
+            qa_mode=str(getattr(self.hub_context, "qa_mode", "") or "").strip(),
+        )
         if route:
             return route
         return self._fallback_chatbot_route(text, pending=pending)
@@ -1419,7 +1608,7 @@ class _TelegramBridge:
         route = cls._llm_route_telegram_message(text)
         if route:
             return str(route.get("intent") or "goal")
-        return "goal"
+        return str(cls._fallback_chatbot_route(text).get("intent") or "clarify")
 
     @staticmethod
     def _field_label(field: str) -> str:
@@ -1547,6 +1736,186 @@ class _TelegramBridge:
             + "진행 중 궁금하면 `현재 상태`라고 보내주세요."
         )
 
+    @staticmethod
+    def _is_tracking_command(raw: str) -> bool:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())
+        lowered = text.lower()
+        compact = lowered.replace(" ", "")
+        return compact in {
+            "/상태추적",
+            "상태추적",
+            "/tracking",
+            "tracking",
+            "/progress",
+            "progress",
+        } or lowered.startswith("/상태 추적") or lowered.startswith("상태 추적")
+
+    def _handle_tracking_command(self, raw: str, chat_id: int) -> str | None:
+        if not self._is_tracking_command(raw):
+            return None
+        text = re.sub(r"\s+", " ", str(raw or "").strip())
+        lowered = text.lower()
+        off_tokens = {"끄기", "중지", "해제", "off", "disable", "stop"}
+        status_tokens = {"status", "확인", "보기"}
+        wants_off = any(token in lowered for token in off_tokens)
+        wants_status = any(token in lowered for token in status_tokens) and not wants_off
+        with self._state_lock:
+            enabled = chat_id in self._tracking_enabled
+            if wants_off:
+                self._tracking_enabled.discard(chat_id)
+                self._tracking_last_signature.pop(chat_id, None)
+                return (
+                    "상태 추적을 껐어요.\n"
+                    "필요하면 `/상태 추적`으로 다시 켤 수 있어요."
+                )
+            if wants_status:
+                return "상태 추적: 켜짐" if enabled else "상태 추적: 꺼짐"
+            self._tracking_enabled.add(chat_id)
+        return (
+            "상태 추적을 켰어요.\n"
+            "이제 목표 시작/완료, Deep QA 라운드와 케이스 진행 정도만 알려드릴게요.\n"
+            "실행 중 추가 지시를 보내면 현재 실행에 참고 지시로 반영합니다."
+        )
+
+    def _tracking_enabled_for(self, chat_id: int) -> bool:
+        with self._state_lock:
+            return chat_id in self._tracking_enabled
+
+    def _record_live_intervention(self, chat_id: int, raw: str) -> str:
+        instruction = re.sub(r"\s+", " ", str(raw or "").strip())
+        if not instruction:
+            return "반영할 내용이 비어 있어요. 추가 지시를 한 문장으로 보내주세요."
+        try:
+            from gaia import chat_hub
+
+            policy = chat_hub._compile_steering_policy(instruction, self.hub_context)
+        except Exception:
+            policy = {}
+        payload = {
+            "seq": str(time.time_ns()),
+            "instruction": instruction,
+            "steering_policy": policy if isinstance(policy, dict) else {},
+            "received_at": time.time(),
+        }
+        with self._state_lock:
+            self._live_interventions[chat_id] = payload
+            active = self._active_runs.get(chat_id)
+            if active is not None:
+                active.last_user_note = instruction
+        if isinstance(policy, dict) and policy:
+            self.hub_context.steering_policy = dict(policy)
+        if self.hub_context.on_session_update:
+            try:
+                self.hub_context.on_session_update(self.hub_context)
+            except Exception:
+                pass
+        return (
+            "알겠어요. 현재 실행에 참고 지시로 반영할게요.\n"
+            "다음 판단 지점부터 이 내용을 우선 고려합니다."
+        )
+
+    def _build_live_intervention_provider(self, chat_id: int):
+        def _provider() -> Optional[Dict[str, Any]]:
+            with self._state_lock:
+                payload = self._live_interventions.get(chat_id)
+                return dict(payload) if isinstance(payload, dict) else None
+
+        return _provider
+
+    @classmethod
+    def _format_tracking_progress_message(cls, event: Mapping[str, Any]) -> str:
+        kind = str(event.get("kind") or "").strip()
+        goal = cls._truncate(event.get("goal"), 100)
+        if kind == "goal_started":
+            return f"상태 추적\n- 시작: {goal}\n- 다음: 목표 수행"
+        if kind == "goal_finished":
+            status = cls._truncate(event.get("status") or ("SUCCESS" if event.get("success") else "FAILED"), 32)
+            reason = cls._truncate(event.get("reason"), 120)
+            return f"상태 추적\n- 완료: 기본 목표 {status}\n- 이유: {reason}\n- 다음: 확장 검증 여부 확인"
+        if kind == "adaptive_started":
+            mode = cls._truncate(event.get("mode") or "adaptive_qa", 40)
+            return f"상태 추적\n- Deep QA 확장 시작\n- 모드: {mode}"
+        if kind == "adaptive_round_started":
+            return (
+                "상태 추적\n"
+                f"- 확장 라운드 {event.get('round') or '-'} 시작\n"
+                f"- 새 테스트: {event.get('count') or 0}건"
+            )
+        if kind == "edge_started":
+            return (
+                "상태 추적\n"
+                f"- 진행 예정: {cls._truncate(event.get('name'), 100)}\n"
+                "- 다음: 이 케이스 실행"
+            )
+        if kind == "edge_finished":
+            return (
+                "상태 추적\n"
+                f"- 완료: {cls._truncate(event.get('name'), 90)}\n"
+                f"- 결과: {cls._truncate(event.get('status'), 20)}\n"
+                f"- 이유: {cls._truncate(event.get('reason'), 120)}"
+            )
+        if kind == "adaptive_finished":
+            summary = event.get("summary") if isinstance(event.get("summary"), Mapping) else {}
+            passed = summary.get("passed_edge_case_count", 0)
+            failed = summary.get("failed_edge_case_count", 0)
+            skipped = summary.get("skipped_edge_case_count", 0)
+            unsupported = summary.get("unsupported_edge_case_count", 0)
+            return (
+                "상태 추적\n"
+                "- Deep QA 확장 완료\n"
+                f"- 결과: PASS {passed} / FAIL {failed} / SKIP {skipped} / UNSUPPORTED {unsupported}"
+            )
+        if kind == "adaptive_done":
+            reason = cls._truncate(event.get("reason") or "추가 케이스 없음", 80)
+            return f"상태 추적\n- 확장 검증 종료\n- 이유: {reason}"
+        return ""
+
+    def _build_progress_callback(self, application, chat_id: int, reply_to_message_id: int | None):
+        def _callback(event: Dict[str, Any]) -> None:
+            if not isinstance(event, dict):
+                return
+            kind = str(event.get("kind") or "").strip()
+            message = self._format_tracking_progress_message(event)
+            with self._state_lock:
+                active = self._active_runs.get(chat_id)
+                if active is not None:
+                    active.progress_events += 1
+                    if kind in {"goal_started", "edge_started"}:
+                        active.current = str(event.get("goal") or event.get("name") or active.current or "").strip()
+                        active.next_action = "실행 중"
+                    elif kind in {"goal_finished", "edge_finished"}:
+                        label = str(event.get("goal") or event.get("name") or "").strip()
+                        status = str(event.get("status") or "").strip()
+                        if label:
+                            active.completed.append(f"{label} ({status or 'done'})")
+                            active.completed = active.completed[-6:]
+                    elif kind == "adaptive_round_started":
+                        active.next_action = f"확장 라운드 {event.get('round') or '-'}"
+                enabled = chat_id in self._tracking_enabled
+                signature = json.dumps(
+                    {"kind": kind, "goal": event.get("goal"), "name": event.get("name"), "status": event.get("status")},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if enabled and signature and self._tracking_last_signature.get(chat_id) == signature:
+                    message = ""
+                if enabled and signature:
+                    self._tracking_last_signature[chat_id] = signature
+            if not message or not self._tracking_enabled_for(chat_id):
+                return
+            loop = self.loop
+            if loop is None:
+                return
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_text(application.bot, chat_id, message, reply_to_message_id),
+                    loop,
+                )
+            except Exception:
+                pass
+
+        return _callback
+
     def _format_live_status(self, chat_id: int) -> str:
         with self._pending_lock:
             pending = self._pending_interventions.get(chat_id)
@@ -1570,13 +1939,24 @@ class _TelegramBridge:
             cmd = (active.raw_command or "").strip()
             if len(cmd) > 120:
                 cmd = cmd[:117] + "..."
-            return (
-                "현재 상태\n"
-                "- 실행 중\n"
-                f"- 요청: {cmd}\n"
-                f"- 경과: {elapsed}초\n"
-                f"- 대기열: {queued}건"
-            )
+            lines = [
+                "현재 상태",
+                "- 실행 중",
+                f"- 요청: {cmd}",
+                f"- 경과: {elapsed}초",
+                f"- 대기열: {queued}건",
+            ]
+            if active.current:
+                lines.append(f"- 현재 테스트: {self._truncate(active.current, 100)}")
+            if active.next_action:
+                lines.append(f"- 다음: {self._truncate(active.next_action, 100)}")
+            if active.last_user_note:
+                lines.append(f"- 최근 사용자 개입: {self._truncate(active.last_user_note, 100)}")
+            if active.completed:
+                lines.append("- 최근 완료")
+                for item in active.completed[-3:]:
+                    lines.append(f"  · {self._truncate(item, 100)}")
+            return "\n".join(lines)
 
         if queued > 0:
             return (
@@ -1601,6 +1981,7 @@ class _TelegramBridge:
                     raw_command=item.raw_command,
                     started_at=time.time(),
                 )
+                self._live_interventions.pop(item.chat_id, None)
             sink = _BufferedSink()
             try:
                 intervention_cb = self._build_intervention_callback(
@@ -1608,6 +1989,12 @@ class _TelegramBridge:
                     item.chat_id,
                     item.reply_to_message_id,
                 )
+                progress_cb = self._build_progress_callback(
+                    application,
+                    item.chat_id,
+                    item.reply_to_message_id,
+                )
+                live_intervention_cb = self._build_live_intervention_provider(item.chat_id)
                 result = await asyncio.to_thread(
                     dispatch_command,
                     self.hub_context,
@@ -1615,6 +2002,8 @@ class _TelegramBridge:
                     sink,
                     self.memory_store,
                     intervention_cb,
+                    progress_cb,
+                    live_intervention_cb,
                 )
                 payload_obj = build_command_payload(self.hub_context, item.raw_command, result)
                 if sink.lines:
@@ -1679,6 +2068,7 @@ class _TelegramBridge:
             finally:
                 with self._state_lock:
                     self._active_runs.pop(item.chat_id, None)
+                    self._live_interventions.pop(item.chat_id, None)
 
     async def _normalize_document_command(self, message, context) -> str:
         raw = (message.text or message.caption or "").strip()
@@ -1879,6 +2269,10 @@ class _TelegramBridge:
             pending = self._pending_interventions.get(chat_id)
         if pending is not None:
             lowered = raw.strip().lower()
+            tracking_reply = self._handle_tracking_command(raw, chat_id)
+            if tracking_reply is not None:
+                await message.reply_text(tracking_reply)
+                return
             if lowered in {"/cancel", "cancel", "취소"}:
                 pending.response_text = "cancel"
                 pending.event.set()
@@ -1915,6 +2309,16 @@ class _TelegramBridge:
                     )
                 )
                 return
+            if intent == "clarify":
+                await message.reply_text(
+                    str(route.get("reply") or "").strip()
+                    or self._format_pending_help(
+                        pending.kind,
+                        pending.question,
+                        list(pending.fields or []),
+                    )
+                )
+                return
             if intent == "cancel":
                 pending.response_text = "cancel"
                 pending.event.set()
@@ -1938,6 +2342,11 @@ class _TelegramBridge:
                 "미승인 사용자입니다. /pair request 로 승인 요청 후 관리자 승인을 받아주세요.\n"
                 "chat_id 확인: /whoami"
             )
+            return
+
+        tracking_reply = self._handle_tracking_command(raw, chat_id)
+        if tracking_reply is not None:
+            await message.reply_text(tracking_reply)
             return
 
         hub_pending = dict(getattr(self.hub_context, "pending_user_input", {}) or {})
@@ -1993,6 +2402,30 @@ class _TelegramBridge:
 
         if intent == "casual":
             await message.reply_text(str(route.get("reply") or "").strip() or self._format_casual_reply(chat_id, raw))
+            return
+
+        if intent == "clarify":
+            await message.reply_text(
+                str(route.get("reply") or "").strip()
+                or "실행할 목표라면 어떤 화면에서 무엇을 확인할지 한 문장으로 보내주세요."
+            )
+            return
+
+        with self._state_lock:
+            active_tracking_run = self._active_runs.get(chat_id) if chat_id in self._tracking_enabled else None
+        if active_tracking_run is not None:
+            if intent == "cancel":
+                self.hub_context.stop_requested = True
+                self.hub_context.pending_user_response = {"action": "cancel", "proceed": "false"}
+                if self.hub_context.on_session_update:
+                    try:
+                        self.hub_context.on_session_update(self.hub_context)
+                    except Exception:
+                        pass
+                await message.reply_text("중단 요청을 현재 실행에 전달했어요. 다음 안전 지점에서 반영됩니다.")
+                return
+            command_text = str(route.get("goal_text") or route.get("pending_text") or "").strip() or raw
+            await message.reply_text(self._record_live_intervention(chat_id, command_text))
             return
 
         queued_ahead = self.queue.qsize()

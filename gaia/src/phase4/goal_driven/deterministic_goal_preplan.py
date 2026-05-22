@@ -40,14 +40,25 @@ def build_deterministic_goal_preplan(
     if not goal_text:
         return None
 
+    constraints = getattr(agent, "_goal_constraints", {}) if isinstance(getattr(agent, "_goal_constraints", {}), dict) else {}
+    test_data = getattr(goal, "test_data", None)
+    test_data = test_data if isinstance(test_data, dict) else {}
+    deterministic_enabled = bool(
+        constraints.get("allow_deterministic_preplan")
+        or test_data.get("allow_deterministic_preplan")
+        or test_data.get("deterministic_preplan")
+    )
+    if not deterministic_enabled:
+        return None
+
     query_tokens = agent._extract_goal_query_tokens(goal)
     if not query_tokens:
         return None
 
     search_hints = ("검색", "search", "query", "find")
     open_hints = ("열어", "open", "상세", "detail")
-    forbid_search_action = bool(agent._goal_constraints.get("forbid_search_action"))
-    current_view_only = bool(agent._goal_constraints.get("current_view_only"))
+    forbid_search_action = bool(constraints.get("forbid_search_action"))
+    current_view_only = bool(constraints.get("current_view_only"))
     current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
     locate_target_search_consumed = bool(getattr(agent, "_locate_target_search_consumed", False))
     target_content_visible = False

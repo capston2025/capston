@@ -9,16 +9,20 @@
   "scenarios": [
     {
       "id": "CYBER_001_LSM_LOGIN_AND_CHAT",
-      "name": "LSM_LOGIN_AND_CHAT",
+      "name": "LMS_LOGIN_FORM_PUBLIC_CHECK",
       "url": "https://cyber.inu.ac.kr/",
-      "goal": "s",
+      "goal": "인천대학교 사이버캠퍼스 공개 로그인 화면에 진입해 아이디 입력란, 비밀번호 입력란, LOGIN 버튼이 모두 보이는지 확인해줘. 실제 로그인은 시도하지 마.",
       "constraints": {
         "allow_navigation": true,
         "require_ref_only": true,
         "require_state_change": false
       },
       "time_budget_sec": 300,
-      "expected_signals": []
+      "expected_signals": [
+        "아이디",
+        "비밀번호",
+        "LOGIN"
+      ]
     }
   ]
 }

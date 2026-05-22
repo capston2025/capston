@@ -271,6 +271,15 @@ def test_reset_openclaw_scenario_state_clears_storage_and_closes_reset_tab(monke
     def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
         del base_url, timeout
         calls.append((method, path, dict(params or {}), dict(payload or {})))
+        if path == "/tabs":
+            return 200, {
+                "tabs": [
+                    {"targetId": "tab-stale", "url": "https://old.example.test/"},
+                    {"targetId": "tab-stale-2", "url": "https://ko.wikipedia.org/wiki/K-pop"},
+                ]
+            }, ""
+        if path in {"/tabs/tab-stale", "/tabs/tab-stale-2"}:
+            return 200, {"ok": True}, ""
         if path == "/tabs/open":
             return 200, {"targetId": "tab-reset", "url": payload["url"]}, ""
         if path in {"/cookies/clear", "/storage/local/clear", "/storage/session/clear"}:
@@ -292,15 +301,19 @@ def test_reset_openclaw_scenario_state_clears_storage_and_closes_reset_tab(monke
     assert text == ""
     assert payload["success"] is True
     assert payload["targetId"] == "tab-reset"
+    assert payload["closed_stale_tab_count"] == 2
     assert [call[1] for call in calls] == [
+        "/tabs",
+        "/tabs/tab-stale",
+        "/tabs/tab-stale-2",
         "/tabs/open",
         "/cookies/clear",
         "/storage/local/clear",
         "/storage/session/clear",
         "/tabs/tab-reset",
     ]
-    assert calls[0][3] == {"url": "https://shop.example.test/product/1", "profile": "openclaw"}
-    assert calls[1][3] == {"targetId": "tab-reset", "profile": "openclaw"}
+    assert calls[3][3] == {"url": "https://shop.example.test/product/1", "profile": "openclaw"}
+    assert calls[4][3] == {"targetId": "tab-reset", "profile": "openclaw"}
 
 
 def test_dispatch_openclaw_goto_uses_session_profile(monkeypatch) -> None:

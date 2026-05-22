@@ -68,6 +68,9 @@ def test_build_child_code_propagates_expected_signals_without_mcp_host_guard() -
     assert "_TeeWriter" in code
     assert "sys.__stdout__" in code
     assert "reset_browser_scenario_state" in code
+    assert "close_mcp_session" in code
+    assert "scenario tab cleanup" in code
+    assert "closed_stale_tabs" in code
 
 
 def test_build_child_code_forces_deep_qa_mode_for_benchmark_runs() -> None:

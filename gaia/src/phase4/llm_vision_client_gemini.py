@@ -88,7 +88,7 @@ def _export_vertex_env_defaults(env_vars: dict[str, str]) -> None:
 class GeminiVisionClient:
     """Client for Gemini-powered vision analysis of web pages."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
         """
         Initialize the Gemini vision client.
 
@@ -139,7 +139,8 @@ class GeminiVisionClient:
             )
             self.auth_backend = "developer_api"
         configured_model = (
-            os.getenv("GAIA_LLM_MODEL")
+            str(model or "").strip()
+            or os.getenv("GAIA_LLM_MODEL")
             or os.getenv("VISION_MODEL")
             or "gemini-2.5-flash"
         ).strip()

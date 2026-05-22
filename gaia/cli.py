@@ -75,6 +75,20 @@ TERMINAL_ACTUAL_PURPOSE_LABEL = "실제 사용 모드 실행"
 TERMINAL_BENCHMARK_PURPOSE_LABEL = "벤치마크 용도 실행"
 TERMINAL_DEEP_QA_BENCHMARK_PURPOSE_LABEL = "Deep QA 전용 벤치마크 실행"
 TERMINAL_BENCHMARK_BACK_CODE = 130
+TERMINAL_ACTUAL_SINGLE_LABEL = "단일 목표 실행"
+TERMINAL_ACTUAL_DEEP_QA_LABEL = "Deep QA 확장 실행"
+TERMINAL_ACTUAL_MODE_CHOICES = (
+    TERMINAL_ACTUAL_SINGLE_LABEL,
+    TERMINAL_ACTUAL_DEEP_QA_LABEL,
+)
+TERMINAL_ACTUAL_MODE_BY_LABEL = {
+    TERMINAL_ACTUAL_SINGLE_LABEL: "single",
+    TERMINAL_ACTUAL_DEEP_QA_LABEL: DEEP_ADAPTIVE_QA_MODE,
+}
+TERMINAL_ACTUAL_PROFILE_LABEL = {
+    "single": TERMINAL_ACTUAL_SINGLE_LABEL,
+    DEEP_ADAPTIVE_QA_MODE: TERMINAL_ACTUAL_DEEP_QA_LABEL,
+}
 TERMINAL_PURPOSE_CHOICES = (
     TERMINAL_ACTUAL_PURPOSE_LABEL,
     TERMINAL_BENCHMARK_PURPOSE_LABEL,
@@ -787,6 +801,34 @@ def _resolve_terminal_launch_purpose(
     profile["last_terminal_purpose"] = purpose
     _save_profile(profile)
     return purpose
+
+
+def _resolve_terminal_actual_mode(
+    parsed: argparse.Namespace,
+    profile: dict[str, str],
+    *,
+    runtime: str,
+    terminal_purpose: str,
+    requested_qa_mode: str | None,
+) -> tuple[str | None, str]:
+    if runtime != "terminal" or terminal_purpose != "actual":
+        return requested_qa_mode, ""
+    if requested_qa_mode or getattr(parsed, "mode", None):
+        return requested_qa_mode, ""
+    if not sys.stdin.isatty():
+        return requested_qa_mode, ""
+
+    last_mode = str(profile.get("last_terminal_actual_mode") or "").strip().lower()
+    default = TERMINAL_ACTUAL_PROFILE_LABEL.get(last_mode, TERMINAL_ACTUAL_SINGLE_LABEL)
+    selected = _prompt_select(
+        "실제 사용 방식을 선택하세요",
+        TERMINAL_ACTUAL_MODE_CHOICES,
+        default=default,
+    )
+    actual_mode = TERMINAL_ACTUAL_MODE_BY_LABEL.get(selected, "single")
+    profile["last_terminal_actual_mode"] = actual_mode
+    _save_profile(profile)
+    return (DEEP_ADAPTIVE_QA_MODE if actual_mode == DEEP_ADAPTIVE_QA_MODE else None), actual_mode
 
 
 def _resolve_telegram_setup_strategy(parsed: argparse.Namespace, profile: dict[str, str]) -> str:
@@ -1660,6 +1702,13 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         if benchmark_result == TERMINAL_BENCHMARK_BACK_CODE:
             continue
         return benchmark_result
+    requested_qa_mode, terminal_actual_mode = _resolve_terminal_actual_mode(
+        args,
+        profile,
+        runtime=runtime,
+        terminal_purpose=terminal_purpose,
+        requested_qa_mode=requested_qa_mode,
+    )
 
     url = _resolve_url(args, profile, required=True)
     if not url:
@@ -1718,8 +1767,11 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
         tg_webhook_bind = "127.0.0.1:8088"
 
         if tg_setup == "reuse":
-            tg_mode = getattr(args, "tg_mode", None) or profile.get("telegram_mode", "")
-            tg_token_file = getattr(args, "tg_token_file", None) or profile.get("telegram_token_file", "")
+            default_token_file = DEFAULT_TELEGRAM_TOKEN_FILE if Path(DEFAULT_TELEGRAM_TOKEN_FILE).exists() else ""
+            tg_mode = getattr(args, "tg_mode", None) or profile.get("telegram_mode", "") or (
+                "polling" if default_token_file else ""
+            )
+            tg_token_file = getattr(args, "tg_token_file", None) or profile.get("telegram_token_file", "") or default_token_file
             tg_allowlist_raw = getattr(args, "tg_allowlist", None) or profile.get("telegram_allowlist", "")
             tg_allowlist = _parse_telegram_allowlist(tg_allowlist_raw)
             tg_webhook_url = getattr(args, "tg_webhook_url", None) or profile.get("telegram_webhook_url", "")
@@ -1892,6 +1944,35 @@ def run_launcher(argv: Sequence[str] | None = None) -> int:
                 webhook_url=tg_webhook_url,
                 webhook_bind=tg_webhook_bind,
             ),
+        )
+
+    if terminal_actual_mode == "single":
+        feature_query = str(args.feature_query or "").strip()
+        if not feature_query and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+            feature_query = _prompt_non_empty("테스트할 기능/목표")
+        if not feature_query:
+            print("실제 사용 모드 실행에는 테스트할 기능/목표가 필요합니다.", file=sys.stderr)
+            return 2
+        _persist_profile(
+            profile,
+            provider=provider,
+            model=model,
+            auth_strategy=auth_strategy,
+            auth_method=getattr(args, "auth_method", None) or profile.get("default_openai_auth_method", "oauth"),
+            url=url,
+            runtime=runtime,
+            control_channel="local",
+            workspace=session_key,
+            session_key=session_key,
+            mcp_session_id=mcp_session_id,
+        )
+        return _dispatch_chat(
+            runtime,
+            url,
+            feature_query,
+            repl=False,
+            session_id=mcp_session_id,
+            qa_mode=None,
         )
 
     if args.mode in {ADAPTIVE_QA_MODE, DEEP_ADAPTIVE_QA_MODE} or requested_qa_mode:

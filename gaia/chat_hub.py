@@ -408,6 +408,9 @@ def build_command_payload(
     rail_artifacts = data.get("validation_rail_artifacts")
     if isinstance(rail_artifacts, dict):
         payload["validation_rail_artifacts"] = rail_artifacts
+    adaptive_qa_report = data.get("adaptive_qa_report")
+    if isinstance(adaptive_qa_report, dict):
+        payload["adaptive_qa_report"] = adaptive_qa_report
     if not payload["goal"] and command.startswith("/test "):
         payload["goal"] = command[6:].strip()
     return payload
@@ -1072,6 +1075,8 @@ def _run_test(
     query: str,
     sink: HubSink,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    live_intervention_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
 ) -> tuple[int, dict]:
     runtime = context.runtime
     qa_mode = _normalize_qa_mode(context.qa_mode)
@@ -1131,6 +1136,8 @@ def _run_test(
             session_id=context.session_id,
             steering_policy=(context.steering_policy if isinstance(context.steering_policy, dict) else None),
             intervention_callback=cb,
+            progress_callback=progress_callback,
+            live_intervention_provider=live_intervention_provider,
         )
     finally:
         if prev_provider is None:
@@ -1243,6 +1250,8 @@ def dispatch_command(
     sink: HubSink,
     memory_store: MemoryStore | None = None,
     intervention_callback: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    live_intervention_provider: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
 ) -> CommandResult:
     line = (raw_line or "").strip()
     if not line:
@@ -1609,7 +1618,14 @@ def dispatch_command(
         if not query:
             return CommandResult(code=2, status="error", output="테스트 목표를 입력해주세요.")
         t0 = time.time()
-        code, detail = _run_test(context, query, sink, intervention_callback=intervention_callback)
+        code, detail = _run_test(
+            context,
+            query,
+            sink,
+            intervention_callback=intervention_callback,
+            progress_callback=progress_callback,
+            live_intervention_provider=live_intervention_provider,
+        )
         status_text = str(detail.get("status") or ("success" if code == 0 else "failed"))
         final_status = str(detail.get("final_status") or "").strip()
         duration_value = _as_float(detail.get("duration_seconds"))

@@ -404,6 +404,44 @@ def _evaluate_post_action_judge_completion(
     )
 
 
+def _evaluate_deferred_action_goal_completion(
+    *,
+    agent: Any,
+    goal: TestGoal,
+    decision: ActionDecision,
+    success: bool,
+    post_dom: List[DOMElement],
+) -> Optional[str]:
+    if not bool(success and decision.is_goal_achieved):
+        return None
+    if decision.action == ActionType.WAIT:
+        return None
+
+    validator = getattr(agent, "_validate_goal_achievement_claim", None)
+    if callable(validator):
+        is_valid, invalid_reason = validator(
+            goal=goal,
+            decision=decision,
+            dom_elements=post_dom or [],
+        )
+        if not is_valid:
+            log = getattr(agent, "_log", None)
+            if callable(log):
+                log(f"⚠️ 실행 후 목표 달성 판정 보류: {invalid_reason}")
+            feedback = getattr(agent, "_action_feedback", None)
+            if isinstance(feedback, list):
+                feedback.append(f"실행 후 목표 달성 판정 보류: {invalid_reason}")
+                if len(feedback) > 10:
+                    del feedback[:-10]
+            return None
+
+    return (
+        str(decision.goal_achievement_reason or "").strip()
+        or str(decision.reasoning or "").strip()
+        or "마지막 실행 액션이 성공하여 목표를 완료로 판정했습니다."
+    )
+
+
 def evaluate_post_action_progress(
     *,
     agent: Any,
@@ -621,6 +659,33 @@ def evaluate_post_action_progress(
                     post_dom = recovered_dom
 
     terminal_result: Optional[GoalResult] = None
+    if terminal_result is None:
+        deferred_reason = _evaluate_deferred_action_goal_completion(
+            agent=agent,
+            goal=goal,
+            decision=decision,
+            success=success,
+            post_dom=post_dom or [],
+        )
+        if deferred_reason:
+            _emit_reason(agent, "goal_achievement_after_action")
+            agent._log(f"✅ 목표 달성! 이유: {deferred_reason}")
+            terminal_result = GoalResult(
+                goal_id=goal.id,
+                goal_name=goal.name,
+                success=True,
+                steps_taken=steps,
+                total_steps=step_count,
+                final_reason=deferred_reason,
+                duration_seconds=time.time() - start_time,
+            )
+            agent._record_goal_summary(
+                goal=goal,
+                status="success",
+                reason=terminal_result.final_reason,
+                step_count=step_count,
+                duration_seconds=terminal_result.duration_seconds,
+            )
     if terminal_result is None:
         target_reason = agent._evaluate_goal_target_completion(
             goal=goal,

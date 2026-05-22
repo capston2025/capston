@@ -1,6 +1,7 @@
 from gaia.src.phase4.goal_driven.goal_completion_helpers import evaluate_goal_target_completion
+from gaia.src.phase4.goal_driven.deterministic_goal_preplan import build_deterministic_goal_preplan
 from gaia.src.phase4.goal_driven.agent import GoalDrivenAgent
-from gaia.src.phase4.goal_driven.models import DOMElement, TestGoal
+from gaia.src.phase4.goal_driven.models import ActionType, DOMElement, TestGoal
 
 
 class _CompletionAgent:
@@ -137,6 +138,167 @@ def test_goal_constraints_do_not_promote_ranking_counts_to_collect_min() -> None
 
     assert constraints.get("collect_min") is None
     assert constraints.get("metric_label") is None
+
+
+def test_goal_constraints_do_not_treat_today_phrase_as_increase_mutation() -> None:
+    goal = TestGoal(
+        id="wiki-portal-readonly",
+        name="사용자 모임 경유 K-pop 포털 정보 확인",
+        description=(
+            "위키백과에서 사용자 모임을 클릭한 뒤, 포털 영역에서 K-pop을 선택했을 때 "
+            "오늘의 아티스트나 오늘의 그림 같은 정보가 화면에 나타나는지 확인해줘."
+        ),
+        success_criteria=[
+            "오늘의 아티스트나 오늘의 그림 같은 정보가 화면에 나타난다.",
+        ],
+    )
+
+    constraints = GoalDrivenAgent._derive_goal_constraints(goal)
+
+    assert constraints.get("mutation_direction") is None
+
+
+def test_goal_constraints_do_not_infer_mutation_direction_from_free_text() -> None:
+    goal = TestGoal(
+        id="free-text-mutation",
+        name="위시리스트 담기 확인",
+        description="첫 번째 상품을 위시리스트에 담아 정상적으로 추가되는지 확인해줘.",
+        success_criteria=["위시리스트에 상품이 추가된다."],
+    )
+
+    constraints = GoalDrivenAgent._derive_goal_constraints(goal)
+
+    assert constraints.get("mutation_direction") is None
+    assert constraints.get("mutate_required") is None
+
+
+def test_explicit_goal_constraints_are_preserved_from_test_data() -> None:
+    goal = TestGoal(
+        id="explicit-mutation-contract",
+        name="명시 계약 기반 위시리스트 담기",
+        description="첫 번째 상품을 위시리스트에 담는다.",
+        success_criteria=["위시리스트에 상품이 추가된다."],
+        test_data={
+            "goal_constraints": {
+                "mutation_direction": "increase",
+                "mutate_required": True,
+                "destination_terms": ["위시리스트"],
+            }
+        },
+    )
+
+    constraints = GoalDrivenAgent._derive_goal_constraints(goal)
+
+    assert constraints["mutation_direction"] == "increase"
+    assert constraints["mutate_required"] is True
+    assert constraints["destination_terms"] == ["위시리스트"]
+
+
+def test_goal_target_completion_does_not_shortcut_readonly_portal_link_visibility() -> None:
+    agent = _CompletionAgent()
+    goal = TestGoal(
+        id="wiki-portal-readonly",
+        name="사용자 모임 경유 K-pop 포털 정보 확인",
+        description=(
+            "위키백과에서 사용자 모임을 클릭한 뒤, 포털 영역에서 K-pop을 선택했을 때 "
+            "오늘의 아티스트나 오늘의 그림 같은 정보가 화면에 나타나는지 확인해줘."
+        ),
+        success_criteria=[
+            "오늘의 아티스트나 오늘의 그림 같은 정보가 화면에 나타난다.",
+        ],
+    )
+    agent._goal_constraints = GoalDrivenAgent._derive_goal_constraints(goal)
+    agent._goal_target_terms = lambda goal: ["K-pop"]  # type: ignore[method-assign]
+    dom = [
+        DOMElement(
+            id=1,
+            tag="a",
+            role="link",
+            text="K-pop",
+            aria_label="K-pop",
+            context_text="포털 목록",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is None
+
+
+def test_goal_target_completion_does_not_shortcut_explicit_mutation_contract() -> None:
+    agent = _CompletionAgent()
+    agent._goal_constraints = {
+        "mutation_direction": "increase",
+        "mutate_required": True,
+        "target_terms": ["첫 번째 상품"],
+    }
+    agent._goal_target_terms = lambda goal: ["첫 번째 상품"]  # type: ignore[method-assign]
+    goal = TestGoal(
+        id="explicit-mutation-no-shortcut",
+        name="첫 번째 상품 위시리스트 담기",
+        description="첫 번째 상품을 위시리스트에 담고 반영 여부를 확인한다.",
+        success_criteria=["위시리스트에 첫 번째 상품이 추가된다."],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="첫 번째 상품",
+            context_text="상품 목록",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is None
+
+
+def test_deterministic_goal_preplan_requires_explicit_opt_in() -> None:
+    class _PreplanAgent:
+        _goal_constraints = {}
+        _element_full_selectors = {}
+        _element_selectors = {}
+        _locate_target_search_consumed = False
+
+        @staticmethod
+        def _normalize_text(value: object) -> str:
+            return str(value or "").strip().lower()
+
+        @staticmethod
+        def _extract_goal_query_tokens(goal: TestGoal) -> list[str]:
+            return ["챗GPT 사용법"]
+
+    dom = [
+        DOMElement(
+            id=1,
+            tag="input",
+            role="textbox",
+            type="search",
+            placeholder="검색어를 입력하세요",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+    goal = TestGoal(
+        id="search-no-preplan",
+        name="네이버에서 챗GPT 사용법 검색",
+        description="네이버에서 챗GPT 사용법을 검색해줘.",
+        success_criteria=["검색 결과가 보인다."],
+    )
+
+    assert build_deterministic_goal_preplan(_PreplanAgent(), goal=goal, dom_elements=dom) is None
+
+    opt_in_goal = goal.model_copy(update={"test_data": {"allow_deterministic_preplan": True}})
+    decision = build_deterministic_goal_preplan(_PreplanAgent(), goal=opt_in_goal, dom_elements=dom)
+
+    assert decision is not None
+    assert decision.action == ActionType.FILL
+    assert decision.value == "챗GPT 사용법"
 
 
 def test_goal_constraints_ignore_forbidden_purchase_or_cart_actions() -> None:

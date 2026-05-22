@@ -321,6 +321,14 @@ def test_validate_goal_achievement_claim_keeps_wait_rejected_for_source_add_row_
 
 def test_validate_goal_achievement_claim_accepts_wait_for_generic_search_change_proof():
     agent = _FakeAgent()
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "검색 결과 목록이 변경되었고 디지털 관련 과목이 현재 화면에 표시됩니다.",
+  "confidence": 0.9
+}
+""".strip()
     goal = SimpleNamespace(
         name="검색 결과 변경 검증",
         description="과목 검색창에 키워드를 입력해 검색 결과 목록이 실제로 바뀌는지 검증",
@@ -806,12 +814,20 @@ def test_validate_goal_achievement_claim_accepts_wait_via_generic_judge_for_late
     assert reason is None
 
 
-def test_wait_completion_accepts_readonly_video_detail_information_without_contract_signal() -> None:
+def test_wait_completion_defers_readonly_video_detail_claim_to_judge() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
     agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
     agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "현재 YouTube 영상 상세 화면에 제목, 채널명, 조회 정보가 직접 보입니다.",
+  "confidence": 0.91
+}
+""".strip()
     goal = SimpleNamespace(
         name="검색 결과에서 공개 영상을 하나 열어 제목, 채널명, 조회 정보 또는 설명 일부 확인",
         description="YouTube 검색 결과에서 공개 영상 상세 화면의 정보가 보이는지 확인해줘.",
@@ -858,10 +874,11 @@ def test_wait_completion_accepts_readonly_video_detail_information_without_contr
         ),
     ]
 
-    reason = evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom)
+    assert evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
 
+    reason = evaluate_reasoning_only_wait_completion(agent, goal=goal, decision=decision, dom_elements=dom)
     assert reason is not None
-    assert "한국관광공사tv" in reason.lower()
+    assert "youtube" in reason.lower()
 
 
 def test_reasoning_only_wait_completion_uses_judge_for_readonly_video_detail_claim() -> None:
@@ -1011,12 +1028,20 @@ def test_reasoning_only_wait_completion_skips_judge_on_service_unavailable_page(
     assert not hasattr(agent, "_last_judge_prompt")
 
 
-def test_wait_completion_accepts_readonly_map_route_panel_information_without_contract_signal() -> None:
+def test_wait_completion_defers_readonly_map_route_panel_claim_to_judge() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
     agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
     agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "현재 카카오맵 길찾기 패널의 출발지와 도착지 입력 영역이 직접 보입니다.",
+  "confidence": 0.91
+}
+""".strip()
     goal = SimpleNamespace(
         name="카카오맵 길찾기 패널 확인",
         description="카카오맵에서 길찾기 패널을 열어 출발지와 도착지 입력 영역이 보이는지 확인해줘.",
@@ -1065,8 +1090,9 @@ def test_wait_completion_accepts_readonly_map_route_panel_information_without_co
         ),
     ]
 
-    reason = evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom)
+    assert evaluate_wait_goal_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
 
+    reason = evaluate_reasoning_only_wait_completion(agent, goal=goal, decision=decision, dom_elements=dom)
     assert reason is not None
     assert "길찾기" in reason
 
@@ -1169,12 +1195,20 @@ def test_validate_goal_achievement_claim_rejects_wait_when_play_control_is_still
     assert reason == "재생 목표는 현재 player surface에 play/start control이 남아 있으면 완료로 보지 않습니다. 먼저 재생 버튼을 누르세요."
 
 
-def test_validate_goal_achievement_claim_accepts_wait_via_reasoning_result_quote_without_judge() -> None:
+def test_validate_goal_achievement_claim_accepts_wait_via_judge_for_result_quote() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._goal_quoted_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
     agent._goal_target_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
     agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "입력과 구분되는 응답 본문이 현재 화면에 표시됩니다.",
+  "confidence": 0.9
+}
+""".strip()
     goal = SimpleNamespace(
         name='이 사이트 들어가서 "안녕 뭐해?"라고 입력하고 결과물 알려줘봐',
         description='입력 후 나온 결과를 확인해줘.',

@@ -75,19 +75,6 @@ def _looks_like_instructional_target_token(token: str) -> bool:
     return any(hint in value for hint in instructional_hints)
 
 
-def _strip_negated_action_clauses(text: str) -> str:
-    """Remove clauses that describe actions the user explicitly forbids."""
-
-    value = str(text or "")
-    if not value:
-        return ""
-    negation_pattern = re.compile(
-        r"[^.!?。;\n]*(?:하지\s*마|하지\s*말|하지마|하지말|절대\s*하지|금지|do\s+not|don't|never|must\s+not)[^.!?。;\n]*",
-        flags=re.IGNORECASE,
-    )
-    return negation_pattern.sub(" ", value)
-
-
 def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> Dict[str, Any]:
     text = normalize_text(goal_blob)
     if not text:
@@ -134,51 +121,6 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
     forbid_search_action = any(hint in text for hint in forbid_search_hints)
     if current_view_only:
         require_no_navigation = True
-    increase_hints = ("증가", "늘", "담", "추가", "add", "append", "increase", "grow", "more")
-    decrease_hints = ("감소", "줄", "제거", "삭제", "remove", "decrease", "less")
-    clear_hints = ("비우", "비웠", "전체 삭제", "전부 삭제", "clear", "empty", "remove all")
-    mutation_text = _strip_negated_action_clauses(text)
-    mutation_text = re.sub(
-        r"추가\s*(?:인증|확인|보안|로그인|otp|2fa)",
-        " ",
-        mutation_text,
-        flags=re.IGNORECASE,
-    )
-    has_increase = any(hint in mutation_text for hint in increase_hints)
-    has_decrease = any(hint in mutation_text for hint in decrease_hints)
-    conditional_remediation_hints = (
-        "이미", "already", "이미 추가", "이미 담", "이미 반영", "이미 들어", "이미 있",
-        "되어 있었", "되어있었", "있었으면", "있다면", "있는 경우", "already added", "already in",
-    )
-    conditional_followup_hints = (
-        "삭제한 뒤", "삭제한뒤", "삭제한뒤에", "삭제 후", "삭제후",
-        "제거한 뒤", "제거한뒤", "제거한뒤에", "제거 후", "제거후",
-        "remove then", "delete then", "삭제하고", "제거하고",
-    )
-    readd_hints = (
-        "다시 추가", "재추가", "다시 담", "다시 넣", "다시 반영", "re-add", "add again",
-    )
-    remediation_direction: Optional[str] = None
-    remediation_trigger: Optional[str] = None
-    mutation_direction: Optional[str] = None
-    conditional_remediation = bool(
-        (has_increase or any(hint in mutation_text for hint in readd_hints))
-        and has_decrease
-        and any(hint in mutation_text for hint in conditional_remediation_hints)
-        and any(hint in mutation_text for hint in conditional_followup_hints)
-    )
-    if conditional_remediation:
-        mutation_direction = "increase"
-        remediation_direction = "decrease_then_increase"
-        remediation_trigger = "already_present"
-    elif any(hint in mutation_text for hint in clear_hints):
-        mutation_direction = "clear"
-    elif has_increase and has_decrease and any(hint in mutation_text for hint in readd_hints):
-        mutation_direction = "increase"
-    elif has_decrease:
-        mutation_direction = "decrease"
-    elif has_increase:
-        mutation_direction = "increase"
     context_terms = _derive_context_terms(text, normalize_text)
     target_terms: List[str] = []
     for group in re.findall(r"\"([^\"]{2,})\"|'([^']{2,})'", str(goal_blob or "")):
@@ -201,17 +143,6 @@ def derive_goal_constraints(goal_blob: str, normalize_text: NormalizeTextFn) -> 
         payload["current_view_only"] = True
     if forbid_search_action:
         payload["forbid_search_action"] = True
-    if mutation_direction:
-        payload["mutation_direction"] = mutation_direction
-    if remediation_direction:
-        payload["remediation_direction"] = remediation_direction
-    if remediation_trigger:
-        payload["conditional_remediation"] = True
-        payload["requires_pre_action_membership_check"] = True
-        payload["remediation_trigger"] = remediation_trigger
-        payload["already_satisfied_ok"] = False
-        payload["mutate_required"] = True
-        payload["context_terms"] = context_terms
     if target_terms:
         payload["target_terms"] = target_terms
     return payload

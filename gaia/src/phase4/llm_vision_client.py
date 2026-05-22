@@ -121,7 +121,13 @@ class LLMVisionClient:
             return {}
         return assignments
 
-    def __init__(self, api_key: str | None = None, provider: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> None:
         """
         Initialize the LLM vision client.
 
@@ -163,7 +169,8 @@ class LLMVisionClient:
                 os.environ[base_url_env] = base_url
 
         configured_model = (
-            os.getenv("GAIA_LLM_MODEL")
+            str(model or "").strip()
+            or os.getenv("GAIA_LLM_MODEL")
             or os.getenv("VISION_MODEL")
             or (os.getenv(model_env) if model_env else "")
             or str(dotenv_assignments.get("GAIA_LLM_MODEL") or "")
@@ -174,6 +181,9 @@ class LLMVisionClient:
         if self.provider == "openai" and configured_model.lower().startswith("gemini-"):
             configured_model = "gpt-5.5"
         self.model = configured_model
+        self.reasoning_effort = str(
+            reasoning_effort if reasoning_effort is not None else os.getenv("GAIA_CODEX_REASONING_EFFORT", "")
+        ).strip().lower()
         self._auth_source = self._load_auth_source(self.provider)
         model_prefers_codex = "codex" in self.model.lower()
         codex_cli_auth_available = self._has_codex_cli_auth()
@@ -340,9 +350,8 @@ class LLMVisionClient:
                 "--output-last-message",
                 str(output_file),
             ]
-            reasoning_effort = str(os.getenv("GAIA_CODEX_REASONING_EFFORT", "") or "").strip().lower()
-            if reasoning_effort:
-                cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+            if self.reasoning_effort:
+                cmd.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
 
             # Model 지정이 실패하면 기본 모델로 재시도할 수 있도록 2회 시도.
             candidates = [self.model, ""]
@@ -422,7 +431,7 @@ class LLMVisionClient:
                 codex_bin=codex_bin,
                 model=self.model,
                 timeout_sec=codex_timeout_sec,
-                reasoning_effort=str(os.getenv("GAIA_CODEX_REASONING_EFFORT", "") or "low"),
+                reasoning_effort=self.reasoning_effort or "low",
                 reuse_thread=self._codex_app_server_reuse_thread(),
             )
         try:

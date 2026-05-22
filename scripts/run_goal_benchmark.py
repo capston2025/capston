@@ -277,6 +277,8 @@ goal_test_data = dict(getattr(prepared_goal, 'test_data', {{}}) or {{}})
 scenario_test_data = scenario.get('test_data') if isinstance(scenario.get('test_data'), dict) else {{}}
 if scenario_test_data:
     goal_test_data.update(scenario_test_data)
+if constraints:
+    goal_test_data['goal_constraints'] = dict(constraints)
 if benchmark_qa_mode:
     goal_test_data['qa_mode'] = benchmark_qa_mode
     if benchmark_qa_mode == 'deep_adaptive_qa':
@@ -301,6 +303,7 @@ if constraints.get('requires_test_credentials'):
             goal_test_data['email'] = email
 prepared_goal.test_data = goal_test_data
 runtime_reset = {{}}
+runtime_cleanup = {{}}
 def _reset_scenario_state_if_enabled():
     if str(os.getenv('GAIA_BENCHMARK_COLD_STATE_RESET') or '').strip() != '1':
         return {{}}
@@ -320,6 +323,28 @@ def _reset_scenario_state_if_enabled():
             'success': False,
             'ok': False,
             'reason_code': 'scenario_state_reset_exception',
+            'reason': str(exc),
+        }}
+def _close_scenario_session_if_enabled():
+    if str(os.getenv('GAIA_BENCHMARK_COLD_STATE_RESET') or '').strip() != '1':
+        return {{}}
+    if str(os.getenv('GAIA_BENCHMARK_CLOSE_SESSION_TAB', '1') or '').strip().lower() in {{'0', 'false', 'no', 'off'}}:
+        return {{}}
+    try:
+        from gaia.src.phase4.mcp_local_dispatch_runtime import close_mcp_session
+        result = close_mcp_session(
+            os.getenv('GAIA_OPENCLAW_BASE_URL') or os.getenv('MCP_HOST_URL') or '',
+            session_id=session_id,
+            timeout=(3, 10),
+        )
+        payload = dict(getattr(result, 'payload', {{}}) or {{}})
+        payload['status_code'] = int(getattr(result, 'status_code', 0) or 0)
+        return payload
+    except Exception as exc:
+        return {{
+            'success': False,
+            'ok': False,
+            'reason_code': 'scenario_session_cleanup_exception',
             'reason': str(exc),
         }}
 buf = io.StringIO()
@@ -342,28 +367,46 @@ tee = _TeeWriter(sys.__stdout__, buf)
 with contextlib.redirect_stdout(tee), contextlib.redirect_stderr(tee):
     runtime_reset = _reset_scenario_state_if_enabled()
     if runtime_reset:
+        closed_count = int(runtime_reset.get('closed_stale_tab_count') or 0)
         print(
             "🧊 scenario state reset: "
             f"success={{bool(runtime_reset.get('success') or runtime_reset.get('ok'))}} "
             f"profile={{runtime_reset.get('profile') or '-'}} "
-            f"target={{runtime_reset.get('targetId') or '-'}}",
+            f"target={{runtime_reset.get('targetId') or '-'}} "
+            f"closed_stale_tabs={{closed_count}}",
             flush=True,
         )
-    code, summary = run_chat_terminal_once(
-        url=scenario['url'],
-        query=scenario['goal'],
-        session_id=session_id,
-        prepared_goal=prepared_goal,
-    )
+    code = 1
+    summary = {{}}
+    try:
+        code, summary = run_chat_terminal_once(
+            url=scenario['url'],
+            query=scenario['goal'],
+            session_id=session_id,
+            prepared_goal=prepared_goal,
+        )
+    finally:
+        runtime_cleanup = _close_scenario_session_if_enabled()
+        if runtime_cleanup:
+            print(
+                "🧹 scenario tab cleanup: "
+                f"success={{bool(runtime_cleanup.get('success') or runtime_cleanup.get('ok'))}} "
+                f"target={{runtime_cleanup.get('targetId') or '-'}} "
+                f"reason={{runtime_cleanup.get('reason_code') or runtime_cleanup.get('reason') or '-'}}",
+                flush=True,
+            )
 if isinstance(summary, dict) and runtime_reset:
     runtime_meta = summary.setdefault('runtime', {{}})
     if isinstance(runtime_meta, dict):
         runtime_meta['scenario_state_reset'] = runtime_reset
+        if runtime_cleanup:
+            runtime_meta['scenario_tab_cleanup'] = runtime_cleanup
 result = {{
     'exit_code': int(code),
     'summary': summary,
     'captured_log': buf.getvalue(),
     'runtime_reset': runtime_reset,
+    'runtime_cleanup': runtime_cleanup,
 }}
 print(json.dumps(result, ensure_ascii=False))
 """
@@ -440,6 +483,7 @@ def _run_scenario_once(
             payload = {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     runtime_reset = payload.get("runtime_reset") if isinstance(payload.get("runtime_reset"), dict) else {}
+    runtime_cleanup = payload.get("runtime_cleanup") if isinstance(payload.get("runtime_cleanup"), dict) else {}
     exit_code = int(payload.get("exit_code") if isinstance(payload.get("exit_code"), int) else return_code)
     status = _normalize_status(summary, exit_code)
     child_log = payload.get("captured_log") if isinstance(payload.get("captured_log"), str) else stdout
@@ -466,6 +510,7 @@ def _run_scenario_once(
         "duration_seconds": duration,
         "summary": summary,
         "runtime_reset": runtime_reset,
+        "runtime_cleanup": runtime_cleanup,
         "captured_log": child_log,
         "benchmark_policy": benchmark_policy,
     })

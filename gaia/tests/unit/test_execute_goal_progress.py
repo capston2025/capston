@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from gaia.src.phase4.goal_driven.execute_goal_progress import (
     evaluate_post_action_progress,
+    _evaluate_deferred_action_goal_completion,
     _evaluate_post_action_judge_completion,
     _prime_dom_cache_from_backend_snapshot,
 )
@@ -291,6 +292,179 @@ def test_post_action_judge_completion_skips_search_fill_before_submit() -> None:
     )
 
     assert reason is None
+
+
+def test_deferred_action_goal_completion_requires_successful_action() -> None:
+    class _Agent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._action_feedback: list[str] = []
+            self.validation_calls = 0
+
+        def _validate_goal_achievement_claim(self, *, goal, decision, dom_elements):
+            self.validation_calls += 1
+            return True, None
+
+    agent = _Agent()
+    goal = SimpleNamespace(
+        name="강의 재생",
+        description="플레이어의 재생 버튼을 눌러 강의를 튼다.",
+        success_criteria=["재생 버튼 클릭"],
+    )
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        ref_id="e22",
+        reasoning="재생 버튼을 클릭한다.",
+        confidence=0.91,
+        is_goal_achieved=True,
+        goal_achievement_reason="재생 버튼 클릭이 마지막 단계입니다.",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="button",
+            role="button",
+            text="일시정지",
+            context_text="Video Player",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    reason = _evaluate_deferred_action_goal_completion(
+        agent=agent,
+        goal=goal,
+        decision=decision,
+        success=True,
+        post_dom=dom,
+    )
+    failed_reason = _evaluate_deferred_action_goal_completion(
+        agent=agent,
+        goal=goal,
+        decision=decision,
+        success=False,
+        post_dom=dom,
+    )
+
+    assert reason == "재생 버튼 클릭이 마지막 단계입니다."
+    assert failed_reason is None
+    assert agent.validation_calls == 1
+
+
+def test_evaluate_post_action_progress_completes_deferred_action_after_execution() -> None:
+    post_dom = [
+        DOMElement(
+            id=1,
+            tag="button",
+            role="button",
+            text="일시정지",
+            context_text="Video Player",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    class _Agent:
+        session_id = "s1"
+        _dom_cache_generation = 3
+        _active_url = ""
+        _active_snapshot_id = ""
+        _active_dom_hash = ""
+        _active_snapshot_epoch = 0
+        _active_scoped_container_ref = ""
+        _last_context_snapshot: dict[str, object] = {}
+        _last_role_snapshot: dict[str, object] = {}
+        _last_snapshot_elements_by_ref: dict[str, object] = {}
+        _last_container_source_summary: dict[str, int] = {}
+        _dom_analyze_cache: dict[str, object] = {}
+        _goal_constraints: dict[str, object] = {}
+        _goal_semantics = SimpleNamespace(goal_kind="", mutate_required=False)
+        _last_snapshot_evidence = {"text_digest": "재생"}
+        _last_backend_post_action_snapshot = {
+            "snapshot_id": "openclaw:s1:9",
+            "url": "https://cyber.inu.ac.kr/mod/vod/viewer.php",
+            "scope_applied": False,
+            "dom_elements": [item.model_dump() for item in post_dom],
+            "evidence": {"text_digest": "일시정지"},
+        }
+        _last_exec_result = SimpleNamespace(
+            success=True,
+            effective=True,
+            reason_code="ok",
+            state_change={
+                "backend": "openclaw",
+                "backend_progress": True,
+                "text_digest_changed": True,
+            },
+        )
+
+        def __init__(self) -> None:
+            self.reason_codes: list[str] = []
+            self.logs: list[str] = []
+            self.summaries: list[dict[str, object]] = []
+
+        @staticmethod
+        def _estimate_goal_metric_from_dom(_dom: list[DOMElement]) -> None:
+            return None
+
+        @staticmethod
+        def _dom_progress_signature(dom: list[DOMElement]) -> tuple[str, ...]:
+            return tuple(str(getattr(item, "text", "") or "") for item in dom)
+
+        @staticmethod
+        def _evaluate_goal_target_completion(*, goal: object, dom_elements: list[DOMElement]) -> None:
+            return None
+
+        def _validate_goal_achievement_claim(self, *, goal, decision, dom_elements):
+            return True, None
+
+        def _record_reason_code(self, code: str) -> None:
+            self.reason_codes.append(code)
+
+        def _log(self, message: str) -> None:
+            self.logs.append(message)
+
+        def _record_goal_summary(self, **payload: object) -> None:
+            self.summaries.append(dict(payload))
+
+    agent = _Agent()
+    goal = SimpleNamespace(
+        id="g-play",
+        name="강의 재생",
+        description="플레이어의 재생 버튼을 눌러 강의를 튼다.",
+        success_criteria=["재생 버튼 클릭"],
+        start_url="",
+    )
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        ref_id="e22",
+        reasoning="재생 버튼을 클릭한다.",
+        confidence=0.91,
+        is_goal_achieved=True,
+        goal_achievement_reason="재생 버튼 클릭이 마지막 단계입니다.",
+    )
+
+    result = evaluate_post_action_progress(
+        agent=agent,
+        goal=goal,
+        decision=decision,
+        success=True,
+        before_signature=("재생",),
+        dom_elements=[
+            DOMElement(id=1, tag="button", role="button", text="재생", is_visible=True, is_enabled=True)
+        ],
+        step_count=4,
+        steps=[],
+        start_time=0.0,
+    )
+
+    assert result["terminal_result"] is not None
+    assert result["terminal_result"].success is True
+    assert result["terminal_result"].steps_taken == []
+    assert result["terminal_result"].total_steps == 4
+    assert result["terminal_result"].final_reason == "재생 버튼 클릭이 마지막 단계입니다."
+    assert "goal_achievement_after_action" in agent.reason_codes
+    assert any("목표 달성" in message for message in agent.logs)
 
 
 def test_prime_dom_cache_from_backend_snapshot_seeds_next_default_analyze() -> None:

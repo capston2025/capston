@@ -26,6 +26,7 @@ from gaia.src.phase4.goal_driven.adaptive_qa_runtime import (
     adaptive_qa_is_deep,
     adaptive_qa_mode,
     build_edge_goal,
+    classify_adaptive_edge_status,
     filter_new_edge_cases,
     generate_adaptive_qa_plan,
     is_adaptive_edge_goal,
@@ -329,7 +330,7 @@ class GoalDrivenWorker(QObject):
                 edge_goal = build_edge_goal(goal, edge_case, index=len(edge_results) + 1)
                 self.progress.emit(f"   [{len(edge_results) + 1}] {edge_goal.name}")
                 result = self._goal_agent.execute_goal(edge_goal)
-                edge_status = "PASS" if result.success else "FAIL"
+                edge_status = classify_adaptive_edge_status(edge_case, result)
                 edge_results.append(
                     {
                         "id": edge_goal.id,

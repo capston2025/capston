@@ -33,7 +33,7 @@ def test_dispatch_command_preserves_inline_credentials_when_router_rewrites_goal
             "handoff": {},
         }
 
-    def fake_run_test(context, query, sink, intervention_callback=None):
+    def fake_run_test(context, query, sink, intervention_callback=None, **_kwargs):
         del context, sink, intervention_callback
         captured["query"] = query
         return 0, {
