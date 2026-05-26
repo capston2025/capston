@@ -130,7 +130,7 @@ def _normalized_binding_text(agent, value: object) -> str:
 
 
 def _is_visual_coordinate_fallback_enabled() -> bool:
-    raw = str(os.getenv("GAIA_VISUAL_COORDINATE_FALLBACK", "1") or "1").strip().lower()
+    raw = str(os.getenv("GAIA_VISUAL_COORDINATE_FALLBACK", "0") or "0").strip().lower()
     return raw in {"1", "true", "yes", "y", "on"}
 
 
@@ -339,6 +339,26 @@ def _force_analyze_dom_for_ref_recovery(agent, *, reason: str = "ref_recovery") 
         return list(agent._analyze_dom() or [])
     except Exception:
         return []
+
+
+def _mark_ref_recovery_failed_resnapshot(agent) -> None:
+    try:
+        agent._record_reason_code("ref_recovery_failed_resnapshot")
+    except Exception:
+        pass
+    force_resnapshot = getattr(agent, "_force_next_dom_resnapshot", None)
+    if callable(force_resnapshot):
+        try:
+            force_resnapshot(reason="ref_recovery_failed")
+            return
+        except Exception:
+            pass
+    try:
+        agent._dom_cache_generation = int(getattr(agent, "_dom_cache_generation", 0) or 0) + 1
+        agent._dom_analyze_cache = {}
+        agent._prev_raw_snapshot_text = ""
+    except Exception:
+        pass
 
 
 def _frame_scoped_selector_for_element(element: Optional[DOMElement]) -> str:
@@ -1622,6 +1642,8 @@ def execute_decision(
                     and (prev_snapshot != agent._active_snapshot_id or prev_ref != (ref_id or ""))
                 ):
                     agent._log("♻️ stale/ref 오류 복구: 최신 snapshot/ref 재매핑 후 재시도 성공")
+            if not bool(agent._last_exec_result.success and agent._last_exec_result.effective):
+                _mark_ref_recovery_failed_resnapshot(agent)
         return bool(agent._last_exec_result.success and agent._last_exec_result.effective), agent._last_exec_result.as_error_message()
 
     def _execute_visual_coordinate_click_fallback() -> tuple[bool, Optional[str]]:

@@ -648,7 +648,156 @@ def test_execute_decision_skips_same_ref_timeout_retry(monkeypatch) -> None:
     assert "visible_ref_timeout_no_retry" in agent.reason_codes
 
 
-def test_execute_decision_uses_visual_fallback_after_same_ref_year_timeout(monkeypatch) -> None:
+def test_execute_decision_disables_visual_fallback_by_default_after_same_ref_timeout(monkeypatch) -> None:
+    class _VisionLLM:
+        def find_element_coordinates(self, screenshot: str, description: str) -> dict[str, object]:
+            raise AssertionError("visual coordinate fallback should be opt-in")
+
+    class _SameRefCoordinateAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._browser_backend_name = "openclaw"
+            self.llm = _VisionLLM()
+            self._active_snapshot_id = "snap-year"
+            self._dom_cache_generation = 3
+            self._dom_analyze_cache = {"key": "stale"}
+            self._prev_raw_snapshot_text = "stale snapshot"
+            self._element_selectors = {88: "span.year-2008"}
+            self._element_full_selectors = {88: "div.skyview-years span.year-2008"}
+            self._element_ref_ids = {88: "e381"}
+            self._element_ref_meta_by_id = {
+                88: {
+                    "ref": "e381",
+                    "selector": "span.year-2008",
+                    "full_selector": "div.skyview-years span.year-2008",
+                    "text": "2008",
+                    "tag": "span",
+                    "role_ref_role": "radio",
+                    "role_ref_name": "2008",
+                    "role_ref_nth": 8,
+                    "container_name": "스카이뷰 촬영연도 2008",
+                }
+            }
+            self._last_snapshot_elements_by_ref = {"e381": dict(self._element_ref_meta_by_id[88])}
+
+        def _analyze_dom(self):
+            self._active_snapshot_id = "snap-year"
+            self._element_selectors = {88: "span.year-2008"}
+            self._element_full_selectors = {88: "div.skyview-years span.year-2008"}
+            self._element_ref_ids = {88: "e381"}
+            self._last_snapshot_elements_by_ref = {"e381": dict(self._element_ref_meta_by_id[88])}
+            return [
+                DOMElement(
+                    id=88,
+                    tag="span",
+                    text="2008",
+                    ref_id="e381",
+                    role_ref_role="radio",
+                    role_ref_name="2008",
+                    role_ref_nth=8,
+                    container_name="스카이뷰 촬영연도 2008",
+                )
+            ]
+
+        def _capture_screenshot(self) -> str:
+            raise AssertionError("screenshot should not be captured when fallback is disabled")
+
+        def _contains_next_pagination_hint(self, _field: object) -> bool:
+            return False
+
+        def _is_numeric_page_label(self, _field: object) -> bool:
+            return False
+
+    monkeypatch.delenv("GAIA_VISUAL_COORDINATE_FALLBACK", raising=False)
+    agent = _SameRefCoordinateAgent()
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="e381", reasoning="2008년 옵션을 클릭한다.")
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append({"action": action_name, "ref_id": ref_id, "value": value})
+        return ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="action_timeout",
+            reason='TimeoutError: locator.click: Timeout 8000ms exceeded. Call log: waiting for locator("aria-ref=e381")',
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [])
+
+    assert ok is False
+    assert err is not None
+    assert [call["action"] for call in calls] == ["click"]
+    assert "visible_ref_timeout_no_retry" in agent.reason_codes
+    assert "ref_recovery_failed_resnapshot" in agent.reason_codes
+    assert "visual_coordinate_fallback" not in agent.reason_codes
+    assert agent._dom_analyze_cache == {}
+    assert agent._prev_raw_snapshot_text == ""
+
+
+def test_execute_decision_disables_visual_fallback_by_default_after_not_found(monkeypatch) -> None:
+    class _VisionLLM:
+        def find_element_coordinates(self, screenshot: str, description: str) -> dict[str, object]:
+            raise AssertionError("visual coordinate fallback should be opt-in")
+
+    class _NoReboundAgent(_FakeAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self._browser_backend_name = "openclaw"
+            self.llm = _VisionLLM()
+            self._dom_cache_generation = 4
+            self._dom_analyze_cache = {"key": "stale"}
+            self._prev_raw_snapshot_text = "stale snapshot"
+
+        def _analyze_dom(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            self._active_snapshot_id = "snap-no-rebound"
+            self._element_selectors = {}
+            self._element_full_selectors = {}
+            self._element_ref_ids = {}
+            self._element_ref_meta_by_id = {}
+            self._last_snapshot_elements_by_ref = {}
+            self._selector_to_ref_id = {}
+            return []
+
+        def _capture_screenshot(self) -> str:
+            raise AssertionError("screenshot should not be captured when fallback is disabled")
+
+        def _contains_next_pagination_hint(self, _field: object) -> bool:
+            return False
+
+        def _is_numeric_page_label(self, _field: object) -> bool:
+            return False
+
+    monkeypatch.delenv("GAIA_VISUAL_COORDINATE_FALLBACK", raising=False)
+    agent = _NoReboundAgent()
+    prior = DOMElement(id=23, tag="button", text="바로 추가", ref_id="old-ref")
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="old-ref", reasoning="바로 추가 클릭")
+    calls: list[dict[str, object]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, **_kwargs):
+        calls.append({"action": action_name, "ref_id": ref_id, "value": value})
+        return ActionExecResult(
+            success=False,
+            effective=False,
+            reason_code="not_found",
+            reason='Error: Element "old-ref" not found or not visible. Run a new snapshot to see current page elements.',
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, [prior])
+
+    assert ok is False
+    assert "[not_found]" in str(err)
+    assert [call["action"] for call in calls] == ["click"]
+    assert "ref_recovery_failed_resnapshot" in agent.reason_codes
+    assert "visual_coordinate_fallback" not in agent.reason_codes
+    assert agent._dom_analyze_cache == {}
+    assert agent._prev_raw_snapshot_text == ""
+
+
+def test_execute_decision_uses_visual_fallback_when_enabled_after_same_ref_year_timeout(monkeypatch) -> None:
     class _VisionLLM:
         def find_element_coordinates(self, screenshot: str, description: str) -> dict[str, object]:
             assert screenshot == "shot"
@@ -720,6 +869,7 @@ def test_execute_decision_uses_visual_fallback_after_same_ref_year_timeout(monke
         def _is_numeric_page_label(self, _field: object) -> bool:
             return False
 
+    monkeypatch.setenv("GAIA_VISUAL_COORDINATE_FALLBACK", "1")
     agent = _SameRefCoordinateAgent()
     decision = ActionDecision(action=ActionType.CLICK, ref_id="e381", reasoning="2008년 옵션을 클릭한다.")
     calls: list[dict[str, object]] = []
@@ -1447,6 +1597,7 @@ def test_execute_decision_uses_safe_visual_coordinate_fallback(monkeypatch) -> N
         def _is_numeric_page_label(self, _field: object) -> bool:
             return False
 
+    monkeypatch.setenv("GAIA_VISUAL_COORDINATE_FALLBACK", "1")
     agent = _CoordinateAgent()
     prior = DOMElement(id=23, tag="button", role="option", text="낮은 가격순", ref_id="old-ref")
     decision = ActionDecision(action=ActionType.CLICK, ref_id="old-ref", reasoning="낮은 가격순 클릭")
@@ -1475,7 +1626,8 @@ def test_execute_decision_uses_safe_visual_coordinate_fallback(monkeypatch) -> N
     assert agent._last_exec_result is not None
     assert agent._last_exec_result.state_change["visual_coordinate_fallback"] is True
     assert agent._last_exec_result.state_change["visual_target_label"] == "낮은 가격순"
-    assert agent.reason_codes == ["visual_coordinate_fallback"]
+    assert "ref_recovery_failed_resnapshot" in agent.reason_codes
+    assert "visual_coordinate_fallback" in agent.reason_codes
 
 
 def test_execute_decision_uses_visual_coordinate_fallback_when_ref_missing(monkeypatch) -> None:
@@ -1504,6 +1656,7 @@ def test_execute_decision_uses_visual_coordinate_fallback_when_ref_missing(monke
         def _is_numeric_page_label(self, _field: object) -> bool:
             return False
 
+    monkeypatch.setenv("GAIA_VISUAL_COORDINATE_FALLBACK", "1")
     agent = _CoordinateAgent()
     decision = ActionDecision(
         action=ActionType.CLICK,
@@ -1550,6 +1703,7 @@ def test_execute_decision_blocks_visual_coordinate_fallback_for_dangerous_label(
         def _record_reason_code(self, code: str) -> None:
             self.reason_codes.append(code)
 
+    monkeypatch.setenv("GAIA_VISUAL_COORDINATE_FALLBACK", "1")
     agent = _CoordinateAgent()
     prior = DOMElement(id=23, tag="button", text="결제하기", ref_id="old-ref")
     decision = ActionDecision(action=ActionType.CLICK, ref_id="old-ref", reasoning="결제하기 클릭")
@@ -1571,4 +1725,5 @@ def test_execute_decision_blocks_visual_coordinate_fallback_for_dangerous_label(
     assert ok is False
     assert "[ref_stale]" in str(err)
     assert calls == ["click"]
-    assert agent.reason_codes == ["visual_coordinate_fallback_blocked"]
+    assert "ref_recovery_failed_resnapshot" in agent.reason_codes
+    assert "visual_coordinate_fallback_blocked" in agent.reason_codes
