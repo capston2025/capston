@@ -84,6 +84,16 @@ function evidenceImageUrl(record: BattleRecord) {
   return "";
 }
 
+function recordUpdatedAtMs(record: BattleRecord) {
+  const parsed = new Date(record.updatedAt || record.createdAt).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function isRecordAtOrAfter(record: BattleRecord, startMs: number | null) {
+  if (!startMs) return false;
+  return recordUpdatedAtMs(record) >= startMs;
+}
+
 function realtimeBadge(status: BattleRealtimeStatus) {
   if (status === "subscribed") return <Badge status="processing" text="실시간 수신" />;
   if (status === "connecting") return <Badge status="processing" text="연결 중" />;
@@ -158,19 +168,37 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
   const lastScenarioRef = useRef<string | null>(null);
 
   const effectiveScenarioId = sessionScenarioId || scenarioId;
+  const sessionStartTime = useMemo(() => {
+    if (!sessionStartedAt) return null;
+    const parsed = new Date(sessionStartedAt).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  }, [sessionStartedAt]);
   const submittedRecord = useMemo(() => {
     const id = participantId(name);
-    if (!name.trim()) return null;
+    if (!name.trim() || !sessionStartTime) return null;
     return (
       records.find(
         (record) =>
           record.participantType === "human" &&
           record.participantId === id &&
-          record.scenarioId === effectiveScenarioId,
+          record.scenarioId === effectiveScenarioId &&
+          isRecordAtOrAfter(record, sessionStartTime),
       ) || null
     );
-  }, [name, records, effectiveScenarioId]);
+  }, [effectiveScenarioId, name, records, sessionStartTime]);
   const locked = Boolean(submittedRecord);
+  const currentRunHasHumanRecord = useMemo(() => {
+    if (!sessionStartTime) return false;
+    return records.some(
+      (record) =>
+        record.participantType === "human" &&
+        record.scenarioId === effectiveScenarioId &&
+        !isDemoLikeRecord(record) &&
+        isRecordAtOrAfter(record, sessionStartTime),
+    );
+  }, [effectiveScenarioId, records, sessionStartTime]);
+  const activeSessionStartTime = sessionStartTime && !currentRunHasHumanRecord ? sessionStartTime : null;
+  const shouldShowCurrentRun = Boolean(activeSessionStartTime || submittedRecord);
 
   useEffect(() => {
     if (!effectiveScenarioId) return;
@@ -249,37 +277,33 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
     };
   }, [refreshRecords, shouldPoll]);
 
-  const sessionStartTime = useMemo(() => {
-    if (!sessionStartedAt) return null;
-    const parsed = new Date(sessionStartedAt).getTime();
-    return Number.isNaN(parsed) ? null : parsed;
-  }, [sessionStartedAt]);
-
   useEffect(() => {
-    if (!sessionStartTime || locked) return;
+    if (!activeSessionStartTime || locked) return;
     const timer = window.setInterval(() => setNow(Date.now() + serverClockOffsetMs), 100);
     return () => window.clearInterval(timer);
-  }, [locked, sessionStartTime, serverClockOffsetMs]);
+  }, [activeSessionStartTime, locked, serverClockOffsetMs]);
 
-  const liveDuration = sessionStartTime && now ? Math.max(0, Math.round(((now - sessionStartTime) / 1000) * 100) / 100) : null;
+  const liveDuration =
+    activeSessionStartTime && now ? Math.max(0, Math.round(((now - activeSessionStartTime) / 1000) * 100) / 100) : null;
   const submittedDuration =
     typeof submittedRecord?.durationSeconds === "number" ? submittedRecord.durationSeconds : null;
   const displayDuration = submittedDuration ?? liveDuration;
-  const timerLabel = submittedRecord ? "제출 완료" : sessionStartTime ? "측정 중" : "시작 대기";
-  const timerHelp = submittedRecord ? "타이머 종료" : sessionStartTime ? "타이머 자동 실행 중" : "점수판 시작 대기";
+  const timerLabel = submittedRecord ? "제출 완료" : activeSessionStartTime ? "측정 중" : "시작 대기";
+  const timerHelp = submittedRecord ? "타이머 종료" : activeSessionStartTime ? "타이머 자동 실행 중" : "GAIA 시작 신호 대기";
   const gaiaRecords = useMemo(
     () => {
-      if (storageMode === "memory") return [];
+      if (storageMode === "memory" || !sessionStartTime || !shouldShowCurrentRun) return [];
       return records
         .filter(
           (record) =>
             record.participantType === "gaia" &&
             record.scenarioId === effectiveScenarioId &&
-            !isDemoLikeRecord(record),
+            !isDemoLikeRecord(record) &&
+            isRecordAtOrAfter(record, sessionStartTime),
         )
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     },
-    [effectiveScenarioId, records, storageMode],
+    [effectiveScenarioId, records, sessionStartTime, shouldShowCurrentRun, storageMode],
   );
   const currentGaiaRecord = useMemo(() => {
     if (!sessionStartTime) return gaiaRecords[0] || null;
@@ -339,7 +363,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
       setMessage({ type: "warning", text: "이름을 먼저 입력해줘." });
       return;
     }
-    if (!sessionStartTime) {
+    if (!activeSessionStartTime) {
       setMessage({ type: "warning", text: "아직 시작 신호가 없습니다." });
       return;
     }
@@ -347,7 +371,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
       setMessage({ type: "warning", text: "이미 기록됨" });
       return;
     }
-    const finalDuration = Math.max(0, Math.round((((now || Date.now()) - sessionStartTime) / 1000) * 100) / 100);
+    const finalDuration = Math.max(0, Math.round((((now || Date.now()) - activeSessionStartTime) / 1000) * 100) / 100);
     const cleanSituation = scenarioSituation.trim();
     const response = await fetch("/api/records", {
       method: "POST",
@@ -437,7 +461,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
                         autoSize={{ minRows: 3, maxRows: 5 }}
                         onChange={(event) => setScenarioSituation(event.target.value)}
                         placeholder="운영자가 시작하면 시나리오가 표시됩니다."
-                        value={scenarioSituation}
+                        value={shouldShowCurrentRun ? scenarioSituation : ""}
                       />
                     </Form.Item>
                     <Form.Item label="결과">
