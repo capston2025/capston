@@ -20,6 +20,7 @@ def test_build_embedded_openclaw_config_defaults_to_local_unauthenticated_browse
     assert config["browser"]["defaultProfile"] == "openclaw"
     assert config["browser"]["profiles"]["openclaw"]["cdpPort"] == 18800
     assert config["browser"]["executablePath"].endswith("Google Chrome")
+    assert "--no-startup-window" in config["browser"]["extraArgs"]
 
 
 def test_embedded_browser_server_entrypoint_uses_event_loop_keepalive() -> None:

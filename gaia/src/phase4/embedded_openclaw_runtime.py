@@ -225,6 +225,11 @@ def build_embedded_openclaw_config(
         "headless": browser_headless_enabled(),
         "defaultProfile": "openclaw",
         "cdpPortRangeStart": int(cdp_port),
+        # Suppress Chromium's default startup window (the empty chrome://newtab
+        # page that otherwise pops up alongside the controlled tab). The working
+        # tab is created on demand via CDP (Target.createTarget), so the browser
+        # process stays alive with no window until a session opens its own tab.
+        "extraArgs": ["--no-startup-window"],
         "profiles": {
             "openclaw": {
                 "cdpPort": int(cdp_port),
