@@ -29,8 +29,9 @@ import {
   Tag,
 } from "antd";
 import type { ClipboardEvent } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { isDemoLikeRecord } from "@/lib/cases";
 import { BattleRecord, BattleSessionState, BattleStorageMode } from "@/lib/types";
 import { useBattleRealtime, type BattleRealtimeStatus } from "./useBattleRealtime";
 
@@ -103,26 +104,6 @@ function terminalGaiaStatus(record: BattleRecord | null, realtimeStatus: BattleR
   );
 }
 
-function isDemoLikeRecord(record: BattleRecord) {
-  const joined = [
-    record.sessionId,
-    record.scenarioId,
-    record.scenarioLabel,
-    record.reason,
-    metadataText(record.metadata?.evidenceSource),
-    metadataText(record.metadata?.suiteId),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return (
-    joined.includes("smoke") ||
-    joined.includes("evidence-demo") ||
-    joined.includes("remote smoke") ||
-    joined.includes("원격 저장 검증") ||
-    joined.includes("cli 타이머 연동 검증")
-  );
-}
-
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -162,6 +143,9 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
   const [name, setName] = useState("");
   const [status, setStatus] = useState<"SUCCESS" | "FAIL">("SUCCESS");
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
+  // The operator-visible "상황". The matching key (scenarioId) is received from
+  // the session state and never shown to the participant.
+  const [sessionScenarioId, setSessionScenarioId] = useState<string | null>(null);
   const [scenarioSituation, setScenarioSituation] = useState("");
   const [evidenceNote, setEvidenceNote] = useState("");
   const [evidenceImage, setEvidenceImage] = useState<EvidenceImage | null>(null);
@@ -171,7 +155,9 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
   const [serverClockOffsetMs, setServerClockOffsetMs] = useState(0);
   const [storageMode, setStorageMode] = useState<BattleStorageMode>("memory");
   const [mounted, setMounted] = useState(false);
+  const lastScenarioRef = useRef<string | null>(null);
 
+  const effectiveScenarioId = sessionScenarioId || scenarioId;
   const submittedRecord = useMemo(() => {
     const id = participantId(name);
     if (!name.trim()) return null;
@@ -180,11 +166,26 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
         (record) =>
           record.participantType === "human" &&
           record.participantId === id &&
-          record.scenarioId === scenarioId,
+          record.scenarioId === effectiveScenarioId,
       ) || null
     );
-  }, [name, records, scenarioId]);
+  }, [name, records, effectiveScenarioId]);
   const locked = Boolean(submittedRecord);
+
+  useEffect(() => {
+    if (!effectiveScenarioId) return;
+    if (lastScenarioRef.current === null) {
+      lastScenarioRef.current = effectiveScenarioId;
+      return;
+    }
+    if (lastScenarioRef.current === effectiveScenarioId) return;
+    lastScenarioRef.current = effectiveScenarioId;
+    setName("");
+    setStatus("SUCCESS");
+    setEvidenceNote("");
+    setEvidenceImage(null);
+    setMessage(null);
+  }, [effectiveScenarioId]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMounted(true), 0);
@@ -207,6 +208,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
     }
     if (data.storage) setStorageMode(data.storage);
     setSessionStartedAt(data.state?.humanStartedAt || null);
+    setSessionScenarioId(data.state?.scenarioId || null);
     if (data.state?.scenarioLabel) {
       setScenarioSituation(data.state.scenarioLabel);
     }
@@ -269,10 +271,15 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
     () => {
       if (storageMode === "memory") return [];
       return records
-        .filter((record) => record.participantType === "gaia" && !isDemoLikeRecord(record))
+        .filter(
+          (record) =>
+            record.participantType === "gaia" &&
+            record.scenarioId === effectiveScenarioId &&
+            !isDemoLikeRecord(record),
+        )
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     },
-    [records, storageMode],
+    [effectiveScenarioId, records, storageMode],
   );
   const currentGaiaRecord = useMemo(() => {
     if (!sessionStartTime) return gaiaRecords[0] || null;
@@ -350,7 +357,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
         participantId: participantId(cleanName),
         participantName: cleanName,
         participantType: "human",
-        scenarioId,
+        scenarioId: effectiveScenarioId,
         scenarioLabel: cleanSituation || "Live QA Mission",
         status,
         durationSeconds: finalDuration,

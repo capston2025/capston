@@ -6,34 +6,17 @@ import {
   FileSearchOutlined,
   FormOutlined,
   LinkOutlined,
-  PaperClipOutlined,
-  PictureOutlined,
   ReloadOutlined,
   RobotOutlined,
   TrophyOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import {
-  Alert,
-  Badge,
-  Button,
-  Card,
-  Col,
-  Empty,
-  Image,
-  Progress,
-  Row,
-  Space,
-  Statistic,
-  Table,
-  Tag,
-  Typography,
-} from "antd";
-import type { ColumnsType } from "antd/es/table";
+import { Badge, Button, Card, Col, Empty, Image, Progress, Row, Space, Statistic, Tag } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { BattleCase, CaseVerdict, groupBattleCases } from "@/lib/cases";
 import { summarizeBattle } from "@/lib/summary";
-import { BattleRecord, BattleStorageMode } from "@/lib/types";
+import { BattleRecord } from "@/lib/types";
 import { useBattleRealtime, type BattleRealtimeStatus } from "./useBattleRealtime";
 
 type Props = {
@@ -94,53 +77,28 @@ function realtimeTag(status: BattleRealtimeStatus) {
   return <Tag color="default">polling</Tag>;
 }
 
-function recordColumns(): ColumnsType<BattleRecord> {
-  return [
-    {
-      title: "참가자",
-      dataIndex: "participantName",
-      key: "participantName",
-      render: (name: string, record) => (
-        <Space size={10}>
-          <span className={record.participantType === "human" ? "avatarIcon humanAvatar" : "avatarIcon gaiaAvatar"}>
-            {record.participantType === "human" ? <UserOutlined /> : <RobotOutlined />}
-          </span>
-          <span className="recordIdentity">
-            <strong>{name}</strong>
-            <small>{record.scenarioLabel || record.scenarioId}</small>
-          </span>
-        </Space>
-      ),
-    },
-    {
-      title: "상태",
-      dataIndex: "status",
-      key: "status",
-      align: "center",
-      width: 116,
-      render: (status: BattleRecord["status"]) => statusTag(status),
-    },
-    {
-      title: "소요",
-      dataIndex: "durationSeconds",
-      key: "durationSeconds",
-      align: "right",
-      width: 96,
-      render: (value: number | null) => <strong className="monoValue">{seconds(value)}</strong>,
-    },
-    {
-      title: "증거",
-      key: "evidence",
-      ellipsis: true,
-      render: (_, record) => <EvidenceInline record={record} />,
-    },
-  ];
+function verdictTag(verdict: CaseVerdict) {
+  switch (verdict) {
+    case "HUMAN_FASTER":
+      return <Tag color="green">사람 우세</Tag>;
+    case "GAIA_FASTER":
+      return <Tag color="blue">GAIA 우세</Tag>;
+    case "TIE":
+      return <Tag color="gold">동률</Tag>;
+    case "HUMAN_WIN":
+      return <Tag color="green">사람만 성공</Tag>;
+    case "GAIA_WIN":
+      return <Tag color="blue">GAIA만 성공</Tag>;
+    case "BOTH_FAILED":
+      return <Tag color="error">둘 다 미성공</Tag>;
+    default:
+      return <Tag color="default">대기 중</Tag>;
+  }
 }
 
 export function BattleBoardClient({ sessionId, initialRecords }: Props) {
   const [records, setRecords] = useState(initialRecords);
   const [updatedAt, setUpdatedAt] = useState("대기 중");
-  const [storageMode, setStorageMode] = useState<BattleStorageMode>("memory");
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -151,17 +109,14 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
   const refreshRecords = useCallback(async () => {
     const response = await fetch(`/api/records?sessionId=${encodeURIComponent(sessionId)}`, { cache: "no-store" });
     if (!response.ok) return;
-    const data = (await response.json()) as { records: BattleRecord[]; storage?: BattleStorageMode };
+    const data = (await response.json()) as { records: BattleRecord[] };
     setRecords(data.records || []);
-    if (data.storage) setStorageMode(data.storage);
     setUpdatedAt(new Date().toLocaleTimeString("ko-KR"));
   }, [sessionId]);
 
   const refreshSession = useCallback(async () => {
     const response = await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}`, { cache: "no-store" });
     if (!response.ok) return;
-    const data = (await response.json()) as { storage?: BattleStorageMode };
-    if (data.storage) setStorageMode(data.storage);
     setUpdatedAt(new Date().toLocaleTimeString("ko-KR"));
   }, [sessionId]);
 
@@ -189,13 +144,8 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
   }, [refreshRecords, refreshSession, shouldPoll]);
 
   const summary = useMemo(() => summarizeBattle(records), [records]);
-  const humanRecords = records.filter((record) => record.participantType === "human");
-  const gaiaRecords = records.filter((record) => record.participantType === "gaia");
-  const evidenceRecords = [...records]
-    .filter((record) => record.reason || record.artifactUrl || Object.keys(record.metadata || {}).length)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const cases = useMemo(() => groupBattleCases(records), [records]);
   const successRate = summary.total ? Math.round((summary.successTotal / summary.total) * 100) : 0;
-  const columns = useMemo(() => recordColumns(), []);
 
   if (!mounted) {
     return (
@@ -219,7 +169,6 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
               <Badge status="processing" text="Live QA Battle" />
               <div>
                 <h1>Human vs GAIA</h1>
-                <p className="heroCopy">GAIA 벤치 실행 신호가 들어오면 참가자 화면 타이머가 자동으로 흐르고, 결과와 증거가 실시간으로 합류합니다.</p>
               </div>
             </Space>
             <Space wrap>
@@ -234,9 +183,6 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
           <div className="sessionStrip">
             <span>Session</span>
             <code>{sessionId}</code>
-            <Tag color={storageMode === "supabase" ? "success" : "warning"}>
-              storage: {storageMode}
-            </Tag>
             {realtimeTag(realtimeStatus)}
             <span className="refreshStamp">
               <ReloadOutlined />
@@ -244,15 +190,6 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
             </span>
           </div>
         </Card>
-
-        {storageMode === "memory" ? (
-          <Alert
-            className="storageAlert"
-            message="현재 기록은 서버 메모리에만 저장됩니다. Vercel 배포 시에는 Supabase 환경변수를 연결해야 여러 컴퓨터에서 안정적으로 공유됩니다."
-            showIcon
-            type="warning"
-          />
-        ) : null}
 
         <Row gutter={[14, 14]} className="metricRow">
           <Col xs={24} md={12} xl={6}>
@@ -272,11 +209,7 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
           </Col>
           <Col xs={12} md={8} xl={5}>
             <Card className="metricCard">
-              <Statistic
-                prefix={<ClockCircleOutlined />}
-                title="Best Human"
-                value={seconds(summary.bestHumanSeconds)}
-              />
+              <Statistic prefix={<ClockCircleOutlined />} title="Best Human" value={seconds(summary.bestHumanSeconds)} />
             </Card>
           </Col>
           <Col xs={12} md={8} xl={5}>
@@ -295,143 +228,88 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
           </Col>
         </Row>
 
-        <Row gutter={[16, 16]} className="tableRow">
-          <Col xs={24} lg={12}>
-            <Card
-              className="recordsCard"
-              extra={<Tag color="blue">{humanRecords.length}</Tag>}
-              title={
-                <Space>
-                  <UserOutlined />
-                  Human Runs
-                </Space>
-              }
-            >
-              <RecordTable columns={columns} empty="아직 사람 QA 기록이 없습니다." records={humanRecords} />
-            </Card>
-          </Col>
-          <Col xs={24} lg={12}>
-            <Card
-              className="recordsCard"
-              extra={<Tag color="geekblue">{gaiaRecords.length}</Tag>}
-              title={
-                <Space>
-                  <RobotOutlined />
-                  GAIA Runs
-                </Space>
-              }
-            >
-              <RecordTable columns={columns} empty="아직 GAIA 업로드 기록이 없습니다." records={gaiaRecords} />
-            </Card>
-          </Col>
-        </Row>
-
         <Card
-          className="evidenceCard"
-          extra={<Tag color="processing">{evidenceRecords.length} items</Tag>}
+          className="casesCard"
+          extra={<Tag color="processing">{cases.length} cases</Tag>}
           title={
             <Space>
               <FileSearchOutlined />
-              Live Evidence Feed
+              케이스별 대결
             </Space>
           }
         >
-          <EvidenceFeed records={evidenceRecords} />
+          {cases.length ? (
+            <div className="caseList">
+              {cases.map((battleCase) => (
+                <CaseCard battleCase={battleCase} key={battleCase.scenarioId} />
+              ))}
+            </div>
+          ) : (
+            <Empty
+              description="GAIA가 케이스를 시작하면 같은 상황의 사람·GAIA 결과가 케이스별로 묶여 표시됩니다."
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+            />
+          )}
         </Card>
       </section>
     </main>
   );
 }
 
-function RecordTable({
-  records,
-  empty,
-  columns,
-}: {
-  records: BattleRecord[];
-  empty: string;
-  columns: ColumnsType<BattleRecord>;
-}) {
-  if (!records.length) {
-    return <Empty description={empty} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-  }
-
+function CaseCard({ battleCase }: { battleCase: BattleCase }) {
   return (
-    <Table
-      columns={columns}
-      dataSource={records}
-      pagination={false}
-      rowKey={(record) => record.id}
-      scroll={{ x: 520 }}
-      size="middle"
-    />
+    <Card className="caseCard">
+      <div className="caseCardHead">
+        <strong className="caseTitle">{battleCase.label}</strong>
+        <Space size={8}>
+          {verdictTag(battleCase.verdict)}
+          <span className="evidenceTime">{formatTime(battleCase.latestAt)}</span>
+        </Space>
+      </div>
+      <div className="caseSides">
+        <CaseSide isHuman record={battleCase.bestHuman} attempts={battleCase.humans.length} />
+        <div className="caseVs">VS</div>
+        <CaseSide isHuman={false} record={battleCase.bestGaia} attempts={battleCase.gaias.length} />
+      </div>
+    </Card>
   );
 }
 
-function EvidenceInline({ record }: { record: BattleRecord }) {
-  const note = record.reason || "증거 메모 없음";
-  const imageUrl = evidenceImageUrl(record);
+function CaseSide({ isHuman, record, attempts }: { isHuman: boolean; record: BattleRecord | null; attempts: number }) {
+  const imageUrl = record ? evidenceImageUrl(record) : "";
+  const provider = record ? metadataText(record.metadata?.provider) : "";
+  const model = record ? metadataText(record.metadata?.model) : "";
+  const qaMode = record ? metadataText(record.metadata?.qaMode) : "";
   return (
-    <Space size={8} wrap>
-      {imageUrl ? (
-        <Tag color="blue" icon={<PictureOutlined />}>
-          스크린샷
-        </Tag>
-      ) : null}
-      <Typography.Text className="evidenceInline" title={note}>
-        {note}
-      </Typography.Text>
-      {record.artifactUrl ? (
-        <Button href={record.artifactUrl} icon={<PaperClipOutlined />} size="small" target="_blank" type="link">
-          링크
-        </Button>
-      ) : null}
-    </Space>
-  );
-}
-
-function EvidenceFeed({ records }: { records: BattleRecord[] }) {
-  if (!records.length) {
-    return <Empty description="Human 또는 GAIA 기록이 올라오면 증거가 실시간으로 표시됩니다." image={Empty.PRESENTED_IMAGE_SIMPLE} />;
-  }
-
-  return (
-    <div className="evidenceGrid">
-      {records.map((record) => {
-        const provider = metadataText(record.metadata?.provider);
-        const model = metadataText(record.metadata?.model);
-        const qaMode = metadataText(record.metadata?.qaMode);
-        const imageUrl = evidenceImageUrl(record);
-        return (
-          <article className="evidenceItem" key={`${record.id}-${record.updatedAt}`}>
-            <div className="evidenceItemHeader">
-              <Space size={10}>
-                <span className={record.participantType === "human" ? "avatarIcon humanAvatar" : "avatarIcon gaiaAvatar"}>
-                  {record.participantType === "human" ? <UserOutlined /> : <RobotOutlined />}
-                </span>
-                <span className="recordIdentity">
-                  <strong>{record.participantName}</strong>
-                  <small>{record.scenarioLabel || record.scenarioId}</small>
-                </span>
-              </Space>
-              <Space size={8}>
-                {statusTag(record.status)}
-                <span className="evidenceTime">{formatTime(record.updatedAt)}</span>
-              </Space>
-            </div>
-            <p>{record.reason || "증거 메모 없음"}</p>
-            {imageUrl ? (
-              <Image
-                alt={`${record.participantName} 증거 스크린샷`}
-                className="evidenceScreenshot"
-                preview={false}
-                src={imageUrl}
-              />
-            ) : null}
+    <div className={isHuman ? "caseSide humanSide" : "caseSide gaiaSide"}>
+      <div className="caseSideHead">
+        <Space size={10}>
+          <span className={isHuman ? "avatarIcon humanAvatar" : "avatarIcon gaiaAvatar"}>
+            {isHuman ? <UserOutlined /> : <RobotOutlined />}
+          </span>
+          <span className="recordIdentity">
+            <strong>{record ? record.participantName : isHuman ? "사람" : "GAIA"}</strong>
+            <small>
+              {isHuman ? "Human" : "GAIA"}
+              {attempts > 1 ? ` · ${attempts}회 기록` : ""}
+            </small>
+          </span>
+        </Space>
+        {record ? statusTag(record.status) : <Tag color="default">대기</Tag>}
+      </div>
+      {record ? (
+        <>
+          <div className="caseSideTime">
+            <ClockCircleOutlined />
+            <strong className="monoValue">{seconds(record.durationSeconds)}</strong>
+            <span>{formatTime(record.updatedAt)}</span>
+          </div>
+          <p>{record.reason || "증거 메모 없음"}</p>
+          {imageUrl ? (
+            <Image alt="증거 스크린샷" className="evidenceScreenshot" preview={false} src={imageUrl} />
+          ) : null}
+          {provider || model || qaMode || record.artifactUrl ? (
             <div className="evidenceMeta">
-              <Tag color={record.participantType === "human" ? "green" : "blue"}>
-                {record.participantType === "human" ? "Human Evidence" : "GAIA Evidence"}
-              </Tag>
               {provider ? <Tag>{provider}</Tag> : null}
               {model ? <Tag>{model}</Tag> : null}
               {qaMode ? <Tag>{qaMode}</Tag> : null}
@@ -441,9 +319,11 @@ function EvidenceFeed({ records }: { records: BattleRecord[] }) {
                 </Button>
               ) : null}
             </div>
-          </article>
-        );
-      })}
+          ) : null}
+        </>
+      ) : (
+        <div className="caseSideEmpty">{isHuman ? "사람 기록 대기" : "GAIA 기록 대기"}</div>
+      )}
     </div>
   );
 }
