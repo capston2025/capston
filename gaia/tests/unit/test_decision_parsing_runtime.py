@@ -149,6 +149,25 @@ def test_parse_type_action_preserves_target_and_value():
     assert d.value == "jangboss02@gmail.com"
 
 
+def test_parse_preserves_llm_requested_text_evidence_contract():
+    agent = _FakeAgent()
+    resp = json.dumps({
+        "action": "inspect",
+        "value": "read current news cards",
+        "reasoning": "현재 화면에는 기사 목록 카드가 있어 텍스트 evidence 수집이 필요하다.",
+        "collect_text_evidence": True,
+        "text_evidence_reason": "기사 목록 1~15의 제목/언론사/시간/요약 수집",
+        "text_evidence_focus": ["제목", "언론사", "시간", "요약"],
+    })
+
+    d = parse_decision(agent, resp)
+
+    assert d.action == ActionType.INSPECT
+    assert d.collect_text_evidence is True
+    assert d.text_evidence_reason == "기사 목록 1~15의 제목/언론사/시간/요약 수집"
+    assert d.text_evidence_focus == ["제목", "언론사", "시간", "요약"]
+
+
 def test_parse_inspect_action_allows_missing_ref():
     agent = _FakeAgent()
     resp = json.dumps({

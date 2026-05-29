@@ -103,6 +103,17 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
                     agent._log(f"turn_control 파싱 실패: {exc}")
                 except Exception:
                     pass
+        evidence_focus_raw = data.get("text_evidence_focus")
+        if isinstance(evidence_focus_raw, list):
+            text_evidence_focus = [
+                str(item or "").strip()
+                for item in evidence_focus_raw
+                if str(item or "").strip()
+            ][:8]
+        elif isinstance(evidence_focus_raw, str) and evidence_focus_raw.strip():
+            text_evidence_focus = [evidence_focus_raw.strip()]
+        else:
+            text_evidence_focus = []
 
         return ActionDecision(
             action=final_action,
@@ -113,6 +124,9 @@ def parse_decision(agent, response_text: str) -> ActionDecision:
             confidence=data.get("confidence", 0.5),
             is_goal_achieved=data.get("is_goal_achieved", False),
             goal_achievement_reason=data.get("goal_achievement_reason"),
+            collect_text_evidence=bool(data.get("collect_text_evidence", False)),
+            text_evidence_reason=_clean_optional_str(data.get("text_evidence_reason")),
+            text_evidence_focus=text_evidence_focus,
             participant_id=_clean_optional_str(data.get("participant_id") or data.get("participant")),
             next_participant=_clean_optional_str(data.get("next_participant")),
             participant_plan=participant_plan,

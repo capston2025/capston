@@ -10,6 +10,7 @@ from .browser_action_rules import (
 )
 from .dom_prompt_formatting import detect_active_surface_context, semantic_tags_for_element
 from .goal_policy_phase_runtime import goal_phase_intent
+from .goal_completion_helpers import build_text_evidence_memory_block
 from .goal_replanning_runtime import sync_goal_replanning_state
 from .media_playback_helpers import (
     collect_visible_play_controls,
@@ -633,6 +634,8 @@ def decide_next_action(
         list(getattr(agent, "_action_feedback", []) or []),
         default=5,
     )
+    text_evidence_memory_block = build_text_evidence_memory_block(agent, max_entries=4, max_lines_per_entry=8)
+    text_evidence_prompt_block = text_evidence_memory_block or "## 누적 텍스트 evidence\n없음"
     run_history_replay_packet = build_run_history_replay_packet_context_impl(agent, goal=goal)
     run_history_replay_block = run_history_replay_packet or "## 세션 continuity replay packet\n없음"
     participant_skill_prompt = build_multi_user_interaction_skill_prompt()
@@ -699,6 +702,8 @@ def decide_next_action(
 ## 최근 실행 피드백
 {chr(10).join(recent_action_feedback) if recent_action_feedback else '없음'}
 
+{text_evidence_prompt_block}
+
 {participant_prompt_block}
 
 ## 최근 반복 클릭 element_id
@@ -717,6 +722,8 @@ def decide_next_action(
 - human_answer skill 사용법: `action`은 `wait`, `value`는 JSON 문자열/객체 `{{"skill":"human_answer","question":"사용자에게 물어볼 질문","fields":["필요한_key"],"reason_code":"human_answer_required"}}`로 응답합니다. 필요한 필드명은 현재 화면과 목표를 보고 직접 정하세요.
 - human_answer는 사용자에게 묻기 위한 skill입니다. 버튼 클릭/입력으로 해결 가능한 단계에는 쓰지 말고, 모델이 알 수 없는 실제 비밀값/정답/인증값이 필요할 때만 사용하세요.
 - 목표 달성 여부를 사용자에게 확인하려고 human_answer를 호출하지 마세요. 순위표/목록/기사/검색결과처럼 화면 증거로 검증 가능한 목표는 `is_goal_achieved=true`와 `goal_achievement_reason`으로 선언하면 검증 에이전트가 DOM 증거로 판정합니다.
+- 목표가 여러 카드/행/댓글/기사/검색결과의 텍스트를 읽고 세거나 필드를 비교하는 목록 수집형이라고 판단되면 `collect_text_evidence=true`로 두세요. 현재 화면에서 수집할 필드(예: 제목, 출처, 시간, 요약, 댓글 본문)는 `text_evidence_focus`에 적으세요.
+- `collect_text_evidence`는 action을 대체하지 않습니다. evidence를 수집하면서도 다음 단계가 필요하면 click/scroll/inspect를 그대로 선택하고, 충분히 수집했다고 판단될 때만 `is_goal_achieved=true`를 선언하세요.
 
 {participant_skill_prompt}
 
@@ -748,6 +755,9 @@ def decide_next_action(
     \"confidence\": 0.0~1.0,
     \"is_goal_achieved\": true | false,
     \"goal_achievement_reason\": \"목표 달성 판단 이유 (is_goal_achieved가 true인 경우)\",
+    \"collect_text_evidence\": true | false,
+    \"text_evidence_reason\": \"목록/카드/댓글/기사 텍스트 evidence를 이번 턴에 누적해야 하는 이유 또는 null\",
+    \"text_evidence_focus\": [\"수집할 필드/관찰 포인트\", \"예: 제목\", \"예: 출처/시간/요약\"],
     \"participant_id\": \"다중 참여자 모드에서 현재 액션을 수행할 participant id 또는 null\",
     \"next_participant\": \"현재 액션 이후 우선 실행할 participant id 또는 null\",
     \"turn_control\": {{

@@ -37,8 +37,10 @@ from .goal_policy_helpers import (
     run_goal_policy_closer as run_goal_policy_closer_impl,
 )
 from .goal_completion_helpers import (
+    record_llm_requested_text_evidence as record_llm_requested_text_evidence_impl,
     evaluate_destination_region_completion as evaluate_destination_region_completion_impl,
     evaluate_goal_target_completion as evaluate_goal_target_completion_impl,
+    evaluate_repeated_stop_completion_judge as evaluate_repeated_stop_completion_judge_impl,
     evaluate_reasoning_only_wait_completion as evaluate_reasoning_only_wait_completion_impl,
     evaluate_explicit_reasoning_proof_completion as evaluate_explicit_reasoning_proof_completion_impl,
     evaluate_wait_goal_completion as evaluate_wait_goal_completion_impl,
@@ -324,6 +326,7 @@ class GoalDrivenAgent:
         self._active_url: str = ""
         self._last_snapshot_elements_by_ref: Dict[str, Dict[str, Any]] = {}
         self._last_snapshot_evidence: Dict[str, Any] = {}
+        self._text_evidence_memory: List[Dict[str, Any]] = []
         self._last_exec_result: Optional[ActionExecResult] = None
         self._persistent_state_memory: List[Dict[str, Any]] = []
         self._active_goal_text: str = ""
@@ -954,6 +957,36 @@ class GoalDrivenAgent:
             dom_elements=dom_elements,
         )
 
+    def _evaluate_repeated_stop_completion(
+        self,
+        *,
+        goal: TestGoal,
+        dom_elements: List[DOMElement],
+        stop_reason: str,
+        decision: Optional[ActionDecision] = None,
+    ) -> Optional[str]:
+        return evaluate_repeated_stop_completion_judge_impl(
+            self,
+            goal=goal,
+            decision=decision,
+            dom_elements=dom_elements,
+            stop_reason=stop_reason,
+        )
+
+    def _record_llm_requested_text_evidence(
+        self,
+        *,
+        goal: TestGoal,
+        decision: ActionDecision,
+        dom_elements: List[DOMElement],
+    ) -> Optional[str]:
+        return record_llm_requested_text_evidence_impl(
+            self,
+            goal=goal,
+            decision=decision,
+            dom_elements=dom_elements,
+        )
+
     def _evaluate_explicit_reasoning_proof_completion(
         self,
         *,
@@ -1353,6 +1386,7 @@ class GoalDrivenAgent:
         steps: List[StepResult] = []
         runtime_state = initialize_goal_execution_state_impl(self, goal)
         log_goal_start_impl(self, goal, runtime_state)
+        self._text_evidence_memory = []
 
         if not self._request_goal_clarification(goal):
             return self._build_failure_result(
@@ -1482,6 +1516,22 @@ class GoalDrivenAgent:
                     orchestrator.same_dom_count = 0
                     force_context_shift = True
                 else:
+                    repeated_completion_reason = self._evaluate_repeated_stop_completion(
+                        goal=goal,
+                        dom_elements=dom_elements,
+                        stop_reason=str(orchestrator.stop_reason or ""),
+                    )
+                    if repeated_completion_reason:
+                        self._record_reason_code("repeated_stop_judge_completion")
+                        self._log(f"✅ 목표 달성! 이유: {repeated_completion_reason}")
+                        return build_success_goal_result_impl(
+                            self,
+                            goal=goal,
+                            steps=steps,
+                            step_count=step_count,
+                            start_time=start_time,
+                            reason=repeated_completion_reason,
+                        )
                     return self._build_failure_result(
                         goal=goal,
                         steps=steps,
@@ -1740,6 +1790,16 @@ class GoalDrivenAgent:
                     self._log(
                         f"♻️ 불일치 재수집 후 최종 결정: {decision.action.value} - {decision.reasoning}"
                     )
+                evidence_summary = self._record_llm_requested_text_evidence(
+                    goal=goal,
+                    decision=decision,
+                    dom_elements=dom_elements,
+                )
+                if evidence_summary:
+                    self._log(f"🧾 {evidence_summary}")
+                    self._action_feedback.append(evidence_summary)
+                    if len(self._action_feedback) > 10:
+                        self._action_feedback = self._action_feedback[-10:]
 
             participant_plan = parse_multi_user_interaction_request(
                 decision.value if decision.action == ActionType.WAIT else None,
@@ -2046,6 +2106,23 @@ class GoalDrivenAgent:
                 has_login_test_data=has_login_test_data,
             )
             if orchestrator.stop_reason:
+                repeated_completion_reason = self._evaluate_repeated_stop_completion(
+                    goal=goal,
+                    decision=decision,
+                    dom_elements=dom_elements,
+                    stop_reason=str(orchestrator.stop_reason or ""),
+                )
+                if repeated_completion_reason:
+                    self._record_reason_code("repeated_stop_judge_completion")
+                    self._log(f"✅ 목표 달성! 이유: {repeated_completion_reason}")
+                    return build_success_goal_result_impl(
+                        self,
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=repeated_completion_reason,
+                    )
                 steps.append(
                     StepResult(
                         step_number=step_count,

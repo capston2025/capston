@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .goal_verification_helpers import extract_goal_query_tokens
 from .media_playback_helpers import (
@@ -680,6 +680,231 @@ def evaluate_reasoning_only_wait_completion(
     return None
 
 
+def evaluate_repeated_stop_completion_judge(
+    agent,
+    *,
+    goal: TestGoal,
+    decision: Optional[ActionDecision] = None,
+    dom_elements: Optional[List[DOMElement]] = None,
+    stop_reason: str = "",
+) -> Optional[str]:
+    reason_blob = str(stop_reason or "").strip()
+    if not reason_blob:
+        return None
+    repeated_stop_tokens = (
+        "화면 상태가 반복",
+        "동일 액션이 반복",
+    )
+    if not any(token in reason_blob for token in repeated_stop_tokens):
+        return None
+    elements = list(dom_elements or [])
+    if (
+        not elements
+        or _dom_has_reasoning_wait_transient_signals(agent, elements)
+        or _dom_has_service_unavailable_signal(agent, elements)
+    ):
+        return None
+
+    base_decision = decision or ActionDecision(
+        action=ActionType.WAIT,
+        reasoning=reason_blob,
+        confidence=0.0,
+    )
+    synthetic_decision = base_decision.model_copy(
+        update={
+            "confidence": max(float(getattr(base_decision, "confidence", 0.0) or 0.0), 0.72),
+            "is_goal_achieved": True,
+            "goal_achievement_reason": (
+                "반복 중단 직전 최종 판정 요청입니다. "
+                "현재 DOM이 목표 성공 조건을 직접 만족하는 경우에만 success=true로 판정하세요. "
+                f"반복 중단 사유: {reason_blob}"
+            ),
+        }
+    )
+    return evaluate_goal_completion_judge(
+        agent,
+        goal=goal,
+        decision=synthetic_decision,
+        dom_elements=elements,
+    )
+
+
+def _text_evidence_memory_limit() -> int:
+    raw_value = str(os.getenv("GAIA_TEXT_EVIDENCE_MEMORY_LIMIT", "8") or "8").strip()
+    try:
+        value = int(raw_value)
+    except Exception:
+        return 8
+    return max(1, min(value, 20))
+
+
+def _text_evidence_line_limit() -> int:
+    raw_value = str(os.getenv("GAIA_TEXT_EVIDENCE_LINE_LIMIT", "24") or "24").strip()
+    try:
+        value = int(raw_value)
+    except Exception:
+        return 24
+    return max(4, min(value, 80))
+
+
+def _compact_text_evidence(value: object, *, limit: int = 500) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _append_unique_text_line(lines: List[str], seen: set[str], line: object, *, limit: int = 500) -> None:
+    text = _compact_text_evidence(line, limit=limit)
+    if not text:
+        return
+    normalized = re.sub(r"\s+", " ", text).strip().lower()
+    if not normalized or normalized in seen:
+        return
+    seen.add(normalized)
+    lines.append(text)
+
+
+def _snapshot_text_evidence_lines(agent) -> List[str]:
+    evidence = getattr(agent, "_last_snapshot_evidence", None)
+    if not isinstance(evidence, dict):
+        return []
+    lines: List[str] = []
+    seen: set[str] = set()
+    block_line_count = 0
+    blocks = evidence.get("dom_text_blocks")
+    if isinstance(blocks, list):
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            text = str(block.get("text") or "").strip()
+            if not text:
+                continue
+            meta_parts = [
+                str(block.get("section") or "").strip(),
+                str(block.get("role") or block.get("tag") or "").strip(),
+            ]
+            meta = " / ".join(part for part in meta_parts if part)
+            line = f"{text} [{meta}]" if meta else text
+            _append_unique_text_line(lines, seen, line, limit=700)
+            block_line_count = len(lines)
+    if block_line_count > 0:
+        return lines
+    live_texts = evidence.get("live_texts")
+    if isinstance(live_texts, list):
+        for item in live_texts:
+            _append_unique_text_line(lines, seen, item, limit=500)
+    digest = str(evidence.get("text_digest") or "").strip()
+    if digest:
+        _append_unique_text_line(lines, seen, digest, limit=900)
+    return lines
+
+
+def _dom_text_evidence_lines(dom_elements: List[DOMElement]) -> List[str]:
+    lines: List[str] = []
+    seen: set[str] = set()
+    for el in list(dom_elements or []):
+        if not bool(getattr(el, "is_visible", True)):
+            continue
+        parts = [
+            str(getattr(el, "container_name", "") or "").strip(),
+            str(getattr(el, "text", "") or "").strip(),
+            str(getattr(el, "aria_label", "") or "").strip(),
+            str(getattr(el, "title", "") or "").strip(),
+            str(getattr(el, "context_text", "") or "").strip(),
+        ]
+        labels = getattr(el, "group_action_labels", None)
+        if isinstance(labels, list):
+            parts.extend(str(item or "").strip() for item in labels if str(item or "").strip())
+        text = " | ".join(part for part in parts if part)
+        if len(text) < 8:
+            continue
+        _append_unique_text_line(lines, seen, text, limit=500)
+    return lines
+
+
+def record_llm_requested_text_evidence(
+    agent,
+    *,
+    goal: TestGoal,
+    decision: ActionDecision,
+    dom_elements: Optional[List[DOMElement]] = None,
+) -> Optional[str]:
+    if not bool(getattr(decision, "collect_text_evidence", False)):
+        return None
+    line_limit = _text_evidence_line_limit()
+    snapshot_lines = _snapshot_text_evidence_lines(agent)
+    if snapshot_lines:
+        lines = snapshot_lines[:line_limit]
+    else:
+        lines = []
+        seen: set[str] = set()
+        for line in _dom_text_evidence_lines(list(dom_elements or [])):
+            _append_unique_text_line(lines, seen, line, limit=500)
+            if len(lines) >= line_limit:
+                break
+    if not lines:
+        return None
+
+    memory = getattr(agent, "_text_evidence_memory", None)
+    if not isinstance(memory, list):
+        memory = []
+    entry: Dict[str, Any] = {
+        "goal_id": str(getattr(goal, "id", "") or ""),
+        "snapshot_id": str(getattr(agent, "_active_snapshot_id", "") or ""),
+        "url": str(getattr(agent, "_active_url", "") or ""),
+        "reason": str(getattr(decision, "text_evidence_reason", "") or getattr(decision, "reasoning", "") or "").strip(),
+        "focus": [
+            str(item or "").strip()
+            for item in list(getattr(decision, "text_evidence_focus", []) or [])
+            if str(item or "").strip()
+        ][:8],
+        "lines": lines[:line_limit],
+    }
+    memory.append(entry)
+    setattr(agent, "_text_evidence_memory", memory[-_text_evidence_memory_limit():])
+    return f"텍스트 evidence {len(entry['lines'])}개 블록 수집"
+
+
+def build_text_evidence_memory_block(agent, *, max_entries: int = 5, max_lines_per_entry: int = 12) -> str:
+    memory = getattr(agent, "_text_evidence_memory", None)
+    if not isinstance(memory, list) or not memory:
+        return ""
+    lines = ["## 누적 텍스트 evidence (LLM 요청 수집)"]
+    for entry_index, raw_entry in enumerate(memory[-max_entries:], start=1):
+        if not isinstance(raw_entry, dict):
+            continue
+        reason = _compact_text_evidence(raw_entry.get("reason"), limit=160)
+        focus = [
+            _compact_text_evidence(item, limit=80)
+            for item in list(raw_entry.get("focus") or [])
+            if str(item or "").strip()
+        ]
+        url = _compact_text_evidence(raw_entry.get("url"), limit=120)
+        snapshot_id = _compact_text_evidence(raw_entry.get("snapshot_id"), limit=80)
+        meta_parts = []
+        if snapshot_id:
+            meta_parts.append(f"snapshot={snapshot_id}")
+        if url:
+            meta_parts.append(f"url={url}")
+        if focus:
+            meta_parts.append("focus=" + ", ".join(focus[:4]))
+        if reason:
+            meta_parts.append(f"reason={reason}")
+        lines.append(f"- capture {entry_index}: " + ("; ".join(meta_parts) if meta_parts else "metadata 없음"))
+        entry_lines = [
+            _compact_text_evidence(item, limit=700)
+            for item in list(raw_entry.get("lines") or [])
+            if str(item or "").strip()
+        ]
+        for text_index, text in enumerate(entry_lines[:max_lines_per_entry], start=1):
+            lines.append(f"  - text {text_index}: {text}")
+        omitted = len(entry_lines) - max_lines_per_entry
+        if omitted > 0:
+            lines.append(f"  - ... ({omitted} more text evidence lines omitted)")
+    return "\n".join(lines)
+
+
 def _should_judge_reasoning_only_wait_completion(
     agent,
     *,
@@ -983,6 +1208,7 @@ def evaluate_goal_completion_judge(
         goal=goal,
         dom_elements=list(dom_elements or []),
     )
+    text_evidence_memory_block = build_text_evidence_memory_block(agent)
 
     prompt = f"""너는 웹 자동화의 최종 성공 판정 judge다.
 actor의 완료 주장을 그대로 믿지 말고, 현재 DOM과 최근 행동 증거를 보고 독립적으로 판정하라.
@@ -1032,6 +1258,8 @@ expected_signals:
 현재 visible DOM 요약:
 {chr(10).join(dom_lines)}
 
+{text_evidence_memory_block or "누적 텍스트 evidence: (없음)"}
+
 media/player 보조 관찰:
 {media_playback_summary or "(없음)"}
 
@@ -1042,6 +1270,8 @@ media/player 보조 관찰:
 - 현재 화면에 직접 보이는 증거만 믿어라.
 - `expected_signals`는 참고 정보일 뿐이고, 부재만으로 자동 실패 처리하지 마라.
 - 추측하지 마라. 애매하면 success=false.
+- 목록/카드/댓글/기사처럼 여러 항목을 읽는 목표에서는 `누적 텍스트 evidence`가 현재 run에서 수집된 직접 증거다.
+- 단, 누적 텍스트 evidence에도 필요한 항목/필드가 부족하면 success=false로 두고 부족한 필드를 이유에 적어라.
 - 응답형/결과형 UI에서는 사용자가 입력한 내용이 전송되었고, 그 뒤의 결과 본문/응답이 별도 surface에 보이면 success=true다.
 - 로딩/생각중/스피너만 보이면 success=false다.
 - 회원가입/로그인 goal은 단순 폼 노출이나 화면 진입만으로 success가 아니다.

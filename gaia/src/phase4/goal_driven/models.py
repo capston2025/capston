@@ -184,6 +184,18 @@ class ActionDecision(BaseModel):
     goal_achievement_reason: Optional[str] = Field(
         default=None, description="목표 달성 판단 이유 (is_goal_achieved=True일 때)"
     )
+    collect_text_evidence: bool = Field(
+        default=False,
+        description="목록/카드/댓글/기사처럼 현재 화면 텍스트 evidence를 누적해야 하면 true",
+    )
+    text_evidence_reason: Optional[str] = Field(
+        default=None,
+        description="텍스트 evidence를 수집해야 한다고 판단한 이유",
+    )
+    text_evidence_focus: List[str] = Field(
+        default_factory=list,
+        description="수집해야 하는 텍스트 필드/관찰 포인트",
+    )
     participant_id: Optional[str] = Field(
         default=None,
         description="다중 참여자 모드에서 이 액션을 수행할 참여자 id",

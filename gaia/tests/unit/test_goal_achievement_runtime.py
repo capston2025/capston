@@ -4,10 +4,14 @@ from types import SimpleNamespace
 
 from gaia.src.phase4.goal_driven.goal_achievement_runtime import validate_goal_achievement_claim
 from gaia.src.phase4.goal_driven.goal_completion_helpers import (
+    build_text_evidence_memory_block,
+    evaluate_goal_completion_judge,
     evaluate_goal_target_completion,
     evaluate_payment_presubmit_completion,
     evaluate_reasoning_only_wait_completion,
+    evaluate_repeated_stop_completion_judge,
     evaluate_wait_goal_completion,
+    record_llm_requested_text_evidence,
 )
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 
@@ -22,6 +26,10 @@ class _FakeAgent:
         self._goal_state_cache = {}
         self._auth_completed_fields = set()
         self._judge_response = ""
+        self._text_evidence_memory = []
+        self._last_snapshot_evidence = {}
+        self._active_snapshot_id = ""
+        self._active_url = ""
 
     @staticmethod
     def _normalize_text(value: object) -> str:
@@ -942,6 +950,195 @@ def test_reasoning_only_wait_completion_uses_judge_for_readonly_video_detail_cla
     assert reason == "현재 YouTube 영상 상세 화면에 제목, 채널명, 조회 정보가 직접 보입니다."
     assert "WAIT reasoning이 현재 화면 기준 목표 완료를 주장했습니다." not in agent._last_judge_prompt
     assert "영상 제목, 채널명, 조회/업로드 정보" in agent._last_judge_prompt
+
+
+def test_repeated_screen_stop_runs_final_completion_judge() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_destination_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "현재 상품 의견 게시판에 최근 댓글 3개가 직접 표시되어 목표 증거가 충분합니다.",
+  "confidence": 0.9
+}
+""".strip()
+    goal = SimpleNamespace(
+        name="상품 의견 게시판 댓글 확인",
+        description="인기 로봇청소기 상세 페이지 하단의 상품 의견 게시판에서 최근 댓글 3개를 확인해줘.",
+        success_criteria=["상품 의견 게시판과 최근 댓글 3개 확인"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.INSPECT,
+        reasoning="같은 화면을 반복 확인하고 있어 더 진행하기 어렵습니다.",
+        confidence=0.45,
+    )
+    dom = [
+        DOMElement(id=1, tag="h3", role="heading", text="상품 의견", is_visible=True, is_enabled=True),
+        DOMElement(id=2, tag="li", role="listitem", text="흡입력은 좋지만 소음이 조금 있습니다.", is_visible=True, is_enabled=True),
+        DOMElement(id=3, tag="li", role="listitem", text="배송 빠르고 설치가 쉬웠어요.", is_visible=True, is_enabled=True),
+        DOMElement(id=4, tag="li", role="listitem", text="앱 연결이 편하고 예약 청소가 됩니다.", is_visible=True, is_enabled=True),
+    ]
+
+    reason = evaluate_repeated_stop_completion_judge(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom,
+        stop_reason="화면 상태가 반복되어 더 이상 진행이 어렵습니다.",
+    )
+
+    assert reason == "현재 상품 의견 게시판에 최근 댓글 3개가 직접 표시되어 목표 증거가 충분합니다."
+    assert "반복 중단 직전 최종 판정 요청" in agent._last_judge_prompt
+    assert "화면 상태가 반복" in agent._last_judge_prompt
+
+
+def test_repeated_stop_judge_ignores_non_repeated_stop_reason() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "judge should not run",
+  "confidence": 0.99
+}
+""".strip()
+    goal = SimpleNamespace(
+        name="로그인 필요 목표",
+        description="로그인이 필요한 화면을 확인한다.",
+        success_criteria=["로그인 후 화면 확인"],
+        expected_signals=[],
+    )
+    dom = [DOMElement(id=1, tag="button", role="button", text="로그인", is_visible=True, is_enabled=True)]
+
+    reason = evaluate_repeated_stop_completion_judge(
+        agent,
+        goal=goal,
+        dom_elements=dom,
+        stop_reason="로그인 모달 반복으로 목표를 진행할 수 없어 중단했습니다.",
+    )
+
+    assert reason is None
+    assert not hasattr(agent, "_last_judge_prompt")
+
+
+def test_llm_requested_text_evidence_records_dom_text_blocks_for_list_goal() -> None:
+    agent = _FakeAgent()
+    agent._active_snapshot_id = "openclaw:test:3"
+    agent._active_url = "https://news.example.test/section/it"
+    agent._last_snapshot_evidence = {
+        "dom_text_blocks": [
+            {
+                "text": "AI 반도체 투자 확대 언론사A 12분전 기업들이 서버 투자를 늘리고 있다.",
+                "section": "최신기사",
+                "tag": "li",
+            },
+            {
+                "text": "우주 발사체 시험 성공 언론사B 18분전 첫 시험 비행이 정상 종료됐다.",
+                "section": "최신기사",
+                "tag": "li",
+            },
+        ],
+        "live_texts": ["AI 반도체 투자 확대 언론사A 12분전 기업들이 서버 투자를 늘리고 있다."],
+    }
+    goal = SimpleNamespace(
+        id="TC_LIST",
+        name="IT 기사 목록 2개 확인",
+        description="IT 기사 목록에서 각 카드의 제목, 언론사, 시간, 요약을 확인한다.",
+        success_criteria=["기사 목록 2개", "제목/언론사/시간/요약"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.INSPECT,
+        reasoning="현재 화면에 기사 목록 카드가 보여 텍스트 evidence를 누적합니다.",
+        confidence=0.8,
+        collect_text_evidence=True,
+        text_evidence_reason="기사 목록 2개 필드 수집",
+        text_evidence_focus=["제목", "언론사", "시간", "요약"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="a",
+            role="link",
+            text="AI 반도체 투자 확대",
+            context_text="언론사A | 12분전 | 기업들이 서버 투자를 늘리고 있다.",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    summary = record_llm_requested_text_evidence(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom,
+    )
+
+    assert summary == "텍스트 evidence 2개 블록 수집"
+    block = build_text_evidence_memory_block(agent)
+    assert "누적 텍스트 evidence" in block
+    assert "AI 반도체 투자 확대" in block
+    assert "우주 발사체 시험 성공" in block
+    assert "focus=제목, 언론사, 시간, 요약" in block
+
+
+def test_goal_completion_judge_receives_accumulated_text_evidence() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_quoted_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._goal_target_terms = lambda goal: []  # type: ignore[method-assign]
+    agent._judge_response = """
+{
+  "success": true,
+  "blocked": false,
+  "reason": "누적 텍스트 evidence에 최신 댓글 3개 본문이 있어 목표 증거가 충분합니다.",
+  "confidence": 0.88
+}
+""".strip()
+    agent._text_evidence_memory = [
+        {
+            "snapshot_id": "openclaw:test:7",
+            "url": "https://shop.example.test/opinion",
+            "reason": "댓글 목록 수집",
+            "focus": ["댓글 본문", "소음"],
+            "lines": [
+                "댓글1: 흡입력은 좋은데 소음이 조금 큽니다.",
+                "댓글2: 설치가 쉽고 앱 연결이 빠릅니다.",
+                "댓글3: 밤에는 시끄럽다 느낄 수 있습니다.",
+            ],
+        }
+    ]
+    goal = SimpleNamespace(
+        name="최근 댓글 3개에서 소음 불만 개수 확인",
+        description="상품 의견 게시판의 최근 댓글 3개를 읽고 소음/시끄럽다 불만을 센다.",
+        success_criteria=["최근 댓글 3개 확인", "소음/시끄럽다 포함 불만 개수"],
+        expected_signals=[],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="최근 댓글 3개의 텍스트 evidence를 수집했습니다.",
+        confidence=0.9,
+        is_goal_achieved=True,
+        goal_achievement_reason="최근 댓글 3개에서 소음 관련 불만 2건 확인",
+    )
+    dom = [DOMElement(id=1, tag="h3", role="heading", text="상품 의견", is_visible=True)]
+
+    reason = evaluate_goal_completion_judge(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom,
+    )
+
+    assert reason == "누적 텍스트 evidence에 최신 댓글 3개 본문이 있어 목표 증거가 충분합니다."
+    assert "누적 텍스트 evidence" in agent._last_judge_prompt
+    assert "댓글1: 흡입력은 좋은데 소음이 조금 큽니다." in agent._last_judge_prompt
 
 
 def test_wait_completion_rejects_service_unavailable_false_positive() -> None:
