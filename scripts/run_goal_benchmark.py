@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import json
+import mimetypes
 import os
 import shutil
 import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +38,7 @@ from scripts.benchmark_blocking import (
     summary_reason_code_summary,
 )
 from scripts.runner_identity import resolve_runner_id
+from gaia.src.battle_board import write_battle_board
 from gaia.harness.benchmark_policy import apply_benchmark_success_policy
 
 _MIN_BENCHMARK_TIMEOUT_SEC = 600
@@ -59,6 +64,7 @@ RUNTIME_ISOLATION_CHOICES = (
     WARM_PROCESS_WARM_STATE_RUNTIME,
 )
 _DEFAULT_RUNTIME_ISOLATION = WARM_PROCESS_COLD_STATE_RUNTIME
+_DEFAULT_BATTLE_SCREENSHOT_MAX_BYTES = 850_000
 _LIVE_TRACE_MARKERS = (
     "🎯 목표 시작",
     "--- Step ",
@@ -271,6 +277,12 @@ scenario = payload['scenario']
 session_id = payload['session_id']
 benchmark_qa_mode = str(payload.get('qa_mode') or '').strip()
 prepared_goal = _build_test_goal(url=scenario['url'], query=scenario['goal'])
+try:
+    scenario_max_steps = int(str(scenario.get('max_steps') or '').strip())
+except Exception:
+    scenario_max_steps = 0
+if scenario_max_steps > 0:
+    prepared_goal.max_steps = scenario_max_steps
 constraints = scenario.get('constraints') if isinstance(scenario.get('constraints'), dict) else {{}}
 expected_signals = scenario.get('expected_signals') if isinstance(scenario.get('expected_signals'), list) else []
 goal_test_data = dict(getattr(prepared_goal, 'test_data', {{}}) or {{}})
@@ -815,9 +827,198 @@ def _apply_provider_model_env(env: Dict[str, str], provider: str, model: str) ->
         env["GAIA_LLM_MODEL"] = normalized_model
 
 
+def _apply_max_steps_env(env: Dict[str, str], max_steps: Any) -> int:
+    try:
+        parsed = int(max_steps or 0)
+    except Exception:
+        parsed = 0
+    if parsed <= 0:
+        return 0
+    env["GAIA_GOAL_MAX_STEPS_OVERRIDE"] = str(parsed)
+    return parsed
+
+
 def _should_push_metrics(args: Any) -> bool:
     """Benchmark metrics leave the machine only when explicitly requested."""
     return bool(getattr(args, "push_metrics", False))
+
+
+def _should_publish_battle_board(args: Any) -> bool:
+    """Write the Human-vs-GAIA board only for explicit battle runs."""
+    if bool(getattr(args, "battle_board", False)):
+        return True
+    raw = str(os.getenv("GAIA_BATTLE_BOARD") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _try_write_battle_board(
+    output_dir: Path,
+    *,
+    summary: Dict[str, Any],
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    try:
+        return write_battle_board(output_dir, summary=summary, rows=rows)
+    except Exception as exc:
+        print(f"battle board write skipped: {exc}", file=sys.stderr, flush=True)
+        return {}
+
+
+def _battle_upload_config(args: Any, env: Dict[str, str]) -> Dict[str, str]:
+    upload_url = str(getattr(args, "battle_upload_url", "") or env.get("GAIA_BATTLE_UPLOAD_URL") or "").strip()
+    session_id = str(getattr(args, "battle_session_id", "") or env.get("GAIA_BATTLE_SESSION_ID") or "").strip()
+    token = str(getattr(args, "battle_upload_token", "") or env.get("GAIA_BATTLE_UPLOAD_TOKEN") or "").strip()
+    participant_id = str(env.get("GAIA_BATTLE_PARTICIPANT_ID") or "gaia").strip() or "gaia"
+    participant_name = str(env.get("GAIA_BATTLE_PARTICIPANT_NAME") or "GAIA").strip() or "GAIA"
+    scenario_label = str(env.get("GAIA_BATTLE_SCENARIO_LABEL") or "").strip()
+    screenshot_max_bytes = str(env.get("GAIA_BATTLE_SCREENSHOT_MAX_BYTES") or _DEFAULT_BATTLE_SCREENSHOT_MAX_BYTES).strip()
+    if not upload_url or not session_id:
+        return {}
+    return {
+        "upload_url": upload_url,
+        "session_id": session_id,
+        "token": token,
+        "participant_id": participant_id,
+        "participant_name": participant_name,
+        "scenario_label": scenario_label,
+        "screenshot_max_bytes": screenshot_max_bytes,
+    }
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _base64_size(data: str) -> int:
+    clean = str(data or "").strip()
+    if "," in clean and clean.startswith("data:image/"):
+        clean = clean.split(",", 1)[1]
+    return max(0, (len(clean) * 3) // 4)
+
+
+def _read_image_path_as_data_url(path: str, *, max_bytes: int) -> Dict[str, Any]:
+    if not path:
+        return {}
+    try:
+        image_path = Path(path).expanduser()
+        if not image_path.is_file():
+            return {}
+        size = image_path.stat().st_size
+        if size > max_bytes:
+            return {
+                "screenshotSkippedReason": f"image_file_too_large({size}>{max_bytes})",
+                "screenshotPath": str(image_path),
+            }
+        mime = mimetypes.guess_type(str(image_path))[0] or "image/png"
+        if not mime.startswith("image/"):
+            return {}
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        return {
+            "screenshotDataUrl": f"data:{mime};base64,{encoded}",
+            "screenshotMime": mime,
+            "screenshotPath": str(image_path),
+            "screenshotBytes": size,
+        }
+    except Exception as exc:
+        return {"screenshotSkippedReason": f"image_file_read_failed({exc})"}
+
+
+def _battle_screenshot_metadata(summary: Dict[str, Any], *, max_bytes: int) -> Dict[str, Any]:
+    attachments = summary.get("attachments") if isinstance(summary, dict) else []
+    if not isinstance(attachments, list):
+        return {}
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        mime = str(attachment.get("mime") or attachment.get("mime_type") or "image/png").strip() or "image/png"
+        data = str(attachment.get("data") or attachment.get("base64") or "").strip()
+        path = str(attachment.get("path") or attachment.get("saved_path") or "").strip()
+        if data and (mime.startswith("image/") or data.startswith("data:image/")):
+            size = _base64_size(data)
+            if size > max_bytes:
+                return {
+                    "screenshotSkippedReason": f"image_base64_too_large({size}>{max_bytes})",
+                    "screenshotPath": path,
+                }
+            data_url = data if data.startswith("data:image/") else f"data:{mime};base64,{data}"
+            return {
+                "screenshotDataUrl": data_url,
+                "screenshotMime": mime,
+                "screenshotLabel": str(attachment.get("label") or "GAIA evidence").strip(),
+                "screenshotPath": path,
+                "screenshotBytes": size,
+                "currentUrl": str(attachment.get("current_url") or "").strip(),
+            }
+        from_path = _read_image_path_as_data_url(path, max_bytes=max_bytes)
+        if from_path:
+            from_path.setdefault("screenshotLabel", str(attachment.get("label") or "GAIA evidence").strip())
+            from_path.setdefault("currentUrl", str(attachment.get("current_url") or "").strip())
+            return from_path
+    return {}
+
+
+def _build_battle_upload_payload(
+    *,
+    config: Dict[str, str],
+    row: Dict[str, Any],
+    scenario: Dict[str, Any],
+    summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    scenario_id = str(row.get("scenario_id") or scenario.get("id") or "live-mission").strip()
+    scenario_label = config.get("scenario_label") or str(scenario.get("name") or scenario.get("title") or scenario_id)
+    artifact_url = str(row.get("artifactUrl") or row.get("artifact_url") or "").strip()
+    if not artifact_url and isinstance(summary.get("battle_board"), dict):
+        artifact_url = str(summary.get("battle_board", {}).get("url") or "").strip()
+    scenario_summary = row.get("summary") if isinstance(row.get("summary"), dict) else {}
+    screenshot_metadata = _battle_screenshot_metadata(
+        scenario_summary,
+        max_bytes=_safe_int(config.get("screenshot_max_bytes"), _DEFAULT_BATTLE_SCREENSHOT_MAX_BYTES),
+    )
+    return {
+        "sessionId": config["session_id"],
+        "participantId": config.get("participant_id") or "gaia",
+        "participantName": config.get("participant_name") or "GAIA",
+        "participantType": "gaia",
+        "scenarioId": scenario_id,
+        "scenarioLabel": scenario_label,
+        "status": str(row.get("status") or "FAIL").strip().upper(),
+        "durationSeconds": row.get("duration_seconds"),
+        "reason": str(row.get("reason") or "").strip(),
+        "artifactUrl": artifact_url,
+        "metadata": {
+            "evidenceSource": "gaia-runner",
+            "suiteId": summary.get("suite_id"),
+            "goal": str(row.get("goal") or scenario.get("goal") or "").strip(),
+            "runnerId": row.get("runner_id"),
+            "provider": row.get("provider"),
+            "model": row.get("model"),
+            "qaMode": row.get("qa_mode"),
+            "benchmarkMode": row.get("benchmark_mode"),
+            "repeat": row.get("repeat"),
+            "expectedSignals": row.get("expected_signals") if isinstance(row.get("expected_signals"), list) else [],
+            **screenshot_metadata,
+        },
+    }
+
+
+def _try_upload_battle_record(config: Dict[str, str], payload: Dict[str, Any]) -> bool:
+    if not config:
+        return False
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if config.get("token"):
+        headers["Authorization"] = f"Bearer {config['token']}"
+    request = urllib.request.Request(config["upload_url"], data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return 200 <= int(response.status) < 300
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"battle upload skipped: {exc}", file=sys.stderr, flush=True)
+        return False
 
 
 def main() -> int:
@@ -833,6 +1034,15 @@ def main() -> int:
         help="Human/team runner identifier recorded in artifacts and metrics. Defaults to GAIA_RUNNER_ID or user@host.",
     )
     parser.add_argument("--timeout-cap", type=int, default=600)
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=0,
+        help=(
+            "Fallback goal step limit for benchmark scenarios. "
+            "Scenario JSON max_steps takes precedence when present."
+        ),
+    )
     parser.add_argument("--session-prefix", default="benchmark")
     parser.add_argument("--output-dir", default="")
     parser.add_argument(
@@ -855,6 +1065,26 @@ def main() -> int:
         action="store_true",
         help="Upload benchmark metrics to the configured monitoring server after the run.",
     )
+    parser.add_argument(
+        "--battle-board",
+        action="store_true",
+        help="Write a Human-vs-GAIA battle board HTML/JSON artifact while the run progresses.",
+    )
+    parser.add_argument(
+        "--battle-upload-url",
+        default="",
+        help="POST each scenario result to a remote Human-vs-GAIA board API. Defaults to GAIA_BATTLE_UPLOAD_URL.",
+    )
+    parser.add_argument(
+        "--battle-session-id",
+        default="",
+        help="Remote battle session id. Defaults to GAIA_BATTLE_SESSION_ID.",
+    )
+    parser.add_argument(
+        "--battle-upload-token",
+        default="",
+        help="Bearer token for the remote board API. Defaults to GAIA_BATTLE_UPLOAD_TOKEN.",
+    )
     args = parser.parse_args()
 
     suite_path = Path(args.suite).expanduser().resolve()
@@ -876,8 +1106,11 @@ def main() -> int:
     run_id = f"{Path(args.suite).stem}_{started_at.strftime('%Y%m%d_%H%M%S')}"
     output_dir = Path(args.output_dir).expanduser().resolve() if args.output_dir else (Path("artifacts") / "benchmarks" / run_id).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    battle_board_enabled = _should_publish_battle_board(args)
+    battle_board_info: Dict[str, Any] = {}
 
     env = os.environ.copy()
+    battle_upload_config = _battle_upload_config(args, env)
     runner_id = resolve_runner_id(args.runner_id, env)
     env["GAIA_RUNNER_ID"] = runner_id
     _apply_qa_mode_env(env, normalized_qa_mode)
@@ -886,6 +1119,7 @@ def main() -> int:
     if not provider:
         provider = _infer_provider_from_model(str(args.model or ""))
     _apply_provider_model_env(env, provider, str(args.model))
+    max_steps_override = _apply_max_steps_env(env, args.max_steps)
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env["GAIA_BENCHMARK_RUNTIME_ISOLATION"] = runtime_isolation
     env["GAIA_BENCHMARK_COLD_STATE_RESET"] = "1" if _runtime_uses_cold_state(runtime_isolation) else "0"
@@ -908,6 +1142,7 @@ def main() -> int:
             "benchmark_mode": benchmark_mode,
             "runtime_isolation": runtime_isolation,
             "runtime_policy": runtime_policy,
+            "max_steps_override": max_steps_override or None,
             "metrics": empty_metrics,
             "kpi_metrics": empty_kpis,
             "status_counts": {},
@@ -915,6 +1150,10 @@ def main() -> int:
             "blocked": [],
             "fatal_error": credential_error,
         }
+        if battle_board_enabled:
+            battle_board_info = _try_write_battle_board(output_dir, summary=summary, rows=[])
+            if battle_board_info:
+                summary["battle_board"] = battle_board_info
         (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         (output_dir / "results.json").write_text("[]", encoding="utf-8")
         (output_dir / "summary.md").write_text(
@@ -927,6 +1166,8 @@ def main() -> int:
             f"- qa_mode: {normalized_qa_mode or 'off'}\n"
             f"- benchmark_mode: {benchmark_mode}\n"
             f"- runtime_isolation: {runtime_isolation}\n"
+            f"- max_steps_override: {max_steps_override or '-'}\n"
+            f"- battle_board: {(battle_board_info or {}).get('url') or '-'}\n"
             f"- fatal_error: {credential_error}\n",
             encoding="utf-8",
         )
@@ -969,9 +1210,47 @@ def main() -> int:
                 if isinstance(runtime_policy.get("openclaw"), dict)
                 else False,
             }
+            try:
+                scenario_max_steps = int(scenario.get("max_steps") or 0)
+            except Exception:
+                scenario_max_steps = 0
+            row["max_steps"] = scenario_max_steps or max_steps_override or None
             row["constraints"] = scenario.get("constraints") if isinstance(scenario.get("constraints"), dict) else {}
             row["expected_signals"] = scenario.get("expected_signals") if isinstance(scenario.get("expected_signals"), list) else []
             rows.append(row)
+            if battle_board_enabled:
+                partial_summary = {
+                    "schema_version": "gaia.benchmark.v1",
+                    "suite_id": suite.get("suite_id") or suite_path.stem,
+                    "site": suite.get("site") or {},
+                    "started_at": started_at.isoformat(),
+                    "repeats": repeats,
+                    "scenario_count": len(scenarios),
+                    "provider": provider,
+                    "model": args.model,
+                    "runner_id": runner_id,
+                    "qa_mode": normalized_qa_mode or "off",
+                    "benchmark_mode": benchmark_mode,
+                    "runtime_isolation": runtime_isolation,
+                    "metrics": _compute_metrics(rows, repeats),
+                    "status_counts": dict(Counter(str(r.get("status") or "UNKNOWN") for r in rows)),
+                }
+                battle_board_info = _try_write_battle_board(output_dir, summary=partial_summary, rows=rows)
+                if battle_board_info and len(rows) == 1:
+                    print(f"battle_board: {battle_board_info.get('url')}", flush=True)
+            if battle_upload_config:
+                upload_summary = {
+                    "battle_board": battle_board_info,
+                    "suite_id": suite.get("suite_id") or suite_path.stem,
+                }
+                upload_payload = _build_battle_upload_payload(
+                    config=battle_upload_config,
+                    row=row,
+                    scenario=scenario,
+                    summary=upload_summary,
+                )
+                if _try_upload_battle_record(battle_upload_config, upload_payload):
+                    print(f"battle_upload: {battle_upload_config['session_id']} {row.get('scenario_id')}", flush=True)
 
     metrics = _compute_metrics(rows, repeats)
     kpi_metrics = _compute_kpi_metrics(rows, repeats)
@@ -991,6 +1270,7 @@ def main() -> int:
         "benchmark_mode": benchmark_mode,
         "runtime_isolation": runtime_isolation,
         "runtime_policy": runtime_policy,
+        "max_steps_override": max_steps_override or None,
         "metrics": metrics,
         "kpi_metrics": kpi_metrics,
         "status_counts": dict(status_counts),
@@ -1014,6 +1294,10 @@ def main() -> int:
             for r in blocked_rows
         ][:20],
     }
+    if battle_board_enabled:
+        battle_board_info = _try_write_battle_board(output_dir, summary=summary, rows=rows)
+        if battle_board_info:
+            summary["battle_board"] = battle_board_info
 
     (output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "results.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1029,6 +1313,9 @@ def main() -> int:
     md.write(f"- qa_mode: {normalized_qa_mode or 'off'}\n")
     md.write(f"- benchmark_mode: {benchmark_mode}\n")
     md.write(f"- runtime_isolation: {runtime_isolation}\n")
+    md.write(f"- max_steps_override: {max_steps_override or '-'}\n")
+    summary_battle_board = summary.get("battle_board") if isinstance(summary.get("battle_board"), dict) else {}
+    md.write(f"- battle_board: {summary_battle_board.get('url') or '-'}\n")
     md.write(f"- warm_process: {runtime_policy.get('warm_process')}\n")
     md.write(f"- cold_state_reset: {runtime_policy.get('cold_state_reset')}\n")
     md.write(f"- success_rate: {metrics['success_rate']}\n")

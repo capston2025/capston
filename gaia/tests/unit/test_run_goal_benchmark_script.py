@@ -10,9 +10,12 @@ from scripts.run_goal_benchmark import (
     WARM_PROCESS_COLD_STATE_RUNTIME,
     WARM_PROCESS_WARM_STATE_RUNTIME,
     _apply_qa_mode_env,
+    _apply_max_steps_env,
     _apply_provider_model_env,
     _build_child_code,
+    _battle_upload_config,
     _benchmark_mode_label,
+    _build_battle_upload_payload,
     _compute_kpi_metrics,
     _compute_metrics,
     _infer_provider_from_model,
@@ -26,7 +29,9 @@ from scripts.run_goal_benchmark import (
     _resolve_codex_exec_timeout,
     _resolve_scenario_timeout_budget,
     _should_emit_live_trace_line,
+    _should_publish_battle_board,
     _should_push_metrics,
+    _try_upload_battle_record,
 )
 from scripts.runner_identity import resolve_runner_id, sanitize_runner_id
 from scripts.benchmark_blocking import (
@@ -88,6 +93,21 @@ def test_build_child_code_forces_deep_qa_mode_for_benchmark_runs() -> None:
     assert "goal_test_data['deep_adaptive_qa'] = {'enabled': True}" in code
 
 
+def test_build_child_code_applies_scenario_max_steps() -> None:
+    scenario = {
+        "id": "LONG_001",
+        "url": "https://example.com",
+        "goal": "긴 공개 탐색 테스트를 수행한다",
+        "max_steps": 120,
+    }
+
+    code = _build_child_code(scenario, "session-1")
+
+    assert '"max_steps": 120' in code
+    assert "scenario_max_steps = int" in code
+    assert "prepared_goal.max_steps = scenario_max_steps" in code
+
+
 def test_runtime_isolation_helpers_normalize_warm_and_cold_modes() -> None:
     assert _normalize_runtime_isolation("warm") == WARM_PROCESS_COLD_STATE_RUNTIME
     assert _normalize_runtime_isolation("demo") == WARM_PROCESS_WARM_STATE_RUNTIME
@@ -113,6 +133,16 @@ def test_qa_mode_helpers_normalize_and_apply_env() -> None:
 
     assert "GAIA_ADAPTIVE_QA" not in env
     assert "GAIA_DEEP_ADAPTIVE_QA" not in env
+
+
+def test_apply_max_steps_env_sets_positive_override_only() -> None:
+    env: dict[str, str] = {}
+
+    assert _apply_max_steps_env(env, 120) == 120
+    assert env["GAIA_GOAL_MAX_STEPS_OVERRIDE"] == "120"
+
+    assert _apply_max_steps_env(env, 0) == 0
+    assert env["GAIA_GOAL_MAX_STEPS_OVERRIDE"] == "120"
 
 
 def test_timeout_floor_applies_by_default() -> None:
@@ -227,6 +257,146 @@ def test_monitoring_push_is_explicit_opt_in() -> None:
     assert _should_push_metrics(SimpleNamespace(push_metrics=False)) is False
     assert _should_push_metrics(SimpleNamespace(push_metrics=True)) is True
     assert _should_push_metrics(SimpleNamespace()) is False
+
+
+def test_battle_board_publish_is_explicit_but_can_use_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GAIA_BATTLE_BOARD", raising=False)
+
+    assert _should_publish_battle_board(SimpleNamespace(battle_board=False)) is False
+    assert _should_publish_battle_board(SimpleNamespace(battle_board=True)) is True
+
+    monkeypatch.setenv("GAIA_BATTLE_BOARD", "1")
+
+    assert _should_publish_battle_board(SimpleNamespace()) is True
+
+
+def test_battle_upload_config_requires_url_and_session() -> None:
+    assert _battle_upload_config(SimpleNamespace(), {}) == {}
+    assert _battle_upload_config(
+        SimpleNamespace(battle_upload_url="https://board.example/api/records", battle_session_id="battle-1"),
+        {},
+    )["session_id"] == "battle-1"
+    assert _battle_upload_config(
+        SimpleNamespace(battle_upload_url="", battle_session_id=""),
+        {
+            "GAIA_BATTLE_UPLOAD_URL": "https://board.example/api/records",
+            "GAIA_BATTLE_SESSION_ID": "battle-2",
+            "GAIA_BATTLE_UPLOAD_TOKEN": "secret",
+        },
+    )["token"] == "secret"
+
+
+def test_build_battle_upload_payload_maps_gaia_result() -> None:
+    payload = _build_battle_upload_payload(
+        config={
+            "session_id": "battle-live",
+            "participant_id": "gaia",
+            "participant_name": "GAIA",
+            "scenario_label": "현장 QA 미션",
+        },
+        row={
+            "scenario_id": "DEMO_001",
+            "status": "SUCCESS",
+            "duration_seconds": 12.3,
+            "runner_id": "runner",
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "artifact_url": "https://evidence.example/gaia-run",
+            "expected_signals": ["order-visible"],
+            "summary": {
+                "attachments": [
+                    {
+                        "kind": "image_base64",
+                        "mime": "image/png",
+                        "data": "ZmFrZQ==",
+                        "label": "최종 증거 화면",
+                        "path": "/tmp/final-proof.png",
+                        "current_url": "https://service.example/result",
+                    }
+                ]
+            },
+        },
+        scenario={"id": "DEMO_001", "goal": "demo"},
+        summary={"battle_board": {"url": "file:///tmp/battle_board.html"}, "suite_id": "suite-demo"},
+    )
+
+    assert payload["sessionId"] == "battle-live"
+    assert payload["participantType"] == "gaia"
+    assert payload["scenarioLabel"] == "현장 QA 미션"
+    assert payload["artifactUrl"] == "https://evidence.example/gaia-run"
+    assert payload["metadata"]["evidenceSource"] == "gaia-runner"
+    assert payload["metadata"]["suiteId"] == "suite-demo"
+    assert payload["metadata"]["goal"] == "demo"
+    assert payload["metadata"]["model"] == "gpt-5.5"
+    assert payload["metadata"]["expectedSignals"] == ["order-visible"]
+    assert payload["metadata"]["screenshotDataUrl"] == "data:image/png;base64,ZmFrZQ=="
+    assert payload["metadata"]["screenshotLabel"] == "최종 증거 화면"
+    assert payload["metadata"]["currentUrl"] == "https://service.example/result"
+
+
+def test_build_battle_upload_payload_skips_oversized_screenshot() -> None:
+    payload = _build_battle_upload_payload(
+        config={
+            "session_id": "battle-live",
+            "participant_id": "gaia",
+            "participant_name": "GAIA",
+            "scenario_label": "운영 미션",
+            "screenshot_max_bytes": "2",
+        },
+        row={
+            "scenario_id": "CASE_001",
+            "status": "SUCCESS",
+            "summary": {
+                "attachments": [
+                    {
+                        "kind": "image_base64",
+                        "mime": "image/png",
+                        "data": "ZmFrZQ==",
+                        "path": "/tmp/too-large.png",
+                    }
+                ]
+            },
+        },
+        scenario={"id": "CASE_001", "goal": "run"},
+        summary={"suite_id": "suite-live"},
+    )
+
+    assert "screenshotDataUrl" not in payload["metadata"]
+    assert payload["metadata"]["screenshotSkippedReason"].startswith("image_base64_too_large")
+
+
+def test_try_upload_battle_record_posts_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["body"] = request.data
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr("scripts.run_goal_benchmark.urllib.request.urlopen", fake_urlopen)
+
+    ok = _try_upload_battle_record(
+        {"upload_url": "https://board.example/api/records", "token": "secret"},
+        {"sessionId": "demo", "participantType": "gaia"},
+    )
+
+    assert ok is True
+    assert captured["url"] == "https://board.example/api/records"
+    assert captured["method"] == "POST"
+    assert captured["authorization"] == "Bearer secret"
+    assert b'"sessionId": "demo"' in captured["body"]
 
 
 def test_runner_id_prefers_explicit_value_and_sanitizes_label() -> None:

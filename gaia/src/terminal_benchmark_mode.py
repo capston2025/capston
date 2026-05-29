@@ -10,8 +10,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import webbrowser
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -75,6 +79,8 @@ EXTERNAL_PUBLIC_MANIFEST_PATH = Path("gaia/tests/scenarios/external_public_manif
 DEEP_QA_ALL_CASES_OPTION = "Deep QA 전체케이스 실행"
 DEEP_QA_BENCHMARK_MANIFEST_PATH = Path("gaia/tests/scenarios/deep_qa_benchmark_manifest.json")
 HUMAN_VS_GAIA_MANIFEST_PATH = Path("gaia/tests/scenarios/gaia_vs_human_manifest.json")
+BATTLE_DEFAULT_SITE_URL = "https://gaia-battle-web.vercel.app"
+BATTLE_DEFAULT_SESSION_ID = "battle-live"
 SITE_ADD_OPTION = "사이트 추가"
 SITE_EDIT_OPTION = "사이트 수정"
 SITE_DELETE_OPTION = "사이트 삭제"
@@ -102,6 +108,14 @@ BENCHMARK_QA_MODE_CHOICES = {
 }
 HUMAN_VS_GAIA_RUN_ALL_OPTION = "전체 사이트 전체 테스트 실행"
 HUMAN_VS_GAIA_SKIP_SITE_KEYS = frozenset({"inu_lms_hvh"})
+
+
+@dataclass(frozen=True)
+class BattleWebConfig:
+    site_url: str
+    upload_url: str
+    session_id: str
+    upload_token: str = ""
 
 
 def build_terminal_benchmark_catalog(
@@ -835,6 +849,156 @@ def open_benchmark_report(report_path: Path, opener: ReportOpener = webbrowser.o
     return bool(opener(report_path.resolve().as_uri()))
 
 
+def _normalize_battle_site_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if not re.match(r"^https?://", raw):
+        raw = f"https://{raw}"
+    parsed = urllib.parse.urlparse(raw)
+    if not parsed.netloc:
+        return ""
+    if parsed.path.rstrip("/").endswith("/api/records"):
+        raw = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    return raw.rstrip("/")
+
+
+def _battle_site_url_from_env(env: Mapping[str, str]) -> str:
+    direct = _normalize_battle_site_url(str(env.get("GAIA_BATTLE_SITE_URL") or ""))
+    if direct:
+        return direct
+    return _normalize_battle_site_url(str(env.get("GAIA_BATTLE_UPLOAD_URL") or ""))
+
+
+def _battle_scenario_label(scenario: Mapping[str, Any] | None, *, fallback: str = "현장 QA 미션") -> str:
+    current = scenario if isinstance(scenario, Mapping) else {}
+    for key in ("scenario_label", "name", "title", "description", "goal"):
+        text = str(current.get(key) or "").strip()
+        if text:
+            return text[:180]
+    scenario_id = str(current.get("id") or "").strip()
+    return scenario_id or fallback
+
+
+def _first_scenario(suite_payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    for raw in list(suite_payload.get("scenarios") or []):
+        if isinstance(raw, Mapping):
+            return dict(raw)
+    return None
+
+
+def _battle_web_config_from_prompt(
+    *,
+    prompt: PromptTextFn,
+    emit: OutputFn,
+    env: Mapping[str, str] | None = None,
+) -> BattleWebConfig | None:
+    current_env = env or os.environ
+    site_default = _battle_site_url_from_env(current_env)
+    site_url = _normalize_battle_site_url(
+        prompt("Human vs GAIA Vercel 사이트 URL (빈칸: 웹 연동 안 함)", default=site_default or "")
+    )
+    if not site_url:
+        emit("Human vs GAIA 웹 연동을 건너뜁니다. 로컬 artifact만 남깁니다.")
+        return None
+
+    session_default = str(current_env.get("GAIA_BATTLE_SESSION_ID") or "").strip() or BATTLE_DEFAULT_SESSION_ID
+    session_id = str(prompt("대결 세션 이름", default=session_default)).strip() or session_default
+    token = str(
+        prompt(
+            "GAIA 업로드 토큰 (Vercel BATTLE_UPLOAD_TOKEN과 같게, 없으면 빈칸)",
+            default=str(current_env.get("GAIA_BATTLE_UPLOAD_TOKEN") or ""),
+        )
+    ).strip()
+    config = BattleWebConfig(
+        site_url=site_url,
+        upload_url=f"{site_url}/api/records",
+        session_id=session_id,
+        upload_token=token,
+    )
+    _emit_battle_web_config(config, emit)
+    return config
+
+
+def _hardcoded_battle_web_config(env: Mapping[str, str] | None = None) -> BattleWebConfig:
+    current_env = env or os.environ
+    site_url = _normalize_battle_site_url(BATTLE_DEFAULT_SITE_URL)
+    token = str(current_env.get("GAIA_BATTLE_UPLOAD_TOKEN") or "").strip()
+    return BattleWebConfig(
+        site_url=site_url,
+        upload_url=f"{site_url}/api/records",
+        session_id=BATTLE_DEFAULT_SESSION_ID,
+        upload_token=token,
+    )
+
+
+def _wants_battle_web_connection(answer: str) -> bool:
+    normalized = str(answer or "").strip().lower()
+    if not normalized:
+        return True
+    return normalized not in {"n", "no", "nope", "false", "0", "ㄴ", "아니오", "아니요", "아니", "안함"}
+
+
+def _battle_web_config_from_confirmation(
+    *,
+    prompt: PromptTextFn,
+    emit: OutputFn,
+    env: Mapping[str, str] | None = None,
+) -> BattleWebConfig | None:
+    answer = prompt(
+        "Human vs GAIA 웹 보드에 연결할까요? (Y/n)",
+        default="Y",
+    )
+    if not _wants_battle_web_connection(answer):
+        emit("Human vs GAIA 웹 보드 연결을 건너뜁니다. 로컬 artifact만 남깁니다.")
+        return None
+    config = _hardcoded_battle_web_config(env=env)
+    _emit_battle_web_config(config, emit)
+    return config
+
+
+def _emit_battle_web_config(config: BattleWebConfig, emit: OutputFn) -> None:
+    emit(f"Human vs GAIA 웹 보드: {config.site_url}/battle/{config.session_id}")
+    emit(f"Human 입력 화면: {config.site_url}/battle/{config.session_id}/human")
+
+
+def _post_battle_session_start(
+    *,
+    config: BattleWebConfig,
+    scenario: Mapping[str, Any] | None,
+    emit: OutputFn,
+) -> tuple[str, bool]:
+    scenario_id = str((scenario or {}).get("id") or "live-mission").strip() or "live-mission"
+    scenario_label = _battle_scenario_label(scenario)
+    started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    body = json.dumps(
+        {
+            "sessionId": config.session_id,
+            "scenarioId": scenario_id,
+            "scenarioLabel": scenario_label,
+            "humanStartedAt": started_at,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{config.site_url}/api/session",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            ok = 200 <= int(response.status) < 300
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        emit(f"Human vs GAIA 웹 타이머 시작 실패: {exc}")
+        return scenario_label, False
+    if ok:
+        emit(f"Human 타이머 시작: {scenario_label}")
+    else:
+        emit("Human vs GAIA 웹 타이머 시작 응답이 성공 범위가 아닙니다.")
+    return scenario_label, ok
+
+
 def run_benchmark_suite(
     *,
     workspace_root: Path,
@@ -848,6 +1012,11 @@ def run_benchmark_suite(
     push_metrics: bool = False,
     runner_id: str = "",
     qa_mode: str | None = None,
+    battle_board: bool = False,
+    battle_upload_url: str = "",
+    battle_session_id: str = "",
+    battle_upload_token: str = "",
+    battle_scenario_label: str = "",
 ) -> dict[str, Any]:
     scenarios = [dict(row) for row in list(suite_payload.get("scenarios") or []) if isinstance(row, Mapping)]
     if not scenarios:
@@ -882,12 +1051,21 @@ def run_benchmark_suite(
         cmd.extend(["--qa-mode", normalized_qa_mode])
     if push_metrics:
         cmd.append("--push-metrics")
+    if battle_board:
+        cmd.append("--battle-board")
+    if battle_upload_url and battle_session_id:
+        cmd.extend(["--battle-upload-url", battle_upload_url])
+        cmd.extend(["--battle-session-id", battle_session_id])
+        if battle_upload_token:
+            cmd.extend(["--battle-upload-token", battle_upload_token])
     env = os.environ.copy()
     resolved_runner_id = resolve_runner_id(runner_id, env)
     env["GAIA_RUNNER_ID"] = resolved_runner_id
     cmd.extend(["--runner-id", resolved_runner_id])
     env.setdefault("GAIA_RAIL_ENABLED", "0")
     env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
+    if battle_scenario_label:
+        env["GAIA_BATTLE_SCENARIO_LABEL"] = battle_scenario_label
     if os.name == "nt":
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -899,6 +1077,10 @@ def run_benchmark_suite(
     emit(f"   - qa_mode: {benchmark_qa_mode_label(normalized_qa_mode)}")
     if push_metrics:
         emit("   - metrics: upload enabled (--push-metrics)")
+    if battle_board:
+        emit("   - battle_board: enabled")
+    if battle_upload_url and battle_session_id:
+        emit(f"   - battle_web: {battle_session_id}")
 
     process = process_factory(
         cmd,
@@ -941,6 +1123,7 @@ def run_benchmark_suite(
         "cmd": cmd,
         "captured": captured,
         "qa_mode": normalized_qa_mode or "off",
+        "battle_board": summary_payload.get("battle_board") if isinstance(summary_payload, Mapping) else {},
     }
 
 
@@ -1171,6 +1354,8 @@ def run_terminal_benchmark_mode(
     auto_pull_shared_tests: bool = True,
     qa_mode: str | None = None,
     dedicated_deep_qa: bool = False,
+    battle_board: bool = False,
+    battle_web_config: BattleWebConfig | None = None,
     deep_qa_manifest_path: Path | str = DEEP_QA_BENCHMARK_MANIFEST_PATH,
     site_prompt_title: str = "벤치 사이트를 선택하세요",
     site_action_options: Sequence[str] | None = None,
@@ -1411,11 +1596,19 @@ def run_terminal_benchmark_mode(
                     push_metrics_for_run = _resolve_push_metrics_for_run(
                         push_metrics=push_metrics,
                         prompt_select=prompt_select,
-                        prompt_non_empty=prompt_non_empty,
-                        emit=emit,
-                        workspace_root=workspace_root,
-                        monitoring_config_path=monitoring_config_path,
-                    )
+                    prompt_non_empty=prompt_non_empty,
+                    emit=emit,
+                    workspace_root=workspace_root,
+                    monitoring_config_path=monitoring_config_path,
+                )
+                    first_scenario = _first_scenario(suite_payload)
+                    battle_scenario_label = ""
+                    if battle_web_config is not None:
+                        battle_scenario_label, _ = _post_battle_session_start(
+                            config=battle_web_config,
+                            scenario=first_scenario,
+                            emit=emit,
+                        )
                     run_suite_handler(
                         workspace_root=workspace_root,
                         preset=preset,
@@ -1426,6 +1619,11 @@ def run_terminal_benchmark_mode(
                         push_metrics=push_metrics_for_run,
                         runner_id=runner_id,
                         qa_mode=normalized_qa_mode,
+                        battle_board=battle_board,
+                        battle_upload_url=battle_web_config.upload_url if battle_web_config is not None else "",
+                        battle_session_id=battle_web_config.session_id if battle_web_config is not None else "",
+                        battle_upload_token=battle_web_config.upload_token if battle_web_config is not None else "",
+                        battle_scenario_label=battle_scenario_label,
                     )
                     continue
 
@@ -1442,9 +1640,17 @@ def run_terminal_benchmark_mode(
                     prompt_non_empty=prompt_non_empty,
                     emit=emit,
                     workspace_root=workspace_root,
-                    monitoring_config_path=monitoring_config_path,
-                )
+                        monitoring_config_path=monitoring_config_path,
+                    )
                 single_payload = build_single_scenario_suite_payload(suite_payload, scenario_id)
+                selected_scenario = _find_scenario(single_payload, scenario_id) or _find_scenario(suite_payload, scenario_id)
+                battle_scenario_label = ""
+                if battle_web_config is not None:
+                    battle_scenario_label, _ = _post_battle_session_start(
+                        config=battle_web_config,
+                        scenario=selected_scenario,
+                        emit=emit,
+                    )
                 run_suite_handler(
                     workspace_root=workspace_root,
                     preset=preset,
@@ -1455,6 +1661,11 @@ def run_terminal_benchmark_mode(
                     push_metrics=push_metrics_for_run,
                     runner_id=runner_id,
                     qa_mode=normalized_qa_mode,
+                    battle_board=battle_board,
+                    battle_upload_url=battle_web_config.upload_url if battle_web_config is not None else "",
+                    battle_session_id=battle_web_config.session_id if battle_web_config is not None else "",
+                    battle_upload_token=battle_web_config.upload_token if battle_web_config is not None else "",
+                    battle_scenario_label=battle_scenario_label,
                 )
                 continue
 
@@ -1557,6 +1768,11 @@ def run_terminal_human_vs_gaia_mode(
     auto_pull_shared_tests: bool = False,
 ) -> int:
     registry = load_benchmark_registry(registry_path)
+    battle_web_config = _battle_web_config_from_confirmation(
+        prompt=prompt,
+        emit=emit,
+        env=os.environ,
+    )
 
     def _build_catalog(
         current_registry: Mapping[str, Any],
@@ -1589,6 +1805,8 @@ def run_terminal_human_vs_gaia_mode(
             push_metrics=push_metrics,
             monitoring_config_path=monitoring_config_path,
             runner_id=resolve_runner_id(env=os.environ),
+            battle_board=True,
+            battle_web_config=battle_web_config,
         )
 
     site_special_action_handlers = {
@@ -1610,6 +1828,8 @@ def run_terminal_human_vs_gaia_mode(
         push_metrics=push_metrics,
         monitoring_config_path=monitoring_config_path,
         auto_pull_shared_tests=auto_pull_shared_tests,
+        battle_board=True,
+        battle_web_config=battle_web_config,
         site_prompt_title="GAIA_VS_HUMAN 사이트를 선택하세요",
         site_action_options=("기존 테스트 실행", "지표 확인", "이전으로"),
         allow_site_management=False,
@@ -1650,6 +1870,8 @@ def _run_human_vs_gaia_all_sites(
     push_metrics: bool,
     monitoring_config_path: Path | None,
     runner_id: str,
+    battle_board: bool = False,
+    battle_web_config: BattleWebConfig | None = None,
 ) -> None:
     runnable_entries: list[tuple[Mapping[str, Any], BenchmarkPreset]] = []
     for site_entry in catalog:
@@ -1733,6 +1955,14 @@ def _run_human_vs_gaia_all_sites(
             else f"{case_start}-{case_end}/{total_case_count}"
         )
         emit(f"[사이트 {index}/{total} | 케이스 {case_progress}] {preset.label} 실행 중")
+        first_scenario = _first_scenario(suite_payload)
+        battle_scenario_label = ""
+        if battle_web_config is not None:
+            battle_scenario_label, _ = _post_battle_session_start(
+                config=battle_web_config,
+                scenario=first_scenario,
+                emit=emit,
+            )
         result = run_suite_handler(
             workspace_root=workspace_root,
             preset=preset,
@@ -1742,6 +1972,11 @@ def _run_human_vs_gaia_all_sites(
             run_tag="full_suite",
             push_metrics=push_metrics_for_run,
             runner_id=runner_id,
+            battle_board=battle_board,
+            battle_upload_url=battle_web_config.upload_url if battle_web_config is not None else "",
+            battle_session_id=battle_web_config.session_id if battle_web_config is not None else "",
+            battle_upload_token=battle_web_config.upload_token if battle_web_config is not None else "",
+            battle_scenario_label=battle_scenario_label,
         )
         status = str(result.get("status") or "").strip().lower()
         if status == "success":

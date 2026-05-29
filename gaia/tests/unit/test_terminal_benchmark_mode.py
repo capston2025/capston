@@ -10,10 +10,15 @@ from gaia.src.benchmark_suite_sharing import SharedSuiteNotFound
 from gaia.src.benchmark_manager import BenchmarkPreset
 from gaia.src.gui.benchmark_mode import find_preset
 from gaia.src.terminal_benchmark_mode import (
+    BattleWebConfig,
     DEEP_QA_ALL_CASES_OPTION,
     DEEP_QA_BENCHMARK_MANIFEST_PATH,
     HUMAN_VS_GAIA_RUN_ALL_OPTION,
     _run_human_vs_gaia_all_sites,
+    _battle_web_config_from_prompt,
+    _battle_web_config_from_confirmation,
+    _hardcoded_battle_web_config,
+    _normalize_battle_site_url,
     _main,
     _grafana_url_from_monitoring_config,
     append_scenario_to_suite,
@@ -364,6 +369,122 @@ def test_run_terminal_human_vs_gaia_mode_can_run_all_sites_except_lms(tmp_path: 
     assert script.select_calls[0][1][0] == HUMAN_VS_GAIA_RUN_ALL_OPTION
     assert [call["preset"].key for call in calls] == ["site_a", "site_b"]
     assert [call["target_url"] for call in calls] == ["https://a.example", "https://b.example"]
+    assert [call["battle_board"] for call in calls] == [True, True]
+
+
+def test_run_terminal_human_vs_gaia_mode_enables_battle_board_for_site_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = _PromptScript(
+        selections=[
+            "Site A",
+            "https://a.example",
+            "기존 테스트 실행",
+            "기존 테스트 전체 실행",
+            "로컬만 저장",
+            "이전으로",
+            "이전으로",
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    catalog = [
+        {
+            "key": "site_a",
+            "label": "Site A",
+            "default_url": "https://a.example",
+            "urls": ["https://a.example"],
+            "suite_path": "gaia/tests/scenarios/a.json",
+            "suite_available": True,
+            "status_text": "GAIA_VS_HUMAN 1개",
+            "is_custom": True,
+        }
+    ]
+    preset_map = {
+        "site_a": BenchmarkPreset(
+            key="site_a",
+            label="Site A",
+            default_url="https://a.example",
+            suite_path="gaia/tests/scenarios/a.json",
+            host_aliases=("a.example",),
+        ),
+    }
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.build_human_vs_gaia_catalog",
+        lambda *args, **kwargs: (catalog, preset_map, {"site_a": {"A_001"}}),
+    )
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode._load_terminal_suite_payload",
+        lambda **kwargs: {"suite_id": "demo", "scenarios": [{"id": "A_001", "goal": "ok"}]},
+    )
+
+    result = run_terminal_human_vs_gaia_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=lambda **kwargs: calls.append(kwargs) or {"status": "success"},
+    )
+
+    assert result == 130
+    assert len(calls) == 1
+    assert calls[0]["battle_board"] is True
+
+
+def test_run_terminal_human_vs_gaia_mode_asks_once_before_hardcoded_battle_web(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = _PromptScript(selections=["이전으로"])
+    emitted: list[str] = []
+    prompts: list[tuple[str, str | None]] = []
+    catalog = [
+        {
+            "key": "site_a",
+            "label": "Site A",
+            "default_url": "https://a.example",
+            "urls": ["https://a.example"],
+            "suite_path": "gaia/tests/scenarios/a.json",
+            "suite_available": True,
+            "status_text": "GAIA_VS_HUMAN 1개",
+            "is_custom": True,
+        }
+    ]
+    preset_map = {
+        "site_a": BenchmarkPreset(
+            key="site_a",
+            label="Site A",
+            default_url="https://a.example",
+            suite_path="gaia/tests/scenarios/a.json",
+            host_aliases=("a.example",),
+        ),
+    }
+
+    monkeypatch.setattr(
+        "gaia.src.terminal_benchmark_mode.build_human_vs_gaia_catalog",
+        lambda *args, **kwargs: (catalog, preset_map, {"site_a": {"A_001"}}),
+    )
+
+    def prompt(label: str, default: str | None = None) -> str:
+        prompts.append((label, default))
+        return default or ""
+
+    result = run_terminal_human_vs_gaia_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=prompt,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=emitted.append,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=lambda **kwargs: {},
+    )
+
+    assert result == 130
+    assert prompts == [("Human vs GAIA 웹 보드에 연결할까요? (Y/n)", "Y")]
+    assert any("https://gaia-battle-web.vercel.app/battle/battle-live" in message for message in emitted)
 
 
 def test_build_human_vs_gaia_catalog_prefers_manifest_default_url(tmp_path: Path) -> None:
@@ -487,6 +608,7 @@ def test_human_vs_gaia_all_sites_advances_case_progress_for_skipped_sites(tmp_pa
     )
 
     assert [call["preset"].key for call in calls] == ["site_b"]
+    assert calls[0]["battle_board"] is False
     assert any("3/3" in message for message in emitted)
 
 
@@ -868,6 +990,164 @@ def test_run_benchmark_suite_appends_push_metrics_flag_when_enabled(tmp_path: Pa
     assert "--push-metrics" in captured_cmd
 
 
+def test_run_benchmark_suite_appends_battle_board_flag_when_enabled(tmp_path: Path) -> None:
+    preset = find_preset("inu_timetable")
+    assert preset is not None
+    captured_cmd: list[str] = []
+
+    class _FakeProcess:
+        def __init__(self, cmd, **kwargs):
+            del kwargs
+            captured_cmd[:] = list(cmd)
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1},
+                        "battle_board": {"enabled": True, "html_path": "/tmp/board.html"},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "INUU_001_HOME_LOGIN_VISIBLE", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def wait(self):
+            return 0
+
+    result = run_benchmark_suite(
+        workspace_root=tmp_path,
+        preset=preset,
+        target_url="https://inuu-timetable.vercel.app/",
+        suite_payload={
+            "suite_id": "inu_timetable_public_v1",
+            "site": {"name": "INU TIMETABLE", "base_url": "https://inuu-timetable.vercel.app/"},
+            "scenarios": [
+                {
+                    "id": "INUU_001_HOME_LOGIN_VISIBLE",
+                    "url": "https://inuu-timetable.vercel.app/",
+                    "goal": "홈 화면 확인",
+                }
+            ],
+        },
+        emit=lambda message: None,
+        run_tag="full_suite",
+        process_factory=_FakeProcess,
+        battle_board=True,
+    )
+
+    assert "--battle-board" in captured_cmd
+    assert result["battle_board"]["enabled"] is True
+
+
+def test_run_benchmark_suite_forwards_battle_web_upload_args(tmp_path: Path) -> None:
+    preset = find_preset("inu_timetable")
+    assert preset is not None
+    captured_cmd: list[str] = []
+    captured_env: dict[str, str] = {}
+
+    class _FakeProcess:
+        def __init__(self, cmd, **kwargs):
+            captured_cmd[:] = list(cmd)
+            captured_env.update(kwargs.get("env") or {})
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps({"scenario_count": 1, "status_counts": {"SUCCESS": 1}}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "INUU_001_HOME_LOGIN_VISIBLE", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def wait(self):
+            return 0
+
+    run_benchmark_suite(
+        workspace_root=tmp_path,
+        preset=preset,
+        target_url="https://inuu-timetable.vercel.app/",
+        suite_payload={
+            "suite_id": "inu_timetable_public_v1",
+            "site": {"name": "INU TIMETABLE", "base_url": "https://inuu-timetable.vercel.app/"},
+            "scenarios": [
+                {
+                    "id": "INUU_001_HOME_LOGIN_VISIBLE",
+                    "url": "https://inuu-timetable.vercel.app/",
+                    "goal": "홈 화면 확인",
+                }
+            ],
+        },
+        emit=lambda message: None,
+        run_tag="INUU_001_HOME_LOGIN_VISIBLE",
+        process_factory=_FakeProcess,
+        battle_upload_url="https://battle.example/api/records",
+        battle_session_id="battle-live",
+        battle_upload_token="secret-token",
+        battle_scenario_label="현장 미션",
+    )
+
+    assert captured_cmd[captured_cmd.index("--battle-upload-url") + 1] == "https://battle.example/api/records"
+    assert captured_cmd[captured_cmd.index("--battle-session-id") + 1] == "battle-live"
+    assert captured_cmd[captured_cmd.index("--battle-upload-token") + 1] == "secret-token"
+    assert captured_env["GAIA_BATTLE_SCENARIO_LABEL"] == "현장 미션"
+
+
+def test_normalize_battle_site_url_accepts_upload_endpoint() -> None:
+    assert _normalize_battle_site_url("battle.example/api/records") == "https://battle.example"
+    assert _normalize_battle_site_url("https://battle.example/") == "https://battle.example"
+
+
+def test_battle_web_config_defaults_to_single_live_session() -> None:
+    prompts: list[tuple[str, str | None]] = []
+    emitted: list[str] = []
+
+    def prompt(label: str, default: str | None = None) -> str:
+        prompts.append((label, default))
+        return default or ""
+
+    config = _battle_web_config_from_prompt(
+        prompt=prompt,
+        emit=emitted.append,
+        env={"GAIA_BATTLE_SITE_URL": "https://battle.example"},
+    )
+
+    assert config is not None
+    assert config.session_id == "battle-live"
+    assert config.upload_url == "https://battle.example/api/records"
+    assert prompts[1][1] == "battle-live"
+    assert emitted[-1] == "Human 입력 화면: https://battle.example/battle/battle-live/human"
+
+
+def test_hardcoded_battle_web_config_uses_deployed_live_board() -> None:
+    config = _hardcoded_battle_web_config(env={"GAIA_BATTLE_SITE_URL": "https://ignored.example"})
+
+    assert config.site_url == "https://gaia-battle-web.vercel.app"
+    assert config.upload_url == "https://gaia-battle-web.vercel.app/api/records"
+    assert config.session_id == "battle-live"
+
+
+def test_battle_web_config_from_confirmation_can_skip_web_board() -> None:
+    emitted: list[str] = []
+
+    config = _battle_web_config_from_confirmation(
+        prompt=lambda label, default=None: "n",
+        emit=emitted.append,
+        env={},
+    )
+
+    assert config is None
+    assert emitted == ["Human vs GAIA 웹 보드 연결을 건너뜁니다. 로컬 artifact만 남깁니다."]
+
+
 def test_run_benchmark_suite_forwards_deep_qa_mode_and_tags_artifact(tmp_path: Path) -> None:
     preset = find_preset("inu_timetable")
     assert preset is not None
@@ -971,6 +1251,58 @@ def test_run_terminal_benchmark_mode_dispatches_single_scenario(tmp_path: Path) 
     assert len(calls) == 1
     assert calls[0]["run_tag"] == "INUU_001_HOME_LOGIN_VISIBLE"
     assert [row["id"] for row in calls[0]["suite_payload"]["scenarios"]] == ["INUU_001_HOME_LOGIN_VISIBLE"]
+
+
+def test_run_terminal_benchmark_mode_starts_battle_web_for_single_scenario(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = _PromptScript(
+        selections=[
+            "INU TIMETABLE",
+            "https://inuu-timetable.vercel.app/",
+            "기존 테스트 실행",
+            "개별 실행",
+            "INUU_001_HOME_LOGIN_VISIBLE | 현재 메인 화면에서 로그인 버튼 또는 로그아웃 버튼 중 하나가 이미 보이는지 확인하고 추가 조작 없이 종료해줘.",
+            "로컬만 저장",
+            "이전으로",
+            "종료",
+        ]
+    )
+    calls: list[dict[str, object]] = []
+    starts: list[dict[str, object]] = []
+
+    def fake_start(**kwargs):
+        starts.append(kwargs)
+        return "현장 시연", True
+
+    monkeypatch.setattr("gaia.src.terminal_benchmark_mode._post_battle_session_start", fake_start)
+
+    run_terminal_benchmark_mode(
+        workspace_root=_repo_root(),
+        prompt_select=script.select,
+        prompt=script.text,
+        prompt_non_empty=script.non_empty_prompt,
+        emit=lambda message: None,
+        registry_path=tmp_path / "benchmark_registry.json",
+        run_suite_handler=lambda **kwargs: calls.append(kwargs) or {},
+        battle_board=True,
+        battle_web_config=BattleWebConfig(
+            site_url="https://battle.example",
+            upload_url="https://battle.example/api/records",
+            session_id="battle-live",
+            upload_token="secret",
+        ),
+    )
+
+    assert len(starts) == 1
+    assert starts[0]["scenario"]["id"] == "INUU_001_HOME_LOGIN_VISIBLE"
+    assert len(calls) == 1
+    assert calls[0]["battle_board"] is True
+    assert calls[0]["battle_upload_url"] == "https://battle.example/api/records"
+    assert calls[0]["battle_session_id"] == "battle-live"
+    assert calls[0]["battle_upload_token"] == "secret"
+    assert calls[0]["battle_scenario_label"] == "현장 시연"
 
 
 def test_run_terminal_benchmark_mode_forwards_deep_qa_to_suite_runs(tmp_path: Path) -> None:

@@ -502,7 +502,8 @@ def _prompt_select_curses(prompt: str, options: Sequence[str], default: str | No
             if ord("1") <= key <= ord("9"):
                 idx = key - ord("1")
                 if 0 <= idx < len(choices):
-                    return choices[idx]
+                    selected = idx
+                    continue
             if key in (3, 4):
                 raise KeyboardInterrupt
 
@@ -514,27 +515,6 @@ def _prompt_select(prompt: str, options: Sequence[str], default: str | None = No
         return default or ""
     if not sys.stdin.isatty():
         return default or options[0]
-
-    # Prefer prompt_toolkit when available: it handles ESC vs arrow timing
-    # robustly across terminals.
-    try:
-        from prompt_toolkit.shortcuts import choice as pt_choice
-
-        values = [(opt, opt) for opt in options]
-        if default in options:
-            default_index = list(options).index(default)
-            values = values[default_index:] + values[:default_index]
-        selected = pt_choice(
-            message=prompt,
-            options=values,
-        )
-        if selected is None:
-            raise KeyboardInterrupt
-        print(f"선택: {selected}")
-        return str(selected)
-    except Exception:
-        # Fall back to manual parser when prompt_toolkit is unavailable.
-        pass
 
     try:
         selected = _prompt_select_curses(prompt, options, default=default)
@@ -575,8 +555,9 @@ def _prompt_select(prompt: str, options: Sequence[str], default: str | None = No
         if len(key) == 1 and key.isdigit():
             idx = ord(key) - ord("1")
             if 0 <= idx < len(choices):
-                print(f"선택: {choices[idx]}")
-                return choices[idx]
+                selected = idx
+                _render()
+                continue
             print(f"1~{len(choices)} 중에서 입력해주세요.")
 
 
