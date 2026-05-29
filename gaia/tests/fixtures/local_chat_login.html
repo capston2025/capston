@@ -13,7 +13,7 @@
     input { margin-top: 0.25rem; padding: 0.7rem; border: 1px solid #b8b8c8; border-radius: 0.5rem; font-size: 1rem; }
     button { margin-top: 1rem; padding: 0.75rem 1rem; border: 0; border-radius: 0.5rem; background: #264ee4; color: white; font-weight: 700; cursor: pointer; }
     button:focus-visible, input:focus-visible { outline: 3px solid #7ba7ff; outline-offset: 2px; }
-    .hint { color: #505060; font-size: 0.95rem; }
+    .hint { color: #505060; font-size: 0.95rem; line-height: 1.45; }
     .error { color: #a11a1a; min-height: 1.25rem; }
     .chat { display: none; }
     .chat[data-authenticated="true"] { display: block; }
@@ -21,12 +21,17 @@
     .message-list { min-height: 5rem; padding: 0; list-style: none; }
     .message-list li { margin-top: 0.5rem; padding: 0.65rem 0.75rem; border-radius: 0.65rem; background: #eef3ff; }
     .message-list li[data-testid="reply-message"] { background: #f1f8ee; }
+    .message-list li[data-testid="received-message"] { background: #fff5db; }
   </style>
 </head>
 <body>
   <main aria-labelledby="fixture-title">
     <h1 id="fixture-title">GAIA local chat fixture</h1>
-    <p class="hint" data-testid="demo-credentials">Demo credentials: demo@example.test / gaia-demo-password</p>
+    <p class="hint" data-testid="demo-credentials">
+      Demo A: demo-a@example.test / gaia-demo-password-a<br />
+      Demo B: demo-b@example.test / gaia-demo-password-b<br />
+      Legacy bot mode: demo@example.test / gaia-demo-password
+    </p>
 
     <section id="login-panel" data-testid="login-panel" aria-label="Login panel">
       <form id="login-form" data-testid="login-form">
@@ -54,8 +59,15 @@
   </main>
 
   <script>
+    const CHAT_STORAGE_KEY = "gaia-local-chat-fixture-messages";
+    const SESSION_ACCOUNT_KEY = "gaia-local-chat-fixture-account";
     const DEMO_EMAIL = "demo@example.test";
     const DEMO_PASSWORD = "gaia-demo-password";
+    const ACCOUNTS = {
+      "demo@example.test": { password: "gaia-demo-password", name: "Demo", botMode: true },
+      "demo-a@example.test": { password: "gaia-demo-password-a", name: "Demo A", botMode: false },
+      "demo-b@example.test": { password: "gaia-demo-password-b", name: "Demo B", botMode: false }
+    };
     const BOT_REPLY_PREFIX = "Assistant reply";
 
     const loginPanel = document.querySelector("[data-testid='login-panel']");
@@ -69,40 +81,95 @@
     const chatInput = document.querySelector("[data-testid='chat-input']");
     const messageList = document.querySelector("[data-testid='message-list']");
     const turnCount = document.querySelector("[data-testid='turn-count']");
+    let currentEmail = "";
+    let currentAccount = null;
     let completedTurns = 0;
 
-    function showChat() {
+    function getMessages() {
+      try {
+        return JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || "[]");
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function saveMessages(messages) {
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+    }
+
+    function showChat(email) {
+      currentEmail = email;
+      currentAccount = ACCOUNTS[email];
+      sessionStorage.setItem(SESSION_ACCOUNT_KEY, email);
       loginPanel.hidden = true;
       chatPanel.dataset.authenticated = "true";
-      loginStatus.textContent = "Logged in as " + DEMO_EMAIL;
+      loginStatus.textContent = "Logged in as " + currentEmail;
+      renderTranscript();
       chatInput.focus();
     }
 
-    function appendMessage(kind, turn, text) {
+    function appendMessage(kind, turn, text, sender) {
       const item = document.createElement("li");
       item.dataset.testid = kind + "-message";
       item.dataset.turn = String(turn);
-      item.setAttribute("aria-label", (kind === "sent" ? "Sent" : "Assistant reply") + " message turn " + turn);
+      item.dataset.sender = sender || "";
+      const label = kind === "sent" ? "Sent" : kind === "reply" ? "Assistant reply" : "Received";
+      item.setAttribute("aria-label", label + " message turn " + turn);
       item.textContent = text;
       messageList.appendChild(item);
     }
 
-    function appendTurn(text) {
-      const turn = completedTurns + 1;
-      appendMessage("sent", turn, "You sent: " + text);
-      appendMessage("reply", turn, BOT_REPLY_PREFIX + " " + turn + ": received " + text);
-      completedTurns = turn;
+    function renderTranscript() {
+      const messages = getMessages();
+      messageList.replaceChildren();
+      completedTurns = 0;
+      for (const message of messages) {
+        if (!message.bot) {
+          completedTurns += 1;
+        }
+        const turn = message.turn || completedTurns;
+        if (message.bot) {
+          appendMessage("reply", turn, message.text, "assistant");
+          continue;
+        }
+        const kind = message.email === currentEmail ? "sent" : "received";
+        appendMessage(kind, turn, message.name + ": " + message.text, message.email);
+      }
       turnCount.textContent = "Total turns: " + completedTurns;
       turnCount.setAttribute("aria-label", "Total chat turns: " + completedTurns);
+    }
+
+    function appendTurn(text) {
+      if (!currentAccount) return;
+      const messages = getMessages();
+      const turn = messages.filter((message) => !message.bot).length + 1;
+      messages.push({
+        id: Date.now() + "-" + turn + "-" + currentEmail,
+        turn,
+        email: currentEmail,
+        name: currentAccount.name,
+        text
+      });
+      if (currentAccount.botMode) {
+        messages.push({
+          id: Date.now() + "-reply-" + turn,
+          turn,
+          bot: true,
+          text: BOT_REPLY_PREFIX + " " + turn + ": received " + text
+        });
+      }
+      saveMessages(messages);
+      renderTranscript();
     }
 
     loginForm.addEventListener("submit", (event) => {
       event.preventDefault();
       const email = emailInput.value.trim();
       const password = passwordInput.value;
-      if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+      const account = ACCOUNTS[email];
+      if (account && password === account.password) {
         loginError.textContent = "";
-        showChat();
+        showChat(email);
       } else {
         loginError.textContent = "Invalid demo credentials";
       }
@@ -115,6 +182,17 @@
       appendTurn(text);
       chatInput.value = "";
     });
+
+    window.addEventListener("storage", (event) => {
+      if (event.key === CHAT_STORAGE_KEY && currentAccount) {
+        renderTranscript();
+      }
+    });
+
+    const savedEmail = sessionStorage.getItem(SESSION_ACCOUNT_KEY);
+    if (savedEmail && ACCOUNTS[savedEmail]) {
+      showChat(savedEmail);
+    }
   </script>
 </body>
 </html>
