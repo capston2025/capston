@@ -4,6 +4,7 @@ from gaia.src.phase4.goal_driven.action_execution_runtime import (
     _find_rebound_element,
     _find_visible_text_ref_candidate,
     _is_stale_like_timeout,
+    _should_autosubmit_search_fill,
     _visual_find_label_candidates,
     _visual_find_label_is_safe,
 )
@@ -339,9 +340,12 @@ def test_execute_decision_force_refreshes_fill_ref_recovery(monkeypatch) -> None
 
     assert ok is True
     assert err is None
-    assert calls == ["old-search-ref", "new-search-ref"]
+    # Trailing "new-search-ref" is the search-fill auto-submit (Enter) on the
+    # recovered search box.
+    assert calls == ["old-search-ref", "new-search-ref", "new-search-ref"]
     assert "ref_recovery" in agent.force_reasons
     assert True in agent.analyze_force_flags
+    assert "search_fill_autosubmit" in agent.reason_codes
 
 
 def test_execute_decision_repairs_non_fillable_search_target_before_fill(monkeypatch) -> None:
@@ -400,9 +404,11 @@ def test_execute_decision_repairs_non_fillable_search_target_before_fill(monkeyp
 
     assert ok is True
     assert err is None
-    assert calls == ["news-search-ref"]
+    # Second "news-search-ref" is the search-fill auto-submit (Enter).
+    assert calls == ["news-search-ref", "news-search-ref"]
     assert "fill_target_recovery" in agent.force_reasons
     assert any("fill 대상 재바인딩" in log for log in agent.logs)
+    assert "search_fill_autosubmit" in agent.reason_codes
 
 
 def test_execute_decision_keeps_rich_text_body_target_over_searchbox(monkeypatch) -> None:
@@ -1727,3 +1733,61 @@ def test_execute_decision_blocks_visual_coordinate_fallback_for_dangerous_label(
     assert calls == ["click"]
     assert "ref_recovery_failed_resnapshot" in agent.reason_codes
     assert "visual_coordinate_fallback_blocked" in agent.reason_codes
+
+
+class _TextAgent:
+    def _normalize_text(self, value: object) -> str:
+        return str(value or "").strip().lower()
+
+
+def _fill_decision(reasoning: str, value: str = "프로젝트 헤일메리") -> ActionDecision:
+    return ActionDecision(action=ActionType.FILL, value=value, reasoning=reasoning)
+
+
+def test_autosubmit_search_fill_true_for_searchbox_with_search_intent() -> None:
+    element = DOMElement(id=1, tag="input", role="searchbox", type="search", ref_id="e86")
+    decision = _fill_decision("검색창에 검색어를 입력합니다.")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, element) is True
+
+
+def test_autosubmit_search_fill_true_for_yes24_textbox_via_container() -> None:
+    # YES24 main search: role is plain "textbox" but the container/context carries 검색.
+    element = DOMElement(
+        id=2,
+        tag="input",
+        role="textbox",
+        ref_id="e86",
+        placeholder="수능 국어 기출 필수! <매3>",
+        container_name="검색",
+    )
+    decision = _fill_decision("상단 검색 입력창에 검색어를 입력해야 합니다.")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, element) is True
+
+
+def test_autosubmit_search_fill_false_for_non_search_input() -> None:
+    element = DOMElement(id=3, tag="input", role="textbox", ref_id="e10", aria_label="이메일")
+    decision = _fill_decision("로그인 이메일을 입력합니다.")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, element) is False
+
+
+def test_autosubmit_search_fill_false_without_search_intent() -> None:
+    element = DOMElement(id=4, tag="input", role="searchbox", type="search", ref_id="e86")
+    decision = _fill_decision("필드에 임의의 값을 채워 동작을 확인합니다.")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, element) is False
+
+
+def test_autosubmit_search_fill_false_on_negative_search_context() -> None:
+    element = DOMElement(id=5, tag="input", role="searchbox", type="search", ref_id="e86")
+    decision = _fill_decision("검색창에 잘못 입력되어 검색 오버레이를 정리하려고 검색어를 다시 넣습니다.")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, element) is False
+
+
+def test_autosubmit_search_fill_false_for_none_element() -> None:
+    decision = _fill_decision("검색어를 입력합니다.")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, None) is False

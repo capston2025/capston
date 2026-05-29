@@ -551,6 +551,71 @@ def _fill_target_score(
     return score
 
 
+def _should_autosubmit_search_fill(
+    agent,
+    decision: ActionDecision,
+    element: Optional[DOMElement],
+) -> bool:
+    """Decide whether a successful fill should be auto-submitted via Enter.
+
+    Some search boxes (e.g. YES24's main search) bind their search *button* to a
+    JS handler that submits a stale internal query state — typically a rotating
+    "추천 검색어" promo — instead of the value we just typed, which redirects to an
+    unrelated event page. Pressing Enter triggers the native form submission,
+    which reads ``input.value`` (the text we actually filled), so it reliably
+    runs the intended query. We only do this for genuine search-box fills with a
+    search intent; everything else (login fields, multi-field forms, rich-text
+    bodies) is left untouched.
+    """
+    if element is None:
+        return False
+    role = _normalized_binding_text(agent, getattr(element, "role", ""))
+    role_ref_role = _normalized_binding_text(agent, getattr(element, "role_ref_role", ""))
+    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    element_blob = _fill_binding_blob(agent, element)
+    is_search_box = (
+        role == "searchbox"
+        or role_ref_role == "searchbox"
+        or field_type == "search"
+        or any(token in element_blob for token in ("검색", "search", "query"))
+    )
+    if not is_search_box:
+        return False
+    reasoning_blob = _normalized_binding_text(agent, getattr(decision, "reasoning", "") or "")
+    negative_search_context = any(
+        token in reasoning_blob
+        for token in (
+            "검색창에 잘못",
+            "검색창에만",
+            "검색 오버레이",
+            "검색창 오버레이",
+            "검색 포커스",
+            "성공 증거가 아니",
+            "search overlay",
+            "wrong search",
+        )
+    )
+    if negative_search_context:
+        return False
+    return any(
+        token in reasoning_blob
+        for token in (
+            "검색 입력",
+            "검색어",
+            "검색창에 입력",
+            "검색 필드",
+            "검색한다",
+            "검색하기",
+            "검색 결과",
+            "검색결과",
+            "search for",
+            "search query",
+            "type into search",
+            "enter search",
+        )
+    )
+
+
 def _find_fill_target_candidate(
     agent,
     decision: ActionDecision,
@@ -1826,6 +1891,22 @@ def execute_decision(
                 _remember_recent_signal_event()
                 _remember_auth_fill()
                 _remember_persistent_control_state()
+                if _should_autosubmit_search_fill(agent, decision, selected_element):
+                    fill_result = agent._last_exec_result
+                    try:
+                        agent._record_reason_code("search_fill_autosubmit")
+                    except Exception:
+                        pass
+                    submit_ok, submit_err = _execute_with_ref_recovery(
+                        "press", action_value="Enter"
+                    )
+                    if submit_ok:
+                        _remember_recent_signal_event()
+                        return True, submit_err
+                    # Enter submission was not actionable; restore the successful
+                    # fill result so the agent can still submit via the search
+                    # button on the next step (no regression vs. fill-only).
+                    agent._last_exec_result = fill_result
             return ok, err
 
         if decision.action == ActionType.TYPE:
