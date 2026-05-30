@@ -56,6 +56,22 @@ def test_successful_mutating_action_without_state_change_is_reported_as_no_state
     )
 
 
+def test_successful_mutating_action_with_deferred_observation_avoids_no_state_change() -> None:
+    class _Decision:
+        action = ActionType.CLICK
+
+    assert (
+        _post_action_reason_code(
+            decision=_Decision(),
+            reason_code="ok",
+            success=True,
+            changed=False,
+            state_change={"post_action_observation_deferred": True},
+        )
+        == "observation_deferred"
+    )
+
+
 def test_successful_inspect_without_state_change_keeps_ok_reason() -> None:
     class _Decision:
         action = ActionType.INSPECT

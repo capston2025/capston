@@ -2757,6 +2757,19 @@ def _actionability_probe_timeout_ms() -> int:
         return 1200
 
 
+def _openclaw_post_action_full_probe_enabled() -> bool:
+    raw = str(os.getenv("GAIA_OPENCLAW_POST_ACTION_FULL_PROBE", "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _openclaw_deferred_observation_settle_ms(kind: str) -> int:
+    default_ms = 700 if str(kind or "").strip() in {"click", "press", "select", "drag"} else 250
+    try:
+        return max(0, int(os.getenv("GAIA_OPENCLAW_DEFERRED_OBSERVATION_SETTLE_MS", str(default_ms))))
+    except Exception:
+        return default_ms
+
+
 def _commit_verify_timeout_ms() -> int:
     try:
         return max(0, int(os.getenv("GAIA_OPENCLAW_COMMIT_VERIFY_TIMEOUT_MS", "3500")))
@@ -4821,6 +4834,7 @@ def dispatch_openclaw_action(
 
     probe_kind = str(payload.get("kind") or "").strip()
     probe_post_action = probe_kind in {"click", "fill", "type", "press", "select", "drag", "hover", "evaluate"}
+    full_post_action_probe = bool(probe_post_action and _openclaw_post_action_full_probe_enabled())
     before_payload: Optional[Dict[str, Any]] = None
     before_tabs_payload: Optional[Dict[str, Any]] = None
     snapshot_before_ms = 0
@@ -4831,6 +4845,7 @@ def dispatch_openclaw_action(
     second_probe_ms = 0
     commit_verify_probe_ms = 0
     commit_verify_probe_rounds = 0
+    deferred_settle_ms = 0
     act_ms = 0
     ref_refresh_count = 0
     target_reopen_count = 0
@@ -4838,13 +4853,16 @@ def dispatch_openclaw_action(
     pointer_interceptor_recovery_count = 0
     recovery_attempt_logs: List[Dict[str, Any]] = []
     if probe_post_action:
+        requested_snapshot_id = str(
+            (effective_params or {}).get("snapshot_id") or (effective_params or {}).get("snapshotId") or ""
+        ).strip()
         before_payload = _cached_snapshot_payload(
             state=state,
-            snapshot_id=str((effective_params or {}).get("snapshot_id") or (effective_params or {}).get("snapshotId") or ""),
+            snapshot_id=requested_snapshot_id,
             target_id=target_id,
-        )
+        ) if requested_snapshot_id else None
         snapshot_before_cache_hit = before_payload is not None
-        if before_payload is None:
+        if before_payload is None and full_post_action_probe:
             try:
                 snapshot_before_started = time.perf_counter()
                 before_payload = _snapshot_payload_for_target(
@@ -5115,7 +5133,7 @@ def dispatch_openclaw_action(
     post_action_snapshot: Optional[Dict[str, Any]] = None
     new_page_evidence: Dict[str, Any] = {}
     auto_follow_evidence: Dict[str, Any] = {}
-    if probe_post_action:
+    if probe_post_action and full_post_action_probe:
         settle_ms = 350 if probe_kind in {"click", "press", "select", "drag"} else 180
         if settle_ms > 0:
             time.sleep(float(settle_ms) / 1000.0)
@@ -5250,9 +5268,67 @@ def dispatch_openclaw_action(
                     state_change=state_change,
                     evidence=auto_follow_evidence,
                 )
+    elif probe_post_action:
+        if before_payload:
+            snapshot_id_before = str(before_payload.get("snapshot_id") or "").strip()
+            if snapshot_id_before:
+                state_change["snapshot_id_before"] = snapshot_id_before
+        deferred_settle_ms = _openclaw_deferred_observation_settle_ms(probe_kind)
+        if deferred_settle_ms > 0:
+            time.sleep(float(deferred_settle_ms) / 1000.0)
+        if before_tabs_payload:
+            after_tabs_payload: Optional[Dict[str, Any]] = None
+            try:
+                after_tabs_payload = _tabs_payload_for_target(
+                    base_url=base_url,
+                    target_id=target_id,
+                    profile=profile_name,
+                    timeout=timeout,
+                )
+                _remember_tabs_payload(
+                    state=state,
+                    target_id=target_id,
+                    profile=profile_name,
+                    payload=after_tabs_payload,
+                )
+            except Exception:
+                after_tabs_payload = None
+            new_page_evidence = _derive_new_page_evidence_from_tabs(
+                before_tabs_payload=before_tabs_payload,
+                after_tabs_payload=after_tabs_payload,
+                reference_url=str(
+                    (before_payload or {}).get("current_url")
+                    or (before_payload or {}).get("url")
+                    or state.get("current_url")
+                    or ""
+                ),
+            )
+            if new_page_evidence:
+                state_change = _merge_state_change_evidence(
+                    state_change=state_change,
+                    evidence=new_page_evidence,
+                )
+                auto_follow_evidence = build_auto_follow_state_update(new_page_evidence)
+                if auto_follow_evidence:
+                    follow_target_id = str(auto_follow_evidence.get("auto_follow_target_id") or "").strip()
+                    follow_url = str(auto_follow_evidence.get("auto_follow_url") or "").strip()
+                    if follow_target_id:
+                        state["target_id"] = follow_target_id
+                        _clear_tabs_cache(state)
+                    if follow_url:
+                        state["current_url"] = follow_url
+                        current_url = follow_url
+                    state_change = _merge_state_change_evidence(
+                        state_change=state_change,
+                        evidence=auto_follow_evidence,
+                    )
+        if not bool(state_change.get("backend_progress")):
+            state_change["post_action_observation_deferred"] = True
+            state_change["backend_pending_observation"] = True
+            state_change["observation_source"] = "next_collect"
 
     commit_ref_id = str(payload.get("ref") or "").strip()
-    if probe_post_action and commit_ref_id and before_payload and post_action_snapshot:
+    if full_post_action_probe and commit_ref_id and before_payload and post_action_snapshot:
         state_change = _apply_commit_verification_to_state_change(
             state_change=state_change,
             before_payload=before_payload,
@@ -5313,6 +5389,8 @@ def dispatch_openclaw_action(
         "snapshot_before_ms": int(snapshot_before_ms),
         "snapshot_before_cache_hit": bool(snapshot_before_cache_hit),
         "tabs_before_cache_hit": bool(tabs_before_cache_hit),
+        "post_action_full_probe": bool(full_post_action_probe),
+        "deferred_settle_ms": int(deferred_settle_ms),
         "act_ms": int(act_ms),
         "post_act_probe_ms": int(post_act_probe_ms),
         "post_act_probe_rounds": int(post_act_probe_rounds),

@@ -631,6 +631,89 @@ def test_evaluate_post_action_progress_keeps_fresh_settle_probe_when_backend_sna
     assert agent._dom_analyze_cache == {}
 
 
+def test_evaluate_post_action_progress_defers_observation_without_immediate_snapshot() -> None:
+    before_dom = [
+        DOMElement(id=1, tag="button", role="button", text="호텔/리조트", is_visible=True, is_enabled=True)
+    ]
+    evidence = {
+        "text_digest": "홈 호텔/리조트",
+        "live_texts": ["홈", "호텔/리조트"],
+        "list_count": 1,
+        "interactive_count": 1,
+        "modal_count": 0,
+        "backdrop_count": 0,
+        "dialog_count": 0,
+        "modal_open": False,
+        "auth_prompt_visible": False,
+        "login_visible": False,
+        "logout_visible": False,
+    }
+    reason_codes: list[str] = []
+
+    class _DeferredAgent:
+        session_id = "s1"
+        _dom_cache_generation = 1
+        _dom_analyze_cache: dict[str, object] = {}
+        _goal_constraints: dict[str, object] = {}
+        _goal_semantics = SimpleNamespace(goal_kind="", mutate_required=False)
+        _goal_policy_phase = ""
+        _goal_phase_intent = ""
+        _last_snapshot_evidence = dict(evidence)
+        _last_backend_post_action_snapshot: dict[str, object] = {}
+        _last_exec_result = SimpleNamespace(
+            success=True,
+            effective=True,
+            reason_code="ok",
+            state_change={
+                "backend": "openclaw",
+                "effective": True,
+                "backend_progress": False,
+                "post_action_observation_deferred": True,
+                "backend_pending_observation": True,
+            },
+        )
+
+        @staticmethod
+        def _estimate_goal_metric_from_dom(_dom: list[DOMElement]) -> None:
+            return None
+
+        @staticmethod
+        def _dom_progress_signature(dom: list[DOMElement]) -> tuple[str, ...]:
+            return tuple(str(getattr(item, "text", "") or "") for item in dom)
+
+        @staticmethod
+        def _evaluate_goal_target_completion(*, goal: object, dom_elements: list[DOMElement]) -> None:
+            return None
+
+        @staticmethod
+        def _record_reason_code(code: str) -> None:
+            reason_codes.append(code)
+
+        @staticmethod
+        def _log(_message: str) -> None:
+            return None
+
+        @staticmethod
+        def _analyze_dom(scope_container_ref_id: str = "") -> list[DOMElement]:
+            raise AssertionError("deferred post-action observation should wait for the next collect")
+
+    result = evaluate_post_action_progress(
+        agent=_DeferredAgent(),
+        goal=SimpleNamespace(id="g1", name="호텔/리조트", description="", success_criteria=[], start_url=""),
+        decision=ActionDecision(action=ActionType.CLICK, reasoning="호텔/리조트 클릭", confidence=0.8),
+        success=True,
+        before_signature=("호텔/리조트",),
+        dom_elements=before_dom,
+        step_count=1,
+        steps=[],
+        start_time=0.0,
+    )
+
+    assert result["changed"] is False
+    assert result["post_dom"] == []
+    assert "post_action_observation_deferred" in reason_codes
+
+
 def test_evaluate_post_action_progress_rejects_unreflected_commit_even_when_modal_closed(monkeypatch) -> None:
     monkeypatch.setattr("gaia.src.phase4.goal_driven.execute_goal_progress.time.sleep", lambda _seconds: None)
     before_dom = [

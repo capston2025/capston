@@ -18,14 +18,23 @@ _STATE_MUTATING_ACTIONS = {
 }
 
 
+def _observation_deferred(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    return bool(state_change.get("post_action_observation_deferred") or state_change.get("backend_pending_observation"))
+
+
 def _post_action_reason_code(
     *,
     decision: Any,
     reason_code: str,
     success: bool,
     changed: bool,
+    state_change: Optional[Dict[str, Any]] = None,
 ) -> str:
     normalized = str(reason_code or "unknown")
+    if bool(success) and not bool(changed) and normalized == "ok" and _observation_deferred(state_change):
+        return "observation_deferred"
     if (
         bool(success)
         and not bool(changed)
@@ -107,6 +116,7 @@ def handle_post_action_runtime(
         backend_trace = dict(state_change.get("backend_trace") or {})
     elif isinstance(getattr(agent, "_last_backend_trace", None), dict):
         backend_trace = dict(getattr(agent, "_last_backend_trace", None) or {})
+    observation_deferred = _observation_deferred(state_change)
     llm_trace = dict(getattr(agent, "_last_llm_trace", None) or {}) if isinstance(getattr(agent, "_last_llm_trace", None), dict) else {}
     terminal_result = progress_eval.get("terminal_result")
     wrapper_mode = wrapper_mode_name(agent)
@@ -118,6 +128,8 @@ def handle_post_action_runtime(
         if terminal_result is None:
             if login_gate_visible:
                 phase_event = "blocked_auth"
+            elif success and observation_deferred:
+                phase_event = "action_observation_deferred"
             elif success:
                 phase_event = "action_ok" if changed else "action_no_state_change"
             else:
@@ -210,6 +222,8 @@ def handle_post_action_runtime(
         agent._no_progress_counter = 0
         agent._weak_progress_streak = 0
         setattr(agent, "_discovery_no_progress_streak", 0)
+    elif observation_deferred:
+        setattr(agent, "_discovery_no_progress_streak", 0)
     else:
         setattr(agent, "_discovery_no_progress_streak", 0)
         agent._no_progress_counter += 1
@@ -224,6 +238,7 @@ def handle_post_action_runtime(
         reason_code=reason_code,
         success=success,
         changed=changed,
+        state_change=state_change,
     )
     master_orchestrator.record_progress(
         changed=changed,
@@ -277,12 +292,12 @@ def handle_post_action_runtime(
         )
         if len(agent._action_feedback) > 10:
             agent._action_feedback = agent._action_feedback[-10:]
-    if bool(success and changed):
+    if bool(success and (changed or observation_deferred)):
         agent._overlay_intercept_pending = False
         force_resnapshot = getattr(agent, "_force_next_dom_resnapshot", None)
         if callable(force_resnapshot):
             try:
-                force_resnapshot(reason="post_action_changed")
+                force_resnapshot(reason="post_action_changed" if changed else "post_action_observation_deferred")
             except Exception:
                 pass
     elif reason_code == "pointer_intercepted" or (

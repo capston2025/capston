@@ -712,10 +712,12 @@ def test_dispatch_openclaw_action_reuses_matching_snapshot_as_before_probe(monke
     assert status_code == 200
     assert text == ""
     assert payload["success"] is True
-    assert len(snapshot_calls) == 1
+    assert len(snapshot_calls) == 0
     assert payload["backend_trace"]["snapshot_before_cache_hit"] is True
     assert payload["backend_trace"]["snapshot_before_ms"] == 0
+    assert payload["backend_trace"]["post_action_full_probe"] is False
     assert payload["state_change"]["snapshot_id_before"] == cached_before["snapshot_id"]
+    assert payload["state_change"]["post_action_observation_deferred"] is True
 
 
 def test_dispatch_openclaw_action_preserves_evaluate_result_in_state_change(monkeypatch) -> None:
@@ -822,8 +824,9 @@ def test_dispatch_openclaw_action_does_not_reuse_scoped_snapshot_as_before_probe
     assert status_code == 200
     assert text == ""
     assert payload["backend_trace"]["snapshot_before_cache_hit"] is False
-    assert payload["state_change"]["snapshot_id_before"] == "openclaw:scoped-cache-s1:2"
-    assert snapshots == []
+    assert payload["backend_trace"]["post_action_full_probe"] is False
+    assert payload["state_change"]["post_action_observation_deferred"] is True
+    assert snapshots == [before_payload, after_payload]
 
 
 def test_cached_tabs_payload_expires(monkeypatch) -> None:
@@ -1819,7 +1822,7 @@ def test_dispatch_openclaw_action_reveals_present_hidden_ref_then_retries_click(
     assert payload["state_change"]["action_recovery"]["attempts"][0]["kind"] == "ref_visibility_reveal"
     assert payload["attempt_count"] == 2
     assert requests_seen[1]["kind"] == "evaluate"
-    assert snapshots == []
+    assert snapshots == [after_payload]
 
 
 def test_dispatch_openclaw_action_recovers_pointer_interceptor_overlay_then_retries_click(monkeypatch):
@@ -1920,7 +1923,7 @@ def test_dispatch_openclaw_action_recovers_pointer_interceptor_overlay_then_retr
     assert payload["state_change"]["action_recovery"]["attempts"][1]["kind"] == "pointer_interceptor_overlay_retry"
     assert payload["attempt_count"] == 2
     assert requests_seen[1]["kind"] == "evaluate"
-    assert snapshots == []
+    assert snapshots == [after_payload]
 
 
 def test_dispatch_openclaw_action_relabels_present_ref_reveal_failure_as_not_actionable(monkeypatch):

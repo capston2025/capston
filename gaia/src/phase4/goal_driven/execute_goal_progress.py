@@ -56,6 +56,12 @@ def _commit_verification_failed(state_change: Optional[Dict[str, Any]]) -> bool:
     return bool(state_change.get("commit_verification_failed") or state_change.get("commit_pending"))
 
 
+def _post_action_observation_deferred(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    return bool(state_change.get("post_action_observation_deferred") or state_change.get("backend_pending_observation"))
+
+
 def _sorted_text_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -506,6 +512,8 @@ def evaluate_post_action_progress(
             )
         )
     )
+    state_change = agent._last_exec_result.state_change if agent._last_exec_result else None
+    observation_deferred = _post_action_observation_deferred(state_change)
     backend_snapshot = (
         dict(getattr(agent, "_last_backend_post_action_snapshot", None) or {})
         if isinstance(getattr(agent, "_last_backend_post_action_snapshot", None), dict)
@@ -527,6 +535,9 @@ def evaluate_post_action_progress(
         post_dom = backend_post_dom
         post_dom_from_backend_snapshot = True
         after_evidence = dict(backend_after_evidence)
+    elif observation_deferred:
+        post_dom = []
+        after_evidence = dict(before_evidence)
     else:
         post_dom = agent._analyze_dom()
         after_evidence = (
@@ -545,7 +556,6 @@ def evaluate_post_action_progress(
     refreshed_metric = agent._estimate_goal_metric_from_dom(post_dom) if post_dom else None
     if refreshed_metric is not None:
         agent._goal_metric_value = refreshed_metric
-    state_change = agent._last_exec_result.state_change if agent._last_exec_result else None
     commit_failed = _commit_verification_failed(state_change)
     current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
     current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase))
@@ -606,6 +616,7 @@ def evaluate_post_action_progress(
         bool(success)
         and not changed
         and not commit_failed
+        and not observation_deferred
         and decision.action in {ActionType.CLICK, ActionType.TYPE, ActionType.PRESS, ActionType.SELECT}
     ):
         time.sleep(0.8)
@@ -663,6 +674,8 @@ def evaluate_post_action_progress(
         _emit_reason(agent, "progress_auth_prompt_visibility")
     elif changed_by_dom:
         _emit_reason(agent, "progress_dom_signature")
+    elif observation_deferred:
+        _emit_reason(agent, "post_action_observation_deferred")
     elif (
         bool(success)
         and isinstance(state_change, dict)
