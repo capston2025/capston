@@ -569,9 +569,9 @@ def _should_autosubmit_search_fill(
     """
     if element is None:
         return False
-    role = _normalized_binding_text(agent, getattr(element, "role", ""))
-    role_ref_role = _normalized_binding_text(agent, getattr(element, "role_ref_role", ""))
-    field_type = _normalized_binding_text(agent, getattr(element, "type", ""))
+    role = _normalized_binding_text(agent, element.role or "")
+    role_ref_role = _normalized_binding_text(agent, element.role_ref_role or "")
+    field_type = _normalized_binding_text(agent, element.type or "")
     element_blob = _fill_binding_blob(agent, element)
     is_search_box = (
         role == "searchbox"
@@ -597,6 +597,11 @@ def _should_autosubmit_search_fill(
     )
     if negative_search_context:
         return False
+    # NOTE: intentionally exclude "검색 결과"/"검색결과" — being *on* a results page
+    # is not an intent to submit a new query, and pairing it with a results/filter
+    # input (e.g. a min-price field whose container says "검색 결과") would wrongly
+    # auto-submit a multi-field filter. Keep tokens to genuine "enter a search
+    # query" intent only.
     return any(
         token in reasoning_blob
         for token in (
@@ -606,8 +611,6 @@ def _should_autosubmit_search_fill(
             "검색 필드",
             "검색한다",
             "검색하기",
-            "검색 결과",
-            "검색결과",
             "search for",
             "search query",
             "type into search",

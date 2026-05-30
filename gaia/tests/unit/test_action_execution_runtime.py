@@ -1791,3 +1791,21 @@ def test_autosubmit_search_fill_false_for_none_element() -> None:
     decision = _fill_decision("검색어를 입력합니다.")
 
     assert _should_autosubmit_search_fill(_TextAgent(), decision, None) is False
+
+
+def test_autosubmit_search_fill_false_for_results_page_filter_input() -> None:
+    # On a results/filter page the container text often contains "검색 결과", which
+    # makes the input look search-related; but typing a min-price filter value is
+    # NOT a request to submit a new query, so Enter must not be auto-pressed.
+    element = DOMElement(
+        id=6,
+        tag="input",
+        role="textbox",
+        ref_id="e50",
+        aria_label="최소 가격",
+        container_name="검색 결과",
+        context_text="검색 결과 1,200건 가격 필터 최소 가격 최대 가격",
+    )
+    decision = _fill_decision("검색 결과 페이지에서 최소 가격을 입력", value="50000")
+
+    assert _should_autosubmit_search_fill(_TextAgent(), decision, element) is False
