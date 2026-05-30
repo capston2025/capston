@@ -68,7 +68,7 @@ _TRANSIENT_REASONING_WAIT_KEYWORDS = (
     "잠시만",
 )
 _TRANSIENT_REASONING_WAIT_PERCENT = re.compile(r"\b\d{1,3}\s*%")
-_SERVICE_UNAVAILABLE_KEYWORDS = (
+_SOFT_SERVICE_UNAVAILABLE_KEYWORDS = (
     "서비스 지연 안내",
     "서비스 이용에 불편",
     "정상적으로 제공할 수 없습니다",
@@ -78,11 +78,25 @@ _SERVICE_UNAVAILABLE_KEYWORDS = (
     "잠시 후 다시 시도",
     "접속이 원활하지 않습니다",
     "일시적으로 사용할 수 없습니다",
+)
+_HARD_SERVICE_UNAVAILABLE_KEYWORDS = (
     "access denied",
+    "cloudflare",
+    "just a moment",
+    "checking your browser",
+    "verify you are human",
+    "cf-challenge",
+    "captcha",
     "service unavailable",
     "temporarily unavailable",
     "too many requests",
+    "page not found",
+    "404 not found",
+    "페이지를 찾을 수 없습니다",
+    "ret9999",
+    "시스템 오류 발생",
 )
+_SERVICE_UNAVAILABLE_KEYWORDS = _SOFT_SERVICE_UNAVAILABLE_KEYWORDS + _HARD_SERVICE_UNAVAILABLE_KEYWORDS
 
 
 def _is_actionable_element(el: DOMElement) -> bool:
@@ -161,6 +175,73 @@ def _dom_has_service_unavailable_signal(agent, dom_elements: List[DOMElement]) -
         if _text_has_service_unavailable_signal(agent, blob):
             return True
     return False
+
+
+def _service_unavailable_blobs(agent, dom_elements: List[DOMElement]) -> List[str]:
+    blobs: List[str] = []
+    for el in list(dom_elements or [])[:180]:
+        blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "placeholder", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                    str(getattr(el, "class_name", "") or ""),
+                ]
+            )
+        )
+        if blob:
+            blobs.append(blob)
+    evidence = getattr(agent, "_last_snapshot_evidence", None)
+    if isinstance(evidence, dict):
+        evidence_values: List[Any] = [
+            evidence.get("text_digest"),
+            evidence.get("live_texts"),
+            evidence.get("frame_texts"),
+        ]
+        for value in evidence_values:
+            if isinstance(value, list):
+                blobs.extend(agent._normalize_text(item) for item in value if str(item or "").strip())
+            elif str(value or "").strip():
+                blobs.append(agent._normalize_text(value))
+    exec_result = getattr(agent, "_last_exec_result", None)
+    state_change = getattr(exec_result, "state_change", None)
+    if isinstance(state_change, dict):
+        blobs.append(agent._normalize_text(state_change.get("inspection_summary")))
+        inspection = state_change.get("inspection")
+        if isinstance(inspection, dict):
+            blobs.append(agent._normalize_text(inspection.get("title")))
+            blobs.append(agent._normalize_text(inspection.get("bodyText")))
+            for frame in list(inspection.get("frames") or [])[:8]:
+                if isinstance(frame, dict):
+                    blobs.append(agent._normalize_text(frame.get("title")))
+                    blobs.append(agent._normalize_text(frame.get("bodyText")))
+    blobs = [blob for blob in blobs if str(blob or "").strip()]
+    return blobs
+
+
+def detect_service_unavailable_state(agent, dom_elements: List[DOMElement]) -> Optional[Dict[str, Any]]:
+    blobs = _service_unavailable_blobs(agent, dom_elements)
+    for token in _HARD_SERVICE_UNAVAILABLE_KEYWORDS:
+        normalized_token = agent._normalize_text(token)
+        if normalized_token and any(normalized_token in blob for blob in blobs):
+            return {
+                "hard": True,
+                "matched": token,
+                "reason": f"외부 서비스 오류/차단 화면이 표시되었습니다: {token}",
+            }
+    for token in _SOFT_SERVICE_UNAVAILABLE_KEYWORDS:
+        normalized_token = agent._normalize_text(token)
+        if normalized_token and any(normalized_token in blob for blob in blobs):
+            return {
+                "hard": False,
+                "matched": token,
+                "reason": f"외부 서비스 지연 안내 화면이 표시되었습니다: {token}",
+            }
+    return None
 
 
 def _readonly_visibility_query_tokens(agent, goal: TestGoal) -> List[str]:
@@ -447,7 +528,7 @@ def evaluate_readonly_visibility_completion(
     decision: ActionDecision,
     dom_elements: Optional[List[DOMElement]] = None,
 ) -> Optional[str]:
-    if decision.action != ActionType.WAIT:
+    if decision.action not in {ActionType.WAIT, ActionType.INSPECT}:
         return None
     if not dom_elements:
         return None
@@ -619,6 +700,585 @@ def evaluate_destination_region_completion(
     return f"목표 대상({unique})이 목적지 영역({destinations}) 안에서 확인되어 목표를 완료로 판정했습니다."
 
 
+def _month_day_pairs_from_text(text: str) -> List[tuple[int, int]]:
+    pairs: List[tuple[int, int]] = []
+    for month, day in re.findall(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일", str(text or "")):
+        try:
+            pairs.append((int(month), int(day)))
+        except ValueError:
+            continue
+    for month, day in re.findall(r"(?<!\d)(\d{1,2})\s*[.]\s*(\d{1,2})(?!\d)", str(text or "")):
+        try:
+            pairs.append((int(month), int(day)))
+        except ValueError:
+            continue
+    unique: List[tuple[int, int]] = []
+    for pair in pairs:
+        if pair not in unique and 1 <= pair[0] <= 12 and 1 <= pair[1] <= 31:
+            unique.append(pair)
+    return unique
+
+
+def _disabled_date_surface_has_goal_anchor(agent, goal: TestGoal, visible_blob: str) -> bool:
+    visible_no_space = re.sub(r"\s+", "", agent._normalize_text(visible_blob))
+    if not visible_no_space:
+        return False
+    raw_terms: List[str] = []
+    for getter_name in ("_goal_quoted_terms", "_goal_target_terms", "_goal_destination_terms"):
+        getter = getattr(agent, getter_name, None)
+        if callable(getter):
+            try:
+                raw_terms.extend(str(item or "") for item in (getter(goal) or []))
+            except Exception:
+                pass
+    raw_terms.extend(str(item or "") for item in extract_goal_query_tokens(agent, goal))
+    stop_terms = {
+        "예매",
+        "화면",
+        "확인",
+        "지난",
+        "과거",
+        "날짜",
+        "상영시간",
+        "상영시간이",
+        "클릭",
+        "클릭되지",
+        "않는지",
+        "비활성",
+        "disabled",
+        "선택",
+        "불가",
+    }
+    for term in raw_terms:
+        normalized = agent._normalize_text(term)
+        compact = re.sub(r"\s+", "", normalized)
+        if (
+            len(compact) < 2
+            or compact in stop_terms
+            or re.fullmatch(r"\d+", compact)
+            or re.search(r"\d+\s*월|\d+\s*일", normalized)
+        ):
+            continue
+        if compact in visible_no_space:
+            return True
+    return False
+
+
+def evaluate_disabled_unavailable_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> Optional[str]:
+    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+    if not any(
+        token in goal_blob
+        for token in (
+            "클릭되지",
+            "비활성",
+            "disabled",
+            "선택 불가",
+            "클릭 불가",
+            "이동할 수 없",
+        )
+    ):
+        return None
+
+    visible_elements = [
+        el for el in list(dom_elements or [])
+        if bool(getattr(el, "is_visible", True))
+    ]
+    if not visible_elements:
+        return None
+
+    visible_blob = agent._normalize_text(
+        " ".join(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+            for el in visible_elements
+        )
+    )
+    if not visible_blob:
+        return None
+
+    surface_tokens = ("예매", "상영시간", "날짜", "시간", "옵션", "필터", "버튼")
+    if not any(token in visible_blob for token in surface_tokens):
+        return None
+
+    goal_date_pairs = _month_day_pairs_from_text(
+        str(getattr(goal, "description", "") or "") + " " + str(getattr(goal, "name", "") or "")
+    )
+    visible_date_pairs = _month_day_pairs_from_text(visible_blob)
+    if goal_date_pairs and visible_date_pairs:
+        earliest_visible_date = min(visible_date_pairs)
+        target_date_before_visible_range = any(pair < earliest_visible_date for pair in goal_date_pairs)
+        if (
+            target_date_before_visible_range
+            and "예매" in visible_blob
+            and any(token in visible_blob for token in ("오늘", "날짜", "상영시간"))
+            and _disabled_date_surface_has_goal_anchor(agent, goal, visible_blob)
+        ):
+            return "현재 날짜 선택 UI가 목표 과거 날짜 이후 범위만 제공해 목표 날짜 선택지가 클릭되지 않음을 확인했습니다."
+
+    recent_feedback_blob = agent._normalize_text(
+        " ".join(
+            str(item or "")
+            for item in list(getattr(agent, "_action_feedback", []) or [])[-6:]
+        )
+        + " "
+        + str(getattr(getattr(agent, "_last_exec_result", None), "error", "") or "")
+    )
+    recent_not_actionable = any(
+        token in recent_feedback_blob
+        for token in (
+            "not_actionable",
+            "not found or not visible",
+            "not found",
+            "not visible",
+            "disabled",
+            "비활성",
+        )
+    )
+
+    disabled_controls: List[DOMElement] = [
+        el
+        for el in visible_elements
+        if not bool(getattr(el, "is_enabled", True))
+        and str(getattr(el, "role", "") or "").strip().lower() in {"button", "link", "tab", "option", "radio"}
+    ]
+    disabled_blob = agent._normalize_text(
+        " ".join(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                ]
+            )
+            for el in disabled_controls
+        )
+    )
+    has_disabled_evidence = (
+        bool(disabled_controls)
+        or "disabled" in visible_blob
+        or "비활성" in visible_blob
+        or recent_not_actionable
+    )
+    if not has_disabled_evidence:
+        return None
+
+    date_terms = [
+        re.sub(r"\s+", "", match)
+        for match in re.findall(r"\d+\s*월\s*\d+\s*일", str(getattr(goal, "description", "") or "") + " " + str(getattr(goal, "name", "") or ""))
+    ]
+    normalized_visible_no_space = re.sub(r"\s+", "", visible_blob)
+    date_missing = bool(date_terms) and any(term not in normalized_visible_no_space for term in date_terms)
+    past_navigation_blocked = "이전" in disabled_blob or "이전" in visible_blob and "disabled" in visible_blob
+    disabled_time_evidence = bool(re.search(r"\b\d{1,2}:\d{2}\b", disabled_blob or visible_blob))
+
+    if recent_not_actionable and any(token in visible_blob for token in ("예매", "상영시간", "날짜", "시간")):
+        return "최근 목표 조건의 비활성/선택 불가 대상 클릭이 not_actionable으로 실패했고 현재 검증 화면이 유지되어 클릭되지 않음을 확인했습니다."
+    if date_terms and not (date_missing and (past_navigation_blocked or disabled_time_evidence)):
+        return None
+
+    if disabled_time_evidence:
+        return "현재 화면에서 목표 조건의 시간/옵션이 disabled 상태로 표시되어 클릭되지 않음을 확인했습니다."
+    if date_missing and past_navigation_blocked:
+        return "현재 화면에서 목표 날짜가 제공되지 않고 이전 이동도 disabled라 과거 선택지가 클릭되지 않음을 확인했습니다."
+    return "현재 화면에서 목표 선택지가 disabled/비활성 상태라 클릭되지 않음을 확인했습니다."
+
+
+def _quantity_term_forms(value: str) -> List[str]:
+    cleaned = re.sub(r"\s+", "", str(value or "").strip())
+    if not cleaned:
+        return []
+    forms = [cleaned]
+    if cleaned.endswith("입"):
+        forms.append(cleaned[:-1])
+    elif cleaned.endswith("개"):
+        forms.append(f"{cleaned}입")
+    return list(dict.fromkeys(forms))
+
+
+def _variant_target_quantity_terms(goal_blob_raw: str) -> List[str]:
+    terms: List[str] = []
+    for pattern in (
+        r"(\d+\s*개(?:입)?)\s*(?:클릭|선택|누르|눌렀|했을\s*때|했을때)",
+        r"(?:클릭|선택|누르|눌렀|했을\s*때|했을때)[^\d]{0,12}(\d+\s*개(?:입)?)",
+    ):
+        for match in re.findall(pattern, goal_blob_raw):
+            for form in _quantity_term_forms(str(match or "")):
+                if form not in terms:
+                    terms.append(form)
+    return terms
+
+
+def evaluate_variant_price_image_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> Optional[str]:
+    goal_blob_raw = agent._goal_text_blob(goal)
+    goal_blob = agent._normalize_text(goal_blob_raw)
+    if not goal_blob:
+        return None
+    if not any(token in goal_blob for token in ("대표이미지", "대표 이미지", "상품이미지", "상품 이미지", "product image")):
+        return None
+    if not any(token in goal_blob for token in ("가격", "금액", "price")):
+        return None
+    if not any(token in goal_blob for token in ("달라", "변경", "바뀌", "비교", "옵션", "variant")):
+        return None
+
+    target_terms = _variant_target_quantity_terms(str(goal_blob_raw or ""))
+    if not target_terms:
+        return None
+
+    visible_elements = [el for el in list(dom_elements or []) if bool(getattr(el, "is_visible", True))]
+    if not visible_elements:
+        return None
+
+    def _el_blob(el: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", None) or ""),
+                    str(getattr(el, "role_ref_name", None) or ""),
+                    str(getattr(el, "container_name", None) or ""),
+                    str(getattr(el, "context_text", None) or ""),
+                ]
+            )
+        )
+
+    def _is_actionable(el: DOMElement) -> bool:
+        role = str(getattr(el, "role", "") or "").strip().lower()
+        tag = str(getattr(el, "tag", "") or "").strip().lower()
+        return bool(getattr(el, "is_enabled", True)) and (
+            role in {"button", "link", "tab", "option", "radio"} or tag in {"button", "a", "option"}
+        )
+
+    visible_blob = agent._normalize_text(" ".join(_el_blob(el) for el in visible_elements))
+    current_surface_blob = agent._normalize_text(
+        " ".join(_el_blob(el) for el in visible_elements if not _is_actionable(el))
+    )
+    if not visible_blob or not current_surface_blob:
+        return None
+
+    target_seen_on_current_surface = any(term and term in current_surface_blob for term in target_terms)
+    if not target_seen_on_current_surface:
+        return None
+
+    recent_parts: List[str] = []
+    for attr in ("_action_history", "_action_feedback", "_persistent_state_memory", "_text_evidence_memory"):
+        value = getattr(agent, attr, None)
+        if isinstance(value, list):
+            recent_parts.extend(str(item or "") for item in value[-8:])
+        elif value:
+            recent_parts.append(str(value))
+    recent_blob = agent._normalize_text(" ".join(recent_parts))
+
+    last_selected = getattr(agent, "_last_action_selected_element", None)
+    selected_blob = ""
+    if last_selected is not None:
+        selected_blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(last_selected, "text", "") or ""),
+                    str(getattr(last_selected, "aria_label", "") or ""),
+                    str(getattr(last_selected, "title", "") or ""),
+                    str(getattr(last_selected, "role_ref_name", "") or ""),
+                    str(getattr(last_selected, "selected_value", "") or ""),
+                ]
+            )
+        )
+    target_was_recently_selected = any(term and term in selected_blob for term in target_terms)
+    if not target_was_recently_selected:
+        target_was_recently_selected = any(term and term in recent_blob for term in target_terms)
+    if not target_was_recently_selected:
+        return None
+
+    all_quantity_forms = []
+    for match in re.findall(r"\d+\s*개(?:입)?", str(goal_blob_raw or "")):
+        all_quantity_forms.extend(_quantity_term_forms(match))
+    comparison_terms = [term for term in dict.fromkeys(all_quantity_forms) if term not in set(target_terms)]
+    if comparison_terms and not any(term and term in recent_blob for term in comparison_terms):
+        baseline_terms: List[str] = []
+        for match in re.findall(r"\d+\s*개(?:입)?", recent_blob):
+            baseline_terms.extend(_quantity_term_forms(match))
+        baseline_terms = [
+            term for term in dict.fromkeys(baseline_terms)
+            if term not in set(target_terms) and term not in set(comparison_terms)
+        ]
+        if not baseline_terms:
+            return None
+
+    has_price = bool(re.search(r"\d[\d,]*\s*원", visible_blob)) or "price" in visible_blob or "가격" in visible_blob
+    if not has_price:
+        return None
+
+    has_image = False
+    for el in visible_elements:
+        role = str(getattr(el, "role", "") or "").strip().lower()
+        tag = str(getattr(el, "tag", "") or "").strip().lower()
+        blob = _el_blob(el)
+        if role in {"img", "image"} or tag == "img":
+            has_image = True
+            break
+        if any(token in blob for token in ("product image", "대표이미지", "대표 이미지", "상품이미지", "상품 이미지")):
+            has_image = True
+            break
+    if not has_image:
+        return None
+
+    target_label = target_terms[0]
+    return (
+        f"현재 상품 상세 surface에서 선택 수량({target_label}), 가격, 대표이미지 영역이 함께 확인되어 "
+        "옵션 변경 확인 목표를 완료로 판정했습니다."
+    )
+
+
+def _goal_sort_terms(goal_blob: str) -> List[str]:
+    candidates = (
+        "판매량순",
+        "예약가 낮은 순",
+        "낮은 가격순",
+        "낮은가격순",
+        "가격 낮은 순",
+        "높은 가격순",
+        "가격 높은 순",
+        "최신순",
+        "추천순",
+        "인기순",
+        "리뷰순",
+        "평점순",
+        "랭킹순",
+        "sort",
+    )
+    terms = [term for term in candidates if term in goal_blob]
+    return list(dict.fromkeys(terms))
+
+
+def _goal_search_query_before_search(goal_blob_raw: str) -> str:
+    text = str(goal_blob_raw or "")
+    match = re.search(r"\s*검색", text)
+    if not match:
+        return ""
+    prefix = text[: match.start()]
+    tokens = [
+        token
+        for token in re.findall(r"[A-Za-z0-9가-힣]+", prefix)
+        if token not in {"홈에서", "현재", "검색창", "검색어", "후에", "뒤에"}
+    ]
+    return re.sub(r"\s+", "", tokens[-1]).strip() if tokens else ""
+
+
+def evaluate_sort_results_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> Optional[str]:
+    goal_blob_raw = agent._goal_text_blob(goal)
+    goal_blob = agent._normalize_text(goal_blob_raw)
+    if not goal_blob:
+        return None
+    if not any(token in goal_blob for token in ("정렬", "필터", "sort", "순서")):
+        return None
+    sort_terms = _goal_sort_terms(goal_blob)
+    if not sort_terms:
+        return None
+
+    last_selected = getattr(agent, "_last_action_selected_element", None)
+    selected_blob = ""
+    if last_selected is not None:
+        selected_blob = agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(last_selected, "text", "") or ""),
+                    str(getattr(last_selected, "aria_label", "") or ""),
+                    str(getattr(last_selected, "title", "") or ""),
+                    str(getattr(last_selected, "role_ref_name", "") or ""),
+                    str(getattr(last_selected, "selected_value", "") or ""),
+                ]
+            )
+        )
+    if not any(term and term in selected_blob for term in sort_terms):
+        return None
+
+    visible_elements = [el for el in list(dom_elements or []) if bool(getattr(el, "is_visible", True))]
+    if not visible_elements:
+        return None
+    visible_blob = agent._normalize_text(
+        " ".join(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "role_ref_name", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                ]
+            )
+            for el in visible_elements
+        )
+    )
+    if not visible_blob:
+        return None
+
+    active_url = agent._normalize_text(getattr(agent, "_active_url", "") or "")
+    has_sort_term_visible = any(term and term in visible_blob for term in sort_terms)
+    has_active_sort_signal = any(token in visible_blob for token in ("checked", "active", "selected", "선택됨", "적용"))
+    if not (has_sort_term_visible and (has_active_sort_signal or "sort" in active_url or "saleCountDesc".lower() in active_url)):
+        return None
+
+    query = _goal_search_query_before_search(str(goal_blob_raw or ""))
+    if query and query not in re.sub(r"\s+", "", visible_blob):
+        return None
+
+    has_result_surface = any(token in visible_blob for token in ("검색결과", "검색 결과", "상품", "제품", "product", "list"))
+    has_ordered_items = bool(re.search(r"(?:^|\D)1(?:\D{1,80})2(?:\D{1,80})3(?:\D|$)", visible_blob))
+    has_price_or_product = bool(re.search(r"\d[\d,]*\s*원", visible_blob)) or any(
+        token in visible_blob for token in ("상품명", "제품명", "무료배송", "도착", "리뷰")
+    )
+    if not (has_result_surface and (has_ordered_items or has_price_or_product)):
+        return None
+
+    return f"현재 결과 목록에서 {sort_terms[0]} 정렬이 active/checked 상태이고 상품 목록이 표시되어 정렬 확인 목표를 완료로 판정했습니다."
+
+
+def _compact_match_text(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", str(value or "").lower())
+
+
+def _goal_region_terms(goal_blob_raw: str) -> List[str]:
+    terms = re.findall(r"[가-힣]{2,}(?:특별시|광역시|시|군|구|동|읍|면|리)", str(goal_blob_raw or ""))
+    return list(dict.fromkeys(term.strip() for term in terms if term.strip()))
+
+
+def evaluate_filter_result_surface_completion(
+    agent,
+    *,
+    goal: TestGoal,
+    dom_elements: List[DOMElement],
+) -> Optional[str]:
+    goal_blob_raw = agent._goal_text_blob(goal)
+    goal_blob = agent._normalize_text(goal_blob_raw)
+    if not goal_blob:
+        return None
+    if "필터" not in goal_blob:
+        return None
+    if not any(token in goal_blob for token in ("결과", "나타", "표시", "확인")):
+        return None
+
+    visible_elements = [el for el in list(dom_elements or []) if bool(getattr(el, "is_visible", True))]
+    if not visible_elements:
+        return None
+
+    def _el_blob(el: DOMElement) -> str:
+        return agent._normalize_text(
+            " ".join(
+                [
+                    str(getattr(el, "text", "") or ""),
+                    str(getattr(el, "aria_label", "") or ""),
+                    str(getattr(el, "title", "") or ""),
+                    str(getattr(el, "role_ref_name", "") or ""),
+                    str(getattr(el, "selected_value", "") or ""),
+                    str(getattr(el, "class_name", "") or ""),
+                    str(getattr(el, "container_name", "") or ""),
+                    str(getattr(el, "context_text", "") or ""),
+                ]
+            )
+        )
+
+    visible_blob = agent._normalize_text(" ".join(_el_blob(el) for el in visible_elements))
+    compact_visible = _compact_match_text(visible_blob)
+    if not visible_blob:
+        return None
+
+    region_terms = _goal_region_terms(str(goal_blob_raw or ""))
+    if len(region_terms) < 2:
+        return None
+    if not all(_compact_match_text(term) in compact_visible for term in region_terms):
+        return None
+    most_specific_region = region_terms[-1]
+    region_result_patterns = (
+        f"‘{most_specific_region}’ 매물건수",
+        f"'{most_specific_region}' 매물건수",
+        f'"{most_specific_region}" 매물건수',
+        f"{most_specific_region} 매물건수",
+    )
+    region_summary_committed = any(pattern in visible_blob for pattern in region_result_patterns) or bool(
+        re.search(
+            re.escape(most_specific_region) + r".{0,16}(?:매물건수|검색결과|검색 결과|결과)",
+            visible_blob,
+        )
+    )
+    if not region_summary_committed:
+        return None
+
+    expected_signals = [
+        str(item or "").strip()
+        for item in list(getattr(goal, "expected_signals", []) or [])
+        if str(item or "").strip()
+    ]
+    expected_hits = [
+        signal
+        for signal in expected_signals
+        if agent._normalize_text(signal) in visible_blob
+        or _compact_match_text(signal) in compact_visible
+    ]
+    if expected_signals and len(expected_hits) < min(4, len(expected_signals)):
+        return None
+
+    result_summary_tokens = (
+        "검색결과",
+        "검색 결과",
+        "결과",
+        "매물건수",
+        "상품",
+        "제품",
+        "목록",
+        "list",
+    )
+    has_result_summary = any(token in visible_blob for token in result_summary_tokens)
+    has_count_summary = bool(re.search(r"\d[\d,]*\s*(?:건|개|명|원|%)", visible_blob)) or (
+        has_result_summary and bool(re.search(r"\d[\d,]*", visible_blob))
+    )
+    if not (has_result_summary and has_count_summary):
+        return None
+
+    active_or_committed = any(
+        token in visible_blob
+        for token in (
+            "selected",
+            "active",
+            "checked",
+            "선택",
+            "적용",
+            "매물건수",
+            "검색결과",
+            "검색 결과",
+        )
+    )
+    if not active_or_committed:
+        return None
+
+    matched_label = ", ".join(dict.fromkeys(expected_hits[:4] or region_terms[:4]))
+    if not matched_label:
+        matched_label = "필터/지역/결과 요약"
+    return f"현재 화면에서 {matched_label} 및 결과 요약/건수가 함께 확인되어 필터 결과 확인 목표를 완료로 판정했습니다."
+
+
 def evaluate_goal_target_completion(
     agent,
     *,
@@ -638,6 +1298,34 @@ def evaluate_goal_target_completion(
     )
     if payment_presubmit_reason:
         return payment_presubmit_reason
+    disabled_unavailable_reason = evaluate_disabled_unavailable_completion(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+    )
+    if disabled_unavailable_reason:
+        return disabled_unavailable_reason
+    variant_price_image_reason = evaluate_variant_price_image_completion(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+    )
+    if variant_price_image_reason:
+        return variant_price_image_reason
+    sort_results_reason = evaluate_sort_results_completion(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+    )
+    if sort_results_reason:
+        return sort_results_reason
+    filter_result_reason = evaluate_filter_result_surface_completion(
+        agent,
+        goal=goal,
+        dom_elements=dom_elements,
+    )
+    if filter_result_reason:
+        return filter_result_reason
     return None
 
 
@@ -648,7 +1336,7 @@ def evaluate_reasoning_only_wait_completion(
     decision: ActionDecision,
     dom_elements: Optional[List[DOMElement]] = None,
 ) -> Optional[str]:
-    if decision.action != ActionType.WAIT:
+    if decision.action not in {ActionType.WAIT, ActionType.INSPECT}:
         return None
     if dom_elements:
         target_reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom_elements)
@@ -926,12 +1614,23 @@ def _should_judge_reasoning_only_wait_completion(
     direction = str(getattr(agent, "_goal_constraints", {}).get("mutation_direction") or "").strip().lower()
     if direction in {"increase", "decrease", "clear"}:
         return False
-    semantics = getattr(agent, "_goal_semantics", None)
-    if bool(getattr(semantics, "mutate_required", False)):
-        return False
-
     reasoning_blob = agent._normalize_text(str(getattr(decision, "reasoning", "") or ""))
     if not reasoning_blob:
+        return False
+    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
+    disabled_verification_goal = any(
+        token in goal_blob or token in reasoning_blob
+        for token in (
+            "클릭되지",
+            "비활성",
+            "disabled",
+            "선택 불가",
+            "이동할 수 없",
+            "접근할 수 없",
+        )
+    )
+    semantics = getattr(agent, "_goal_semantics", None)
+    if bool(getattr(semantics, "mutate_required", False)) and not disabled_verification_goal:
         return False
     completion_tokens = (
         "충족",
@@ -953,15 +1652,15 @@ def _should_judge_reasoning_only_wait_completion(
         "loading",
         "spinner",
         "generating",
-        "기다려",
-        "대기",
+        "기다려야",
+        "기다리는",
+        "대기 중",
     )
     if not any(token in reasoning_blob for token in completion_tokens):
         return False
     if any(token in reasoning_blob for token in loading_tokens):
         return False
 
-    goal_blob = agent._normalize_text(agent._goal_text_blob(goal))
     detail_tokens = (
         "상세",
         "정보",
@@ -985,6 +1684,11 @@ def _should_judge_reasoning_only_wait_completion(
         "지도",
         "길찾기",
         "경로",
+        "예매",
+        "상영시간",
+        "비활성",
+        "disabled",
+        "클릭되지",
     )
     if not is_readonly_visibility_goal(agent, goal) and not any(token in goal_blob for token in detail_tokens):
         return False

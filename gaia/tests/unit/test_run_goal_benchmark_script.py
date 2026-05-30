@@ -36,6 +36,7 @@ from scripts.run_goal_benchmark import (
 from scripts.runner_identity import resolve_runner_id, sanitize_runner_id
 from scripts.benchmark_blocking import (
     BLOCKED_CAPTCHA_REASON_CODE,
+    BLOCKED_EXTERNAL_SERVICE_REASON_CODE,
     BLOCKED_USER_ACTION_STATUS,
     is_blocked_user_action,
     normalize_blocked_user_action_row,
@@ -494,3 +495,99 @@ def test_blocked_captcha_is_excluded_from_primary_success_rate() -> None:
     assert kpis["primary_success_rate"] == 0.5
     assert kpis["counts"]["blocked"] == 1
     assert kpis["counts"]["primary_runs"] == 2
+
+
+def test_external_service_unavailable_is_normalized_to_blocked_user_action() -> None:
+    row = normalize_blocked_user_action_row(
+        {
+            "scenario_id": "COUPANG_001_ZERO_COLA_BESTSELLING_SORT",
+            "status": "FAIL",
+            "reason": "external_service_unavailable: 외부 서비스 오류/차단 화면이 표시되었습니다: access denied",
+            "duration_seconds": 3.8,
+            "summary": {
+                "final_status": "FAIL",
+                "reason_code_summary": {"external_service_unavailable": 1},
+            },
+        }
+    )
+
+    assert row["status"] == BLOCKED_USER_ACTION_STATUS
+    assert row["blocked_reason_code"] == BLOCKED_EXTERNAL_SERVICE_REASON_CODE
+    assert row["summary"]["final_status"] == BLOCKED_USER_ACTION_STATUS
+    assert row["summary"]["blocked_reason_code"] == BLOCKED_EXTERNAL_SERVICE_REASON_CODE
+    assert row["summary"]["reason_code_summary"][BLOCKED_EXTERNAL_SERVICE_REASON_CODE] == 1
+    assert is_blocked_user_action(row)
+
+
+def test_external_service_blocked_rows_are_excluded_from_primary_metrics() -> None:
+    rows = [
+        {"scenario_id": "OK_001", "status": "SUCCESS", "duration_seconds": 5.0, "summary": {}},
+        normalize_blocked_user_action_row(
+            {
+                "scenario_id": "CHATGPT_001_GAIA_VS_HUMAN_V1",
+                "status": "FAIL",
+                "reason": (
+                    "external_service_unavailable: 외부 페이지가 렌더링됐지만 "
+                    "접근 가능한 DOM을 제공하지 않아 anti-bot/challenge 또는 외부 로딩 차단으로 분리했습니다."
+                ),
+                "duration_seconds": 10.0,
+                "summary": {"final_status": "FAIL", "reason_code_summary": {"external_service_unavailable": 1}},
+            }
+        ),
+    ]
+
+    metrics = _compute_metrics(rows, repeats=1)
+    kpis = _compute_kpi_metrics(rows, repeats=1)
+
+    assert metrics["success_rate"] == 0.5
+    assert metrics["primary_success_rate"] == 1.0
+    assert metrics["blocked_runs_total"] == 1
+    assert kpis["primary_success_rate"] == 1.0
+    assert kpis["intervention_rate"] == 0.5
+
+
+def test_blocked_retries_do_not_penalize_self_recovery_rate() -> None:
+    rows = [
+        {
+            "scenario_id": "JOBKOREA_006_ONEPICK_HIGH_SALARY_FILTER",
+            "status": "SUCCESS",
+            "duration_seconds": 71.2,
+            "summary": {"reason_code_summary": {"not_actionable": 1}},
+        },
+        normalize_blocked_user_action_row(
+            {
+                "scenario_id": "CHATGPT_001_GAIA_VS_HUMAN_V1",
+                "status": "FAIL",
+                "reason": "external_service_unavailable: anti-bot/challenge",
+                "duration_seconds": 27.4,
+                "summary": {
+                    "final_status": "FAIL",
+                    "reason_code_summary": {
+                        "dom_snapshot_retry": 18,
+                        "external_service_unavailable": 1,
+                    },
+                },
+            }
+        ),
+    ]
+
+    kpis = _compute_kpi_metrics(rows, repeats=1)
+
+    assert kpis["self_recovery_rate"] == 1.0
+    assert kpis["counts"]["recovery_runs"] == 1
+    assert kpis["counts"]["recovery_success"] == 1
+
+
+def test_cancelled_required_human_input_is_normalized_to_blocked_user_action() -> None:
+    row = normalize_blocked_user_action_row(
+        {
+            "scenario_id": "CYBER_001_LSM_LOGIN_AND_CHAT",
+            "status": "FAIL",
+            "reason": "사용자가 필요한 입력 제공을 취소했습니다.",
+            "duration_seconds": 16.4,
+            "summary": {"final_status": "FAIL", "reason_code_summary": {}},
+        }
+    )
+
+    assert row["status"] == BLOCKED_USER_ACTION_STATUS
+    assert is_blocked_user_action(row)

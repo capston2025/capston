@@ -40,18 +40,18 @@ def to_ai_friendly_error(
             "최신 snapshot을 다시 촬영하여 정확한 ref를 확인하세요."
         )
 
-    # Timeout + not visible 조합 -> 요소 없음/숨김
-    if _is_visibility_timeout(message):
-        return (
-            f'"{identifier}"를 찾을 수 없거나 표시되지 않습니다. '
-            "최신 snapshot을 기반으로 요소를 다시 확인하세요."
-        )
-
     # intercepts pointer events -> 다른 요소에 가려짐
     if _is_pointer_blocked(message):
         return (
             f'"{identifier}"가 다른 요소에 가려져 상호작용할 수 없습니다. '
             "스크롤하거나 오버레이를 닫은 후 다시 시도하세요."
+        )
+
+    # Timeout + not visible 조합 -> 요소 없음/숨김
+    if _is_visibility_timeout(message):
+        return (
+            f'"{identifier}"를 찾을 수 없거나 표시되지 않습니다. '
+            "최신 snapshot을 기반으로 요소를 다시 확인하세요."
         )
 
     # detached from DOM -> 요소가 DOM에서 제거됨

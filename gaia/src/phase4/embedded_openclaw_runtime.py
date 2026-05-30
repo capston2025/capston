@@ -201,6 +201,19 @@ def _detect_playwright_chromium_executable() -> str | None:
                 version = 0
             candidates = (
                 entry / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                entry
+                / "chrome-mac"
+                / "Google Chrome for Testing.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome for Testing",
+                entry / "chrome-mac-arm64" / "Chromium.app" / "Contents" / "MacOS" / "Chromium",
+                entry
+                / "chrome-mac-arm64"
+                / "Google Chrome for Testing.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome for Testing",
                 entry / "chrome-linux" / "chrome",
                 entry / "chrome-win" / "chrome.exe",
             )
@@ -288,6 +301,8 @@ def _ensure_browser_profile_started(base_url: str) -> None:
     last_error = ""
     attempts = len(_PROFILE_START_RETRY_DELAYS_S) + 1
     for attempt in range(attempts):
+        if _browser_profile_ready(base_url, profile="openclaw"):
+            return
         response = requests.post(
             f"{base_url.rstrip('/')}/start",
             params={"profile": "openclaw"},
@@ -300,9 +315,34 @@ def _ensure_browser_profile_started(base_url: str) -> None:
         if response.status_code < 400 and not (isinstance(data, dict) and data.get("ok") is False):
             return
         last_error = str(data.get("error") or response.text or "openclaw profile start failed")
+        if _browser_profile_ready(base_url, profile="openclaw"):
+            return
         if attempt < len(_PROFILE_START_RETRY_DELAYS_S):
+            _cleanup_stale_browser_profile()
             time.sleep(float(_PROFILE_START_RETRY_DELAYS_S[attempt]))
     raise RuntimeError(last_error)
+
+
+def _browser_profile_ready(base_url: str, *, profile: str) -> bool:
+    try:
+        response = requests.get(
+            f"{base_url.rstrip('/')}/",
+            params={"profile": profile},
+            timeout=1.5,
+        )
+    except Exception:
+        return False
+    if response.status_code >= 400:
+        return False
+    try:
+        data = response.json()
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("profile") or "") != str(profile or ""):
+        return False
+    return bool(data.get("running")) and bool(data.get("cdpReady"))
 
 
 def _browser_server_ready(base_url: str) -> bool:

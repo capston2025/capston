@@ -26,6 +26,27 @@ def test_openclaw_snapshot_max_chars_accepts_explicit_cap(monkeypatch):
     assert runtime._openclaw_snapshot_max_chars_param() == 120000
 
 
+def test_normalize_failure_reports_pointer_interceptor_details():
+    message = """
+Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator('aria-ref=e131')
+    - locator resolved to <a href="#" class="skyview">스카이뷰</a>
+    - element is visible, enabled and stable
+    - <div id="dimmedLayer" class="DimmedLayer"></div> intercepts pointer events
+"""
+
+    status_code, payload, text = runtime._normalize_failure(500, {"error": message}, "")
+
+    assert status_code == 200
+    assert payload["success"] is False
+    assert payload["reason_code"] == "pointer_intercepted"
+    assert payload["attempt_count"] == 1
+    assert payload["state_change"]["pointer_interceptor"]["description"] == "div#dimmedLayer.DimmedLayer"
+    assert payload["attempt_logs"][0]["pointer_interceptor"]["id"] == "dimmedLayer"
+    assert text == message
+
+
 def test_build_snapshot_payload_merges_dom_text_evidence():
     state = _seed_session("dom-text-session")
 
@@ -57,6 +78,61 @@ def test_build_snapshot_payload_merges_dom_text_evidence():
     assert evidence["dom_text_block_count"] == 1
     assert "청소기가 좀 시끄러워요" in evidence["text_digest"]
     assert any("밤에는 돌리기 어려운 편" in text for text in evidence["live_texts"])
+
+
+def test_select_ref_actionability_probe_candidates_prioritizes_short_click_targets(monkeypatch):
+    monkeypatch.setenv("GAIA_OPENCLAW_ACTIONABILITY_PROBE_LIMIT", "3")
+    payload = {
+        "role_snapshot": {"ref_line_index": {"e1": 1, "e2": 2, "e3": 3, "e4": 4}},
+        "elements": [
+            {"ref_id": "e1", "tag": "a", "text": "아주 긴 광고성 링크입니다", "attributes": {"role": "link"}},
+            {"ref_id": "e2", "tag": "button", "text": "검색어", "attributes": {"role": "textbox"}},
+            {"ref_id": "e3", "tag": "button", "text": "2", "attributes": {"role": "button"}},
+            {"ref_id": "e4", "tag": "button", "text": "적용하기", "attributes": {"role": "button"}},
+        ],
+    }
+
+    refs = runtime._select_ref_actionability_probe_candidates(payload)
+
+    assert refs == ["e3", "e4", "e1"]
+
+
+def test_apply_ref_actionability_reports_marks_covered_ref_in_payload_and_role_tree():
+    state = _seed_session("actionability-mark-session")
+    payload = runtime._build_snapshot_payload(
+        session_id="actionability-mark-session",
+        target_id="tab-1",
+        current_url=_DEFAULT_URL,
+        requested_scope_ref_id="",
+        raw_snapshot={
+            "snapshot": '- button "2" [ref=e1]\n- button "적용하기" [ref=e2]',
+            "refs": {
+                "e1": {"role": "button", "name": "2"},
+                "e2": {"role": "button", "name": "적용하기"},
+            },
+        },
+        state=state,
+    )
+
+    warnings = runtime._apply_ref_actionability_reports_to_payload(
+        payload,
+        [
+            {
+                "ref": "e1",
+                "status": "covered",
+                "actionable": False,
+                "reason": "center_hits_other_element",
+                "hit": {"tag": "div", "className": "flex h-full flex-col"},
+            }
+        ],
+    )
+
+    assert len(warnings) == 1
+    meta = payload["elements_by_ref"]["e1"]
+    assert meta["attributes"]["gaia-disabled"] == "true"
+    assert meta["attributes"]["openclaw_actionability"] == "covered"
+    assert "not-actionable=covered by div.flex.h-full.flex-col" in payload["role_snapshot"]["snapshot"]
+    assert payload["evidence"]["actionability_warning_count"] == 1
 
 
 def _evidence(text: str, *, live_texts: list[str] | None = None, logout_visible: bool = False) -> dict[str, object]:
@@ -284,6 +360,11 @@ def test_reset_openclaw_scenario_state_clears_storage_and_closes_reset_tab(monke
             return 200, {"targetId": "tab-reset", "url": payload["url"]}, ""
         if path in {"/cookies/clear", "/storage/local/clear", "/storage/session/clear"}:
             return 200, {"ok": True, "targetId": payload["targetId"]}, ""
+        if path == "/act":
+            assert payload["kind"] == "evaluate"
+            assert "indexedDB" in payload["fn"]
+            assert "serviceWorker" in payload["fn"]
+            return 200, {"ok": True, "targetId": payload["targetId"], "result": {}}, ""
         if path == "/tabs/tab-reset":
             return 200, {"ok": True}, ""
         raise AssertionError(path)
@@ -310,10 +391,12 @@ def test_reset_openclaw_scenario_state_clears_storage_and_closes_reset_tab(monke
         "/cookies/clear",
         "/storage/local/clear",
         "/storage/session/clear",
+        "/act",
         "/tabs/tab-reset",
     ]
     assert calls[3][3] == {"url": "https://shop.example.test/product/1", "profile": "openclaw"}
     assert calls[4][3] == {"targetId": "tab-reset", "profile": "openclaw"}
+    assert calls[7][3]["targetId"] == "tab-reset"
 
 
 def test_dispatch_openclaw_goto_uses_session_profile(monkeypatch) -> None:
@@ -516,6 +599,69 @@ def test_derive_state_change_from_snapshot_payloads_surfaces_new_page_evidence()
     assert state_change["new_page_urls"] == ["https://cyber.inu.ac.kr/mod/vod/viewer.php?id=1346868"]
     assert state_change["backend_progress"] is True
     assert state_change["backend_effective_only"] is False
+
+
+def test_apply_commit_verification_flags_unreflected_date_apply() -> None:
+    before_evidence = _evidence(
+        "날짜, 인원 선택 2026.06 06.02(화) • 1박 적용하기",
+        live_texts=["날짜, 인원 선택", "2026.06", "06.02(화) • 1박", "적용하기"],
+    )
+    before_evidence.update({"modal_open": True, "modal_count": 1, "dialog_count": 1})
+    before_payload = {
+        "evidence": before_evidence,
+        "elements_by_ref": {"eApply": {"role": "button", "name": "적용하기"}},
+        "role_snapshot": {"snapshot": "- button \"적용하기\" [ref=eApply]"},
+    }
+    after_payload = {
+        "evidence": _evidence(
+            "송도/소래포구 05.30~05.31 · 2명 정렬",
+            live_texts=["송도/소래포구", "05.30~05.31 · 2명", "정렬"],
+        ),
+        "role_snapshot": {"snapshot": "- button \"05.30~05.31 · 2명\" [ref=e29]"},
+    }
+
+    state_change = runtime._apply_commit_verification_to_state_change(
+        state_change={"backend": "openclaw", "backend_progress": True, "effective": True},
+        before_payload=before_payload,
+        after_payload=after_payload,
+        ref_id="eApply",
+    )
+
+    assert state_change["commit_verification_failed"] is True
+    assert state_change["backend_progress"] is False
+    assert state_change["backend_effective_only"] is True
+    assert state_change["commit_verification"]["expected_range"] == "06.02~06.03"
+    assert state_change["commit_verification"]["observed_ranges"] == ["05.30~05.31"]
+
+
+def test_apply_commit_verification_accepts_reflected_date_apply() -> None:
+    before_evidence = _evidence(
+        "날짜, 인원 선택 2026.06 06.02(화) • 1박 적용하기",
+        live_texts=["날짜, 인원 선택", "2026.06", "06.02(화) • 1박", "적용하기"],
+    )
+    before_evidence.update({"modal_open": True, "modal_count": 1, "dialog_count": 1})
+    before_payload = {
+        "evidence": before_evidence,
+        "elements_by_ref": {"eApply": {"role": "button", "name": "적용하기"}},
+    }
+    after_payload = {
+        "evidence": _evidence(
+            "송도/소래포구 06.02~06.03 · 2명 정렬",
+            live_texts=["송도/소래포구", "06.02~06.03 · 2명", "정렬"],
+        ),
+        "role_snapshot": {"snapshot": "- button \"06.02~06.03 · 2명\" [ref=e29]"},
+    }
+
+    state_change = runtime._apply_commit_verification_to_state_change(
+        state_change={"backend": "openclaw", "backend_progress": True, "effective": True},
+        before_payload=before_payload,
+        after_payload=after_payload,
+        ref_id="eApply",
+    )
+
+    assert state_change["commit_verified"] is True
+    assert state_change["commit_verification_failed"] is False
+    assert state_change["backend_progress"] is True
 
 
 def test_dispatch_openclaw_action_reuses_matching_snapshot_as_before_probe(monkeypatch) -> None:
@@ -1510,3 +1656,347 @@ def test_pseudo_elements_from_role_snapshot_does_not_promote_dangerous_custom_dr
     for ref_id in ("e3", "e4", "e5", "e6"):
         attrs = dict(elements_by_ref[ref_id].get("attributes") or {})
         assert attrs.get("gaia-custom-option") is None
+
+
+def test_collect_act_failure_diagnostics_flags_present_ref(monkeypatch):
+    state = _seed_session("act-diag-present", target_id="tab-1")
+
+    def fake_snapshot(**kwargs):
+        return {
+            "snapshot_id": "openclaw:act-diag-present:7",
+            "targetId": "tab-1",
+            "elements_by_ref": {
+                "e133": {"role": "link", "name": "스카이뷰", "interactive": True},
+            },
+        }
+
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", fake_snapshot)
+    monkeypatch.setattr(
+        runtime,
+        "_probe_ref_actionability",
+        lambda **kwargs: {
+            "status": "covered",
+            "actionable": False,
+            "reason": "center_hits_other_element",
+            "hit": {"tag": "div", "id": "dimmedLayer"},
+            "target": {"tag": "a", "className": "skyview"},
+        },
+    )
+
+    diagnostics = runtime._collect_act_failure_diagnostics(
+        base_url="http://127.0.0.1:18791",
+        session_id="act-diag-present",
+        state=state,
+        target_id="tab-1",
+        ref_used="e133",
+        timeout=None,
+    )
+
+    assert diagnostics["ref_present_in_fresh_snapshot"] is True
+    assert diagnostics["target_changed"] is False
+    assert diagnostics["fresh_ref_role"] == "link"
+    assert diagnostics["fresh_ref_name"] == "스카이뷰"
+    assert diagnostics["fresh_snapshot_id"] == "openclaw:act-diag-present:7"
+    assert diagnostics["ref_actionability"]["status"] == "covered"
+    assert diagnostics["ref_actionability"]["hit"] == "div#dimmedLayer"
+
+
+def test_collect_act_failure_diagnostics_flags_absent_ref_and_target_drift(monkeypatch):
+    state = _seed_session("act-diag-absent", target_id="tab-1")
+
+    def fake_snapshot(**kwargs):
+        return {
+            "snapshot_id": "openclaw:act-diag-absent:2",
+            "targetId": "tab-9",
+            "elements_by_ref": {"e7": {"role": "button", "name": "검색"}},
+        }
+
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", fake_snapshot)
+    monkeypatch.setattr(runtime, "_probe_ref_actionability", lambda **kwargs: None)
+
+    diagnostics = runtime._collect_act_failure_diagnostics(
+        base_url="http://127.0.0.1:18791",
+        session_id="act-diag-absent",
+        state=state,
+        target_id="tab-1",
+        ref_used="e133",
+        timeout=None,
+    )
+
+    assert diagnostics["ref_present_in_fresh_snapshot"] is False
+    assert diagnostics["target_changed"] is True
+    assert "fresh_ref_role" not in diagnostics
+
+
+def test_dispatch_openclaw_action_reveals_present_hidden_ref_then_retries_click(monkeypatch):
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime, "_probe_ref_actionability", lambda **kwargs: None)
+    session_id = "act-reveal-retry"
+    current_url = _DEFAULT_URL
+    state = _seed_session(session_id, current_url=current_url)
+    cached_before = _build_cached_snapshot(
+        session_id=session_id,
+        state=state,
+        current_url=current_url,
+        role="button",
+        name="2",
+        ref_id="e9",
+    )
+    fresh_snapshot = {
+        "snapshot_id": "openclaw:act-reveal-retry:2",
+        "targetId": "tab-1",
+        "current_url": current_url,
+        "url": current_url,
+        "elements_by_ref": {
+            "e9": {"role": "button", "name": "2", "interactive": True},
+        },
+        "evidence": _evidence("달력 6월"),
+    }
+    after_payload = {
+        "snapshot_id": "openclaw:act-reveal-retry:3",
+        "targetId": "tab-1",
+        "current_url": current_url,
+        "url": current_url,
+        "elements_by_ref": {
+            "e9": {"role": "button", "name": "2", "interactive": True},
+        },
+        "evidence": _evidence("날짜 6/2 선택됨"),
+    }
+    snapshots = [fresh_snapshot, after_payload]
+    requests_seen: list[dict[str, object]] = []
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(runtime, "_tabs_payload_for_target", lambda **kwargs: {"tabs": []})
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", lambda **kwargs: snapshots.pop(0))
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/act"
+        payload = dict(payload or {})
+        requests_seen.append(payload)
+        if len(requests_seen) == 1:
+            assert payload["kind"] == "click"
+            return 500, {"error": 'Element "e9" not found or not visible'}, ""
+        if len(requests_seen) == 2:
+            assert payload["kind"] == "evaluate"
+            assert payload["ref"] == "e9"
+            return 200, {
+                "ok": True,
+                "targetId": "tab-1",
+                "url": current_url,
+                "result": {
+                    "viewportVisibleBefore": False,
+                    "viewportVisibleAfter": True,
+                    "scrollChanged": True,
+                    "beforeRect": {"top": 900, "height": 24},
+                    "afterRect": {"top": 320, "height": 24},
+                    "scrollChanges": [{"tag": "div", "beforeTop": 0, "afterTop": 580}],
+                },
+            }, ""
+        assert payload["kind"] == "click"
+        assert payload["timeoutMs"] == 6000
+        return 200, {"ok": True, "url": current_url, "targetId": "tab-1"}, ""
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": cached_before["snapshot_id"],
+            "action": "click",
+            "ref_id": "e9",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["backend_trace"]["visibility_recovery_count"] == 1
+    assert payload["state_change"]["recovered_after_ref_visibility_reveal"] is True
+    assert payload["state_change"]["action_recovery"]["attempts"][0]["kind"] == "ref_visibility_reveal"
+    assert payload["attempt_count"] == 2
+    assert requests_seen[1]["kind"] == "evaluate"
+    assert snapshots == []
+
+
+def test_dispatch_openclaw_action_recovers_pointer_interceptor_overlay_then_retries_click(monkeypatch):
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime, "_probe_ref_actionability", lambda **kwargs: None)
+    session_id = "act-pointer-overlay-retry"
+    current_url = _DEFAULT_URL
+    state = _seed_session(session_id, current_url=current_url)
+    cached_before = _build_cached_snapshot(
+        session_id=session_id,
+        state=state,
+        current_url=current_url,
+        role="button",
+        name="스카이뷰",
+        ref_id="e152",
+    )
+    fresh_snapshot = {
+        "snapshot_id": "openclaw:act-pointer-overlay-retry:2",
+        "targetId": "tab-1",
+        "current_url": current_url,
+        "url": current_url,
+        "elements_by_ref": {
+            "e152": {"role": "button", "name": "스카이뷰", "interactive": True},
+        },
+        "evidence": _evidence("지도 스카이뷰"),
+    }
+    after_payload = {
+        "snapshot_id": "openclaw:act-pointer-overlay-retry:3",
+        "targetId": "tab-1",
+        "current_url": current_url,
+        "url": current_url,
+        "elements_by_ref": {
+            "e152": {"role": "button", "name": "스카이뷰", "interactive": True},
+        },
+        "evidence": _evidence("스카이뷰 항공사진"),
+    }
+    snapshots = [fresh_snapshot, after_payload]
+    requests_seen: list[dict[str, object]] = []
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(runtime, "_tabs_payload_for_target", lambda **kwargs: {"tabs": []})
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", lambda **kwargs: snapshots.pop(0))
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/act"
+        payload = dict(payload or {})
+        requests_seen.append(payload)
+        if len(requests_seen) == 1:
+            assert payload["kind"] == "click"
+            return 500, {
+                "error": (
+                    'Error: Element "e152" is not interactable (covered by another element). '
+                    '<div id="dimmedLayer" class="DimmedLayer"></div> intercepts pointer events'
+                )
+            }, ""
+        if len(requests_seen) == 2:
+            assert payload["kind"] == "evaluate"
+            assert payload["ref"] == "e152"
+            return 200, {
+                "ok": True,
+                "targetId": "tab-1",
+                "url": current_url,
+                "result": {
+                    "recovered": True,
+                    "action": "pointer_events_none",
+                    "bypassed": True,
+                    "targetClickableBefore": False,
+                    "targetClickableAfter": True,
+                    "beforeBlocker": {"tag": "div", "id": "dimmedLayer", "className": "DimmedLayer"},
+                    "afterBlocker": {},
+                },
+            }, ""
+        assert payload["kind"] == "click"
+        assert payload["timeoutMs"] == 6000
+        return 200, {"ok": True, "url": current_url, "targetId": "tab-1"}, ""
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": cached_before["snapshot_id"],
+            "action": "click",
+            "ref_id": "e152",
+        },
+    )
+
+    assert status_code == 200
+    assert text == ""
+    assert payload["success"] is True
+    assert payload["backend_trace"]["pointer_interceptor_recovery_count"] == 1
+    assert payload["state_change"]["recovered_after_pointer_interceptor_recovery"] is True
+    assert payload["state_change"]["action_recovery"]["attempts"][0]["kind"] == "pointer_interceptor_overlay_recovery"
+    assert payload["state_change"]["action_recovery"]["attempts"][1]["kind"] == "pointer_interceptor_overlay_retry"
+    assert payload["attempt_count"] == 2
+    assert requests_seen[1]["kind"] == "evaluate"
+    assert snapshots == []
+
+
+def test_dispatch_openclaw_action_relabels_present_ref_reveal_failure_as_not_actionable(monkeypatch):
+    monkeypatch.setattr(runtime, "_resolve_base_url", lambda raw: "http://127.0.0.1:18791")
+    monkeypatch.setattr(runtime.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime, "_probe_ref_actionability", lambda **kwargs: None)
+    session_id = "act-reveal-fails"
+    current_url = _DEFAULT_URL
+    state = _seed_session(session_id, current_url=current_url)
+    cached_before = _build_cached_snapshot(
+        session_id=session_id,
+        state=state,
+        current_url=current_url,
+        role="button",
+        name="2",
+        ref_id="e9",
+    )
+    fresh_snapshot = {
+        "snapshot_id": "openclaw:act-reveal-fails:2",
+        "targetId": "tab-1",
+        "current_url": current_url,
+        "url": current_url,
+        "elements_by_ref": {
+            "e9": {"role": "button", "name": "2", "interactive": True},
+        },
+        "evidence": _evidence("달력 6월"),
+    }
+
+    monkeypatch.setattr(runtime, "_ensure_target", lambda **kwargs: state)
+    monkeypatch.setattr(runtime, "_tabs_payload_for_target", lambda **kwargs: {"tabs": []})
+    monkeypatch.setattr(runtime, "_snapshot_payload_for_target", lambda **kwargs: fresh_snapshot)
+
+    def fake_request(method, *, base_url, path, timeout=None, params=None, payload=None):
+        assert method == "POST"
+        assert path == "/act"
+        if (payload or {}).get("kind") == "evaluate":
+            return 500, {"error": "evaluate failed while revealing ref"}, ""
+        return 500, {"error": 'Element "e9" not found or not visible'}, ""
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    status_code, payload, text = runtime.dispatch_openclaw_action(
+        None,
+        action="browser_act",
+        params={
+            "session_id": session_id,
+            "snapshot_id": cached_before["snapshot_id"],
+            "action": "click",
+            "ref_id": "e9",
+        },
+    )
+
+    assert status_code == 200
+    assert payload["success"] is False
+    assert payload["reason_code"] == "not_actionable"
+    assert payload["state_change"]["ref_present_but_act_failed"] is True
+    assert payload["state_change"]["action_recovery"]["recovered"] is False
+    assert payload["attempt_logs"][-1]["kind"] == "ref_visibility_reveal"
+    assert text == 'Element "e9" not found or not visible'
+
+
+def test_runtime_bundle_classifies_pointer_intercept_before_visibility_timeout():
+    # Root-cause guard: the embedded OpenClaw bundle must detect a pointer-event
+    # interceptor BEFORE the generic "not found or not visible" branch, otherwise
+    # overlay-covered clicks (e.g. KakaoMap #dimmedLayer) get mislabeled as stale
+    # refs and the interceptor evidence is discarded.
+    from pathlib import Path
+
+    bundle = (
+        Path(__file__).resolve().parents[3]
+        / "vendor"
+        / "openclaw-runtime"
+        / "gaia-embedded-browser-server.bundle.mjs"
+    ).read_text(encoding="utf-8")
+    intercept_pos = bundle.find("is not interactable (covered by another element)")
+    not_found_pos = bundle.find("not found or not visible. Run a new snapshot")
+    assert intercept_pos != -1, "pointer-intercept branch missing from runtime bundle"
+    assert not_found_pos != -1, "visibility-timeout branch missing from runtime bundle"
+    assert intercept_pos < not_found_pos, "pointer-intercept must be classified before visibility-timeout"

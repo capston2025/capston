@@ -56,6 +56,19 @@ def record_action_feedback(
     if isinstance(state_change, dict) and state_change:
         effective = bool(state_change.get("effective", False))
         state_info = f", effective={effective}"
+        commit_verification = (
+            state_change.get("commit_verification")
+            if isinstance(state_change.get("commit_verification"), dict)
+            else {}
+        )
+        if bool(state_change.get("commit_verification_failed")) and commit_verification:
+            expected = str(commit_verification.get("expected_range") or "").strip()
+            observed = commit_verification.get("observed_ranges")
+            observed_text = ", ".join(str(item) for item in observed[:3]) if isinstance(observed, list) else ""
+            detail = f", commit_expected={expected or 'unknown'}"
+            if observed_text:
+                detail += f", observed_ranges={observed_text}"
+            state_info += detail
     feedback = (
         f"Step {step_number}: action={decision.action.value}, "
         f"element_id={decision.element_id}, changed={changed}, success={success}, "

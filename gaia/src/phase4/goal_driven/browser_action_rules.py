@@ -61,6 +61,7 @@ DOM_TRUST_RULES: list[str] = [
     "현재 화면에서 직접 연결된 증거가 더 강한 쪽을 고르세요.",
     "방금 뜬 임시 피드백(toast/snackbar/banner)보다 지속 증거(row, counter, reveal surface)를 우선 확인하세요.",
     "`select`를 고를 때는 해당 combobox의 `options=[...]` 또는 바로 아래 subtree에 실제로 보이는 옵션만 선택하세요.",
+    "적용/확인/완료 버튼 뒤에는 모달 안 임시 요약이 아니라 닫힌 뒤의 지속 chip/header/list/query 상태가 바뀌었는지 확인한 다음 진행하세요.",
 ]
 
 AGENTIC_TOOL_RULES: list[str] = [

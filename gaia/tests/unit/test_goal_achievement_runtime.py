@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from gaia.src.phase4.goal_driven.goal_achievement_runtime import validate_goal_achievement_claim
+from gaia.src.phase4.goal_driven.goal_achievement_runtime import (
+    has_recent_transition_completion_proof,
+    validate_goal_achievement_claim,
+)
 from gaia.src.phase4.goal_driven.goal_completion_helpers import (
     build_text_evidence_memory_block,
+    detect_service_unavailable_state,
     evaluate_goal_completion_judge,
+    evaluate_filter_result_surface_completion,
     evaluate_goal_target_completion,
     evaluate_payment_presubmit_completion,
     evaluate_reasoning_only_wait_completion,
@@ -13,6 +18,7 @@ from gaia.src.phase4.goal_driven.goal_completion_helpers import (
     evaluate_wait_goal_completion,
     record_llm_requested_text_evidence,
 )
+from gaia.src.phase4.goal_driven.agent import GoalDrivenAgent
 from gaia.src.phase4.goal_driven.models import ActionDecision, ActionType, DOMElement
 
 
@@ -30,6 +36,10 @@ class _FakeAgent:
         self._last_snapshot_evidence = {}
         self._active_snapshot_id = ""
         self._active_url = ""
+        self._action_history = []
+        self._action_feedback = []
+        self._last_action_selected_element = None
+        self._last_action_decision = None
 
     @staticmethod
     def _normalize_text(value: object) -> str:
@@ -217,6 +227,250 @@ def test_payment_presubmit_completion_rejects_payment_completion_goal() -> None:
     ]
 
     assert evaluate_payment_presubmit_completion(agent, goal=goal, dom_elements=dom) is None
+
+
+def test_variant_price_image_completion_accepts_selected_product_surface() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._action_history = [
+        "click 검색 결과 2등 상품 더단백 드링크 초코, 250ml, 36개 43,340원",
+        "click 총 수량 옵션 18개",
+    ]
+    goal = SimpleNamespace(
+        name="단백질 쉐이크 옵션 비교",
+        description="단백질 쉐이크 검색한뒤 2등 상품 클릭해주고, 18개입 클릭했을때 대표이미지랑 가격이 2등 상품인 36개입짜리랑 달라지는지 확인해줘",
+        success_criteria=["18개입 선택 후 대표이미지와 가격 확인"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="더단백 드링크 초코, 250ml, 18개",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="generic",
+            text="23,940원",
+            context_text="상품 가격",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="img",
+            role="img",
+            text="Product image",
+            aria_label="Product image",
+            context_text="대표이미지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+    agent._last_action_selected_element = DOMElement(
+        id=9,
+        tag="button",
+        role="button",
+        text="18개",
+        is_visible=True,
+        is_enabled=True,
+    )
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is not None
+    assert "선택 수량" in reason
+
+
+def test_variant_price_image_completion_rejects_unselected_option_button_only() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._action_history = [
+        "click 검색 결과 2등 상품 더단백 드링크 초코, 250ml, 36개 43,340원",
+    ]
+    goal = SimpleNamespace(
+        name="단백질 쉐이크 옵션 비교",
+        description="단백질 쉐이크 검색한뒤 2등 상품 클릭해주고, 18개입 클릭했을때 대표이미지랑 가격이 2등 상품인 36개입짜리랑 달라지는지 확인해줘",
+        success_criteria=["18개입 선택 후 대표이미지와 가격 확인"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="더단백 드링크 초코, 250ml, 36개",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="generic",
+            text="43,340원",
+            context_text="상품 가격",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="18개",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=4,
+            tag="img",
+            role="img",
+            text="Product image",
+            aria_label="Product image",
+            context_text="대표이미지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+    agent._last_action_selected_element = DOMElement(
+        id=9,
+        tag="a",
+        role="link",
+        text="더단백 드링크 초코, 250ml, 36개",
+        is_visible=True,
+        is_enabled=True,
+    )
+
+    assert evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom) is None
+
+
+def test_variant_price_image_completion_accepts_recent_target_selection_after_inspect_loop() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._action_history = [
+        "click 검색 결과 2등 상품 테이크핏 맥스 초코맛 프로틴, 250ml, 24개 32,900원",
+        "click 모든 옵션 보기",
+        "click 250ml × 18개",
+        "inspect 대표이미지 ref=e173",
+        "click 모든 옵션 보기",
+    ]
+    goal = SimpleNamespace(
+        name="단백질 쉐이크 옵션 비교",
+        description="단백질 쉐이크 검색한뒤 2등 상품 클릭해주고, 18개입 클릭했을때 대표이미지랑 가격이 2등 상품인 36개입짜리랑 달라지는지 확인해줘",
+        success_criteria=["18개입 선택 후 대표이미지와 가격 확인"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="테이크핏 맥스 초코맛 + 바나나맛, 250ml, 18개",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="generic",
+            text="25,900원",
+            context_text="상품 가격",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="img",
+            role="img",
+            text="Product image",
+            aria_label="Product image",
+            context_text="대표이미지",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+    agent._last_action_selected_element = DOMElement(
+        id=9,
+        tag="button",
+        role="button",
+        text="모든 옵션 보기",
+        is_visible=True,
+        is_enabled=True,
+    )
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is not None
+    assert "선택 수량" in reason
+
+
+def test_sort_results_completion_accepts_checked_sorted_product_list() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._active_url = "https://www.coupang.com/np/search?q=제로콜라&sorter=saleCountDesc"
+    agent._last_action_selected_element = DOMElement(
+        id=9,
+        tag="label",
+        role="radio",
+        text="판매량순",
+        is_visible=True,
+        is_enabled=True,
+    )
+    goal = SimpleNamespace(
+        name="제로콜라 판매량순 정렬",
+        description="제로콜라 검색 후에 판매량순 필터 클릭하고 순서대로 정렬되어 제품이 나타나는지 확인해줘",
+        success_criteria=["판매량순 정렬된 제품 목록 확인"],
+    )
+    dom = [
+        DOMElement(id=1, tag="h1", role="heading", text="제로콜라 검색결과", is_visible=True),
+        DOMElement(id=2, tag="label", role="radio", text="판매량순 checked active", is_visible=True),
+        DOMElement(
+            id=3,
+            tag="ul",
+            role="list",
+            text="product-list 1 코카콜라 제로 2 펩시 제로 3 탐스 제로",
+            context_text="제품 목록 상품 무료배송 리뷰",
+            is_visible=True,
+        ),
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason is not None
+    assert "판매량순" in reason
+
+
+def test_sort_results_completion_rejects_sort_option_before_click() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._active_url = "https://www.coupang.com/np/search?q=제로콜라"
+    agent._last_action_selected_element = DOMElement(
+        id=9,
+        tag="button",
+        role="button",
+        text="검색",
+        is_visible=True,
+        is_enabled=True,
+    )
+    goal = SimpleNamespace(
+        name="제로콜라 판매량순 정렬",
+        description="제로콜라 검색 후에 판매량순 필터 클릭하고 순서대로 정렬되어 제품이 나타나는지 확인해줘",
+        success_criteria=["판매량순 정렬된 제품 목록 확인"],
+    )
+    dom = [
+        DOMElement(id=1, tag="h1", role="heading", text="제로콜라 검색결과", is_visible=True),
+        DOMElement(id=2, tag="label", role="radio", text="판매량순", is_visible=True),
+        DOMElement(
+            id=3,
+            tag="ul",
+            role="list",
+            text="product-list 1 코카콜라 제로 2 펩시 제로 3 탐스 제로",
+            context_text="제품 목록 상품 무료배송 리뷰",
+            is_visible=True,
+        ),
+    ]
+
+    assert evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom) is None
 
 
 def test_validate_goal_achievement_claim_accepts_wait_when_destination_anchor_and_row_action_are_separate():
@@ -708,6 +962,34 @@ def test_validate_goal_achievement_claim_accepts_wait_on_recent_transition_even_
     ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
 
     assert ok is True
+    assert reason is None
+
+
+def test_recent_transition_completion_rejects_uncertain_wait_rationale() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {"require_state_change": True}
+    goal = SimpleNamespace(
+        name="과거 날짜 비활성 확인",
+        description="과거 날짜 선택 불가를 확인한다.",
+        success_criteria=["과거 날짜가 클릭되지 않는지 확인"],
+        expected_signals=["날짜", "클릭되지 않음"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="DOM만으로는 숨겨져 있는지 추가 화면 컨텍스트 확인이 필요하므로 짧게 대기합니다.",
+        confidence=0.6,
+        is_goal_achieved=True,
+        goal_achievement_reason="",
+    )
+
+    reason = has_recent_transition_completion_proof(
+        agent,
+        goal=goal,
+        decision=decision,
+        state_change={"dom_changed": True},
+        achieved_signals=[],
+    )
+
     assert reason is None
 
 
@@ -1219,10 +1501,317 @@ def test_reasoning_only_wait_completion_skips_judge_on_service_unavailable_page(
             is_visible=True,
             is_enabled=True,
         ),
+        DOMElement(
+            id=3,
+            tag="pre",
+            role="generic",
+            text='{"rCode":"RET9999","rMessage":"시스템 오류 발생"}',
+            is_visible=True,
+            is_enabled=True,
+        ),
     ]
 
     assert evaluate_reasoning_only_wait_completion(agent, goal=goal, decision=decision, dom_elements=dom) is None
     assert not hasattr(agent, "_last_judge_prompt")
+
+
+def test_detect_service_unavailable_state_marks_ret9999_as_hard() -> None:
+    agent = _FakeAgent()
+    dom = [
+        DOMElement(
+            id=1,
+            tag="pre",
+            role="generic",
+            text='{"rCode":"RET9999","rMessage":"시스템 오류 발생"}',
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    state = detect_service_unavailable_state(agent, dom)
+
+    assert state is not None
+    assert state["hard"] is True
+    assert state["matched"] in {"ret9999", "시스템 오류 발생"}
+
+
+def test_detect_service_unavailable_state_marks_delay_notice_as_soft() -> None:
+    agent = _FakeAgent()
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="대한민국 구석구석 서비스 지연 안내",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="p",
+            role="generic",
+            text="잠시 후 다시 접속해 주세요.",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    state = detect_service_unavailable_state(agent, dom)
+
+    assert state is not None
+    assert state["hard"] is False
+    assert state["matched"] == "서비스 지연 안내"
+
+
+def test_detect_service_unavailable_state_marks_not_found_surface_as_hard() -> None:
+    agent = _FakeAgent()
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h1",
+            role="heading",
+            text="페이지를 찾을 수 없습니다",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    state = detect_service_unavailable_state(agent, dom)
+
+    assert state is not None
+    assert state["hard"] is True
+    assert state["matched"] == "페이지를 찾을 수 없습니다"
+
+
+def test_detect_service_unavailable_state_uses_snapshot_text_when_dom_empty() -> None:
+    agent = _FakeAgent()
+    agent._last_snapshot_evidence = {
+        "text_digest": "확인 중... CLOUDFLARE 개인 정보 도움말",
+        "live_texts": [],
+    }
+
+    state = detect_service_unavailable_state(agent, [])
+
+    assert state is not None
+    assert state["hard"] is True
+    assert state["matched"] == "cloudflare"
+
+
+def test_detect_service_unavailable_state_uses_inspection_text_when_dom_empty() -> None:
+    agent = _FakeAgent()
+    agent._last_exec_result = SimpleNamespace(
+        state_change={
+            "inspection": {
+                "title": "Just a moment...",
+                "bodyText": "확인 중... Cloudflare 개인 정보 도움말",
+                "frames": [],
+            },
+            "inspection_summary": "title: Just a moment... text: 확인 중... Cloudflare",
+        }
+    )
+
+    state = detect_service_unavailable_state(agent, [])
+
+    assert state is not None
+    assert state["hard"] is True
+    assert state["matched"] == "cloudflare"
+
+
+def test_dead_navigation_recovery_rewinds_to_start_url_and_records_feedback() -> None:
+    agent = object.__new__(GoalDrivenAgent)
+    agent._active_url = "https://example.test/404"
+    agent._action_feedback = []
+    agent._dead_navigation_recovery_count = 0
+    agent._last_action_decision = ActionDecision(
+        action=ActionType.CLICK,
+        element_id=7,
+        reasoning="open listing section",
+    )
+    agent._last_action_selected_element = DOMElement(
+        id=7,
+        tag="a",
+        text="매물",
+        href="https://broken.example.test/complexes",
+    )
+    calls: list[tuple[str, str | None, str | None]] = []
+    reason_codes: list[str] = []
+
+    def _execute_action(action: str, url: str | None = None, value: str | None = None) -> SimpleNamespace:
+        calls.append((action, url, value))
+        return SimpleNamespace(success=True, state_change={"evaluate_result": {"wentBack": True}})
+
+    agent._execute_action = _execute_action  # type: ignore[method-assign]
+    agent._record_reason_code = lambda code: reason_codes.append(str(code or ""))  # type: ignore[method-assign]
+    agent._log = lambda message: None  # type: ignore[method-assign]
+    goal = SimpleNamespace(start_url="https://example.test/start")
+
+    recovered = agent._maybe_recover_dead_navigation(
+        goal=goal,  # type: ignore[arg-type]
+        service_state={
+            "matched": "페이지를 찾을 수 없습니다",
+            "reason": "외부 서비스 오류/차단 화면이 표시되었습니다: 페이지를 찾을 수 없습니다",
+        },
+    )
+
+    assert recovered is True
+    assert len(calls) == 1
+    assert calls[0][0] == "evaluate"
+    assert reason_codes == ["dead_navigation_recovered"]
+    assert agent._dead_navigation_recovery_count == 1
+    assert any("dead_target=매물" in item for item in agent._action_feedback)
+
+
+def test_dead_navigation_recovery_ignores_initial_start_url_failure_without_action() -> None:
+    agent = object.__new__(GoalDrivenAgent)
+    agent._active_url = "https://example.test/404"
+    agent._action_feedback = []
+    agent._dead_navigation_recovery_count = 0
+    agent._last_action_decision = None
+    agent._last_action_selected_element = None
+    agent._execute_action = lambda action, url=None: (_ for _ in ()).throw(AssertionError("unexpected recovery"))  # type: ignore[method-assign]
+    goal = SimpleNamespace(start_url="https://example.test/start")
+
+    recovered = agent._maybe_recover_dead_navigation(
+        goal=goal,  # type: ignore[arg-type]
+        service_state={
+            "matched": "페이지를 찾을 수 없습니다",
+            "reason": "외부 서비스 오류/차단 화면이 표시되었습니다: 페이지를 찾을 수 없습니다",
+        },
+    )
+
+    assert recovered is False
+
+
+def test_dead_navigation_recovery_marks_search_submit_path_as_dead() -> None:
+    agent = object.__new__(GoalDrivenAgent)
+    agent._active_url = "https://example.test/404"
+    agent._action_feedback = []
+    agent._dead_navigation_recovery_count = 0
+    agent._last_action_decision = ActionDecision(
+        action=ActionType.PRESS,
+        element_id=3,
+        value="Enter",
+        reasoning="submit search",
+    )
+    agent._last_action_selected_element = DOMElement(
+        id=3,
+        tag="input",
+        text="",
+        placeholder="검색",
+    )
+    agent._execute_action = (  # type: ignore[method-assign]
+        lambda action, url=None, value=None: SimpleNamespace(
+            success=True,
+            state_change={"evaluate_result": {"wentBack": True}},
+        )
+    )
+    agent._record_reason_code = lambda code: None  # type: ignore[method-assign]
+    agent._log = lambda message: None  # type: ignore[method-assign]
+    goal = SimpleNamespace(start_url="https://example.test/start")
+
+    recovered = agent._maybe_recover_dead_navigation(
+        goal=goal,  # type: ignore[arg-type]
+        service_state={
+            "matched": "page not found",
+            "reason": "external page not found",
+        },
+    )
+
+    assert recovered is True
+    assert any("검색 입력/검색 버튼/Enter submit 경로도 dead navigation" in item for item in agent._action_feedback)
+
+
+def test_filter_result_surface_completion_accepts_visible_region_filter_and_count() -> None:
+    agent = _FakeAgent()
+    goal = SimpleNamespace(
+        name="부동산 필터 확인",
+        description=(
+            "검색결과에서 인천시 연수구 송도동을 클릭해줘. "
+            "이후 빌라주택을 눌렀을 때 빌라, 주택 필터의 결과만 나타나는지 확인해줘."
+        ),
+        expected_signals=[
+            "부동산",
+            "매물",
+            "인천시 연수구 송도동",
+            "빌라주택",
+            "빌라",
+            "주택",
+        ],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            text="인천시 > 연수구 > 송도동",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="a",
+            text="빌라·주택",
+            class_name="selected",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="p",
+            text="‘송도동’ 매물건수 매매 0 | 전세 0 | 월세 0",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_filter_result_surface_completion(agent, goal=goal, dom_elements=dom)  # type: ignore[arg-type]
+
+    assert reason is not None
+    assert "필터 결과 확인 목표" in reason
+
+
+def test_filter_result_surface_completion_rejects_region_option_before_committed_summary() -> None:
+    agent = _FakeAgent()
+    goal = SimpleNamespace(
+        name="부동산 필터 확인",
+        description=(
+            "검색결과에서 인천시 연수구 송도동을 클릭해줘. "
+            "이후 빌라주택을 눌렀을 때 빌라, 주택 필터의 결과만 나타나는지 확인해줘."
+        ),
+        expected_signals=[
+            "부동산",
+            "매물",
+            "인천시 연수구 송도동",
+            "빌라주택",
+            "빌라",
+            "주택",
+        ],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            text="인천시 > 연수구 > 읍/면/동 동춘동 선학동 송도동 연수동",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="a",
+            text="빌라·주택",
+            class_name="selected",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="p",
+            text="송도동 (0) 연수동 (0) 옥련동 (0) ‘연수구’ 매물건수 매매 0 | 전세 0 | 월세 0",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    assert evaluate_filter_result_surface_completion(agent, goal=goal, dom_elements=dom) is None  # type: ignore[arg-type]
 
 
 def test_wait_completion_defers_readonly_map_route_panel_claim_to_judge() -> None:
@@ -1687,3 +2276,254 @@ def test_validate_goal_achievement_claim_allows_direct_click_without_expected_si
     assert ok is True
     assert reason is None
     assert agent._last_goal_completion_source == "direct"
+
+
+def test_reasoning_only_wait_completion_accepts_past_showtime_unavailable_evidence() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_semantics = SimpleNamespace(mutate_required=True)
+    agent._judge_response = ""
+    goal = SimpleNamespace(
+        name="메가박스 송도 지난 상영시간 비활성 확인",
+        description="예매 화면에서 5월 19일 과거 날짜의 지난 상영시간이 클릭되지 않는지 확인한다.",
+        success_criteria=["과거 날짜 또는 지난 상영시간이 선택 불가/disabled임을 확인"],
+        expected_signals=["메가박스 송도", "예매", "5월 19일", "상영시간", "클릭되지 않음"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning=(
+            "현재 화면은 메가박스 송도 예매 탭이며 5.30(오늘)부터 날짜가 시작되고 "
+            "이전 버튼은 disabled라 5월 19일로 이동할 수 없습니다. "
+            "지난 상영시간도 비활성화되어 클릭되지 않음이 확인됩니다."
+        ),
+        confidence=0.75,
+        is_goal_achieved=False,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="h2",
+            role="heading",
+            text="메가박스 송도",
+            context_text="장소 상세",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="tab",
+            text="메가박스 송도 예매",
+            context_text="예매 탭 선택됨",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="이전",
+            context_text="날짜 이전 disabled",
+            is_visible=True,
+            is_enabled=False,
+        ),
+        DOMElement(
+            id=4,
+            tag="button",
+            role="button",
+            text="11:00",
+            context_text="상영시간 disabled",
+            is_visible=True,
+            is_enabled=False,
+        ),
+    ]
+
+    reason = evaluate_reasoning_only_wait_completion(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom,
+    )
+
+    assert reason == "현재 화면에서 목표 조건의 시간/옵션이 disabled 상태로 표시되어 클릭되지 않음을 확인했습니다."
+
+
+def test_reasoning_only_inspect_completion_accepts_past_showtime_unavailable_evidence() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._goal_semantics = SimpleNamespace(mutate_required=True)
+    agent._judge_response = ""
+    goal = SimpleNamespace(
+        name="메가박스 송도 지난 상영시간 비활성 확인",
+        description="예매 화면에서 5월 19일 과거 날짜의 지난 상영시간이 클릭되지 않는지 확인한다.",
+        success_criteria=["과거 날짜 또는 지난 상영시간이 선택 불가/disabled임을 확인"],
+        expected_signals=["메가박스 송도", "예매", "5월 19일", "상영시간", "클릭되지 않음"],
+    )
+    decision = ActionDecision(
+        action=ActionType.INSPECT,
+        reasoning=(
+            "현재 화면에서 목표 검증에 필요한 증거가 모두 확인됩니다. "
+            "이전 버튼은 disabled이고 지난 상영시간도 비활성화되어 클릭되지 않습니다."
+        ),
+        confidence=0.75,
+        is_goal_achieved=False,
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="button",
+            role="tab",
+            text="메가박스 송도 예매",
+            context_text="예매 탭 선택됨",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="button",
+            role="button",
+            text="이전",
+            context_text="날짜 이전 disabled",
+            is_visible=True,
+            is_enabled=False,
+        ),
+        DOMElement(
+            id=3,
+            tag="button",
+            role="button",
+            text="11:00",
+            context_text="상영시간 disabled",
+            is_visible=True,
+            is_enabled=False,
+        ),
+    ]
+
+    reason = evaluate_reasoning_only_wait_completion(
+        agent,
+        goal=goal,
+        decision=decision,
+        dom_elements=dom,
+    )
+
+    assert reason == "현재 화면에서 목표 조건의 시간/옵션이 disabled 상태로 표시되어 클릭되지 않음을 확인했습니다."
+
+
+def test_target_completion_accepts_recent_not_actionable_for_disabled_verification_goal() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    agent._action_feedback = [
+        '[not_actionable] Error: Element "f9e212" not found or not visible. Run a new snapshot.'
+    ]
+    goal = SimpleNamespace(
+        name="메가박스 송도 지난 상영시간 비활성 확인",
+        description="예매 화면에서 5월 19일 과거 날짜의 지난 상영시간이 클릭되지 않는지 확인한다.",
+        success_criteria=["과거 날짜 또는 지난 상영시간이 선택 불가/disabled임을 확인"],
+        expected_signals=["메가박스 송도", "예매", "5월 19일", "상영시간", "클릭되지 않음"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="button",
+            role="tab",
+            text="예매",
+            context_text="예매 탭 선택됨",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="generic",
+            text="날짜 오늘",
+            context_text="상영시간 11:00 13:40 16:15",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason == "최근 목표 조건의 비활성/선택 불가 대상 클릭이 not_actionable으로 실패했고 현재 검증 화면이 유지되어 클릭되지 않음을 확인했습니다."
+
+
+def test_target_completion_accepts_past_date_outside_visible_booking_range() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="메가박스 송도 지난 상영시간 비활성 확인",
+        description="예매 화면에서 5월 19일 과거 날짜의 지난 상영시간이 클릭되지 않는지 확인한다.",
+        success_criteria=["과거 날짜 또는 지난 상영시간이 선택 불가/disabled임을 확인"],
+        expected_signals=["메가박스 송도", "예매", "5월 19일", "상영시간", "클릭되지 않음"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="button",
+            role="tab",
+            text="메가박스 송도 예매",
+            context_text="예매 탭 선택됨",
+            is_visible=True,
+            is_enabled=True,
+        ),
+        DOMElement(
+            id=2,
+            tag="div",
+            role="generic",
+            text="5.30 오늘 5.31 6.1",
+            context_text="날짜 선택 상영시간",
+            is_visible=True,
+            is_enabled=True,
+        ),
+    ]
+
+    reason = evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom)
+
+    assert reason == "현재 날짜 선택 UI가 목표 과거 날짜 이후 범위만 제공해 목표 날짜 선택지가 클릭되지 않음을 확인했습니다."
+
+
+def test_target_completion_rejects_past_date_range_without_goal_anchor() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="메가박스 송도 지난 상영시간 비활성 확인",
+        description="예매 화면에서 5월 19일 과거 날짜의 지난 상영시간이 클릭되지 않는지 확인한다.",
+        success_criteria=["과거 날짜 또는 지난 상영시간이 선택 불가/disabled임을 확인"],
+        expected_signals=["메가박스 송도", "예매", "5월 19일", "상영시간", "클릭되지 않음"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="네이버지도 검색",
+            context_text="5.30 오늘 날짜",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    assert evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom) is None
+
+
+def test_target_completion_rejects_past_date_range_before_booking_surface() -> None:
+    agent = _FakeAgent()
+    agent._goal_constraints = {}
+    goal = SimpleNamespace(
+        name="메가박스 송도 지난 상영시간 비활성 확인",
+        description="예매 화면에서 5월 19일 과거 날짜의 지난 상영시간이 클릭되지 않는지 확인한다.",
+        success_criteria=["과거 날짜 또는 지난 상영시간이 선택 불가/disabled임을 확인"],
+        expected_signals=["메가박스 송도", "예매", "5월 19일", "상영시간", "클릭되지 않음"],
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="input",
+            role="combobox",
+            text="메가박스 송도",
+            context_text="지도 검색창 5.30 오늘",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    assert evaluate_goal_target_completion(agent, goal=goal, dom_elements=dom) is None

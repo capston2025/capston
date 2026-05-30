@@ -60,6 +60,34 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
     );
   }
 
+  // Pointer-intercept / covered element must be classified BEFORE the generic
+  // visibility-timeout branch. A click that times out because an overlay
+  // intercepts pointer events also contains "waiting for ... to be visible" in
+  // its Playwright call log, so the visibility-timeout branch below would
+  // otherwise mislabel it as a stale/not-found ref and discard the interceptor
+  // evidence. Preserve the interceptor snippet so downstream callers can extract
+  // the blocking element (e.g. <div id="dimmedLayer">).
+  if (
+    message.includes("intercepts pointer events") ||
+    message.includes("not receive pointer events")
+  ) {
+    const interceptLine = (
+      message
+        .split("\n")
+        .map((line) => line.trim())
+        .find(
+          (line) =>
+            line.includes("intercepts pointer events") ||
+            line.includes("not receive pointer events"),
+        ) || ""
+    ).trim();
+    const detail = interceptLine ? ` ${interceptLine}` : "";
+    return new Error(
+      `Element "${selector}" is not interactable (covered by another element).${detail} ` +
+        `Close or wait out the overlay, or scroll it into view, then re-snapshot before retrying.`,
+    );
+  }
+
   if (
     (message.includes("Timeout") || message.includes("waiting for")) &&
     (message.includes("to be visible") || message.includes("not visible"))
@@ -70,11 +98,7 @@ export function toAIFriendlyError(error: unknown, selector: string): Error {
     );
   }
 
-  if (
-    message.includes("intercepts pointer events") ||
-    message.includes("not visible") ||
-    message.includes("not receive pointer events")
-  ) {
+  if (message.includes("not visible")) {
     return new Error(
       `Element "${selector}" is not interactable (hidden or covered). ` +
         `Try scrolling it into view, closing overlays, or re-snapshotting.`,

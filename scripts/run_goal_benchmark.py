@@ -625,6 +625,8 @@ def _has_recovery_event(row: Dict[str, Any]) -> bool:
         "request_exception",
         "auth_submit_timeout_recovered",
         "dom_snapshot_retry",
+        "not_actionable",
+        "pointer_intercepted",
     )
     for code in rc_summary.keys():
         normalized = str(code or "").strip().lower()
@@ -639,7 +641,7 @@ def _compute_kpi_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, 
     blocked_count = sum(1 for row in rows if _is_blocked_user_action(row))
     primary_total = max(0, len(rows) - blocked_count)
     stop_failure_count = sum(1 for row in rows if _is_progress_stop_failure(row))
-    recovery_rows = [row for row in rows if _has_recovery_event(row)]
+    recovery_rows = [row for row in rows if _has_recovery_event(row) and not _is_blocked_user_action(row)]
     recovery_success = sum(
         1
         for row in recovery_rows

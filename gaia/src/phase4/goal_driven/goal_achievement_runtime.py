@@ -112,6 +112,22 @@ def has_recent_transition_completion_proof(
     rationale = str(decision.goal_achievement_reason or decision.reasoning or "").strip()
     if not rationale:
         return None
+    normalized_rationale = agent._normalize_text(rationale)
+    uncertain_tokens = (
+        "추가 화면 컨텍스트 확인",
+        "추가 확인",
+        "재확인",
+        "확인이 필요",
+        "증거가 부족",
+        "불충분",
+        "숨겨져",
+        "추측 클릭",
+        "짧게 대기",
+        "대기해",
+        "기다려",
+    )
+    if any(token in normalized_rationale for token in uncertain_tokens):
+        return None
 
     if achieved_signals:
         return (

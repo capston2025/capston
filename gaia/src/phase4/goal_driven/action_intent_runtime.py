@@ -69,7 +69,15 @@ def update_intent_stats(
         if int(stat.get("hard_fail") or 0) > 0:
             stat["hard_fail"] = int(stat["hard_fail"]) - 1
         return
-    if reason_code in {"no_state_change", "not_actionable", "modal_not_open", "blocked_ref_no_progress", "ambiguous_ref_target", "ambiguous_selector"}:
+    if reason_code in {
+        "no_state_change",
+        "not_actionable",
+        "modal_not_open",
+        "blocked_ref_no_progress",
+        "ambiguous_ref_target",
+        "ambiguous_selector",
+        "pointer_intercepted",
+    }:
         stat["soft_fail"] = min(200, int(stat.get("soft_fail") or 0) + 1)
     else:
         stat["hard_fail"] = min(200, int(stat.get("hard_fail") or 0) + 1)

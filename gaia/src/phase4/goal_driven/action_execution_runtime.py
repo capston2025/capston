@@ -782,12 +782,13 @@ _BROWSER_INSPECTION_SCRIPT = r"""() => {
         return { index, frame: frameInfo, accessible: false, reason: String(err && err.message || err) };
       }
     });
-  return {
-    url: location.href,
-    title: document.title,
-    activeElement: describe(document.activeElement),
-    fields: fields.map(describe),
-    buttons: collectButtons(document),
+	  return {
+	    url: location.href,
+	    title: document.title,
+	    bodyText: compact((document.body && (document.body.innerText || document.body.textContent)) || "", 1000),
+	    activeElement: describe(document.activeElement),
+	    fields: fields.map(describe),
+	    buttons: collectButtons(document),
     tokenAreas: collectTokenAreas(document, fields),
     dialogs,
     frames
@@ -828,6 +829,12 @@ def _summarize_browser_inspection(inspection: Dict[str, Any]) -> str:
     if not isinstance(inspection, dict) or not inspection:
         return "inspect 결과 없음"
     parts: List[str] = []
+    title = _compact_inspection_text(inspection.get("title"), limit=80)
+    body_text = _compact_inspection_text(inspection.get("bodyText"), limit=120)
+    if title:
+        parts.append(f"title: {title}")
+    if body_text:
+        parts.append(f"text: {body_text}")
     active = inspection.get("activeElement")
     if isinstance(active, dict):
         active_tag = _compact_inspection_text(active.get("tag"), limit=30) or "element"
