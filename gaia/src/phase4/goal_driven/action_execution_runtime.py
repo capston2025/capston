@@ -4,6 +4,7 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
 from .goal_policy_phase_runtime import goal_phase_intent
 from .models import ActionDecision, ActionType, DOMElement
@@ -1273,6 +1274,50 @@ def execute_decision(
         except Exception:
             pass
 
+    def _execute_link_navigation_recovery(previous_error: Optional[str]) -> tuple[bool, Optional[str]]:
+        if selected_element is None:
+            return False, previous_error
+        href = str(getattr(selected_element, "href", "") or "").strip()
+        if not href:
+            return False, previous_error
+        tag = str(getattr(selected_element, "tag", "") or "").strip().lower()
+        role = str(getattr(selected_element, "role", "") or "").strip().lower()
+        if tag != "a" and role != "link":
+            return False, previous_error
+        if str(agent._goal_constraints.get("allow_navigation", True)).strip().lower() in {"0", "false", "no", "off"}:
+            return False, previous_error
+        if href.lower().startswith(("javascript:", "mailto:", "tel:", "#")):
+            return False, previous_error
+        failed_reason = str(getattr(getattr(agent, "_last_exec_result", None), "reason_code", "") or "")
+        if failed_reason not in {"not_actionable", "not_found", "ref_stale", "action_timeout"}:
+            return False, previous_error
+
+        current_url = str(getattr(agent, "_current_url", "") or getattr(agent, "_active_url", "") or "")
+        target_url = urljoin(current_url or "about:blank", href)
+        parsed = urlparse(target_url)
+        if parsed.scheme not in {"http", "https"}:
+            return False, previous_error
+        if current_url and target_url.rstrip("/") == current_url.rstrip("/"):
+            return False, previous_error
+
+        agent._last_exec_result = execute_action(agent, "goto", url=target_url)
+        if not bool(agent._last_exec_result.success and agent._last_exec_result.effective):
+            return False, agent._last_exec_result.as_error_message() or previous_error
+
+        state_change = dict(agent._last_exec_result.state_change or {})
+        state_change["link_navigation_recovery"] = True
+        state_change["recovered_from_reason_code"] = failed_reason
+        state_change["recovered_ref_id"] = str(ref_id or "")
+        state_change["recovered_href"] = href
+        state_change["recovered_url"] = target_url
+        agent._last_exec_result.state_change = state_change
+        agent._last_exec_result.reason = "link_navigation_recovery"
+        try:
+            agent._record_reason_code("link_navigation_recovery")
+        except Exception:
+            pass
+        return True, None
+
     def _annotate_control_state_change() -> None:
         exec_result = getattr(agent, "_last_exec_result", None)
         state_change = getattr(exec_result, "state_change", None)
@@ -1778,6 +1823,8 @@ def execute_decision(
             if any(token in reasoning_norm for token in ("닫", "close", "dismiss", "x 버튼", "우상단 x")):
                 click_value = "__close_intent__"
             ok, err = _execute_with_ref_recovery("click", action_value=click_value)
+            if not ok:
+                ok, err = _execute_link_navigation_recovery(err)
             if not ok:
                 ok, err = _execute_visual_coordinate_click_fallback()
             if ok:
