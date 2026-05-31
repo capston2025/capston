@@ -2694,13 +2694,6 @@ _OPENCLAW_REF_ACTIONABILITY_PROBE_FN = r"""(el) => {
       rect.left <= window.innerWidth
     );
   }
-  function horizontallyOutsideViewport(rect) {
-    return !!(
-      rect &&
-      rect.width >= 1 &&
-      (rect.left >= window.innerWidth || rect.right <= 0)
-    );
-  }
   function centerPoint(rect) {
     return {
       x: Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2)),
@@ -2716,9 +2709,6 @@ _OPENCLAW_REF_ACTIONABILITY_PROBE_FN = r"""(el) => {
   }
   if (rect.width < 1 || rect.height < 1) {
     return { status: "zero_rect", actionable: false, reason: "zero_sized_rect", target, rect };
-  }
-  if (horizontallyOutsideViewport(rect)) {
-    return { status: "offscreen_horizontal", actionable: false, reason: "outside_horizontal_viewport", target, rect };
   }
   if (!inViewport(rect)) {
     return { status: "offscreen", actionable: true, reason: "outside_viewport_but_scrollable", target, rect };
@@ -2905,14 +2895,6 @@ def _probe_ref_actionability(
     )
     if status_code >= 400:
         message = str((data or {}).get("error") or text or "").strip()
-        reason_code = _reason_code_from_error(message, status_code)
-        if reason_code in {"not_found", "ref_stale", "missing_element_id"}:
-            return {
-                "ref": ref_id,
-                "status": "probe_not_visible",
-                "actionable": False,
-                "reason": message[:200] or reason_code,
-            }
         return {
             "ref": ref_id,
             "status": "probe_failed",
@@ -2956,10 +2938,6 @@ def _actionability_warning_marker(report: Dict[str, Any]) -> str:
         return "not-actionable=zero_rect"
     if status == "no_hit":
         return f"not-actionable=no_hit{':' + reason[:48] if reason else ''}"
-    if status == "offscreen_horizontal":
-        return "not-actionable=offscreen_horizontal"
-    if status == "probe_not_visible":
-        return "not-actionable=probe_not_visible"
     return f"actionability={status}"
 
 
@@ -3001,14 +2979,7 @@ def _apply_ref_actionability_reports_to_payload(
 ) -> List[Dict[str, Any]]:
     if not isinstance(payload, dict) or not reports:
         return []
-    actionable_bad_statuses = {
-        "covered",
-        "hidden",
-        "zero_rect",
-        "no_hit",
-        "offscreen_horizontal",
-        "probe_not_visible",
-    }
+    actionable_bad_statuses = {"covered", "hidden", "zero_rect", "no_hit"}
     warnings = [
         report
         for report in reports
@@ -3034,13 +3005,7 @@ def _apply_ref_actionability_reports_to_payload(
         attrs["openclaw_actionability_hit"] = _actionability_node_description(report.get("hit"))
         attrs["gaia-disabled"] = "true"
         attrs["aria-disabled"] = "true"
-        if str(report.get("status") or "") in {
-            "hidden",
-            "zero_rect",
-            "no_hit",
-            "offscreen_horizontal",
-            "probe_not_visible",
-        }:
+        if str(report.get("status") or "") in {"hidden", "zero_rect", "no_hit"}:
             item["is_visible"] = False
     elements_by_ref = payload.get("elements_by_ref") if isinstance(payload.get("elements_by_ref"), dict) else {}
     for ref_id, report in warnings_by_ref.items():
@@ -3054,13 +3019,7 @@ def _apply_ref_actionability_reports_to_payload(
         attrs["openclaw_actionability_hit"] = _actionability_node_description(report.get("hit"))
         attrs["gaia-disabled"] = "true"
         attrs["aria-disabled"] = "true"
-        if str(report.get("status") or "") in {
-            "hidden",
-            "zero_rect",
-            "no_hit",
-            "offscreen_horizontal",
-            "probe_not_visible",
-        }:
+        if str(report.get("status") or "") in {"hidden", "zero_rect", "no_hit"}:
             meta["is_visible"] = False
     role_snapshot = payload.get("role_snapshot") if isinstance(payload.get("role_snapshot"), dict) else {}
     if role_snapshot:

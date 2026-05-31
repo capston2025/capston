@@ -527,7 +527,7 @@ def test_validate_goal_achievement_claim_accepts_wait_when_destination_anchor_an
     assert reason is None
 
 
-def test_validate_goal_achievement_claim_accepts_llm_completion_claim_even_with_source_add_row_anchor():
+def test_validate_goal_achievement_claim_keeps_wait_rejected_for_source_add_row_even_with_page_destination_anchor():
     agent = _FakeAgent()
     goal = SimpleNamespace(
         name="포용사회와문화탐방1 과목을 바로 추가",
@@ -577,9 +577,8 @@ def test_validate_goal_achievement_claim_accepts_llm_completion_claim_even_with_
 
     ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
 
-    assert ok is True
-    assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert ok is False
+    assert reason == "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다."
 
 
 def test_validate_goal_achievement_claim_accepts_wait_for_generic_search_change_proof():
@@ -685,7 +684,7 @@ def test_validate_goal_achievement_claim_accepts_wait_for_readonly_visibility_ab
     assert reason is None
 
 
-def test_validate_goal_achievement_claim_accepts_llm_completion_wait_without_specific_evidence():
+def test_validate_goal_achievement_claim_rejects_generic_search_wait_without_specific_evidence():
     agent = _FakeAgent()
     goal = SimpleNamespace(
         name="검색 결과 변경 검증",
@@ -715,9 +714,8 @@ def test_validate_goal_achievement_claim_accepts_llm_completion_wait_without_spe
 
     ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
 
-    assert ok is True
-    assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert ok is False
+    assert reason == "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다."
 
 
 def test_validate_goal_achievement_claim_accepts_wait_when_expected_signals_are_met() -> None:
@@ -825,7 +823,7 @@ def test_validate_goal_achievement_claim_accepts_multi_user_blackboard_evidence(
 
     assert ok is True
     assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert agent._last_goal_completion_source == "multi_user_evidence"
 
 
 def test_validate_goal_achievement_claim_rejects_signup_goal_without_completion_signal() -> None:
@@ -924,7 +922,7 @@ def test_validate_goal_achievement_claim_accepts_multi_user_signup_context_evide
 
     assert ok is True
     assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert agent._last_goal_completion_source == "multi_user_evidence"
 
 
 def test_validate_goal_achievement_claim_accepts_wait_on_recent_transition_even_when_expected_signals_are_missing() -> None:
@@ -1624,26 +1622,6 @@ def test_detect_service_unavailable_state_marks_not_found_surface_as_hard() -> N
     assert state["matched"] == "페이지를 찾을 수 없습니다"
 
 
-def test_detect_service_unavailable_state_ignores_captcha_legal_footer() -> None:
-    agent = _FakeAgent()
-    dom = [
-        DOMElement(
-            id=1,
-            tag="p",
-            role="paragraph",
-            text=(
-                "This site is protected by reCAPTCHA and the Google Privacy Policy "
-                "and Terms of Service apply. This site is protected by hCaptcha "
-                "and its Privacy Policy and Terms of Service apply."
-            ),
-            is_visible=True,
-            is_enabled=True,
-        )
-    ]
-
-    assert detect_service_unavailable_state(agent, dom) is None
-
-
 def test_detect_service_unavailable_state_uses_snapshot_text_when_dom_empty() -> None:
     agent = _FakeAgent()
     agent._last_snapshot_evidence = {
@@ -1944,7 +1922,7 @@ def test_wait_completion_defers_readonly_map_route_panel_claim_to_judge() -> Non
     assert "길찾기" in reason
 
 
-def test_validate_goal_achievement_claim_skips_judge_prompt_when_llm_claims_new_page_completion() -> None:
+def test_validate_goal_achievement_claim_includes_new_page_evidence_in_judge_prompt() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._judge_response = """
@@ -1993,8 +1971,10 @@ def test_validate_goal_achievement_claim_skips_judge_prompt_when_llm_claims_new_
 
     assert ok is True
     assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
-    assert not hasattr(agent, "_last_judge_prompt")
+    assert agent._last_goal_completion_source == "judge"
+    assert '"new_page_detected": true' in agent._last_judge_prompt
+    assert "viewer.php?id=1346868" in agent._last_judge_prompt
+    assert "viewer_like" in agent._last_judge_prompt
 
 
 def test_validate_goal_achievement_claim_rejects_wait_when_play_control_is_still_visible() -> None:
@@ -2096,7 +2076,7 @@ def test_validate_goal_achievement_claim_accepts_wait_via_judge_for_result_quote
     assert reason is None
 
 
-def test_validate_goal_achievement_claim_accepts_first_wait_completion_claim_even_on_transient_surface() -> None:
+def test_validate_goal_achievement_claim_defers_first_wait_for_transient_loading_surface() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._consecutive_wait_count = 1
@@ -2143,9 +2123,9 @@ def test_validate_goal_achievement_claim_accepts_first_wait_completion_claim_eve
 
     ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
 
-    assert ok is True
-    assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert ok is False
+    assert reason == "첫 WAIT는 완료 판정을 내리지 않고 한 번 더 상태 변화를 관찰합니다."
+    assert agent._last_goal_completion_source == ""
 
 
 def test_validate_goal_achievement_claim_allows_first_wait_for_stable_zero_state_surface() -> None:
@@ -2197,10 +2177,10 @@ def test_validate_goal_achievement_claim_allows_first_wait_for_stable_zero_state
 
     assert ok is True
     assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert agent._last_goal_completion_source == "judge"
 
 
-def test_validate_goal_achievement_claim_accepts_loading_quote_when_llm_declares_completion() -> None:
+def test_validate_goal_achievement_claim_rejects_loading_quote_as_result() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
     agent._goal_quoted_terms = lambda goal: ["안녕 뭐해?"]  # type: ignore[method-assign]
@@ -2241,9 +2221,8 @@ def test_validate_goal_achievement_claim_accepts_loading_quote_when_llm_declares
 
     ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
 
-    assert ok is True
-    assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert ok is False
+    assert reason == "WAIT 기반 성공 판정은 현재 DOM의 강한 목표 증거나 contract signal이 필요합니다."
 
 
 def test_validate_goal_achievement_claim_allows_judge_to_bypass_missing_expected_signals() -> None:
@@ -2301,84 +2280,6 @@ def test_validate_goal_achievement_claim_allows_judge_to_bypass_missing_expected
     assert agent._last_goal_completion_source == "judge"
 
 
-def test_validate_goal_achievement_claim_accepts_active_sort_result_with_plain_expected_terms() -> None:
-    agent = _FakeAgent()
-    agent._goal_constraints = {}
-    agent._active_url = "https://www.coupang.com/np/search?q=제로콜라&sorter=saleCountDesc"
-    goal = SimpleNamespace(
-        name="제로콜라 판매량순 정렬 확인",
-        description="제로콜라 검색 후에 판매량순 필터 클릭하고 순서대로 정렬되어 제품이 나타나는지 확인",
-        success_criteria=["판매량순 필터가 active이고 제품 목록이 표시된다."],
-        expected_signals=["제로콜라", "판매량순", "정렬", "제품"],
-    )
-    decision = ActionDecision(
-        action=ActionType.WAIT,
-        reasoning=(
-            "현재 DOM에서 검색어 제로콜라, 판매량순 active 라디오, "
-            "순위 1, 2, 3 상품 목록이 보여 목표가 완료되었습니다."
-        ),
-        confidence=0.9,
-        is_goal_achieved=True,
-        goal_achievement_reason="판매량순 정렬 결과 확인",
-    )
-    dom = [
-        DOMElement(
-            id=1,
-            tag="h1",
-            role="heading",
-            text="제로콜라 검색결과",
-            is_visible=True,
-            is_enabled=True,
-        ),
-        DOMElement(
-            id=2,
-            tag="label",
-            role="radio",
-            text="판매량순 active",
-            aria_label="판매량순",
-            context_text="정렬 옵션 selected",
-            is_visible=True,
-            is_enabled=True,
-        ),
-        DOMElement(
-            id=3,
-            tag="li",
-            role="listitem",
-            text="1 코카콜라 제로 24개 19,900원",
-            container_name="상품 목록 검색 결과",
-            context_text="product searchRank=1",
-            is_visible=True,
-            is_enabled=True,
-        ),
-        DOMElement(
-            id=4,
-            tag="li",
-            role="listitem",
-            text="2 펩시 제로 24개 18,900원",
-            container_name="상품 목록 검색 결과",
-            context_text="product searchRank=2",
-            is_visible=True,
-            is_enabled=True,
-        ),
-        DOMElement(
-            id=5,
-            tag="li",
-            role="listitem",
-            text="3 탐스 제로 20개 16,900원",
-            container_name="상품 목록 검색 결과",
-            context_text="product searchRank=3",
-            is_visible=True,
-            is_enabled=True,
-        ),
-    ]
-
-    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
-
-    assert ok is True
-    assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
-
-
 def test_validate_goal_achievement_claim_allows_direct_click_without_expected_signal_gate() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {}
@@ -2414,27 +2315,6 @@ def test_validate_goal_achievement_claim_allows_direct_click_without_expected_si
     assert ok is True
     assert reason is None
     assert agent._last_goal_completion_source == "direct"
-
-
-def test_detect_service_unavailable_state_marks_bad_gateway_as_hard() -> None:
-    agent = _FakeAgent()
-    dom = [
-        DOMElement(
-            id=1,
-            tag="h1",
-            role="heading",
-            text="502 Bad Gateway",
-            context_text="nginx",
-            is_visible=True,
-            is_enabled=True,
-        )
-    ]
-
-    state = detect_service_unavailable_state(agent, dom)
-
-    assert state is not None
-    assert state["hard"] is True
-    assert state["matched"] == "502 bad gateway"
 
 
 def test_reasoning_only_wait_completion_accepts_past_showtime_unavailable_evidence() -> None:

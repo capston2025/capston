@@ -135,65 +135,6 @@ def test_apply_ref_actionability_reports_marks_covered_ref_in_payload_and_role_t
     assert payload["evidence"]["actionability_warning_count"] == 1
 
 
-def test_apply_ref_actionability_reports_marks_horizontal_offscreen_ref_as_hidden():
-    state = _seed_session("actionability-offscreen-session")
-    payload = runtime._build_snapshot_payload(
-        session_id="actionability-offscreen-session",
-        target_id="tab-1",
-        current_url=_DEFAULT_URL,
-        requested_scope_ref_id="",
-        raw_snapshot={
-            "snapshot": '- link "메뉴열기" [ref=e1]\n- button "MENU" [ref=e2]',
-            "refs": {
-                "e1": {"role": "link", "name": "메뉴열기"},
-                "e2": {"role": "button", "name": "MENU"},
-            },
-        },
-        state=state,
-    )
-
-    warnings = runtime._apply_ref_actionability_reports_to_payload(
-        payload,
-        [
-            {
-                "ref": "e2",
-                "status": "offscreen_horizontal",
-                "actionable": False,
-                "reason": "outside_horizontal_viewport",
-                "target": {"tag": "a", "className": "en"},
-            }
-        ],
-    )
-
-    assert len(warnings) == 1
-    meta = payload["elements_by_ref"]["e2"]
-    assert meta["is_visible"] is False
-    assert meta["attributes"]["gaia-disabled"] == "true"
-    assert meta["attributes"]["openclaw_actionability"] == "offscreen_horizontal"
-    assert "not-actionable=offscreen_horizontal" in payload["role_snapshot"]["snapshot"]
-    assert "not-actionable=offscreen_horizontal" not in payload["role_snapshot"]["snapshot"].splitlines()[0]
-
-
-def test_probe_ref_actionability_marks_visible_resolution_failure_not_actionable(monkeypatch):
-    def fake_request(method, *, base_url, path, timeout, payload):  # noqa: ARG001
-        return 400, {"error": 'Error: Element "e40" not found or not visible.'}, ""
-
-    monkeypatch.setattr(runtime, "_request", fake_request)
-
-    report = runtime._probe_ref_actionability(
-        base_url="http://127.0.0.1:18791",
-        target_id="tab-1",
-        profile="openclaw",
-        timeout=(1, 1),
-        ref_id="e40",
-    )
-
-    assert report is not None
-    assert report["status"] == "probe_not_visible"
-    assert report["actionable"] is False
-    assert "not found or not visible" in report["reason"]
-
-
 def _evidence(text: str, *, live_texts: list[str] | None = None, logout_visible: bool = False) -> dict[str, object]:
     return {
         "text_digest": text,

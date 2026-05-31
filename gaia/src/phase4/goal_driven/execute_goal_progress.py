@@ -454,63 +454,6 @@ def _evaluate_deferred_action_goal_completion(
     )
 
 
-def _evaluate_inspect_action_goal_completion(
-    *,
-    agent: Any,
-    goal: TestGoal,
-    decision: ActionDecision,
-    success: bool,
-    post_dom: List[DOMElement],
-) -> Optional[str]:
-    if not bool(success) or decision.action != ActionType.INSPECT:
-        return None
-
-    state_change = (
-        dict(getattr(getattr(agent, "_last_exec_result", None), "state_change", {}) or {})
-        if getattr(agent, "_last_exec_result", None) is not None
-        else {}
-    )
-    inspection_summary = str(state_change.get("inspection_summary") or "").strip()
-    inspection = state_change.get("inspection") if isinstance(state_change.get("inspection"), dict) else {}
-    inspection_text_parts = [
-        inspection_summary,
-        str(inspection.get("title") or "").strip() if isinstance(inspection, dict) else "",
-        str(inspection.get("bodyText") or "").strip() if isinstance(inspection, dict) else "",
-    ]
-    inspection_blob = " ".join(part for part in inspection_text_parts if part).strip()
-    if not inspection_blob:
-        return None
-
-    synthetic_decision = decision.model_copy(
-        update={
-            "confidence": max(float(decision.confidence or 0.0), 0.75),
-            "is_goal_achieved": False,
-            "goal_achievement_reason": (
-                str(decision.goal_achievement_reason or "").strip()
-                or f"inspect 결과에서 목표 상태가 확인되었습니다: {inspection_summary or inspection_blob[:180]}"
-            ),
-            "reasoning": " ".join(
-                part
-                for part in (
-                    str(decision.reasoning or "").strip(),
-                    f"inspect 결과: {inspection_blob}",
-                )
-                if part
-            ),
-        }
-    )
-    reasoning_completion = getattr(agent, "_evaluate_reasoning_only_wait_completion", None)
-    if callable(reasoning_completion):
-        reason = reasoning_completion(
-            goal=goal,
-            decision=synthetic_decision,
-            dom_elements=post_dom or [],
-        )
-        if reason:
-            return reason
-    return None
-
-
 def _selected_element_for_decision(decision: ActionDecision, dom_elements: List[DOMElement]) -> Optional[DOMElement]:
     ref_id = str(getattr(decision, "ref_id", "") or "").strip()
     if ref_id:
@@ -815,33 +758,6 @@ def evaluate_post_action_progress(
                 steps_taken=steps,
                 total_steps=step_count,
                 final_reason=target_reason,
-                duration_seconds=time.time() - start_time,
-            )
-            agent._record_goal_summary(
-                goal=goal,
-                status="success",
-                reason=terminal_result.final_reason,
-                step_count=step_count,
-                duration_seconds=terminal_result.duration_seconds,
-            )
-    if terminal_result is None:
-        inspect_reason = _evaluate_inspect_action_goal_completion(
-            agent=agent,
-            goal=goal,
-            decision=decision,
-            success=success,
-            post_dom=post_dom or [],
-        )
-        if inspect_reason:
-            _emit_reason(agent, "inspect_goal_completion")
-            agent._log(f"✅ 목표 달성! 이유: {inspect_reason}")
-            terminal_result = GoalResult(
-                goal_id=goal.id,
-                goal_name=goal.name,
-                success=True,
-                steps_taken=steps,
-                total_steps=step_count,
-                final_reason=inspect_reason,
                 duration_seconds=time.time() - start_time,
             )
             agent._record_goal_summary(

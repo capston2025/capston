@@ -291,13 +291,17 @@ def validate_goal_achievement_claim(
     setattr(agent, "_last_goal_completion_source", "")
     if not decision.is_goal_achieved:
         return True, None
-    if decision.action == ActionType.WAIT and goal_requires_media_playback(agent.__class__, goal):
-        visible_play_controls = collect_visible_play_controls(agent.__class__, dom_elements or [], limit=3)
-        if visible_play_controls:
-            return (
-                False,
-                "재생 목표는 현재 player surface에 play/start control이 남아 있으면 완료로 보지 않습니다. 먼저 재생 버튼을 누르세요.",
-            )
+    if decision.action == ActionType.WAIT:
+        ready = wait_completion_ready(agent, dom_elements)
+        if not ready:
+            return False, "첫 WAIT는 완료 판정을 내리지 않고 한 번 더 상태 변화를 관찰합니다."
+        if goal_requires_media_playback(agent.__class__, goal):
+            visible_play_controls = collect_visible_play_controls(agent.__class__, dom_elements or [], limit=3)
+            if visible_play_controls:
+                return (
+                    False,
+                    "재생 목표는 현재 player surface에 play/start control이 남아 있으면 완료로 보지 않습니다. 먼저 재생 버튼을 누르세요.",
+                )
 
     expected_signals = [
         str(item or "").strip().lower()
@@ -360,32 +364,6 @@ def validate_goal_achievement_claim(
     if constraint_reason:
         return False, constraint_reason
 
-    if decision.action == ActionType.WAIT:
-        if missing and not wait_contract_override:
-            judge_reason = evaluate_goal_completion_judge(
-                agent,
-                goal=goal,
-                decision=decision,
-                dom_elements=dom_elements,
-            )
-            if judge_reason:
-                setattr(agent, "_last_goal_completion_source", "judge")
-                decision.goal_achievement_reason = judge_reason
-                return True, None
-            setattr(agent, "_last_goal_completion_source", "wait_completion_rejected_missing_signals")
-            _record_completion_gate_reason(agent, "goal_achievement_wait_rejected")
-            return (
-                False,
-                "goal contract signal 미충족: " + ", ".join(missing),
-            )
-        setattr(agent, "_last_goal_completion_source", "llm_completion_claim")
-        if not str(decision.goal_achievement_reason or "").strip():
-            decision.goal_achievement_reason = (
-                str(decision.reasoning or "").strip()
-                or "LLM이 현재 화면 증거를 바탕으로 목표 완료를 선언했습니다."
-            )
-        return True, None
-
     judge_reason = evaluate_goal_completion_judge(
         agent,
         goal=goal,
@@ -402,6 +380,8 @@ def validate_goal_achievement_claim(
         return True, None
 
     if missing and not wait_contract_override:
+        setattr(agent, "_last_goal_completion_source", "wait_completion_rejected_missing_signals")
+        _record_completion_gate_reason(agent, "goal_achievement_wait_rejected")
         return (
             False,
             "goal contract signal 미충족: " + ", ".join(missing),
