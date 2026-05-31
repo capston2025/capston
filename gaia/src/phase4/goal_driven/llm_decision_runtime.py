@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any, List, Optional
 
@@ -33,6 +34,87 @@ from .wrapper_trace_runtime import dump_wrapper_trace, serialize_dom_elements, t
 
 def _thin_wrapper_mode(agent: Any) -> bool:
     return thin_wrapper_enabled(agent)
+
+
+def _llm_decision_retry_attempts() -> int:
+    raw = str(os.getenv("GAIA_LLM_DECISION_RETRY_ATTEMPTS", "1") or "1").strip()
+    try:
+        attempts = int(raw)
+    except Exception:
+        attempts = 1
+    return max(0, min(attempts, 2))
+
+
+def _llm_decision_retry_delay_seconds() -> float:
+    raw = str(os.getenv("GAIA_LLM_DECISION_RETRY_DELAY_MS", "800") or "800").strip()
+    try:
+        delay_ms = int(raw)
+    except Exception:
+        delay_ms = 800
+    return max(0, min(delay_ms, 3000)) / 1000.0
+
+
+def _llm_decision_retryable_error(exc: Exception) -> bool:
+    text = str(exc or "").strip().lower()
+    if not text:
+        return False
+    hard_fail_tokens = (
+        "insufficient_quota",
+        "quota exceeded",
+        "resource_exhausted",
+        "invalid_api_key",
+        "incorrect api key",
+        "forbidden",
+        "403",
+        "unexpected argument",
+        "not valid utf-8",
+    )
+    if any(token in text for token in hard_fail_tokens):
+        return False
+    retryable_tokens = (
+        "authentication",
+        "unauthorized",
+        "401",
+        "empty_response_from_codex_exec",
+        "empty_response_from_model",
+        "codex_exec_timeout",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "temporarily unavailable",
+        "econnreset",
+    )
+    return any(token in text for token in retryable_tokens)
+
+
+def _call_llm_decision_with_retry(
+    agent: Any,
+    *,
+    prompt: str,
+    screenshot: Optional[str],
+) -> str:
+    max_retries = _llm_decision_retry_attempts()
+    attempts_total = max_retries + 1
+    last_exc: Optional[Exception] = None
+    for attempt_index in range(attempts_total):
+        try:
+            if screenshot:
+                return agent.llm.analyze_with_vision(prompt, screenshot)
+            return agent._call_llm_text_only(prompt)
+        except Exception as exc:
+            last_exc = exc
+            if attempt_index >= max_retries or not _llm_decision_retryable_error(exc):
+                raise
+            log = getattr(agent, "_log", None)
+            if callable(log):
+                log(
+                    "♻️ LLM 결정 호출 일시 오류 감지: "
+                    f"{exc} — {attempt_index + 1}/{max_retries}회 재호출합니다."
+                )
+            time.sleep(_llm_decision_retry_delay_seconds())
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("LLM decision call failed without exception")
 
 
 def _ref_for_prompt(el: Optional[DOMElement]) -> str:
@@ -467,6 +549,70 @@ def _build_new_page_signal_summary(agent: Any) -> str:
     return "\n".join(lines)
 
 
+def _compact_self_state_text(value: Any, *, limit: int = 220) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if len(text) > limit:
+        return text[:limit].rstrip() + "..."
+    return text
+
+
+def _build_self_state_memory_block(agent: Any) -> str:
+    """Summarize the agent's own recent state beliefs for the next decision.
+
+    This is intentionally not a step checklist. It is a short continuity layer
+    derived from actions that actually executed in this run so the next LLM call
+    does not re-infer state only from whatever controls are visible now.
+    """
+
+    recent_actions = [
+        _compact_self_state_text(item, limit=260)
+        for item in list(getattr(agent, "_action_history", []) or [])[-8:]
+        if str(item or "").strip()
+    ]
+    persistent_inputs = []
+    for item in list(getattr(agent, "_persistent_state_memory", []) or [])[-5:]:
+        if not isinstance(item, dict):
+            continue
+        value = _compact_self_state_text(item.get("expected_value"), limit=80)
+        if not value:
+            continue
+        context = _compact_self_state_text(
+            item.get("context_text") or item.get("container_name") or item.get("role_ref_name"),
+            limit=140,
+        )
+        kind = _compact_self_state_text(item.get("kind"), limit=24) or "input"
+        persistent_inputs.append(
+            {
+                "kind": kind,
+                "value": value,
+                "context": context,
+            }
+        )
+
+    if not recent_actions and not persistent_inputs:
+        return ""
+
+    lines = [
+        "## 작업 자기 상태 메모리",
+        "- 이 블록은 목표 checklist가 아니라, 이 run에서 실제로 수행한 행동으로부터 만든 현재 belief입니다.",
+        "- 최신 DOM/URL/명시적 오류가 이 belief를 반박하지 않으면, 같은 의미의 검색/선택/탭 전환을 반복하지 마세요.",
+        "- 검색창이나 최근 검색어가 다시 보여도, 아래에 같은 query/result 선택이 이미 있으면 `아직 검색 전`으로 되돌아가지 말고 다음 미해결 상태를 찾으세요.",
+    ]
+    if recent_actions:
+        lines.append("- recent effective actions:")
+        lines.extend(f"  - {item}" for item in recent_actions[-6:])
+    if persistent_inputs:
+        lines.append("- committed input/select beliefs:")
+        for item in persistent_inputs:
+            suffix = f" | context={item['context']}" if item.get("context") else ""
+            lines.append(f"  - {item['kind']}: {item['value']}{suffix}")
+    lines.append(
+        "- 다음 판단 순서: 현재 화면이 belief를 반박하는가? 아니면 이미 한 행동을 반복하려는가? "
+        "반복이라면 inspect/다음 필터/다음 tab처럼 새로운 상태 확인으로 전환하세요."
+    )
+    return "\n".join(lines)
+
+
 def _build_media_playback_signal_summary(
     agent: Any,
     goal: TestGoal,
@@ -634,6 +780,8 @@ def decide_next_action(
         list(getattr(agent, "_action_feedback", []) or []),
         default=5,
     )
+    self_state_memory_block = _build_self_state_memory_block(agent)
+    self_state_prompt_block = self_state_memory_block or "## 작업 자기 상태 메모리\n없음"
     text_evidence_memory_block = build_text_evidence_memory_block(agent, max_entries=4, max_lines_per_entry=8)
     text_evidence_prompt_block = text_evidence_memory_block or "## 누적 텍스트 evidence\n없음"
     run_history_replay_packet = build_run_history_replay_packet_context_impl(agent, goal=goal)
@@ -701,6 +849,8 @@ def decide_next_action(
 
 ## 최근 실행 피드백
 {chr(10).join(recent_action_feedback) if recent_action_feedback else '없음'}
+
+{self_state_prompt_block}
 
 {text_evidence_prompt_block}
 
@@ -811,6 +961,7 @@ JSON 응답:"""
                 "prompt_elements": serialize_dom_elements(elements_for_prompt, agent=agent),
                 "recent_action_history": recent_action_history,
                 "recent_action_feedback": recent_action_feedback,
+                "self_state_memory_block": self_state_memory_block,
                 "llm_path": "vision" if screenshot else "text_only",
                 "uses_openclaw_backend": str(getattr(agent, "_browser_backend_name", "") or "").strip().lower() == "openclaw",
                 "agentic_wrapper_mode": True,
@@ -831,10 +982,11 @@ JSON 응답:"""
             },
         )
         llm_started = time.perf_counter()
-        if screenshot:
-            response_text = agent.llm.analyze_with_vision(prompt, screenshot)
-        else:
-            response_text = agent._call_llm_text_only(prompt)
+        response_text = _call_llm_decision_with_retry(
+            agent,
+            prompt=prompt,
+            screenshot=screenshot,
+        )
         agent._last_llm_trace = {
             "used_llm": True,
             "llm_ms": int((time.perf_counter() - llm_started) * 1000),

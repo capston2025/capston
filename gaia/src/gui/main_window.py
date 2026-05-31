@@ -11,6 +11,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -1846,6 +1847,7 @@ class MainWindow(QMainWindow):
     benchmarkSaveRequested = Signal(str, str)
     benchmarkRunRequested = Signal(str, str)
     benchmarkViewRequested = Signal(str, str)
+    benchmarkBattleCatalogRequested = Signal()
 
     def __init__(
         self, *, controller_factory: Callable[["MainWindow"], object] | None = None
@@ -3617,6 +3619,7 @@ class MainWindow(QMainWindow):
         self._browser_preview_enabled: bool = False
         self._workflow_stage: str
         self._selected_run_mode: str = "quick"
+        self._battle_demo_fast_path = False
         self._selected_input_source: str = "none"
         self._control_channel: str = "local"
         self._full_execution_logs: List[str] = []
@@ -4650,9 +4653,15 @@ class MainWindow(QMainWindow):
             return []
         # _benchmark_catalog에서 suite_path 찾음
         suite_path_rel = ""
+        allowed_scenarios: set[str] = set()
         for item in self._benchmark_catalog or []:
             if str(item.get("key") or "").strip() == site_key:
                 suite_path_rel = str(item.get("suite_path") or "").strip()
+                allowed_scenarios = {
+                    str(raw).strip()
+                    for raw in list(item.get("allowed_scenarios") or [])
+                    if str(raw).strip()
+                }
                 break
         if not suite_path_rel:
             return []
@@ -4667,7 +4676,10 @@ class MainWindow(QMainWindow):
             scenarios = data.get("scenarios") or []
             if not isinstance(scenarios, list):
                 return []
-            return [s for s in scenarios if isinstance(s, dict) and s.get("id")]
+            rows = [s for s in scenarios if isinstance(s, dict) and s.get("id")]
+            if allowed_scenarios:
+                rows = [s for s in rows if str(s.get("id") or "").strip() in allowed_scenarios]
+            return rows
         except Exception:
             return []
 
@@ -4719,59 +4731,60 @@ class MainWindow(QMainWindow):
                     "scenario_id": str(s.get("id", "")),
                 })
 
-        # 3. 부가 모드들 (사이트 무관) — 빠른 목표, AI 자율 탐색, 기획서
-        cases.extend([
-            {
-                "id": "quick_goal",
-                "mode": "quick",
-                "icon_mode": "quick",
-                "title": "빠른 목표 직접 입력",
-                "desc": "AI가 직접 목표를 이해하고 수행합니다 (단일 실행).",
-                "eta": "예상 소요 1~3분",
-                "recommended": False,
-                "scenario_id": "",
-            },
-            {
-                "id": "adaptive_qa_goal",
-                "mode": "adaptive_qa",
-                "icon_mode": "adaptive_qa",
-                "title": "QA 확장 실행",
-                "desc": "목표 수행 후 안전 엣지 케이스를 최대 5개 확장합니다.",
-                "eta": "예상 소요 5~10분",
-                "recommended": False,
-                "scenario_id": "",
-            },
-            {
-                "id": "deep_adaptive_qa_goal",
-                "mode": "deep_adaptive_qa",
-                "icon_mode": "deep_adaptive_qa",
-                "title": "Deep QA 확장 실행",
-                "desc": "새로운 안전 엣지 케이스가 더 이상 없을 때까지 계속 확장합니다.",
-                "eta": "예상 소요 가변",
-                "recommended": False,
-                "scenario_id": "",
-            },
-            {
-                "id": "ai_explore",
-                "mode": "ai",
-                "icon_mode": "ai",
-                "title": "AI 자율 탐색",
-                "desc": "AI가 사이트를 자유 탐색하며 이상 여부를 보고합니다.",
-                "eta": "예상 소요 5~10분",
-                "recommended": False,
-                "scenario_id": "",
-            },
-            {
-                "id": "from_spec",
-                "mode": "bundle",
-                "icon_mode": "spec",
-                "title": "기획서 업로드해서 자동 생성",
-                "desc": "PDF/DOCX 기획서를 업로드하면 시나리오 자동 생성.",
-                "eta": "예상 소요 2~5분",
-                "recommended": False,
-                "scenario_id": "",
-            },
-        ])
+        # 3. 부가 모드들 (사이트 무관) — 시연 fast path에서는 후보 테스트만 남겨 클릭 수를 줄인다.
+        if not bool(getattr(self, "_battle_demo_fast_path", False)):
+            cases.extend([
+                {
+                    "id": "quick_goal",
+                    "mode": "quick",
+                    "icon_mode": "quick",
+                    "title": "빠른 목표 직접 입력",
+                    "desc": "AI가 직접 목표를 이해하고 수행합니다 (단일 실행).",
+                    "eta": "예상 소요 1~3분",
+                    "recommended": False,
+                    "scenario_id": "",
+                },
+                {
+                    "id": "adaptive_qa_goal",
+                    "mode": "adaptive_qa",
+                    "icon_mode": "adaptive_qa",
+                    "title": "QA 확장 실행",
+                    "desc": "목표 수행 후 안전 엣지 케이스를 최대 5개 확장합니다.",
+                    "eta": "예상 소요 5~10분",
+                    "recommended": False,
+                    "scenario_id": "",
+                },
+                {
+                    "id": "deep_adaptive_qa_goal",
+                    "mode": "deep_adaptive_qa",
+                    "icon_mode": "deep_adaptive_qa",
+                    "title": "Deep QA 확장 실행",
+                    "desc": "새로운 안전 엣지 케이스가 더 이상 없을 때까지 계속 확장합니다.",
+                    "eta": "예상 소요 가변",
+                    "recommended": False,
+                    "scenario_id": "",
+                },
+                {
+                    "id": "ai_explore",
+                    "mode": "ai",
+                    "icon_mode": "ai",
+                    "title": "AI 자율 탐색",
+                    "desc": "AI가 사이트를 자유 탐색하며 이상 여부를 보고합니다.",
+                    "eta": "예상 소요 5~10분",
+                    "recommended": False,
+                    "scenario_id": "",
+                },
+                {
+                    "id": "from_spec",
+                    "mode": "bundle",
+                    "icon_mode": "spec",
+                    "title": "기획서 업로드해서 자동 생성",
+                    "desc": "PDF/DOCX 기획서를 업로드하면 시나리오 자동 생성.",
+                    "eta": "예상 소요 2~5분",
+                    "recommended": False,
+                    "scenario_id": "",
+                },
+            ])
         return cases
 
     def refresh_test_cases_for_site(self) -> None:
@@ -4950,7 +4963,10 @@ class MainWindow(QMainWindow):
             self._metric_selected_cases.setText(str(len(rows)))
         # 가장 첫 선택된 row의 mode를 채택
         mode = str(rows[0].property("mode") or "benchmark")
-        self.set_selected_run_mode(mode)
+        if mode == "benchmark" and bool(getattr(self, "_battle_demo_fast_path", False)):
+            self.set_selected_run_mode("battle_demo")
+        else:
+            self.set_selected_run_mode(mode)
 
         if mode == "benchmark":
             # 시나리오 ID 수집 — "전체 시나리오"(scenario_id="")가 포함되면 None (필터 없이 전체 실행)
@@ -5186,6 +5202,13 @@ class MainWindow(QMainWindow):
         self._benchmark_mode_button.clicked.connect(self._activate_benchmark_mode)
         self._run_mode_group.addButton(self._benchmark_mode_button)
         mode_row.addWidget(self._benchmark_mode_button)
+
+        self._battle_demo_mode_button = QPushButton("GAIA vs Human 시연", page)
+        self._battle_demo_mode_button.setCheckable(True)
+        self._battle_demo_mode_button.setProperty("modeButton", True)
+        self._battle_demo_mode_button.clicked.connect(self._activate_battle_demo_mode)
+        self._run_mode_group.addButton(self._battle_demo_mode_button)
+        mode_row.addWidget(self._battle_demo_mode_button)
         mode_row.addStretch()
         layout.addLayout(mode_row)
 
@@ -5362,6 +5385,21 @@ class MainWindow(QMainWindow):
         self._benchmark_stage_url_metric.setWordWrap(True)
         metrics_row.addWidget(self._benchmark_stage_url_metric, stretch=1)
         card_layout.addLayout(metrics_row)
+
+        option_row = QHBoxLayout()
+        option_row.setSpacing(12)
+        self._benchmark_battle_checkbox = QCheckBox("Human vs GAIA 웹 연동", card)
+        self._benchmark_battle_checkbox.setToolTip(
+            "켜면 고정 battle-live 웹 보드에 Human 타이머 시작 신호와 GAIA 증거를 업로드합니다."
+        )
+        option_row.addWidget(self._benchmark_battle_checkbox)
+        self._benchmark_fast_checkbox = QCheckBox("Fast mode", card)
+        self._benchmark_fast_checkbox.setToolTip(
+            "Codex priority 실행 옵션입니다. 토큰 소모가 커서 시연 때만 켜세요."
+        )
+        option_row.addWidget(self._benchmark_fast_checkbox)
+        option_row.addStretch()
+        card_layout.addLayout(option_row)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(12)
@@ -6705,6 +6743,17 @@ class MainWindow(QMainWindow):
     def get_selected_benchmark_url(self) -> str:
         return self._selected_benchmark_url
 
+    def get_benchmark_run_options(self) -> dict[str, Any]:
+        battle_checkbox = getattr(self, "_benchmark_battle_checkbox", None)
+        fast_checkbox = getattr(self, "_benchmark_fast_checkbox", None)
+        demo_fast_path = bool(getattr(self, "_battle_demo_fast_path", False))
+        return {
+            "battle_mode": demo_fast_path or bool(battle_checkbox is not None and battle_checkbox.isChecked()),
+            "fast_mode": demo_fast_path or bool(fast_checkbox is not None and fast_checkbox.isChecked()),
+            "battle_site_url": "https://gaia-battle-web.vercel.app",
+            "battle_session_id": "battle-live",
+        }
+
     def show_html_in_browser(self, html_content: str) -> None:
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
         self._browser_view.setHtml(html_content)
@@ -7261,11 +7310,29 @@ class MainWindow(QMainWindow):
         self._current_feature_query = str(text or "").strip()
 
     def _activate_benchmark_mode(self) -> None:
+        self._battle_demo_fast_path = False
+        if hasattr(self, "_benchmark_battle_checkbox"):
+            self._benchmark_battle_checkbox.setChecked(False)
+        if hasattr(self, "_benchmark_fast_checkbox"):
+            self._benchmark_fast_checkbox.setChecked(False)
         self.set_selected_run_mode("benchmark")
         self._emit_benchmark_manage()
 
+    def _activate_battle_demo_mode(self) -> None:
+        self._battle_demo_fast_path = True
+        self.set_selected_run_mode("battle_demo")
+        if hasattr(self, "_benchmark_battle_checkbox"):
+            self._benchmark_battle_checkbox.setChecked(True)
+        if hasattr(self, "_benchmark_fast_checkbox"):
+            self._benchmark_fast_checkbox.setChecked(True)
+        self.benchmarkBattleCatalogRequested.emit()
+        self.show_site_selection_stage()
+
     def set_selected_run_mode(self, mode: str) -> None:
-        normalized = mode if mode in {"quick", "adaptive_qa", "deep_adaptive_qa", "ai", "bundle", "benchmark"} else "quick"
+        allowed_modes = {"quick", "adaptive_qa", "deep_adaptive_qa", "ai", "bundle", "benchmark", "battle_demo"}
+        normalized = mode if mode in allowed_modes else "quick"
+        if normalized not in {"benchmark", "battle_demo"}:
+            self._battle_demo_fast_path = False
         self._selected_run_mode = normalized
         mapping = {
             "quick": getattr(self, "_quick_mode_button", None),
@@ -7274,6 +7341,7 @@ class MainWindow(QMainWindow):
             "ai": getattr(self, "_ai_mode_button", None),
             "bundle": getattr(self, "_bundle_mode_button", None),
             "benchmark": getattr(self, "_benchmark_mode_button", None),
+            "battle_demo": getattr(self, "_battle_demo_mode_button", None),
         }
         for key, button in mapping.items():
             if button is None:
@@ -7286,7 +7354,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_feature_input_container"):
             self._feature_input_container.setVisible(normalized in {"quick", "adaptive_qa", "deep_adaptive_qa"})
         if hasattr(self, "_standard_action_container"):
-            self._standard_action_container.setVisible(normalized != "benchmark")
+            self._standard_action_container.setVisible(normalized not in {"benchmark", "battle_demo"})
         # 신규 3단계 UX: mode 변경만으로 stage를 자동 전환하지 않음.
         # Step 2 (test_case_stage)에서 선택 완료 시 _on_case_selection_complete가
         # 적절한 시그널을 발생시키고, controller가 set_busy(True)를 호출하여 Step 3로 전환.

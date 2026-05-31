@@ -11,7 +11,9 @@ from gaia.src.phase4.goal_driven.llm_decision_runtime import (
     _build_goal_state_summary,
     _build_media_playback_signal_summary,
     _build_new_page_signal_summary,
+    _build_self_state_memory_block,
     _build_target_destination_summary,
+    _call_llm_decision_with_retry,
     _is_forbidden_global_control,
 )
 from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import (
@@ -77,6 +79,56 @@ def test_build_goal_state_summary_keeps_membership_belief_in_classic_mode():
     assert parsed["membership_belief"] == "absent"
     assert parsed["subgoal"] is None
     assert meta["membership_hint_included"] is True
+
+
+def test_call_llm_decision_retries_transient_auth_error(monkeypatch) -> None:
+    monkeypatch.setenv("GAIA_LLM_DECISION_RETRY_ATTEMPTS", "1")
+    monkeypatch.setenv("GAIA_LLM_DECISION_RETRY_DELAY_MS", "0")
+
+    class _RetryAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.logs: list[str] = []
+
+        def _call_llm_text_only(self, _prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("authentication failed: 401 Unauthorized")
+            return '{"action":"wait","reasoning":"ok","confidence":0.9}'
+
+        def _log(self, message: str) -> None:
+            self.logs.append(message)
+
+    agent = _RetryAgent()
+
+    response = _call_llm_decision_with_retry(agent, prompt="prompt", screenshot=None)
+
+    assert agent.calls == 2
+    assert '"action":"wait"' in response
+    assert any("재호출" in message for message in agent.logs)
+
+
+def test_call_llm_decision_does_not_retry_hard_key_error(monkeypatch) -> None:
+    monkeypatch.setenv("GAIA_LLM_DECISION_RETRY_ATTEMPTS", "2")
+
+    class _NoRetryAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _call_llm_text_only(self, _prompt: str) -> str:
+            self.calls += 1
+            raise RuntimeError("invalid_api_key")
+
+    agent = _NoRetryAgent()
+
+    try:
+        _call_llm_decision_with_retry(agent, prompt="prompt", screenshot=None)
+    except RuntimeError as exc:
+        assert "invalid_api_key" in str(exc)
+    else:
+        raise AssertionError("hard auth error should propagate")
+
+    assert agent.calls == 1
 
 
 def test_multi_user_interaction_skill_prompt_advertises_explicit_plan_contract():
@@ -441,6 +493,31 @@ def test_build_media_playback_signal_summary_describes_visible_play_controls():
     assert 'play candidate 1: ref=e15 label="재생" role=button' in summary
     assert "viewer surface 진입만으로 완료 처리하지 말고" in summary
     assert "`is_goal_achieved=true`" in summary
+
+
+def test_build_self_state_memory_block_carries_recent_effective_actions_without_checklist():
+    agent = SimpleNamespace(
+        _action_history=[
+            "Step 3: click - 검색 결과에서 인천시 연수구 송도동을 클릭하여 해당 지역으로 이동합니다.",
+            "Step 4: click - 매물 버튼을 클릭하여 매물 화면으로 이동합니다.",
+        ],
+        _persistent_state_memory=[
+            {
+                "kind": "fill",
+                "expected_value": "송도",
+                "context_text": "단지, 지역, 지하철, 초등학교 검색",
+            }
+        ],
+    )
+
+    block = _build_self_state_memory_block(agent)
+
+    assert "작업 자기 상태 메모리" in block
+    assert "목표 checklist가 아니라" in block
+    assert "인천시 연수구 송도동" in block
+    assert "매물 버튼" in block
+    assert "fill: 송도" in block
+    assert "같은 query/result 선택이 이미 있으면" in block
 
 
 def test_forbidden_global_control_does_not_block_destination_reveal_with_logout_in_context():

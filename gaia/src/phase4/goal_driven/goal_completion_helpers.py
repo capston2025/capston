@@ -81,6 +81,10 @@ _SOFT_SERVICE_UNAVAILABLE_KEYWORDS = (
 )
 _HARD_SERVICE_UNAVAILABLE_KEYWORDS = (
     "access denied",
+    "502 bad gateway",
+    "bad gateway",
+    "504 gateway timeout",
+    "gateway timeout",
     "cloudflare",
     "just a moment",
     "checking your browser",
@@ -97,6 +101,36 @@ _HARD_SERVICE_UNAVAILABLE_KEYWORDS = (
     "시스템 오류 발생",
 )
 _SERVICE_UNAVAILABLE_KEYWORDS = _SOFT_SERVICE_UNAVAILABLE_KEYWORDS + _HARD_SERVICE_UNAVAILABLE_KEYWORDS
+
+
+_CAPTCHA_LEGAL_DISCLOSURE_HINTS = (
+    "protected by recaptcha",
+    "protected by hcaptcha",
+    "privacy policy",
+    "terms of service",
+    "google privacy policy",
+    "hcaptcha privacy policy",
+)
+_CAPTCHA_ACTIVE_CHALLENGE_HINTS = (
+    "verify you are human",
+    "checking your browser",
+    "cf-challenge",
+    "cloudflare",
+    "access denied",
+    "보안 확인",
+    "보안문자",
+    "자동화된 접근",
+    "비정상 접근",
+)
+
+
+def _is_captcha_legal_disclosure(normalized_blob: str) -> bool:
+    if not normalized_blob:
+        return False
+    has_disclosure = any(hint in normalized_blob for hint in _CAPTCHA_LEGAL_DISCLOSURE_HINTS)
+    if not has_disclosure:
+        return False
+    return not any(hint in normalized_blob for hint in _CAPTCHA_ACTIVE_CHALLENGE_HINTS)
 
 
 def _is_actionable_element(el: DOMElement) -> bool:
@@ -227,7 +261,11 @@ def detect_service_unavailable_state(agent, dom_elements: List[DOMElement]) -> O
     blobs = _service_unavailable_blobs(agent, dom_elements)
     for token in _HARD_SERVICE_UNAVAILABLE_KEYWORDS:
         normalized_token = agent._normalize_text(token)
-        if normalized_token and any(normalized_token in blob for blob in blobs):
+        if normalized_token and any(
+            normalized_token in blob
+            and not (normalized_token == "captcha" and _is_captcha_legal_disclosure(blob))
+            for blob in blobs
+        ):
             return {
                 "hard": True,
                 "matched": token,
@@ -1111,8 +1149,7 @@ def evaluate_sort_results_completion(
                 ]
             )
         )
-    if not any(term and term in selected_blob for term in sort_terms):
-        return None
+    selected_matches_sort = any(term and term in selected_blob for term in sort_terms)
 
     visible_elements = [el for el in list(dom_elements or []) if bool(getattr(el, "is_visible", True))]
     if not visible_elements:
@@ -1138,7 +1175,19 @@ def evaluate_sort_results_completion(
     active_url = agent._normalize_text(getattr(agent, "_active_url", "") or "")
     has_sort_term_visible = any(term and term in visible_blob for term in sort_terms)
     has_active_sort_signal = any(token in visible_blob for token in ("checked", "active", "selected", "선택됨", "적용"))
-    if not (has_sort_term_visible and (has_active_sort_signal or "sort" in active_url or "saleCountDesc".lower() in active_url)):
+    active_url_sort_signal = any(
+        token in active_url
+        for token in (
+            "sort",
+            "sorter",
+            "order",
+            "rank",
+            "salecountdesc",
+        )
+    )
+    if selected_blob and not selected_matches_sort and not (has_active_sort_signal or active_url_sort_signal):
+        return None
+    if not (has_sort_term_visible and (has_active_sort_signal or active_url_sort_signal)):
         return None
 
     query = _goal_search_query_before_search(str(goal_blob_raw or ""))

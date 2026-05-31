@@ -46,6 +46,7 @@ def test_dispatch_command_preserves_inline_credentials_when_router_rewrites_goal
 
     monkeypatch.setattr(chat_hub, "_interpret_user_message_with_llm", fake_interpret)
     monkeypatch.setattr(chat_hub, "_run_test", fake_run_test)
+    monkeypatch.setattr(chat_hub, "_capture_session_screenshot_attachment", lambda _session_id: None)
     context = HubContext(
         provider="openai",
         model="gpt-5.5",

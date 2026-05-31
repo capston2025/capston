@@ -33,7 +33,9 @@ from gaia.src.gui.goal_worker import GoalDrivenWorker, ExploratoryWorker, Benchm
 from gaia.src.benchmark_manager import (
     BenchmarkPreset,
     build_benchmark_site_catalog,
+    build_human_vs_gaia_site_catalog,
     build_single_scenario_suite_payload,
+    filter_suite_payload_for_scenario_ids,
     load_benchmark_registry,
     load_suite_payload,
     render_benchmark_reports_html,
@@ -141,6 +143,8 @@ class AppController(QObject):
         self._window.benchmarkSaveRequested.connect(self._on_benchmark_save_requested)
         self._window.benchmarkRunRequested.connect(self._on_benchmark_run_requested)
         self._window.benchmarkViewRequested.connect(self._on_benchmark_view_requested)
+        if hasattr(self._window, "benchmarkBattleCatalogRequested"):
+            self._window.benchmarkBattleCatalogRequested.connect(self._on_benchmark_battle_catalog_requested)
         self._refresh_benchmark_catalog()
 
     def apply_run_context(
@@ -1050,13 +1054,55 @@ class AppController(QObject):
         *,
         selected_site_key: str | None = None,
         selected_url: str | None = None,
+        battle_mode: bool = False,
     ) -> None:
-        catalog, _ = build_benchmark_site_catalog(self._benchmark_registry)
+        if battle_mode:
+            catalog, _, _ = build_human_vs_gaia_site_catalog(
+                self._benchmark_registry,
+                workspace_root=self._workspace_root(),
+            )
+            if not catalog:
+                catalog, _ = build_benchmark_site_catalog(self._benchmark_registry)
+        else:
+            catalog, _ = build_benchmark_site_catalog(self._benchmark_registry)
         self._window.set_benchmark_catalog(
             catalog,
             selected_site_key=selected_site_key or (catalog[0]["key"] if catalog else None),
             selected_url=selected_url,
         )
+
+    @Slot()
+    def _on_benchmark_battle_catalog_requested(self) -> None:
+        self._refresh_benchmark_catalog(battle_mode=True)
+
+    def _workspace_root(self) -> Path:
+        return Path(__file__).resolve().parents[3]
+
+    @staticmethod
+    def _normalize_benchmark_run_options(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+        raw = raw if isinstance(raw, Mapping) else {}
+        normalized: dict[str, Any] = {
+            "battle_mode": bool(raw.get("battle_mode")),
+            "fast_mode": bool(raw.get("fast_mode")),
+        }
+        for key in ("battle_site_url", "battle_session_id", "battle_upload_token"):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                normalized[key] = value
+        return normalized
+
+    def _benchmark_run_options_from_window(self) -> dict[str, Any]:
+        getter = getattr(self._window, "get_benchmark_run_options", None)
+        if not callable(getter):
+            return {"battle_mode": False, "fast_mode": False}
+        return self._normalize_benchmark_run_options(getter())
+
+    def _benchmark_run_options_from_manager(self) -> dict[str, Any]:
+        dialog = self._benchmark_manager_dialog
+        getter = getattr(dialog, "benchmark_run_options", None)
+        if dialog is None or not callable(getter):
+            return {"battle_mode": False, "fast_mode": False}
+        return self._normalize_benchmark_run_options(getter())
 
     @Slot(str, str)
     def _on_benchmark_manage_requested(self, site_key: str, url: str) -> None:
@@ -1105,6 +1151,7 @@ class AppController(QObject):
             url=url,
             scenario_id=scenario_id,
             push_metrics=push_metrics,
+            run_options=self._benchmark_run_options_from_manager(),
         )
 
     @Slot(str, str)
@@ -1127,7 +1174,13 @@ class AppController(QObject):
     @Slot(str, str)
     def _on_benchmark_run_requested(self, site_key: str, url: str) -> None:
         # GUI 신규 흐름에서는 기본적으로 Grafana로 메트릭 push하여 결과 보드에 즉시 노출
-        self._run_benchmark_request(site_key=site_key, url=url, scenario_id="", push_metrics=True)
+        self._run_benchmark_request(
+            site_key=site_key,
+            url=url,
+            scenario_id="",
+            push_metrics=True,
+            run_options=self._benchmark_run_options_from_window(),
+        )
 
     def _run_benchmark_request(
         self,
@@ -1136,13 +1189,28 @@ class AppController(QObject):
         url: str,
         scenario_id: str = "",
         push_metrics: bool = False,
+        run_options: Mapping[str, Any] | None = None,
     ) -> None:
         clean_site = str(site_key or "").strip()
         clean_url = str(url or "").strip()
         clean_scenario_id = str(scenario_id or "").strip()
-        preset = resolve_benchmark_site(self._benchmark_registry, clean_site)
+        options = self._normalize_benchmark_run_options(run_options)
+        workspace_root = self._workspace_root()
+        allowed_scenarios: set[str] | None = None
+        if options["battle_mode"]:
+            _catalog, preset_map, scenario_filter_map = build_human_vs_gaia_site_catalog(
+                self._benchmark_registry,
+                workspace_root=workspace_root,
+            )
+            preset = preset_map.get(clean_site)
+            allowed_scenarios = scenario_filter_map.get(clean_site)
+        else:
+            preset = resolve_benchmark_site(self._benchmark_registry, clean_site)
         if preset is None:
-            self._window.append_log("⚠️ 실행할 벤치 사이트를 먼저 선택해주세요.")
+            if options["battle_mode"]:
+                self._window.append_log("⚠️ Human vs GAIA 후보 목록에서 실행할 사이트를 선택해주세요.")
+            else:
+                self._window.append_log("⚠️ 실행할 벤치 사이트를 먼저 선택해주세요.")
             return
         if self._worker_thread:
             self._window.append_log("⚠️ 이미 다른 실행이 진행 중입니다.")
@@ -1150,7 +1218,11 @@ class AppController(QObject):
         if clean_url:
             self._benchmark_registry = upsert_benchmark_site_url(self._benchmark_registry, clean_site, clean_url)
             save_benchmark_registry(self._benchmark_registry)
-            self._refresh_benchmark_catalog(selected_site_key=clean_site, selected_url=clean_url)
+            self._refresh_benchmark_catalog(
+                selected_site_key=clean_site,
+                selected_url=clean_url,
+                battle_mode=options["battle_mode"],
+            )
         if not preset.suite_path:
             self._window.append_log(f"ℹ️ {preset.label}용 기존 suite는 아직 저장소에 없습니다. 링크는 저장했지만 바로 실행할 benchmark는 없습니다.")
             return
@@ -1165,9 +1237,18 @@ class AppController(QObject):
         suite_payload: dict[str, Any] | None = None
         run_tag = clean_scenario_id or "full_suite"
         if clean_scenario_id:
+            if allowed_scenarios and clean_scenario_id not in allowed_scenarios:
+                self._window.append_log("⚠️ 선택한 케이스가 Human vs GAIA 후보 목록에 없습니다.")
+                self._window.set_busy(False)
+                return
             suite_payload = build_single_scenario_suite_payload(
-                load_suite_payload(Path(__file__).resolve().parents[3], preset.suite_path or ""),
+                load_suite_payload(workspace_root, preset.suite_path or ""),
                 clean_scenario_id,
+            )
+        elif allowed_scenarios:
+            suite_payload = filter_suite_payload_for_scenario_ids(
+                load_suite_payload(workspace_root, preset.suite_path or ""),
+                allowed_scenarios,
             )
         self._start_benchmark_worker(
             preset,
@@ -1175,6 +1256,7 @@ class AppController(QObject):
             suite_payload=suite_payload,
             run_tag=run_tag,
             push_metrics=push_metrics,
+            run_options=options,
         )
 
     def _start_benchmark_worker(
@@ -1185,6 +1267,7 @@ class AppController(QObject):
         suite_payload: Mapping[str, Any] | None = None,
         run_tag: str = "full_suite",
         push_metrics: bool = False,
+        run_options: Mapping[str, Any] | None = None,
     ) -> None:
         # GUI에서 사용자가 일부 시나리오만 선택했으면 window가 _pending_scenario_ids에 저장.
         # None이면 suite의 전체 시나리오 실행 (기존 동작).
@@ -1200,6 +1283,7 @@ class AppController(QObject):
             workspace_root=Path(__file__).resolve().parents[3],
             push_metrics=push_metrics,
             scenario_ids=scenario_ids,
+            run_options=run_options,
         )
         worker.moveToThread(thread)
 

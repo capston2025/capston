@@ -284,6 +284,9 @@ BENCHMARK_PRESETS: tuple[BenchmarkPreset, ...] = (
     ),
 )
 
+HUMAN_VS_GAIA_MANIFEST_PATH = Path("gaia/tests/scenarios/gaia_vs_human_manifest.json")
+HUMAN_VS_GAIA_SKIP_SITE_KEYS = frozenset({"inu_lms_hvh"})
+
 
 def benchmark_registry_path() -> Path:
     return Path.home() / ".gaia" / "benchmark_mode_targets.json"
@@ -494,6 +497,100 @@ def build_benchmark_site_catalog(
             }
         )
     return catalog, preset_map
+
+
+def build_human_vs_gaia_site_catalog(
+    payload: Mapping[str, Any],
+    *,
+    workspace_root: Path,
+    manifest_path: Path | str = HUMAN_VS_GAIA_MANIFEST_PATH,
+) -> tuple[list[dict[str, Any]], dict[str, BenchmarkPreset], dict[str, set[str]]]:
+    """Build the fixed presentation shortlist catalog from the Human-vs-GAIA manifest."""
+    resolved_manifest = (Path(workspace_root) / Path(manifest_path)).resolve()
+    try:
+        manifest_payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [], {}, {}
+    if not isinstance(manifest_payload, Mapping):
+        return [], {}, {}
+
+    sites = payload.get("sites") if isinstance(payload.get("sites"), Mapping) else {}
+    catalog: list[dict[str, Any]] = []
+    preset_map: dict[str, BenchmarkPreset] = {}
+    scenario_filter_map: dict[str, set[str]] = {}
+    for raw in list(manifest_payload.get("sites") or []):
+        if not isinstance(raw, Mapping):
+            continue
+        site_key = str(raw.get("site_key") or "").strip()
+        if site_key in HUMAN_VS_GAIA_SKIP_SITE_KEYS:
+            continue
+        label = str(raw.get("label") or "").strip()
+        default_url = str(raw.get("default_url") or "").strip()
+        suite_path = str(raw.get("suite_path") or "").strip()
+        allowed_scenarios = {
+            str(item).strip()
+            for item in list(raw.get("allowed_scenarios") or [])
+            if str(item).strip()
+        }
+        if not site_key or not label or not default_url or not suite_path or not allowed_scenarios:
+            continue
+
+        current = sites.get(site_key) if isinstance(sites, Mapping) else {}
+        current = current if isinstance(current, Mapping) else {}
+        registry_urls = [str(current.get("default_url") or "").strip()]
+        registry_urls.extend(list(current.get("urls") or []))
+        urls = build_url_history({"default_url": default_url, "urls": registry_urls})
+        host_aliases = tuple(
+            str(item).strip().lower()
+            for item in list(raw.get("host_aliases") or [])
+            if str(item).strip()
+        )
+        preset = BenchmarkPreset(
+            key=site_key,
+            label=label,
+            default_url=default_url,
+            suite_path=suite_path,
+            host_aliases=host_aliases or tuple(filter(None, (extract_url_host(default_url),))),
+        )
+        preset_map[site_key] = preset
+        scenario_filter_map[site_key] = allowed_scenarios
+        catalog.append(
+            {
+                "key": site_key,
+                "label": label,
+                "default_url": urls[0] if urls else default_url,
+                "urls": urls[:8],
+                "suite_path": suite_path,
+                "suite_available": True,
+                "status_text": f"Human vs GAIA {len(allowed_scenarios)}개",
+                "is_custom": True,
+                "battle_mode": True,
+                "allowed_scenarios": sorted(allowed_scenarios),
+            }
+        )
+    return catalog, preset_map, scenario_filter_map
+
+
+def filter_suite_payload_for_scenario_ids(
+    suite_payload: Mapping[str, Any],
+    allowed_scenarios: set[str] | Sequence[str] | None,
+) -> dict[str, Any]:
+    """Return a suite copy containing only the requested scenario ids."""
+    normalized = dict(suite_payload)
+    allowed = {
+        str(item).strip()
+        for item in list(allowed_scenarios or [])
+        if str(item).strip()
+    }
+    if not allowed:
+        return normalized
+    scenarios = [
+        dict(row)
+        for row in list(normalized.get("scenarios") or [])
+        if isinstance(row, Mapping) and str(row.get("id") or "").strip() in allowed
+    ]
+    normalized["scenarios"] = scenarios
+    return normalized
 
 
 def build_benchmark_catalog(payload: Mapping[str, Any]) -> list[dict[str, Any]]:

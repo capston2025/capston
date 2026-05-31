@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from gaia.src.phase4.goal_driven.execute_goal_progress import (
     evaluate_post_action_progress,
     _evaluate_deferred_action_goal_completion,
+    _evaluate_inspect_action_goal_completion,
     _evaluate_post_action_judge_completion,
     _prime_dom_cache_from_backend_snapshot,
 )
@@ -349,6 +350,62 @@ def test_deferred_action_goal_completion_requires_successful_action() -> None:
     assert reason == "재생 버튼 클릭이 마지막 단계입니다."
     assert failed_reason is None
     assert agent.validation_calls == 1
+
+
+def test_inspect_action_completion_uses_inspection_summary_without_next_step() -> None:
+    class _Agent:
+        _last_exec_result = SimpleNamespace(
+            state_change={
+                "inspection_summary": "title: 순위표 | body: 상위 3개 팀 순위와 승점이 표시됨",
+                "inspection": {"title": "순위표", "bodyText": "상위 3개 팀 순위와 승점이 표시됨"},
+            }
+        )
+
+        def __init__(self) -> None:
+            self.reasoning_seen = ""
+
+        def _evaluate_reasoning_only_wait_completion(self, *, goal, decision, dom_elements):
+            self.reasoning_seen = str(decision.reasoning or "")
+            if "상위 3개 팀" in self.reasoning_seen:
+                return "inspect 결과에서 상위 3개 팀 순위가 확인되어 완료"
+            return None
+
+    agent = _Agent()
+    reason = _evaluate_inspect_action_goal_completion(
+        agent=agent,
+        goal=SimpleNamespace(name="순위표 확인", description="상위 3개 팀 순위 확인"),
+        decision=ActionDecision(
+            action=ActionType.INSPECT,
+            reasoning="순위표 영역을 확인한다.",
+            confidence=0.7,
+        ),
+        success=True,
+        post_dom=[
+            DOMElement(id=1, tag="table", role="table", text="팀 순위", is_visible=True, is_enabled=True)
+        ],
+    )
+
+    assert reason == "inspect 결과에서 상위 3개 팀 순위가 확인되어 완료"
+    assert "inspect 결과" in agent.reasoning_seen
+
+
+def test_inspect_action_completion_skips_empty_inspection_summary() -> None:
+    class _Agent:
+        _last_exec_result = SimpleNamespace(state_change={})
+
+        @staticmethod
+        def _evaluate_reasoning_only_wait_completion(*, goal, decision, dom_elements):
+            raise AssertionError("empty inspection must not ask completion judge")
+
+    reason = _evaluate_inspect_action_goal_completion(
+        agent=_Agent(),
+        goal=SimpleNamespace(name="상태 확인", description=""),
+        decision=ActionDecision(action=ActionType.INSPECT, reasoning="상태 확인", confidence=0.7),
+        success=True,
+        post_dom=[],
+    )
+
+    assert reason is None
 
 
 def test_evaluate_post_action_progress_completes_deferred_action_after_execution() -> None:
