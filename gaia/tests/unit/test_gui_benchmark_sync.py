@@ -815,11 +815,31 @@ def test_main_window_battle_demo_mode_enables_web_and_fast_path(monkeypatch) -> 
 
     assert window.get_selected_run_mode() == "battle_demo"
     assert window._workflow_stage == "site_selection"
+    assert window._site_battle_demo_button.text() == "Human vs GAIA 시연 모드"
+    assert window._site_battle_demo_button.isChecked() is True
     assert window._standard_action_container.isVisible() is False
     assert window.get_benchmark_run_options()["battle_mode"] is True
     assert window.get_benchmark_run_options()["fast_mode"] is True
     assert window._benchmark_battle_checkbox.isChecked() is True
     assert window._benchmark_fast_checkbox.isChecked() is True
+    assert emitted == [True]
+
+
+def test_main_window_site_selection_battle_demo_button_is_direct_entry(monkeypatch) -> None:
+    _app()
+    monkeypatch.setattr(MainWindow, "_setup_screencast", lambda self: None)
+
+    window = MainWindow()
+    emitted: list[bool] = []
+    window.benchmarkBattleCatalogRequested.connect(lambda: emitted.append(True))
+
+    window.show_site_selection_stage()
+    window._site_battle_demo_button.click()
+
+    assert window.get_selected_run_mode() == "battle_demo"
+    assert window.get_benchmark_run_options()["battle_mode"] is True
+    assert window.get_benchmark_run_options()["fast_mode"] is True
+    assert window._site_battle_demo_button.isChecked() is True
     assert emitted == [True]
 
 

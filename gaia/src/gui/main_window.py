@@ -4174,6 +4174,37 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(8)
 
+        battle_panel = QFrame(page)
+        battle_panel.setObjectName("SiteBattleDemoPanel")
+        battle_layout = QHBoxLayout(battle_panel)
+        battle_layout.setContentsMargins(16, 14, 16, 14)
+        battle_layout.setSpacing(12)
+
+        battle_text_col = QWidget(battle_panel)
+        battle_text_layout = QVBoxLayout(battle_text_col)
+        battle_text_layout.setContentsMargins(0, 0, 0, 0)
+        battle_text_layout.setSpacing(2)
+        battle_title = QLabel("Human vs GAIA 시연", battle_text_col)
+        battle_title.setObjectName("BenchmarkHeroKicker")
+        battle_text_layout.addWidget(battle_title)
+        battle_desc = QLabel(
+            "battle-live 웹 보드와 Fast mode를 켜고, 현장 대결 후보만 보여줍니다.",
+            battle_text_col,
+        )
+        battle_desc.setObjectName("PageSubtitle")
+        battle_desc.setWordWrap(True)
+        battle_text_layout.addWidget(battle_desc)
+        battle_layout.addWidget(battle_text_col, stretch=1)
+
+        self._site_battle_demo_button = QPushButton("Human vs GAIA 시연 모드", battle_panel)
+        self._site_battle_demo_button.setCheckable(True)
+        self._site_battle_demo_button.setProperty("modeButton", True)
+        self._site_battle_demo_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._site_battle_demo_button.clicked.connect(self._activate_battle_demo_mode)
+        battle_layout.addWidget(self._site_battle_demo_button)
+
+        layout.addWidget(battle_panel)
+
         # 검색 + 카테고리 + "+ 직접 URL 입력하기"
         controls_row = QHBoxLayout()
         controls_row.setSpacing(10)
@@ -5203,7 +5234,7 @@ class MainWindow(QMainWindow):
         self._run_mode_group.addButton(self._benchmark_mode_button)
         mode_row.addWidget(self._benchmark_mode_button)
 
-        self._battle_demo_mode_button = QPushButton("GAIA vs Human 시연", page)
+        self._battle_demo_mode_button = QPushButton("Human vs GAIA 시연", page)
         self._battle_demo_mode_button.setCheckable(True)
         self._battle_demo_mode_button.setProperty("modeButton", True)
         self._battle_demo_mode_button.clicked.connect(self._activate_battle_demo_mode)
@@ -7342,11 +7373,12 @@ class MainWindow(QMainWindow):
             "bundle": getattr(self, "_bundle_mode_button", None),
             "benchmark": getattr(self, "_benchmark_mode_button", None),
             "battle_demo": getattr(self, "_battle_demo_mode_button", None),
+            "site_battle_demo": getattr(self, "_site_battle_demo_button", None),
         }
         for key, button in mapping.items():
             if button is None:
                 continue
-            selected = key == normalized
+            selected = key == normalized or (key == "site_battle_demo" and normalized == "battle_demo")
             button.setChecked(selected)
             button.setProperty("modeSelected", selected)
             button.style().unpolish(button)
