@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import date, timedelta
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ from gaia.src.phase4.mcp_ref.snapshot_helpers import (
     _build_role_tree,
     _role_snapshot_stats,
 )
+from gaia.src.phase4.mcp_ref.actionability_errors import extract_pointer_interceptor
 
 _SESSION_LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
@@ -896,6 +898,33 @@ def delete_openclaw_profile(
     )
 
 
+_SCENARIO_DEEP_STORAGE_CLEAR_FN = r"""async () => {
+  const result = { indexedDB: "unsupported", caches: "unsupported", serviceWorkers: "unsupported" };
+  if (globalThis.indexedDB && typeof indexedDB.databases === "function") {
+    const databases = await indexedDB.databases();
+    const names = databases.map((db) => db && db.name).filter(Boolean);
+    await Promise.all(names.map((name) => new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase(name);
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => resolve(false);
+      request.onblocked = () => resolve(false);
+    })));
+    result.indexedDB = names.length;
+  }
+  if (globalThis.caches && typeof caches.keys === "function") {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((key) => caches.delete(key)));
+    result.caches = keys.length;
+  }
+  if (navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === "function") {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+    result.serviceWorkers = registrations.length;
+  }
+  return result;
+}"""
+
+
 def reset_openclaw_scenario_state(
     raw_base_url: str | None,
     *,
@@ -953,6 +982,27 @@ def reset_openclaw_scenario_state(
                     "reason": "" if ok else str((data or {}).get("error") or text or "clear_failed"),
                 }
             )
+        status_code, data, text = _request(
+            "POST",
+            base_url=base_url,
+            path="/act",
+            timeout=timeout,
+            payload={
+                "targetId": target_id,
+                "profile": profile_name,
+                "kind": "evaluate",
+                "fn": _SCENARIO_DEEP_STORAGE_CLEAR_FN,
+            },
+        )
+        ok = status_code < 400 and bool((data or {}).get("ok", True))
+        clear_results.append(
+            {
+                "kind": "indexedDB/cache/serviceWorker",
+                "ok": ok,
+                "status_code": status_code,
+                "reason": "" if ok else str((data or {}).get("error") or text or "clear_failed"),
+            }
+        )
     except Exception as exc:
         return _normalize_failure(500, {"error": f"openclaw_scenario_state_reset_failed: {exc}"}, "")
     finally:
@@ -2350,6 +2400,697 @@ def _merge_dom_text_evidence(
     evidence["dom_text_block_count"] = len(blocks)
 
 
+_DATE_PICKER_SELECTION_RE = re.compile(
+    r"(?P<month>\d{1,2})\.(?P<day>\d{1,2})\s*\([^)]{1,8}\)\s*[•·]\s*(?P<nights>\d{1,2})\s*박"
+)
+_DATE_PICKER_YEAR_MONTH_RE = re.compile(r"(?P<year>20\d{2})\s*\.\s*(?P<month>\d{1,2})")
+_DATE_RANGE_DISPLAY_RE = re.compile(
+    r"(?P<start_month>\d{1,2})\s*[./]\s*(?P<start_day>\d{1,2})\s*(?:~|-|–|—|to|부터)\s*"
+    r"(?P<end_month>\d{1,2})\s*[./]\s*(?P<end_day>\d{1,2})",
+    re.IGNORECASE,
+)
+
+
+def _compact_snapshot_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _snapshot_search_text(payload: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    chunks: List[str] = []
+    for key in ("current_url", "url"):
+        value = _compact_snapshot_text(payload.get(key))
+        if value:
+            chunks.append(value)
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    if evidence:
+        for key in ("text_digest", "frame_texts"):
+            value = evidence.get(key)
+            if isinstance(value, list):
+                chunks.extend(_compact_snapshot_text(item) for item in value if _compact_snapshot_text(item))
+            else:
+                text = _compact_snapshot_text(value)
+                if text:
+                    chunks.append(text)
+        live_texts = evidence.get("live_texts") if isinstance(evidence.get("live_texts"), list) else []
+        chunks.extend(_compact_snapshot_text(item) for item in live_texts[:60] if _compact_snapshot_text(item))
+    role_snapshot = payload.get("role_snapshot") if isinstance(payload.get("role_snapshot"), dict) else {}
+    role_text = _compact_snapshot_text(role_snapshot.get("snapshot"))
+    if role_text:
+        chunks.append(role_text)
+    elements_by_ref = payload.get("elements_by_ref") if isinstance(payload.get("elements_by_ref"), dict) else {}
+    for meta in list(elements_by_ref.values())[:160]:
+        if not isinstance(meta, dict):
+            continue
+        attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+        for value in (
+            meta.get("name"),
+            meta.get("text"),
+            meta.get("role_ref_name"),
+            meta.get("context_text"),
+            attrs.get("href"),
+            attrs.get("aria-label"),
+            attrs.get("title"),
+        ):
+            text = _compact_snapshot_text(value)
+            if text:
+                chunks.append(text)
+    return " ".join(chunks)
+
+
+def _ref_label_from_payload(payload: Optional[Dict[str, Any]], ref_id: str) -> str:
+    if not isinstance(payload, dict) or not ref_id:
+        return ""
+    ref = str(ref_id or "").strip()
+    elements_by_ref = payload.get("elements_by_ref") if isinstance(payload.get("elements_by_ref"), dict) else {}
+    meta = elements_by_ref.get(ref) if isinstance(elements_by_ref.get(ref), dict) else {}
+    attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+    chunks: List[str] = []
+    for value in (
+        meta.get("name"),
+        meta.get("text"),
+        meta.get("role_ref_name"),
+        meta.get("context_text"),
+        attrs.get("aria-label"),
+        attrs.get("title"),
+    ):
+        text = _compact_snapshot_text(value)
+        if text:
+            chunks.append(text)
+    elements = payload.get("elements") if isinstance(payload.get("elements"), list) else []
+    for item in elements:
+        if not isinstance(item, dict) or str(item.get("ref_id") or "").strip() != ref:
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        for value in (
+            item.get("text"),
+            item.get("role_ref_name"),
+            item.get("context_text"),
+            attrs.get("aria-label"),
+            attrs.get("title"),
+        ):
+            text = _compact_snapshot_text(value)
+            if text:
+                chunks.append(text)
+        break
+    return " ".join(chunks)
+
+
+def _looks_like_commit_control_label(label: str) -> bool:
+    normalized = _normalize_hint_text(label)
+    if not normalized:
+        return False
+    return any(term in normalized for term in ("적용", "확인", "완료", "apply", "done", "confirm"))
+
+
+def _year_for_date_picker_selection(text: str, month: int) -> int:
+    fallback_year = date.today().year
+    matches = list(_DATE_PICKER_YEAR_MONTH_RE.finditer(text or ""))
+    for match in reversed(matches):
+        try:
+            if int(match.group("month")) == int(month):
+                return int(match.group("year"))
+        except Exception:
+            continue
+    for match in reversed(matches):
+        try:
+            return int(match.group("year"))
+        except Exception:
+            continue
+    return fallback_year
+
+
+def _date_picker_commit_expectation(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    if evidence and not bool(evidence.get("modal_open")):
+        return None
+    text = _snapshot_search_text(payload)
+    matches = list(_DATE_PICKER_SELECTION_RE.finditer(text))
+    if not matches:
+        return None
+    match = matches[-1]
+    try:
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        nights = int(match.group("nights"))
+    except Exception:
+        return None
+    if nights < 1 or nights > 30:
+        return None
+    year = _year_for_date_picker_selection(text, month)
+    try:
+        start = date(year, month, day)
+        end = start + timedelta(days=nights)
+    except Exception:
+        return None
+    start_display = f"{start.month:02d}.{start.day:02d}"
+    end_display = f"{end.month:02d}.{end.day:02d}"
+    return {
+        "kind": "date_range",
+        "selected_summary": _compact_snapshot_text(match.group(0)),
+        "nights": nights,
+        "start_display": start_display,
+        "end_display": end_display,
+        "expected_range": f"{start_display}~{end_display}",
+        "start_iso": start.isoformat(),
+        "end_iso": end.isoformat(),
+    }
+
+
+def _display_date_pattern(display: str) -> str:
+    try:
+        month, day = [int(part) for part in str(display or "").split(".", 1)]
+    except Exception:
+        return re.escape(str(display or ""))
+    return rf"0?{month}\s*[./]\s*0?{day}"
+
+
+def _snapshot_contains_date_commit(payload: Optional[Dict[str, Any]], expectation: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict) or not expectation:
+        return False
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    if bool(evidence.get("modal_open")):
+        return False
+    text = _snapshot_search_text(payload)
+    compact = re.sub(r"\s+", "", text)
+    start_iso = str(expectation.get("start_iso") or "")
+    end_iso = str(expectation.get("end_iso") or "")
+    if start_iso and end_iso and start_iso in compact and end_iso in compact:
+        return True
+    start_display = str(expectation.get("start_display") or "")
+    end_display = str(expectation.get("end_display") or "")
+    if not start_display or not end_display:
+        return False
+    range_re = re.compile(
+        _display_date_pattern(start_display)
+        + r"\s*(?:~|-|–|—|to|부터)\s*"
+        + _display_date_pattern(end_display),
+        re.IGNORECASE,
+    )
+    return bool(range_re.search(text))
+
+
+def _observed_date_ranges(payload: Optional[Dict[str, Any]], *, limit: int = 4) -> List[str]:
+    text = _snapshot_search_text(payload)
+    ranges: List[str] = []
+    for match in _DATE_RANGE_DISPLAY_RE.finditer(text):
+        try:
+            value = (
+                f"{int(match.group('start_month')):02d}.{int(match.group('start_day')):02d}"
+                f"~{int(match.group('end_month')):02d}.{int(match.group('end_day')):02d}"
+            )
+        except Exception:
+            continue
+        if value not in ranges:
+            ranges.append(value)
+        if len(ranges) >= limit:
+            break
+    return ranges
+
+
+def _apply_commit_verification_to_state_change(
+    *,
+    state_change: Dict[str, Any],
+    before_payload: Optional[Dict[str, Any]],
+    after_payload: Optional[Dict[str, Any]],
+    ref_id: str,
+) -> Dict[str, Any]:
+    updated = dict(state_change or {})
+    label = _ref_label_from_payload(before_payload, ref_id)
+    if not _looks_like_commit_control_label(label):
+        return updated
+    expectation = _date_picker_commit_expectation(before_payload)
+    if not expectation:
+        return updated
+    reflected = _snapshot_contains_date_commit(after_payload, expectation)
+    verification = {
+        **expectation,
+        "reflected": bool(reflected),
+        "control_label": _compact_snapshot_text(label)[:160],
+        "observed_ranges": _observed_date_ranges(after_payload),
+    }
+    updated["commit_verification"] = verification
+    if reflected:
+        updated["commit_verified"] = True
+        updated["commit_verification_failed"] = False
+        return updated
+    updated["commit_verified"] = False
+    updated["commit_verification_failed"] = True
+    updated["commit_pending"] = True
+    updated["backend_progress"] = False
+    updated["backend_effective_only"] = True
+    updated["commit_verification_reason"] = (
+        f"expected {expectation.get('expected_range')} after commit control, "
+        "but the post-action snapshot did not reflect that persistent range"
+    )
+    return updated
+
+
+_OPENCLAW_REF_ACTIONABILITY_PROBE_FN = r"""(el) => {
+  function rectOf(node) {
+    try {
+      const rect = node.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top),
+        left: Math.round(rect.left),
+        bottom: Math.round(rect.bottom),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+  function describe(node) {
+    if (!node) {
+      return {};
+    }
+    let className = "";
+    try {
+      className = typeof node.className === "string" ? node.className : "";
+    } catch (_) {}
+    return {
+      tag: String(node.tagName || "").toLowerCase(),
+      id: node.id || "",
+      className: className.slice(0, 120),
+      role: node.getAttribute && node.getAttribute("role") || "",
+      ariaLabel: node.getAttribute && node.getAttribute("aria-label") || "",
+      text: String(node.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80),
+      rect: rectOf(node),
+    };
+  }
+  function inViewport(rect) {
+    return !!(
+      rect &&
+      rect.width >= 1 &&
+      rect.height >= 1 &&
+      rect.bottom >= 0 &&
+      rect.right >= 0 &&
+      rect.top <= window.innerHeight &&
+      rect.left <= window.innerWidth
+    );
+  }
+  function centerPoint(rect) {
+    return {
+      x: Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2)),
+      y: Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2)),
+    };
+  }
+
+  const style = window.getComputedStyle(el);
+  const rect = rectOf(el);
+  const target = describe(el);
+  if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) === 0) {
+    return { status: "hidden", actionable: false, reason: "computed_hidden", target, rect };
+  }
+  if (rect.width < 1 || rect.height < 1) {
+    return { status: "zero_rect", actionable: false, reason: "zero_sized_rect", target, rect };
+  }
+  if (!inViewport(rect)) {
+    return { status: "offscreen", actionable: true, reason: "outside_viewport_but_scrollable", target, rect };
+  }
+  const point = centerPoint(rect);
+  const hit = document.elementFromPoint(point.x, point.y);
+  const hitDesc = describe(hit);
+  if (!hit) {
+    return { status: "no_hit", actionable: false, reason: "center_has_no_hit_target", target, rect, point };
+  }
+  if (hit === el || el.contains(hit)) {
+    return { status: "ok", actionable: true, reason: "center_hits_target", target, rect, point, hit: hitDesc };
+  }
+  const tag = String(hit.tagName || "").toLowerCase();
+  if (tag === "html" || tag === "body") {
+    return { status: "no_hit", actionable: false, reason: "center_hits_page_shell", target, rect, point, hit: hitDesc };
+  }
+  return {
+    status: "covered",
+    actionable: false,
+    reason: hit.contains && hit.contains(el) ? "center_hits_ancestor" : "center_hits_other_element",
+    target,
+    rect,
+    point,
+    hit: hitDesc,
+  };
+}"""
+
+
+def _openclaw_actionability_probe_enabled() -> bool:
+    raw = str(os.getenv("GAIA_OPENCLAW_ACTIONABILITY_PROBE", "1") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _openclaw_actionability_probe_limit() -> int:
+    try:
+        return max(0, int(os.getenv("GAIA_OPENCLAW_ACTIONABILITY_PROBE_LIMIT", "24")))
+    except Exception:
+        return 24
+
+
+def _actionability_probe_timeout_ms() -> int:
+    try:
+        return max(300, int(os.getenv("GAIA_OPENCLAW_ACTIONABILITY_PROBE_TIMEOUT_MS", "1200")))
+    except Exception:
+        return 1200
+
+
+def _openclaw_post_action_full_probe_enabled() -> bool:
+    raw = str(os.getenv("GAIA_OPENCLAW_POST_ACTION_FULL_PROBE", "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _openclaw_deferred_observation_settle_ms(kind: str) -> int:
+    default_ms = 700 if str(kind or "").strip() in {"click", "press", "select", "drag"} else 250
+    try:
+        return max(0, int(os.getenv("GAIA_OPENCLAW_DEFERRED_OBSERVATION_SETTLE_MS", str(default_ms))))
+    except Exception:
+        return default_ms
+
+
+def _commit_verify_timeout_ms() -> int:
+    try:
+        return max(0, int(os.getenv("GAIA_OPENCLAW_COMMIT_VERIFY_TIMEOUT_MS", "3500")))
+    except Exception:
+        return 3500
+
+
+def _commit_verify_interval_ms() -> int:
+    try:
+        return max(100, int(os.getenv("GAIA_OPENCLAW_COMMIT_VERIFY_INTERVAL_MS", "700")))
+    except Exception:
+        return 700
+
+
+def _element_actionability_label(item: Dict[str, Any]) -> str:
+    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+    for value in (
+        item.get("text"),
+        attrs.get("role_ref_name"),
+        attrs.get("aria-label"),
+        attrs.get("title"),
+    ):
+        cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _select_ref_actionability_probe_candidates(payload: Dict[str, Any]) -> List[str]:
+    limit = _openclaw_actionability_probe_limit()
+    if limit <= 0:
+        return []
+    elements = payload.get("elements") if isinstance(payload.get("elements"), list) else []
+    role_snapshot = payload.get("role_snapshot") if isinstance(payload.get("role_snapshot"), dict) else {}
+    ref_line_index = role_snapshot.get("ref_line_index") if isinstance(role_snapshot.get("ref_line_index"), dict) else {}
+    candidates: List[Tuple[int, int, str]] = []
+    seen: set[str] = set()
+    clickish_roles = {
+        "button",
+        "link",
+        "option",
+        "radio",
+        "checkbox",
+        "menuitem",
+        "menuitemcheckbox",
+        "menuitemradio",
+        "tab",
+        "gridcell",
+    }
+    clickish_tags = {"button", "a", "option", "summary"}
+    priority_terms = (
+        "적용",
+        "정렬",
+        "필터",
+        "옵션",
+        "예약",
+        "선택",
+        "다음",
+        "이전",
+        "검색",
+        "apply",
+        "sort",
+        "filter",
+        "option",
+    )
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+        ref_id = str(item.get("ref_id") or "").strip()
+        if not ref_id or ref_id in seen:
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        role = str(attrs.get("role") or item.get("role") or "").strip().lower()
+        tag = str(item.get("tag") or "").strip().lower()
+        if role in {"textbox", "searchbox", "combobox", "listbox"}:
+            continue
+        if role not in clickish_roles and tag not in clickish_tags:
+            continue
+        label = _element_actionability_label(item)
+        normalized = _normalize_hint_text(label)
+        score = 8
+        if re.fullmatch(r"\d{1,2}(?:[./-]\d{1,2})?", normalized):
+            score = 0
+        elif re.search(r"\d{1,2}\s*(?:월|일|개|명|박|일차)", normalized):
+            score = 1
+        elif normalized and len(normalized) <= 8:
+            score = 2
+        elif any(term in normalized for term in priority_terms):
+            score = 3
+        try:
+            line_index = int(ref_line_index.get(ref_id) or 10**9)
+        except Exception:
+            line_index = 10**9
+        seen.add(ref_id)
+        candidates.append((score, line_index, ref_id))
+    candidates.sort(key=lambda item: item[:2] + (item[2],))
+    return [ref_id for _score, _line_index, ref_id in candidates[:limit]]
+
+
+def _probe_ref_actionability(
+    *,
+    base_url: str,
+    target_id: str,
+    profile: str,
+    timeout: Any,
+    ref_id: str,
+) -> Optional[Dict[str, Any]]:
+    payload: Dict[str, Any] = {
+        "targetId": target_id,
+        "kind": "evaluate",
+        "ref": ref_id,
+        "fn": _OPENCLAW_REF_ACTIONABILITY_PROBE_FN,
+        "timeoutMs": _actionability_probe_timeout_ms(),
+    }
+    if profile:
+        payload["profile"] = profile
+    status_code, data, text = _request(
+        "POST",
+        base_url=base_url,
+        path="/act",
+        timeout=timeout,
+        payload=payload,
+    )
+    if status_code >= 400:
+        message = str((data or {}).get("error") or text or "").strip()
+        return {
+            "ref": ref_id,
+            "status": "probe_failed",
+            "actionable": True,
+            "reason": message[:200] or "probe_failed",
+        }
+    result = data.get("result") if isinstance(data, dict) and isinstance(data.get("result"), dict) else {}
+    if not result:
+        return None
+    report = dict(result)
+    report["ref"] = ref_id
+    report["status"] = str(report.get("status") or "unknown")
+    report["actionable"] = bool(report.get("actionable"))
+    report["reason"] = str(report.get("reason") or "")
+    return report
+
+
+def _actionability_node_description(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    tag = str(node.get("tag") or "").strip().lower()
+    node_id = str(node.get("id") or "").strip()
+    class_name = re.sub(r"\s+", ".", str(node.get("className") or "").strip())
+    pieces = [tag or "node"]
+    if node_id:
+        pieces.append(f"#{node_id}")
+    if class_name:
+        pieces.append(f".{class_name[:80]}")
+    return "".join(pieces)[:120]
+
+
+def _actionability_warning_marker(report: Dict[str, Any]) -> str:
+    status = str(report.get("status") or "").strip() or "unknown"
+    hit_desc = _actionability_node_description(report.get("hit"))
+    reason = str(report.get("reason") or "").strip()
+    if status == "covered" and hit_desc:
+        return f"not-actionable=covered by {hit_desc}"
+    if status == "hidden":
+        return "not-actionable=hidden"
+    if status == "zero_rect":
+        return "not-actionable=zero_rect"
+    if status == "no_hit":
+        return f"not-actionable=no_hit{':' + reason[:48] if reason else ''}"
+    return f"actionability={status}"
+
+
+def _annotate_role_snapshot_actionability(
+    role_snapshot: Dict[str, Any],
+    warnings: List[Dict[str, Any]],
+    *,
+    field: str = "snapshot",
+) -> None:
+    snapshot = str(role_snapshot.get(field) or "").strip()
+    if not snapshot or not warnings:
+        return
+    warning_by_ref = {
+        str(item.get("ref") or "").strip(): _actionability_warning_marker(item)
+        for item in warnings
+        if str(item.get("ref") or "").strip()
+    }
+    if not warning_by_ref:
+        return
+    annotated_lines: List[str] = []
+    ref_pattern = re.compile(r"\[ref=([^\]]+)\]")
+    for line in snapshot.splitlines():
+        marker = ""
+        for match in ref_pattern.finditer(line):
+            ref_id = str(match.group(1) or "").strip()
+            if ref_id in warning_by_ref:
+                marker = warning_by_ref[ref_id]
+                break
+        if marker and marker not in line:
+            annotated_lines.append(f"{line} [{marker}]")
+        else:
+            annotated_lines.append(line)
+    role_snapshot[field] = "\n".join(annotated_lines).strip()
+
+
+def _apply_ref_actionability_reports_to_payload(
+    payload: Dict[str, Any],
+    reports: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not isinstance(payload, dict) or not reports:
+        return []
+    actionable_bad_statuses = {"covered", "hidden", "zero_rect", "no_hit"}
+    warnings = [
+        report
+        for report in reports
+        if isinstance(report, dict)
+        and str(report.get("ref") or "").strip()
+        and str(report.get("status") or "").strip() in actionable_bad_statuses
+        and not bool(report.get("actionable"))
+    ]
+    if not warnings:
+        return []
+    warnings_by_ref = {str(item.get("ref") or "").strip(): item for item in warnings}
+    for item in list(payload.get("elements") or []) + list(payload.get("dom_elements") or []):
+        if not isinstance(item, dict):
+            continue
+        ref_id = str(item.get("ref_id") or "").strip()
+        report = warnings_by_ref.get(ref_id)
+        if not report:
+            continue
+        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        item["attributes"] = attrs
+        attrs["openclaw_actionability"] = str(report.get("status") or "")
+        attrs["openclaw_actionability_reason"] = str(report.get("reason") or "")
+        attrs["openclaw_actionability_hit"] = _actionability_node_description(report.get("hit"))
+        attrs["gaia-disabled"] = "true"
+        attrs["aria-disabled"] = "true"
+        if str(report.get("status") or "") in {"hidden", "zero_rect", "no_hit"}:
+            item["is_visible"] = False
+    elements_by_ref = payload.get("elements_by_ref") if isinstance(payload.get("elements_by_ref"), dict) else {}
+    for ref_id, report in warnings_by_ref.items():
+        meta = elements_by_ref.get(ref_id)
+        if not isinstance(meta, dict):
+            continue
+        attrs = meta.get("attributes") if isinstance(meta.get("attributes"), dict) else {}
+        meta["attributes"] = attrs
+        attrs["openclaw_actionability"] = str(report.get("status") or "")
+        attrs["openclaw_actionability_reason"] = str(report.get("reason") or "")
+        attrs["openclaw_actionability_hit"] = _actionability_node_description(report.get("hit"))
+        attrs["gaia-disabled"] = "true"
+        attrs["aria-disabled"] = "true"
+        if str(report.get("status") or "") in {"hidden", "zero_rect", "no_hit"}:
+            meta["is_visible"] = False
+    role_snapshot = payload.get("role_snapshot") if isinstance(payload.get("role_snapshot"), dict) else {}
+    if role_snapshot:
+        role_snapshot["actionability_warnings"] = warnings
+        refs = role_snapshot.get("refs") if isinstance(role_snapshot.get("refs"), dict) else {}
+        for ref_id, report in warnings_by_ref.items():
+            if isinstance(refs.get(ref_id), dict):
+                refs[ref_id]["actionability"] = str(report.get("status") or "")
+                refs[ref_id]["actionability_reason"] = str(report.get("reason") or "")
+        _annotate_role_snapshot_actionability(role_snapshot, warnings, field="snapshot")
+        _annotate_role_snapshot_actionability(role_snapshot, warnings, field="scoped_snapshot")
+        role_snapshot["stats"] = _role_snapshot_stats(
+            str(role_snapshot.get("snapshot") or ""),
+            role_snapshot.get("refs") if isinstance(role_snapshot.get("refs"), dict) else {},
+        )
+        if str(role_snapshot.get("scoped_snapshot") or "").strip():
+            role_snapshot["scoped_stats"] = _role_snapshot_stats(
+                str(role_snapshot.get("scoped_snapshot") or ""),
+                role_snapshot.get("scoped_refs") if isinstance(role_snapshot.get("scoped_refs"), dict) else {},
+            )
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    if evidence is not None:
+        evidence["actionability_warning_count"] = len(warnings)
+        evidence["actionability_warnings"] = [
+            {
+                "ref": str(item.get("ref") or ""),
+                "status": str(item.get("status") or ""),
+                "reason": str(item.get("reason") or ""),
+                "hit": _actionability_node_description(item.get("hit")),
+            }
+            for item in warnings[:12]
+        ]
+    return warnings
+
+
+def _augment_snapshot_with_ref_actionability(
+    *,
+    payload: Dict[str, Any],
+    base_url: str,
+    target_id: str,
+    profile: str,
+    timeout: Any,
+) -> None:
+    if not _openclaw_actionability_probe_enabled():
+        return
+    candidate_refs = _select_ref_actionability_probe_candidates(payload)
+    if not candidate_refs:
+        return
+    reports: List[Dict[str, Any]] = []
+    for ref_id in candidate_refs:
+        try:
+            report = _probe_ref_actionability(
+                base_url=base_url,
+                target_id=target_id,
+                profile=profile,
+                timeout=timeout,
+                ref_id=ref_id,
+            )
+        except Exception:
+            report = None
+        if isinstance(report, dict):
+            reports.append(report)
+    warnings = _apply_ref_actionability_reports_to_payload(payload, reports)
+    if warnings:
+        payload["actionability_probe"] = {
+            "enabled": True,
+            "candidate_count": len(candidate_refs),
+            "warning_count": len(warnings),
+        }
+
+
 def _apply_scope_to_elements(
     elements: List[Dict[str, Any]],
     requested_scope_ref_id: str,
@@ -2494,7 +3235,7 @@ def _snapshot_payload_for_target(
         profile=profile,
         timeout=timeout,
     )
-    return _build_snapshot_payload(
+    payload = _build_snapshot_payload(
         session_id=session_id,
         target_id=target_id,
         current_url=str(data.get("url") or state.get("current_url") or ""),
@@ -2504,6 +3245,15 @@ def _snapshot_payload_for_target(
         frame_descriptors=frame_descriptors,
         dom_text_blocks=dom_text_blocks,
     )
+    _augment_snapshot_with_ref_actionability(
+        payload=payload,
+        base_url=base_url,
+        target_id=target_id,
+        profile=profile,
+        timeout=timeout,
+    )
+    state["last_snapshot_payload"] = payload
+    return payload
 
 
 def _sorted_evidence_list(value: Any) -> List[str]:
@@ -2712,10 +3462,10 @@ _DOM_TEXT_EVIDENCE_SCRIPT = r"""() => {
   candidates.sort((a, b) => (b.score - a.score) || (a.order - b.order));
   const out = [];
   const seen = new Set();
-  for (const item of candidates) {
-    const normalized = clean(item.text).toLowerCase();
-    if (!normalized || seen.has(normalized)) {
-      continue;
+	  for (const item of candidates) {
+	    const normalized = clean(item.text).toLowerCase();
+	    if (!normalized || seen.has(normalized)) {
+	      continue;
     }
     let duplicate = false;
     for (const existing of seen) {
@@ -2733,12 +3483,30 @@ _DOM_TEXT_EVIDENCE_SCRIPT = r"""() => {
     }
     seen.add(normalized);
     out.push(item);
-    if (out.length >= MAX_RESULTS) {
-      break;
-    }
-  }
-  return out;
-}"""
+	    if (out.length >= MAX_RESULTS) {
+	      break;
+	    }
+	  }
+	  const pageText = clean(document.body && document.body.innerText);
+	  const CHALLENGE_RE = /(cloudflare|checking your browser|verify you are human|captcha|access denied|service unavailable|temporarily unavailable|확인 중|접속이 원활하지|서비스 이용에 불편)/i;
+	  if (pageText && CHALLENGE_RE.test(pageText)) {
+	    const normalizedPageText = pageText.toLowerCase();
+	    const alreadyIncluded = out.some((item) => normalizedPageText.includes(clean(item.text).toLowerCase()));
+	    if (!alreadyIncluded) {
+	      out.unshift({
+	        order: -1,
+	        score: 100,
+	        text: pageText.slice(0, 1200),
+	        tag: 'body',
+	        role: 'document',
+	        selector: 'body',
+	        section: 'page_text',
+	        inViewport: true,
+	      });
+	    }
+	  }
+	  return out;
+	}"""
 
 
 def _fetch_frame_descriptors_for_target(
@@ -3145,6 +3913,8 @@ def _derive_state_change_from_snapshot_payloads(
 
 def _reason_code_from_error(message: str, status_code: int) -> str:
     text = str(message or "").strip().lower()
+    if extract_pointer_interceptor(message):
+        return "pointer_intercepted"
     if "ref is required" in text:
         return "ref_required"
     if "selector" in text and "unsupported" in text:
@@ -3294,20 +4064,426 @@ def _build_openclaw_action_payload(
 
 def _normalize_failure(status_code: int, data: Dict[str, Any], text: str) -> Tuple[int, Dict[str, Any], str]:
     message = str((data or {}).get("error") or text or "openclaw_request_failed")
+    pointer_interceptor = extract_pointer_interceptor(message)
+    reason_code = _reason_code_from_error(message, status_code)
+    state_change: Dict[str, Any] = {"effective": False, "backend": "openclaw"}
+    attempt_logs: List[Dict[str, Any]] = []
+    if pointer_interceptor:
+        state_change["pointer_interceptor"] = pointer_interceptor
+        attempt_logs.append(
+            {
+                "reason_code": reason_code,
+                "error": message,
+                "pointer_interceptor": pointer_interceptor,
+            }
+        )
     return (
         200,
         {
             "success": False,
             "effective": False,
-            "reason_code": _reason_code_from_error(message, status_code),
+            "reason_code": reason_code,
             "reason": message,
-            "state_change": {"effective": False, "backend": "openclaw"},
-            "attempt_logs": [],
+            "state_change": state_change,
+            "attempt_logs": attempt_logs,
             "retry_path": [],
-            "attempt_count": 0,
+            "attempt_count": len(attempt_logs),
         },
         message,
     )
+
+
+def _collect_act_failure_diagnostics(
+    *,
+    base_url: str,
+    session_id: str,
+    state: Dict[str, Any],
+    target_id: str,
+    ref_used: str,
+    timeout: Any,
+) -> Dict[str, Any]:
+    """Capture a fresh snapshot right after a failed /act so the artifact can
+    tell a genuinely stale ref apart from a ref that is still present but could
+    not be acted on (commonly an overlay covering it). Records whether the
+    failed ref survives in a fresh snapshot, whether the target drifted, and the
+    fresh role/name so the real cause is visible instead of a bare not_found."""
+    diagnostics: Dict[str, Any] = {"ref_used": ref_used}
+    try:
+        fresh = _snapshot_payload_for_target(
+            base_url=base_url,
+            session_id=session_id,
+            state=state,
+            target_id=target_id,
+            timeout=timeout,
+        )
+    except Exception as exc:  # pragma: no cover - best-effort diagnostic
+        diagnostics["fresh_snapshot"] = "error"
+        diagnostics["fresh_snapshot_error"] = str(exc)[:200]
+        return diagnostics
+    if not isinstance(fresh, dict):
+        diagnostics["fresh_snapshot"] = "unavailable"
+        return diagnostics
+    elements_by_ref = fresh.get("elements_by_ref") if isinstance(fresh.get("elements_by_ref"), dict) else {}
+    element = elements_by_ref.get(ref_used) if ref_used else None
+    fresh_target_id = str(fresh.get("targetId") or fresh.get("tab_id") or "").strip()
+    diagnostics["fresh_snapshot"] = "captured"
+    diagnostics["fresh_snapshot_id"] = str(fresh.get("snapshot_id") or "")
+    diagnostics["ref_present_in_fresh_snapshot"] = bool(element)
+    diagnostics["target_changed"] = bool(fresh_target_id and target_id and fresh_target_id != target_id)
+    if isinstance(element, dict):
+        diagnostics["fresh_ref_role"] = str(element.get("role") or "")
+        diagnostics["fresh_ref_name"] = str(element.get("name") or element.get("label") or "")[:80]
+        diagnostics["fresh_ref_interactive"] = bool(element.get("interactive"))
+    if ref_used:
+        try:
+            actionability = _probe_ref_actionability(
+                base_url=base_url,
+                target_id=target_id,
+                profile=str(state.get("profile") or "").strip(),
+                timeout=timeout,
+                ref_id=ref_used,
+            )
+        except Exception:
+            actionability = None
+        if isinstance(actionability, dict):
+            diagnostics["ref_actionability"] = {
+                "status": str(actionability.get("status") or ""),
+                "actionable": bool(actionability.get("actionable")),
+                "reason": str(actionability.get("reason") or ""),
+                "hit": _actionability_node_description(actionability.get("hit")),
+                "target": _actionability_node_description(actionability.get("target")),
+            }
+    return diagnostics
+
+
+_REF_VISIBILITY_REVEAL_FN = r"""(el) => {
+  function rectOf(node) {
+    try {
+      const rect = node.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top),
+        left: Math.round(rect.left),
+        bottom: Math.round(rect.bottom),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+  function visibleInViewport(rect) {
+    return !!(
+      rect &&
+      rect.width >= 1 &&
+      rect.height >= 1 &&
+      rect.bottom >= 0 &&
+      rect.right >= 0 &&
+      rect.top <= window.innerHeight &&
+      rect.left <= window.innerWidth
+    );
+  }
+  function isScrollable(node) {
+    try {
+      const style = window.getComputedStyle(node);
+      const overflow = `${style.overflow} ${style.overflowY} ${style.overflowX}`.toLowerCase();
+      return (
+        /(auto|scroll|overlay|hidden)/.test(overflow) &&
+        ((node.scrollHeight - node.clientHeight) > 1 || (node.scrollWidth - node.clientWidth) > 1)
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  const beforeRect = rectOf(el);
+  const scrollChanges = [];
+  try {
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+  } catch (_) {}
+
+  const ancestors = [];
+  for (let node = el.parentElement; node && ancestors.length < 8; node = node.parentElement) {
+    if (isScrollable(node)) {
+      ancestors.push(node);
+    }
+  }
+  for (const node of ancestors) {
+    const beforeTop = node.scrollTop;
+    const beforeLeft = node.scrollLeft;
+    try {
+      const nodeRect = node.getBoundingClientRect();
+      const elRect = el.getBoundingClientRect();
+      if (elRect.top < nodeRect.top || elRect.bottom > nodeRect.bottom) {
+        node.scrollTop += (elRect.top + elRect.bottom) / 2 - (nodeRect.top + nodeRect.bottom) / 2;
+      }
+      if (elRect.left < nodeRect.left || elRect.right > nodeRect.right) {
+        node.scrollLeft += (elRect.left + elRect.right) / 2 - (nodeRect.left + nodeRect.right) / 2;
+      }
+    } catch (_) {}
+    const afterTop = node.scrollTop;
+    const afterLeft = node.scrollLeft;
+    if (Math.abs(afterTop - beforeTop) >= 1 || Math.abs(afterLeft - beforeLeft) >= 1) {
+      scrollChanges.push({
+        tag: String(node.tagName || "").toLowerCase(),
+        id: node.id || "",
+        className: typeof node.className === "string" ? node.className.slice(0, 120) : "",
+        beforeTop,
+        afterTop,
+        beforeLeft,
+        afterLeft,
+      });
+    }
+  }
+
+  const afterRect = rectOf(el);
+  return {
+    beforeRect,
+    afterRect,
+    viewportVisibleBefore: visibleInViewport(beforeRect),
+    viewportVisibleAfter: visibleInViewport(afterRect),
+    scrollChanged: scrollChanges.length > 0,
+    scrollChanges,
+  };
+}"""
+
+
+def _attempt_ref_visibility_reveal(
+    *,
+    base_url: str,
+    target_id: str,
+    profile_name: str,
+    ref_used: str,
+    timeout: Any,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "targetId": target_id,
+        "kind": "evaluate",
+        "ref": ref_used,
+        "fn": _REF_VISIBILITY_REVEAL_FN,
+        "timeoutMs": 4500,
+    }
+    if profile_name:
+        payload["profile"] = profile_name
+    status_code, data, text = _request(
+        "POST",
+        base_url=base_url,
+        path="/act",
+        timeout=timeout,
+        payload=payload,
+    )
+    result = data.get("result") if isinstance(data, dict) and isinstance(data.get("result"), dict) else {}
+    message = str((data or {}).get("error") or text or "").strip() if status_code >= 400 else ""
+    return {
+        "kind": "ref_visibility_reveal",
+        "ref": ref_used,
+        "success": status_code < 400,
+        "reason_code": "ok" if status_code < 400 else _reason_code_from_error(message, status_code),
+        "error": message,
+        "result": {
+            "viewport_visible_before": bool(result.get("viewportVisibleBefore")),
+            "viewport_visible_after": bool(result.get("viewportVisibleAfter")),
+            "scroll_changed": bool(result.get("scrollChanged")),
+            "before_rect": result.get("beforeRect") if isinstance(result.get("beforeRect"), dict) else {},
+            "after_rect": result.get("afterRect") if isinstance(result.get("afterRect"), dict) else {},
+            "scroll_changes": list(result.get("scrollChanges") or [])[:4] if isinstance(result.get("scrollChanges"), list) else [],
+        },
+    }
+
+
+_POINTER_INTERCEPTOR_RECOVERY_FN = r"""async (el) => {
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  function rectOf(node) {
+    try {
+      const rect = node.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top),
+        left: Math.round(rect.left),
+        bottom: Math.round(rect.bottom),
+        right: Math.round(rect.right),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+  function describe(node) {
+    if (!node || node === document.documentElement || node === document.body) {
+      return {};
+    }
+    let className = "";
+    try {
+      className = typeof node.className === "string" ? node.className : "";
+    } catch (_) {}
+    return {
+      tag: String(node.tagName || "").toLowerCase(),
+      id: node.id || "",
+      className: className.slice(0, 160),
+      role: node.getAttribute("role") || "",
+      ariaLabel: node.getAttribute("aria-label") || "",
+      rect: rectOf(node),
+      textLength: String(node.innerText || node.textContent || "").trim().length,
+    };
+  }
+  function centerPoint(node) {
+    const rect = node.getBoundingClientRect();
+    const x = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+    const y = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+    return { x, y };
+  }
+  function blockerAtTarget() {
+    const point = centerPoint(el);
+    const hit = document.elementFromPoint(point.x, point.y);
+    const blocked = !!(hit && hit !== el && !el.contains(hit));
+    return { point, hit, blocked };
+  }
+  function looksLikeInertOverlay(node) {
+    if (!node || node === document.documentElement || node === document.body) {
+      return false;
+    }
+    const info = describe(node);
+    const style = window.getComputedStyle(node);
+    const hint = `${info.tag} ${info.id} ${info.className} ${info.role} ${info.ariaLabel}`.toLowerCase();
+    const hasOverlayHint = /(overlay|backdrop|scrim|dim|dimmed|mask|modal|popup|layer)/.test(hint);
+    const rect = node.getBoundingClientRect();
+    const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+    const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+    const coversViewport = (
+      area >= viewportArea * 0.15 ||
+      (rect.left <= 4 && rect.top <= 4 && rect.right >= window.innerWidth * 0.65 && rect.bottom >= window.innerHeight * 0.65)
+    );
+    const positioned = /^(fixed|absolute|sticky)$/.test(String(style.position || "").toLowerCase());
+    const lowContent = info.textLength <= 120;
+    return lowContent && (hasOverlayHint || (positioned && coversViewport));
+  }
+  function fireEscape() {
+    const eventInit = {
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+      cancelable: true,
+    };
+    for (const target of [document.activeElement, document.body, document, window]) {
+      try {
+        target && target.dispatchEvent(new KeyboardEvent("keydown", eventInit));
+        target && target.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+      } catch (_) {}
+    }
+  }
+
+  const before = blockerAtTarget();
+  const beforeBlocker = describe(before.hit);
+  if (!before.blocked) {
+    return {
+      recovered: true,
+      action: "already_clickable",
+      targetClickableBefore: true,
+      targetClickableAfter: true,
+      beforeBlocker,
+      afterBlocker: {},
+    };
+  }
+
+  fireEscape();
+  await sleep(80);
+  const afterEscape = blockerAtTarget();
+  if (!afterEscape.blocked) {
+    return {
+      recovered: true,
+      action: "escape",
+      targetClickableBefore: false,
+      targetClickableAfter: true,
+      beforeBlocker,
+      afterBlocker: {},
+    };
+  }
+
+  const blocker = afterEscape.hit;
+  let action = "none";
+  let bypassed = false;
+  if (looksLikeInertOverlay(blocker)) {
+    try {
+      blocker.setAttribute("data-gaia-pointer-recovery", "pointer-events-none");
+      blocker.style.pointerEvents = "none";
+      action = "pointer_events_none";
+      bypassed = true;
+    } catch (_) {}
+  }
+
+  await sleep(20);
+  const after = blockerAtTarget();
+  return {
+    recovered: !after.blocked,
+    action,
+    bypassed,
+    targetClickableBefore: false,
+    targetClickableAfter: !after.blocked,
+    beforeBlocker,
+    afterEscapeBlocker: describe(afterEscape.hit),
+    afterBlocker: describe(after.hit),
+  };
+}"""
+
+
+def _attempt_pointer_interceptor_recovery(
+    *,
+    base_url: str,
+    target_id: str,
+    profile_name: str,
+    ref_used: str,
+    timeout: Any,
+    pointer_interceptor: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "targetId": target_id,
+        "kind": "evaluate",
+        "ref": ref_used,
+        "fn": _POINTER_INTERCEPTOR_RECOVERY_FN,
+        "timeoutMs": 4500,
+    }
+    if profile_name:
+        payload["profile"] = profile_name
+    status_code, data, text = _request(
+        "POST",
+        base_url=base_url,
+        path="/act",
+        timeout=timeout,
+        payload=payload,
+    )
+    result = data.get("result") if isinstance(data, dict) and isinstance(data.get("result"), dict) else {}
+    message = str((data or {}).get("error") or text or "").strip() if status_code >= 400 else ""
+    return {
+        "kind": "pointer_interceptor_overlay_recovery",
+        "ref": ref_used,
+        "success": status_code < 400,
+        "reason_code": "ok" if status_code < 400 else _reason_code_from_error(message, status_code),
+        "error": message,
+        "pointer_interceptor": pointer_interceptor or {},
+        "result": {
+            "recovered": bool(result.get("recovered")),
+            "action": str(result.get("action") or ""),
+            "bypassed": bool(result.get("bypassed")),
+            "target_clickable_before": bool(result.get("targetClickableBefore")),
+            "target_clickable_after": bool(result.get("targetClickableAfter")),
+            "before_blocker": result.get("beforeBlocker") if isinstance(result.get("beforeBlocker"), dict) else {},
+            "after_escape_blocker": result.get("afterEscapeBlocker") if isinstance(result.get("afterEscapeBlocker"), dict) else {},
+            "after_blocker": result.get("afterBlocker") if isinstance(result.get("afterBlocker"), dict) else {},
+        },
+    }
+
+
+def _retry_timeout_ms_for_revealed_ref(payload: Dict[str, Any]) -> int:
+    raw_value = payload.get("timeoutMs")
+    try:
+        value = int(raw_value)
+    except Exception:
+        value = 6000
+    return max(1000, min(value, 6000))
 
 
 def dispatch_openclaw_action(
@@ -3658,6 +4834,7 @@ def dispatch_openclaw_action(
 
     probe_kind = str(payload.get("kind") or "").strip()
     probe_post_action = probe_kind in {"click", "fill", "type", "press", "select", "drag", "hover", "evaluate"}
+    full_post_action_probe = bool(probe_post_action and _openclaw_post_action_full_probe_enabled())
     before_payload: Optional[Dict[str, Any]] = None
     before_tabs_payload: Optional[Dict[str, Any]] = None
     snapshot_before_ms = 0
@@ -3666,17 +4843,26 @@ def dispatch_openclaw_action(
     post_act_probe_ms = 0
     post_act_probe_rounds = 0
     second_probe_ms = 0
+    commit_verify_probe_ms = 0
+    commit_verify_probe_rounds = 0
+    deferred_settle_ms = 0
     act_ms = 0
     ref_refresh_count = 0
     target_reopen_count = 0
+    visibility_recovery_count = 0
+    pointer_interceptor_recovery_count = 0
+    recovery_attempt_logs: List[Dict[str, Any]] = []
     if probe_post_action:
+        requested_snapshot_id = str(
+            (effective_params or {}).get("snapshot_id") or (effective_params or {}).get("snapshotId") or ""
+        ).strip()
         before_payload = _cached_snapshot_payload(
             state=state,
-            snapshot_id=str((effective_params or {}).get("snapshot_id") or (effective_params or {}).get("snapshotId") or ""),
+            snapshot_id=requested_snapshot_id,
             target_id=target_id,
-        )
+        ) if requested_snapshot_id else None
         snapshot_before_cache_hit = before_payload is not None
-        if before_payload is None:
+        if before_payload is None and full_post_action_probe:
             try:
                 snapshot_before_started = time.perf_counter()
                 before_payload = _snapshot_payload_for_target(
@@ -3748,7 +4934,179 @@ def dispatch_openclaw_action(
         )
         act_ms += int((time.perf_counter() - act_started) * 1000)
     if status_code >= 400:
-        return _normalize_failure(status_code, data, text)
+        status, failure_payload, failure_message = _normalize_failure(status_code, data, text)
+        ref_used = str(payload.get("ref") or "").strip()
+        if not ref_used:
+            fields = payload.get("fields")
+            if isinstance(fields, list) and fields and isinstance(fields[0], dict):
+                ref_used = str(fields[0].get("ref") or "").strip()
+        recovered_by_action_recovery = False
+        if ref_used and probe_post_action:
+            diagnostics = _collect_act_failure_diagnostics(
+                base_url=base_url,
+                session_id=session_id,
+                state=state,
+                target_id=target_id,
+                ref_used=ref_used,
+                timeout=timeout,
+            )
+            state_change = failure_payload.get("state_change")
+            if not isinstance(state_change, dict):
+                state_change = {"effective": False, "backend": "openclaw"}
+            state_change["act_failure_diagnostics"] = diagnostics
+            if (
+                diagnostics.get("ref_present_in_fresh_snapshot")
+                and failure_payload.get("reason_code") in {"not_found", "ref_stale", "missing_element_id"}
+            ):
+                # The ref still resolves in a fresh snapshot, so "not found" is
+                # misleading: the element is present but the action could not
+                # complete. Surface it as not_actionable so the agent stops
+                # treating it as a stale ref and re-snapshotting in a loop.
+                state_change["ref_present_but_act_failed"] = True
+                failure_payload["reason_code"] = "not_actionable"
+            failure_payload["state_change"] = state_change
+            attempt_logs = list(failure_payload.get("attempt_logs") or [])
+            attempt_logs.append(
+                {
+                    "reason_code": failure_payload.get("reason_code"),
+                    "error": failure_message,
+                    "act_failure_diagnostics": diagnostics,
+                }
+            )
+            failure_payload["attempt_logs"] = attempt_logs
+            failure_payload["attempt_count"] = len(attempt_logs)
+            if (
+                probe_kind == "click"
+                and diagnostics.get("ref_present_in_fresh_snapshot")
+                and not diagnostics.get("target_changed")
+            ):
+                reveal_log: Optional[Dict[str, Any]] = None
+                pointer_interceptor = None
+                state_change = failure_payload.get("state_change")
+                if isinstance(state_change, dict) and isinstance(state_change.get("pointer_interceptor"), dict):
+                    pointer_interceptor = state_change.get("pointer_interceptor")
+                if pointer_interceptor is None:
+                    pointer_interceptor = extract_pointer_interceptor(failure_message)
+                if pointer_interceptor:
+                    pointer_log = _attempt_pointer_interceptor_recovery(
+                        base_url=base_url,
+                        target_id=target_id,
+                        profile_name=profile_name,
+                        ref_used=ref_used,
+                        timeout=timeout,
+                        pointer_interceptor=pointer_interceptor,
+                    )
+                    recovery_attempt_logs.append(pointer_log)
+                    pointer_result = pointer_log.get("result") if isinstance(pointer_log.get("result"), dict) else {}
+                    if bool(pointer_log.get("success")) and bool(pointer_result.get("target_clickable_after")):
+                        retry_payload = dict(payload)
+                        retry_payload["timeoutMs"] = _retry_timeout_ms_for_revealed_ref(retry_payload)
+                        act_started = time.perf_counter()
+                        retry_status_code, retry_data, retry_text = _request(
+                            "POST",
+                            base_url=base_url,
+                            path="/act",
+                            timeout=timeout,
+                            payload=retry_payload,
+                        )
+                        retry_ms = int((time.perf_counter() - act_started) * 1000)
+                        act_ms += retry_ms
+                        retry_log = {
+                            "kind": "pointer_interceptor_overlay_retry",
+                            "ref": ref_used,
+                            "success": retry_status_code < 400,
+                            "duration_ms": retry_ms,
+                        }
+                        if retry_status_code >= 400:
+                            retry_message = str((retry_data or {}).get("error") or retry_text or "")
+                            retry_log["reason_code"] = _reason_code_from_error(retry_message, retry_status_code)
+                            retry_log["error"] = retry_message
+                        else:
+                            retry_log["reason_code"] = "ok"
+                        recovery_attempt_logs.append(retry_log)
+                        if retry_status_code < 400:
+                            status_code, data, text = retry_status_code, retry_data, retry_text
+                            pointer_interceptor_recovery_count += 1
+                            recovered_by_action_recovery = True
+                if not recovered_by_action_recovery:
+                    reveal_log = _attempt_ref_visibility_reveal(
+                        base_url=base_url,
+                        target_id=target_id,
+                        profile_name=profile_name,
+                        ref_used=ref_used,
+                        timeout=timeout,
+                    )
+                    recovery_attempt_logs.append(reveal_log)
+                if (not recovered_by_action_recovery) and reveal_log and bool(reveal_log.get("success")):
+                    retry_payload = dict(payload)
+                    retry_payload["timeoutMs"] = _retry_timeout_ms_for_revealed_ref(retry_payload)
+                    act_started = time.perf_counter()
+                    retry_status_code, retry_data, retry_text = _request(
+                        "POST",
+                        base_url=base_url,
+                        path="/act",
+                        timeout=timeout,
+                        payload=retry_payload,
+                    )
+                    retry_ms = int((time.perf_counter() - act_started) * 1000)
+                    act_ms += retry_ms
+                    retry_log = {
+                        "kind": "ref_visibility_reveal_retry",
+                        "ref": ref_used,
+                        "success": retry_status_code < 400,
+                        "duration_ms": retry_ms,
+                    }
+                    if retry_status_code >= 400:
+                        retry_message = str((retry_data or {}).get("error") or retry_text or "")
+                        retry_log["reason_code"] = _reason_code_from_error(retry_message, retry_status_code)
+                        retry_log["error"] = retry_message
+                    else:
+                        retry_log["reason_code"] = "ok"
+                    recovery_attempt_logs.append(retry_log)
+                    if retry_status_code < 400:
+                        status_code, data, text = retry_status_code, retry_data, retry_text
+                        visibility_recovery_count += 1
+                        recovered_by_action_recovery = True
+                    else:
+                        final_status, final_payload, final_message = _normalize_failure(
+                            retry_status_code,
+                            retry_data,
+                            retry_text,
+                        )
+                        final_attempt_logs = list(failure_payload.get("attempt_logs") or [])
+                        final_attempt_logs.extend(recovery_attempt_logs)
+                        final_attempt_logs.extend(list(final_payload.get("attempt_logs") or []))
+                        final_state_change = final_payload.get("state_change")
+                        if not isinstance(final_state_change, dict):
+                            final_state_change = {"effective": False, "backend": "openclaw"}
+                        final_state_change["act_failure_diagnostics"] = diagnostics
+                        final_state_change["ref_present_but_act_failed"] = True
+                        final_state_change["action_recovery"] = {
+                            "kind": "actionability_recovery",
+                            "recovered": False,
+                            "attempts": recovery_attempt_logs,
+                        }
+                        final_payload["reason_code"] = "not_actionable"
+                        final_payload["state_change"] = final_state_change
+                        final_payload["attempt_logs"] = final_attempt_logs
+                        final_payload["attempt_count"] = len(final_attempt_logs)
+                        return final_status, final_payload, final_message
+        if not recovered_by_action_recovery:
+            if recovery_attempt_logs:
+                state_change = failure_payload.get("state_change")
+                if not isinstance(state_change, dict):
+                    state_change = {"effective": False, "backend": "openclaw"}
+                state_change["action_recovery"] = {
+                    "kind": "actionability_recovery",
+                    "recovered": False,
+                    "attempts": recovery_attempt_logs,
+                }
+                failure_payload["state_change"] = state_change
+                attempt_logs = list(failure_payload.get("attempt_logs") or [])
+                attempt_logs.extend(recovery_attempt_logs)
+                failure_payload["attempt_logs"] = attempt_logs
+                failure_payload["attempt_count"] = len(attempt_logs)
+            return status, failure_payload, failure_message
 
     state_change: Dict[str, Any] = {
         "backend": "openclaw",
@@ -3775,7 +5133,7 @@ def dispatch_openclaw_action(
     post_action_snapshot: Optional[Dict[str, Any]] = None
     new_page_evidence: Dict[str, Any] = {}
     auto_follow_evidence: Dict[str, Any] = {}
-    if probe_post_action:
+    if probe_post_action and full_post_action_probe:
         settle_ms = 350 if probe_kind in {"click", "press", "select", "drag"} else 180
         if settle_ms > 0:
             time.sleep(float(settle_ms) / 1000.0)
@@ -3910,9 +5268,120 @@ def dispatch_openclaw_action(
                     state_change=state_change,
                     evidence=auto_follow_evidence,
                 )
+    elif probe_post_action:
+        if before_payload:
+            snapshot_id_before = str(before_payload.get("snapshot_id") or "").strip()
+            if snapshot_id_before:
+                state_change["snapshot_id_before"] = snapshot_id_before
+        deferred_settle_ms = _openclaw_deferred_observation_settle_ms(probe_kind)
+        if deferred_settle_ms > 0:
+            time.sleep(float(deferred_settle_ms) / 1000.0)
+        if before_tabs_payload:
+            after_tabs_payload: Optional[Dict[str, Any]] = None
+            try:
+                after_tabs_payload = _tabs_payload_for_target(
+                    base_url=base_url,
+                    target_id=target_id,
+                    profile=profile_name,
+                    timeout=timeout,
+                )
+                _remember_tabs_payload(
+                    state=state,
+                    target_id=target_id,
+                    profile=profile_name,
+                    payload=after_tabs_payload,
+                )
+            except Exception:
+                after_tabs_payload = None
+            new_page_evidence = _derive_new_page_evidence_from_tabs(
+                before_tabs_payload=before_tabs_payload,
+                after_tabs_payload=after_tabs_payload,
+                reference_url=str(
+                    (before_payload or {}).get("current_url")
+                    or (before_payload or {}).get("url")
+                    or state.get("current_url")
+                    or ""
+                ),
+            )
+            if new_page_evidence:
+                state_change = _merge_state_change_evidence(
+                    state_change=state_change,
+                    evidence=new_page_evidence,
+                )
+                auto_follow_evidence = build_auto_follow_state_update(new_page_evidence)
+                if auto_follow_evidence:
+                    follow_target_id = str(auto_follow_evidence.get("auto_follow_target_id") or "").strip()
+                    follow_url = str(auto_follow_evidence.get("auto_follow_url") or "").strip()
+                    if follow_target_id:
+                        state["target_id"] = follow_target_id
+                        _clear_tabs_cache(state)
+                    if follow_url:
+                        state["current_url"] = follow_url
+                        current_url = follow_url
+                    state_change = _merge_state_change_evidence(
+                        state_change=state_change,
+                        evidence=auto_follow_evidence,
+                    )
+        if not bool(state_change.get("backend_progress")):
+            state_change["post_action_observation_deferred"] = True
+            state_change["backend_pending_observation"] = True
+            state_change["observation_source"] = "next_collect"
+
+    commit_ref_id = str(payload.get("ref") or "").strip()
+    if full_post_action_probe and commit_ref_id and before_payload and post_action_snapshot:
+        state_change = _apply_commit_verification_to_state_change(
+            state_change=state_change,
+            before_payload=before_payload,
+            after_payload=post_action_snapshot,
+            ref_id=commit_ref_id,
+        )
+        if bool(state_change.get("commit_verification_failed")):
+            deadline = time.perf_counter() + (float(_commit_verify_timeout_ms()) / 1000.0)
+            interval_s = float(_commit_verify_interval_ms()) / 1000.0
+            while bool(state_change.get("commit_verification_failed")) and time.perf_counter() < deadline:
+                remaining_s = max(0.0, deadline - time.perf_counter())
+                time.sleep(min(interval_s, remaining_s))
+                try:
+                    commit_probe_started = time.perf_counter()
+                    commit_after_payload = _snapshot_payload_for_target(
+                        base_url=base_url,
+                        session_id=session_id,
+                        state=state,
+                        target_id=target_id,
+                        timeout=timeout,
+                    )
+                    commit_verify_probe_ms += int((time.perf_counter() - commit_probe_started) * 1000)
+                    commit_verify_probe_rounds += 1
+                except Exception:
+                    commit_after_payload = None
+                if not commit_after_payload:
+                    continue
+                post_action_snapshot = commit_after_payload
+                current_url = str(commit_after_payload.get("current_url") or commit_after_payload.get("url") or current_url)
+                state_change = _derive_state_change_from_snapshot_payloads(
+                    before_payload=before_payload,
+                    after_payload=commit_after_payload,
+                    new_page_evidence=new_page_evidence,
+                )
+                state_change = _apply_commit_verification_to_state_change(
+                    state_change=state_change,
+                    before_payload=before_payload,
+                    after_payload=commit_after_payload,
+                    ref_id=commit_ref_id,
+                )
 
     if probe_kind == "evaluate" and eval_result:
         state_change["evaluate_result"] = eval_result
+    if recovery_attempt_logs:
+        state_change["action_recovery"] = {
+            "kind": "actionability_recovery",
+            "recovered": bool(visibility_recovery_count or pointer_interceptor_recovery_count),
+            "attempts": recovery_attempt_logs,
+        }
+        if visibility_recovery_count:
+            state_change["recovered_after_ref_visibility_reveal"] = True
+        if pointer_interceptor_recovery_count:
+            state_change["recovered_after_pointer_interceptor_recovery"] = True
 
     backend_trace = {
         "name": "openclaw",
@@ -3920,12 +5389,18 @@ def dispatch_openclaw_action(
         "snapshot_before_ms": int(snapshot_before_ms),
         "snapshot_before_cache_hit": bool(snapshot_before_cache_hit),
         "tabs_before_cache_hit": bool(tabs_before_cache_hit),
+        "post_action_full_probe": bool(full_post_action_probe),
+        "deferred_settle_ms": int(deferred_settle_ms),
         "act_ms": int(act_ms),
         "post_act_probe_ms": int(post_act_probe_ms),
         "post_act_probe_rounds": int(post_act_probe_rounds),
         "second_probe_ms": int(second_probe_ms),
+        "commit_verify_probe_ms": int(commit_verify_probe_ms),
+        "commit_verify_probe_rounds": int(commit_verify_probe_rounds),
         "ref_refresh_count": int(ref_refresh_count),
         "target_reopen_count": int(target_reopen_count),
+        "visibility_recovery_count": int(visibility_recovery_count),
+        "pointer_interceptor_recovery_count": int(pointer_interceptor_recovery_count),
         "backend_verdict": "progress" if bool(state_change.get("backend_progress")) else "effective_only",
         "reason_code": "ok",
         "total_ms": int(snapshot_before_ms + act_ms + post_act_probe_ms + second_probe_ms),
@@ -3949,9 +5424,9 @@ def dispatch_openclaw_action(
             "state_change": state_change,
             "backend_trace": backend_trace,
             "post_action_snapshot": post_action_snapshot if isinstance(post_action_snapshot, dict) else {},
-            "attempt_logs": [],
+            "attempt_logs": recovery_attempt_logs,
             "retry_path": [],
-            "attempt_count": 0,
+            "attempt_count": len(recovery_attempt_logs),
             "current_url": current_url,
             "profile": profile_name,
             "targetId": response_target_id,

@@ -23,5 +23,12 @@ def track_ref_outcome(
     if success and changed:
         agent._ineffective_ref_counts.pop(ref_id, None)
         return
-    if reason_code in {"no_state_change", "not_actionable", "modal_not_open", "ambiguous_ref_target", "ambiguous_selector"}:
+    if reason_code in {
+        "no_state_change",
+        "not_actionable",
+        "modal_not_open",
+        "ambiguous_ref_target",
+        "ambiguous_selector",
+        "pointer_intercepted",
+    }:
         agent._ineffective_ref_counts[ref_id] = int(agent._ineffective_ref_counts.get(ref_id, 0)) + 1

@@ -103,6 +103,7 @@ export function buildOpenClawChromeLaunchArgs(params: {
     "--disable-session-crashed-bubble",
     "--hide-crash-restore-bubble",
     "--password-store=basic",
+    "--use-mock-keychain",
   ];
 
   if (resolved.headless) {

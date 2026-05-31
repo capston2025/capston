@@ -199,6 +199,113 @@ def test_execute_decision_retries_stale_timeout_with_rebound_ref(monkeypatch) ->
     assert any("ref 재바인딩" in log for log in agent.logs)
 
 
+def test_execute_decision_blocks_temporarily_ineffective_ref_in_openclaw_mode() -> None:
+    agent = _FakeAgent()
+    agent._browser_backend_name = "openclaw"
+    agent._is_ref_temporarily_blocked = lambda ref_id: ref_id == "old-ref"  # type: ignore[method-assign]
+    dom_elements = [
+        DOMElement(
+            id=23,
+            tag="button",
+            text="바로 추가",
+            ref_id="old-ref",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        element_id=23,
+        reasoning="같은 버튼을 다시 눌러본다.",
+    )
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is False
+    assert "blocked_ref_no_progress" in str(err)
+    assert agent._last_exec_result.reason_code == "blocked_ref_no_progress"
+
+
+def test_execute_action_preserves_requested_ref_on_openclaw_failure(monkeypatch) -> None:
+    agent = _FakeAgent()
+
+    def fake_execute_mcp_action_with_recovery(**_kwargs):
+        return type(
+            "Response",
+            (),
+            {
+                "status_code": 200,
+                "payload": {
+                    "success": False,
+                    "effective": False,
+                    "reason_code": "not_actionable",
+                    "reason": 'Element "e20" not found or not visible.',
+                    "state_change": {"effective": False, "backend": "openclaw"},
+                },
+                "text": "",
+            },
+        )()
+
+    monkeypatch.setattr(runtime, "execute_mcp_action_with_recovery", fake_execute_mcp_action_with_recovery)
+
+    result = runtime.execute_action(agent, "click", ref_id="e20")
+
+    assert result.success is False
+    assert result.reason_code == "not_actionable"
+    assert result.ref_id_used == "e20"
+
+
+def test_execute_decision_recovers_link_click_failure_with_href_navigation(monkeypatch) -> None:
+    agent = _FakeAgent()
+    agent._current_url = "https://www.apple.com/kr/"
+    agent._goal_constraints = {"allow_navigation": True}
+    agent._contains_next_pagination_hint = lambda _value: False  # type: ignore[method-assign]
+    agent._is_numeric_page_label = lambda _value: False  # type: ignore[method-assign]
+    dom_elements = [
+        DOMElement(
+            id=23,
+            tag="a",
+            role="link",
+            text="iPad",
+            href="/kr/ipad/",
+            ref_id="old-ref",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+    decision = ActionDecision(action=ActionType.CLICK, ref_id="old-ref", reasoning="iPad 링크 클릭")
+    calls: list[tuple[str, str | None, str | None]] = []
+
+    def fake_execute_action(agent_obj, action_name, selector=None, full_selector=None, ref_id=None, value=None, url=None, **_kwargs):
+        del agent_obj, selector, full_selector, value
+        calls.append((action_name, ref_id, url))
+        if action_name == "click":
+            return ActionExecResult(
+                success=False,
+                effective=False,
+                reason_code="not_actionable",
+                reason='Element "old-ref" not found or not visible.',
+                ref_id_used=str(ref_id or ""),
+            )
+        return ActionExecResult(
+            success=True,
+            effective=True,
+            reason_code="ok",
+            reason="ok",
+            state_change={"url_changed": True, "effective": True},
+        )
+
+    monkeypatch.setattr(runtime, "execute_action", fake_execute_action)
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is True
+    assert err is None
+    assert calls == [("click", "old-ref", None), ("goto", None, "https://www.apple.com/kr/ipad/")]
+    assert agent._last_exec_result.state_change["link_navigation_recovery"] is True
+    assert agent._last_exec_result.state_change["recovered_ref_id"] == "old-ref"
+
+
 def test_execute_decision_retries_ref_stale_with_rebound_ref(monkeypatch) -> None:
     agent = _FakeAgent()
     dom_elements = [

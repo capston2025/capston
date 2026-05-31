@@ -50,6 +50,18 @@ def _is_openclaw_backend_state_change(state_change: Optional[Dict[str, Any]]) ->
     return str(state_change.get("backend") or "").strip().lower() == "openclaw"
 
 
+def _commit_verification_failed(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    return bool(state_change.get("commit_verification_failed") or state_change.get("commit_pending"))
+
+
+def _post_action_observation_deferred(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    return bool(state_change.get("post_action_observation_deferred") or state_change.get("backend_pending_observation"))
+
+
 def _sorted_text_list(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -442,6 +454,25 @@ def _evaluate_deferred_action_goal_completion(
     )
 
 
+def _selected_element_for_decision(decision: ActionDecision, dom_elements: List[DOMElement]) -> Optional[DOMElement]:
+    ref_id = str(getattr(decision, "ref_id", "") or "").strip()
+    if ref_id:
+        for el in dom_elements or []:
+            if str(getattr(el, "ref_id", "") or "").strip() == ref_id:
+                return el
+    element_id = getattr(decision, "element_id", None)
+    if element_id is not None:
+        try:
+            wanted = int(element_id)
+        except Exception:
+            wanted = None
+        if wanted is not None:
+            for el in dom_elements or []:
+                if int(getattr(el, "id", -1)) == wanted:
+                    return el
+    return None
+
+
 def evaluate_post_action_progress(
     *,
     agent: Any,
@@ -454,6 +485,13 @@ def evaluate_post_action_progress(
     steps: List[StepResult],
     start_time: float,
 ) -> Dict[str, Any]:
+    if bool(success):
+        setattr(agent, "_last_action_selected_element", _selected_element_for_decision(decision, dom_elements))
+        setattr(agent, "_last_action_decision", decision)
+    else:
+        setattr(agent, "_last_action_selected_element", None)
+        setattr(agent, "_last_action_decision", decision)
+
     before_evidence = (
         dict(agent._last_snapshot_evidence)
         if isinstance(getattr(agent, "_last_snapshot_evidence", None), dict)
@@ -474,6 +512,8 @@ def evaluate_post_action_progress(
             )
         )
     )
+    state_change = agent._last_exec_result.state_change if agent._last_exec_result else None
+    observation_deferred = _post_action_observation_deferred(state_change)
     backend_snapshot = (
         dict(getattr(agent, "_last_backend_post_action_snapshot", None) or {})
         if isinstance(getattr(agent, "_last_backend_post_action_snapshot", None), dict)
@@ -495,6 +535,9 @@ def evaluate_post_action_progress(
         post_dom = backend_post_dom
         post_dom_from_backend_snapshot = True
         after_evidence = dict(backend_after_evidence)
+    elif observation_deferred:
+        post_dom = []
+        after_evidence = dict(before_evidence)
     else:
         post_dom = agent._analyze_dom()
         after_evidence = (
@@ -513,7 +556,7 @@ def evaluate_post_action_progress(
     refreshed_metric = agent._estimate_goal_metric_from_dom(post_dom) if post_dom else None
     if refreshed_metric is not None:
         agent._goal_metric_value = refreshed_metric
-    state_change = agent._last_exec_result.state_change if agent._last_exec_result else None
+    commit_failed = _commit_verification_failed(state_change)
     current_phase = str(getattr(agent, "_goal_policy_phase", "") or "").strip().lower()
     current_phase_intent = str(getattr(agent, "_goal_phase_intent", "") or goal_phase_intent(current_phase))
     recent_exec = getattr(agent, "_last_exec_result", None)
@@ -531,8 +574,12 @@ def evaluate_post_action_progress(
     changed_by_state = _strong_state_progress(state_change)
     openclaw_backend_state = _is_openclaw_backend_state_change(state_change)
     openclaw_backend_progress = bool(openclaw_backend_state and bool(state_change.get("backend_progress")))
+    if commit_failed:
+        changed_by_state = False
+        openclaw_backend_progress = False
     openclaw_backend_provisional = bool(
         openclaw_backend_state
+        and not commit_failed
         and bool(getattr(recent_exec, "success", False))
         and bool(getattr(recent_exec, "effective", False))
         and str(getattr(recent_exec, "reason_code", "") or "").strip().lower() == "ok"
@@ -542,6 +589,8 @@ def evaluate_post_action_progress(
     if openclaw_backend_provisional and not changed_by_state:
         changed_by_state = True
     changed_by_evidence = _strong_evidence_progress(before_evidence, after_evidence)
+    if commit_failed:
+        changed_by_evidence = False
     after_signature = agent._dom_progress_signature(post_dom) if post_dom else before_signature
     changed_by_dom = False
     if bool(post_dom) and before_signature != after_signature:
@@ -552,6 +601,10 @@ def evaluate_post_action_progress(
             after_signature=after_signature,
         )
         changed_by_dom = not weak_dom_only
+    if commit_failed:
+        changed_by_dom = False
+        modal_visibility_changed = False
+        auth_prompt_visibility_changed = False
     changed = bool(
         changed_by_state
         or changed_by_evidence
@@ -562,6 +615,8 @@ def evaluate_post_action_progress(
     if (
         bool(success)
         and not changed
+        and not commit_failed
+        and not observation_deferred
         and decision.action in {ActionType.CLICK, ActionType.TYPE, ActionType.PRESS, ActionType.SELECT}
     ):
         time.sleep(0.8)
@@ -619,6 +674,8 @@ def evaluate_post_action_progress(
         _emit_reason(agent, "progress_auth_prompt_visibility")
     elif changed_by_dom:
         _emit_reason(agent, "progress_dom_signature")
+    elif observation_deferred:
+        _emit_reason(agent, "post_action_observation_deferred")
     elif (
         bool(success)
         and isinstance(state_change, dict)

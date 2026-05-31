@@ -1,12 +1,15 @@
 """Qt workers for goal-driven and exploratory automation."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -37,6 +40,10 @@ from gaia.src.phase4.goal_driven.multi_user_interaction_runtime import close_par
 from gaia.src.tracker.checklist import ChecklistTracker
 from gaia.src.utils.config import CONFIG
 from gaia.src.gui.benchmark_mode import override_suite_urls
+
+BATTLE_DEFAULT_SITE_URL = "https://gaia-battle-web.vercel.app"
+BATTLE_DEFAULT_SESSION_ID = "battle-live"
+FAST_MODE_APP_SERVER_ARGS = '-c service_tier="priority"'
 
 
 def _goal_step_timeline(result: Any, goal_name: str) -> list[dict[str, Any]]:
@@ -490,6 +497,65 @@ class ExploratoryWorker(QObject):
         self._cancel_requested = True
 
 
+def _normalize_battle_site_url(raw: str) -> str:
+    value = str(raw or "").strip().rstrip("/")
+    return value or BATTLE_DEFAULT_SITE_URL
+
+
+def _first_scenario(suite_payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    for raw in list(suite_payload.get("scenarios") or []):
+        if isinstance(raw, Mapping):
+            return dict(raw)
+    return None
+
+
+def _battle_scenario_label(scenario: Mapping[str, Any] | None, *, fallback: str = "현장 QA 미션") -> str:
+    current = scenario if isinstance(scenario, Mapping) else {}
+    for key in ("scenario_label", "name", "title", "description", "goal"):
+        text = str(current.get(key) or "").strip()
+        if text:
+            return text[:180]
+    scenario_id = str(current.get("id") or "").strip()
+    return scenario_id or fallback
+
+
+def _post_battle_session_start(
+    *,
+    site_url: str,
+    session_id: str,
+    scenario: Mapping[str, Any] | None,
+    emit: Callable[[str], None],
+) -> tuple[str, bool]:
+    scenario_id = str((scenario or {}).get("id") or "live-mission").strip() or "live-mission"
+    scenario_label = _battle_scenario_label(scenario)
+    body = json.dumps(
+        {
+            "sessionId": session_id,
+            "scenarioId": scenario_id,
+            "scenarioLabel": scenario_label,
+            "humanStartedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{site_url}/api/session",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            ok = 200 <= int(getattr(response, "status", 0) or 0) < 300
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        emit(f"Human vs GAIA 웹 타이머 시작 실패: {exc}")
+        return scenario_label, False
+    if ok:
+        emit(f"Human 타이머 시작: {scenario_label}")
+    else:
+        emit("Human vs GAIA 웹 타이머 시작 응답이 성공 범위가 아닙니다.")
+    return scenario_label, ok
+
+
 class BenchmarkWorker(QObject):
     """Run benchmark suites in a background thread for GUI benchmark mode."""
 
@@ -510,6 +576,7 @@ class BenchmarkWorker(QObject):
         timeout_cap: int = 600,
         push_metrics: bool = False,
         scenario_ids: list[str] | None = None,
+        run_options: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self._site_key = site_key
@@ -521,6 +588,7 @@ class BenchmarkWorker(QObject):
         self._run_tag = str(run_tag or "full_suite").strip() or "full_suite"
         self._timeout_cap = max(600, int(timeout_cap))
         self._push_metrics = bool(push_metrics)
+        self._run_options = dict(run_options or {})
         # 선택된 시나리오 ID 리스트 — None이면 suite의 전체 시나리오 실행, list면 해당 ID만 필터
         self._scenario_ids = list(scenario_ids) if scenario_ids else None
         self._cancel_requested = False
@@ -557,6 +625,31 @@ class BenchmarkWorker(QObject):
                 # run_tag에 시나리오 수 반영 (artifacts/tmp 파일명에 사용)
                 self._run_tag = f"selected_{len(filtered)}"
 
+            battle_mode = bool(self._run_options.get("battle_mode"))
+            fast_mode = bool(self._run_options.get("fast_mode"))
+            battle_site_url = _normalize_battle_site_url(
+                str(self._run_options.get("battle_site_url") or "").strip()
+                or os.getenv("GAIA_BATTLE_SITE_URL", "")
+                or BATTLE_DEFAULT_SITE_URL
+            )
+            battle_session_id = (
+                str(self._run_options.get("battle_session_id") or "").strip()
+                or os.getenv("GAIA_BATTLE_SESSION_ID", "").strip()
+                or BATTLE_DEFAULT_SESSION_ID
+            )
+            battle_upload_token = (
+                str(self._run_options.get("battle_upload_token") or "").strip()
+                or os.getenv("GAIA_BATTLE_UPLOAD_TOKEN", "").strip()
+            )
+            battle_scenario_label = ""
+            if battle_mode:
+                battle_scenario_label, _started_ok = _post_battle_session_start(
+                    site_url=battle_site_url,
+                    session_id=battle_session_id,
+                    scenario=_first_scenario(overridden),
+                    emit=self.progress.emit,
+                )
+
             tmp_root = self._workspace_root / "artifacts" / "tmp"
             tmp_root.mkdir(parents=True, exist_ok=True)
             run_tag = re.sub(r"[^a-zA-Z0-9_]+", "_", self._run_tag).strip("_") or "full_suite"
@@ -581,9 +674,21 @@ class BenchmarkWorker(QObject):
             ]
             if self._push_metrics:
                 cmd.append("--push-metrics")
+            if battle_mode:
+                cmd.append("--battle-board")
+                cmd.extend(["--battle-upload-url", f"{battle_site_url}/api/records"])
+                cmd.extend(["--battle-session-id", battle_session_id])
+                if battle_upload_token:
+                    cmd.extend(["--battle-upload-token", battle_upload_token])
             env = os.environ.copy()
             env.setdefault("GAIA_RAIL_ENABLED", "0")
             env.setdefault("GAIA_LLM_MODEL", env.get("GAIA_LLM_MODEL", "gpt-5.5"))
+            if fast_mode:
+                env["GAIA_CODEX_APP_SERVER_ARGS"] = FAST_MODE_APP_SERVER_ARGS
+            else:
+                env.pop("GAIA_CODEX_APP_SERVER_ARGS", None)
+            if battle_mode and battle_scenario_label:
+                env["GAIA_BATTLE_SCENARIO_LABEL"] = battle_scenario_label
             # Windows에서 subprocess stdout이 버퍼링되어 GUI로 전달이 막히는 문제 방지.
             # 자식 Python 프로세스의 출력을 즉시 flush하도록 강제.
             env["PYTHONUNBUFFERED"] = "1"
@@ -595,6 +700,10 @@ class BenchmarkWorker(QObject):
                 self.progress.emit(f"   - target: {self._target_url}")
             if self._push_metrics:
                 self.progress.emit("   - metrics: upload enabled (--push-metrics)")
+            if battle_mode:
+                self.progress.emit(f"   - battle board: {battle_site_url}/battle/{battle_session_id}")
+                self.progress.emit(f"   - human input: {battle_site_url}/battle/{battle_session_id}/human")
+            self.progress.emit(f"   - fast mode: {'enabled' if fast_mode else 'off'}")
             self.progress.emit(f"   - cmd: {sys.executable} {' '.join(cmd[1:3])} ...")
 
             self._process = subprocess.Popen(
@@ -683,6 +792,10 @@ class BenchmarkWorker(QObject):
                     "site_label": self._site_label,
                     "target_url": self._target_url,
                     "push_metrics": self._push_metrics,
+                    "battle_mode": battle_mode,
+                    "fast_mode": fast_mode,
+                    "battle_site_url": battle_site_url if battle_mode else "",
+                    "battle_session_id": battle_session_id if battle_mode else "",
                     "output_dir": str(output_dir),
                     "summary_path": str(summary_path),
                     "results_path": str(results_path),
@@ -695,6 +808,11 @@ class BenchmarkWorker(QObject):
                     "proof_lines": [
                         f"artifact: {output_dir}",
                         f"success {success_count} / fail {explicit_fail_count} / blocked {blocked_count} / total {total_count}",
+                        *(
+                            [f"battle board: {battle_site_url}/battle/{battle_session_id}"]
+                            if battle_mode
+                            else []
+                        ),
                     ],
                 }
             )
@@ -712,6 +830,8 @@ class BenchmarkWorker(QObject):
                     "site_label": self._site_label,
                     "target_url": self._target_url,
                     "push_metrics": self._push_metrics,
+                    "battle_mode": bool(self._run_options.get("battle_mode")),
+                    "fast_mode": bool(self._run_options.get("fast_mode")),
                     "output_dir": str(output_dir) if output_dir else "",
                     "summary_path": str(output_dir / 'summary.json') if output_dir else "",
                     "results_path": str(output_dir / 'results.json') if output_dir else "",

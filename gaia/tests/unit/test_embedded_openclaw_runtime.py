@@ -35,6 +35,17 @@ def test_embedded_browser_server_entrypoint_uses_event_loop_keepalive() -> None:
         assert "process.once(signal, resolve)" in text
 
 
+def test_openclaw_chrome_launch_uses_mock_keychain() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    source = repo_root / "vendor" / "openclaw" / "extensions" / "browser" / "src" / "browser" / "chrome.ts"
+    bundle = repo_root / "vendor" / "openclaw-runtime" / "gaia-embedded-browser-server.bundle.mjs"
+
+    for path in (source, bundle):
+        text = path.read_text(encoding="utf-8")
+        assert "--password-store=basic" in text
+        assert "--use-mock-keychain" in text
+
+
 def test_browser_server_ready_uses_lightweight_profiles_route(monkeypatch) -> None:
     calls: list[str] = []
 
@@ -95,6 +106,16 @@ def test_detect_browser_executable_prefers_playwright_chromium(monkeypatch, tmp_
     new_browser = cache_dir / "chromium-1208" / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS"
     new_browser.mkdir(parents=True)
     (new_browser / "Chromium").write_text("", encoding="utf-8")
+    chrome_for_testing = (
+        cache_dir
+        / "chromium-1223"
+        / "chrome-mac-arm64"
+        / "Google Chrome for Testing.app"
+        / "Contents"
+        / "MacOS"
+    )
+    chrome_for_testing.mkdir(parents=True)
+    (chrome_for_testing / "Google Chrome for Testing").write_text("", encoding="utf-8")
 
     monkeypatch.delenv("GAIA_OPENCLAW_BROWSER_EXECUTABLE", raising=False)
     monkeypatch.setattr(runtime, "_PLAYWRIGHT_CACHE_DIR_CANDIDATES", (cache_dir,))
@@ -104,7 +125,7 @@ def test_detect_browser_executable_prefers_playwright_chromium(monkeypatch, tmp_
         ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",),
     )
 
-    assert runtime.detect_browser_executable() == str(new_browser / "Chromium")
+    assert runtime.detect_browser_executable() == str(chrome_for_testing / "Google Chrome for Testing")
 
 
 def test_detect_browser_executable_includes_common_windows_install_paths(monkeypatch, tmp_path) -> None:
@@ -224,6 +245,8 @@ def test_ensure_browser_profile_started_raises_on_error(monkeypatch) -> None:
             return {"error": self.text}
 
     monkeypatch.setattr(runtime.requests, "post", lambda *args, **kwargs: _Response())
+    monkeypatch.setattr(runtime, "_browser_profile_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr(runtime, "_cleanup_stale_browser_profile", lambda: None)
     monkeypatch.setattr(runtime.time, "sleep", lambda _: None)
 
     try:
@@ -255,10 +278,63 @@ def test_ensure_browser_profile_started_retries_transient_start_failure(monkeypa
         return responses.pop(0)
 
     monkeypatch.setattr(runtime.requests, "post", fake_post)
+    monkeypatch.setattr(runtime, "_browser_profile_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr(runtime, "_cleanup_stale_browser_profile", lambda: None)
     monkeypatch.setattr(runtime.time, "sleep", lambda seconds: sleeps.append(float(seconds)))
 
     runtime._ensure_browser_profile_started("http://127.0.0.1:18791")
 
+    assert sleeps == [0.5]
+    assert responses == []
+
+
+def test_ensure_browser_profile_started_accepts_late_ready_profile(monkeypatch) -> None:
+    class _Response:
+        status_code = 500
+        text = 'Error: Failed to start Chrome CDP on port 18800 for profile "openclaw".'
+
+        def json(self) -> dict[str, str]:
+            return {"error": self.text}
+
+    ready = [False, True]
+    cleanup_calls: list[str] = []
+
+    monkeypatch.setattr(runtime.requests, "post", lambda *args, **kwargs: _Response())
+    monkeypatch.setattr(runtime, "_browser_profile_ready", lambda *args, **kwargs: ready.pop(0))
+    monkeypatch.setattr(runtime, "_cleanup_stale_browser_profile", lambda: cleanup_calls.append("cleanup"))
+    monkeypatch.setattr(runtime.time, "sleep", lambda _: None)
+
+    runtime._ensure_browser_profile_started("http://127.0.0.1:18791")
+
+    assert ready == []
+    assert cleanup_calls == []
+
+
+def test_ensure_browser_profile_started_cleans_stale_profile_before_retry(monkeypatch) -> None:
+    class _Response:
+        def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = str(payload.get("error") or "")
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    responses = [
+        _Response(500, {"error": 'Failed to start Chrome CDP on port 18800 for profile "openclaw".'}),
+        _Response(200, {"ok": True}),
+    ]
+    cleanup_calls: list[str] = []
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(runtime.requests, "post", lambda *args, **kwargs: responses.pop(0))
+    monkeypatch.setattr(runtime, "_browser_profile_ready", lambda *args, **kwargs: False)
+    monkeypatch.setattr(runtime, "_cleanup_stale_browser_profile", lambda: cleanup_calls.append("cleanup"))
+    monkeypatch.setattr(runtime.time, "sleep", lambda seconds: sleeps.append(float(seconds)))
+
+    runtime._ensure_browser_profile_started("http://127.0.0.1:18791")
+
+    assert cleanup_calls == ["cleanup"]
     assert sleeps == [0.5]
     assert responses == []
 

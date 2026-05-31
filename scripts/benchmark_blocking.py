@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 BLOCKED_USER_ACTION_STATUS = "BLOCKED_USER_ACTION"
 BLOCKED_CAPTCHA_REASON_CODE = "blocked_captcha"
+BLOCKED_EXTERNAL_SERVICE_REASON_CODE = "blocked_external_service"
 BLOCKED_LOGIN_REASON_CODE = "blocked_login_gate"
 BLOCKED_USER_ACTION_REASON_CODE = "blocked_user_action"
 
@@ -35,11 +36,35 @@ _CAPTCHA_GATE_MARKERS = (
 _USER_ACTION_MARKERS = (
     "사용자 개입",
     "사용자 입력",
+    "사용자가 필요한 입력",
+    "필요한 입력 제공을 취소",
     "사람의 입력",
     "human_answer",
+    "목표를 더 구체적으로",
     "login required",
     "로그인 필요",
     "로그인이 필요",
+)
+
+_EXTERNAL_SERVICE_MARKERS = (
+    "external_service_unavailable",
+    "access denied",
+    "service unavailable",
+    "temporarily unavailable",
+    "too many requests",
+    "page not found",
+    "404 not found",
+    "페이지를 찾을 수 없습니다",
+    "서비스 이용에 불편",
+    "서비스 지연",
+    "외부 서비스 오류",
+    "외부 서비스 지연",
+    "외부 페이지가 렌더링됐지만 접근 가능한 dom을 제공하지 않아",
+    "anti-bot",
+    "bot-wall",
+    "challenge",
+    "ret9999",
+    "시스템 오류 발생",
 )
 
 
@@ -95,6 +120,21 @@ def is_captcha_or_security_gate(row: Dict[str, Any]) -> bool:
     return any(marker in text for marker in _CAPTCHA_GATE_MARKERS)
 
 
+def is_external_service_blocked(row: Dict[str, Any]) -> bool:
+    if _status(row) == "SUCCESS":
+        return False
+    if BLOCKED_EXTERNAL_SERVICE_REASON_CODE in {
+        str(code).strip().lower() for code in summary_reason_code_summary(row).keys()
+    }:
+        return True
+    if "external_service_unavailable" in {
+        str(code).strip().lower() for code in summary_reason_code_summary(row).keys()
+    }:
+        return True
+    text = _row_blocking_text(row)
+    return any(marker in text for marker in _EXTERNAL_SERVICE_MARKERS)
+
+
 def is_blocked_user_action(row: Dict[str, Any]) -> bool:
     if _status(row) == "SUCCESS":
         return False
@@ -105,6 +145,8 @@ def is_blocked_user_action(row: Dict[str, Any]) -> bool:
         return True
     if is_captcha_or_security_gate(row):
         return True
+    if is_external_service_blocked(row):
+        return True
     text = _row_blocking_text(row)
     return any(marker in text for marker in _USER_ACTION_MARKERS)
 
@@ -112,6 +154,8 @@ def is_blocked_user_action(row: Dict[str, Any]) -> bool:
 def _blocked_reason_code(row: Dict[str, Any]) -> str:
     if is_captcha_or_security_gate(row):
         return BLOCKED_CAPTCHA_REASON_CODE
+    if is_external_service_blocked(row):
+        return BLOCKED_EXTERNAL_SERVICE_REASON_CODE
     text = _row_blocking_text(row)
     if "login required" in text or "로그인 필요" in text or "로그인이 필요" in text:
         return BLOCKED_LOGIN_REASON_CODE
@@ -121,6 +165,8 @@ def _blocked_reason_code(row: Dict[str, Any]) -> str:
 def _blocked_reason_prefix(reason_code: str) -> str:
     if reason_code == BLOCKED_CAPTCHA_REASON_CODE:
         return "CAPTCHA/security verification gate detected; user action required."
+    if reason_code == BLOCKED_EXTERNAL_SERVICE_REASON_CODE:
+        return "External service unavailable or access gate detected; excluded from primary benchmark."
     if reason_code == BLOCKED_LOGIN_REASON_CODE:
         return "Login gate detected; user action required."
     return "User action required."

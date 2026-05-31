@@ -112,6 +112,22 @@ def has_recent_transition_completion_proof(
     rationale = str(decision.goal_achievement_reason or decision.reasoning or "").strip()
     if not rationale:
         return None
+    normalized_rationale = agent._normalize_text(rationale)
+    uncertain_tokens = (
+        "추가 화면 컨텍스트 확인",
+        "추가 확인",
+        "재확인",
+        "확인이 필요",
+        "증거가 부족",
+        "불충분",
+        "숨겨져",
+        "추측 클릭",
+        "짧게 대기",
+        "대기해",
+        "기다려",
+    )
+    if any(token in normalized_rationale for token in uncertain_tokens):
+        return None
 
     if achieved_signals:
         return (
@@ -256,6 +272,16 @@ def _evaluate_multi_user_completion_evidence(
     return "multi-user blackboard와 현재 화면 증거가 성공 조건을 모두 포함해 목표를 완료로 판정했습니다."
 
 
+def _record_completion_gate_reason(agent, reason_code: str) -> None:
+    recorder = getattr(agent, "_record_reason_code", None)
+    if not callable(recorder):
+        return
+    try:
+        recorder(reason_code)
+    except Exception:
+        return
+
+
 def validate_goal_achievement_claim(
     agent,
     goal: TestGoal,
@@ -354,6 +380,8 @@ def validate_goal_achievement_claim(
         return True, None
 
     if missing and not wait_contract_override:
+        setattr(agent, "_last_goal_completion_source", "wait_completion_rejected_missing_signals")
+        _record_completion_gate_reason(agent, "goal_achievement_wait_rejected")
         return (
             False,
             "goal contract signal 미충족: " + ", ".join(missing),

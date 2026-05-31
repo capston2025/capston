@@ -9,6 +9,42 @@ from .models import ActionType, TestGoal
 from .wrapper_trace_runtime import dump_wrapper_trace, serialize_dom_elements, thin_wrapper_enabled, wrapper_mode_name
 
 
+_STATE_MUTATING_ACTIONS = {
+    ActionType.CLICK,
+    ActionType.FILL,
+    ActionType.TYPE,
+    ActionType.PRESS,
+    ActionType.SELECT,
+}
+
+
+def _observation_deferred(state_change: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state_change, dict):
+        return False
+    return bool(state_change.get("post_action_observation_deferred") or state_change.get("backend_pending_observation"))
+
+
+def _post_action_reason_code(
+    *,
+    decision: Any,
+    reason_code: str,
+    success: bool,
+    changed: bool,
+    state_change: Optional[Dict[str, Any]] = None,
+) -> str:
+    normalized = str(reason_code or "unknown")
+    if bool(success) and not bool(changed) and normalized == "ok" and _observation_deferred(state_change):
+        return "observation_deferred"
+    if (
+        bool(success)
+        and not bool(changed)
+        and normalized == "ok"
+        and getattr(decision, "action", None) in _STATE_MUTATING_ACTIONS
+    ):
+        return "no_state_change"
+    return normalized
+
+
 def _has_zero_result_surface(agent: Any, dom_elements: List[Any]) -> bool:
     visible_blob = agent._normalize_text(
         " ".join(
@@ -80,6 +116,7 @@ def handle_post_action_runtime(
         backend_trace = dict(state_change.get("backend_trace") or {})
     elif isinstance(getattr(agent, "_last_backend_trace", None), dict):
         backend_trace = dict(getattr(agent, "_last_backend_trace", None) or {})
+    observation_deferred = _observation_deferred(state_change)
     llm_trace = dict(getattr(agent, "_last_llm_trace", None) or {}) if isinstance(getattr(agent, "_last_llm_trace", None), dict) else {}
     terminal_result = progress_eval.get("terminal_result")
     wrapper_mode = wrapper_mode_name(agent)
@@ -91,6 +128,8 @@ def handle_post_action_runtime(
         if terminal_result is None:
             if login_gate_visible:
                 phase_event = "blocked_auth"
+            elif success and observation_deferred:
+                phase_event = "action_observation_deferred"
             elif success:
                 phase_event = "action_ok" if changed else "action_no_state_change"
             else:
@@ -183,6 +222,8 @@ def handle_post_action_runtime(
         agent._no_progress_counter = 0
         agent._weak_progress_streak = 0
         setattr(agent, "_discovery_no_progress_streak", 0)
+    elif observation_deferred:
+        setattr(agent, "_discovery_no_progress_streak", 0)
     else:
         setattr(agent, "_discovery_no_progress_streak", 0)
         agent._no_progress_counter += 1
@@ -191,10 +232,18 @@ def handle_post_action_runtime(
         else:
             agent._weak_progress_streak = 0
 
+    reason_code = agent._last_exec_result.reason_code if agent._last_exec_result else "unknown"
+    outcome_reason_code = _post_action_reason_code(
+        decision=decision,
+        reason_code=reason_code,
+        success=success,
+        changed=changed,
+        state_change=state_change,
+    )
     master_orchestrator.record_progress(
         changed=changed,
         signal={
-            "reason_code": agent._last_exec_result.reason_code if agent._last_exec_result else "unknown",
+            "reason_code": outcome_reason_code,
             "phase": agent._runtime_phase,
             "step": step_count,
         },
@@ -205,7 +254,7 @@ def handle_post_action_runtime(
         success=success,
         changed=changed,
         error=error,
-        reason_code=agent._last_exec_result.reason_code if agent._last_exec_result else None,
+        reason_code=outcome_reason_code,
         state_change=state_change,
         intent_key=action_intent_key,
     )
@@ -217,12 +266,11 @@ def handle_post_action_runtime(
         changed=changed,
         error=error,
     )
-    reason_code = agent._last_exec_result.reason_code if agent._last_exec_result else "unknown"
     if (
         agentic_wrapper_mode
         and login_gate_visible
         and decision.action == ActionType.CLICK
-        and reason_code in {"not_found", "not_actionable", "action_timeout", "no_state_change"}
+        and outcome_reason_code in {"not_found", "not_actionable", "action_timeout", "no_state_change"}
     ):
         agent._action_feedback.append(
             "로그인/인증 surface가 열려 있어 배경 CTA가 차단됐습니다. "
@@ -230,17 +278,43 @@ def handle_post_action_runtime(
         )
         if len(agent._action_feedback) > 10:
             agent._action_feedback = agent._action_feedback[-10:]
-    if bool(success and changed):
+    if isinstance(state_change, dict) and bool(state_change.get("commit_verification_failed")):
+        verification = state_change.get("commit_verification") if isinstance(state_change.get("commit_verification"), dict) else {}
+        expected = str(verification.get("expected_range") or "").strip()
+        observed = verification.get("observed_ranges")
+        observed_text = ", ".join(str(item) for item in observed[:3]) if isinstance(observed, list) else ""
+        detail = f"예상 {expected}" if expected else "예상 선택값"
+        if observed_text:
+            detail += f", 현재 표시 {observed_text}"
+        agent._action_feedback.append(
+            f"커밋 검증 실패: 적용/확인 후 지속 화면에 {detail}가 반영되지 않았습니다. "
+            "다음 단계로 넘어가지 말고 현재 표시값을 기준으로 다시 선택/적용하세요."
+        )
+        if len(agent._action_feedback) > 10:
+            agent._action_feedback = agent._action_feedback[-10:]
+    if bool(success and (changed or observation_deferred)):
         agent._overlay_intercept_pending = False
         force_resnapshot = getattr(agent, "_force_next_dom_resnapshot", None)
         if callable(force_resnapshot):
             try:
-                force_resnapshot(reason="post_action_changed")
+                force_resnapshot(reason="post_action_changed" if changed else "post_action_observation_deferred")
             except Exception:
                 pass
-    elif reason_code in {"not_actionable", "no_state_change"} and agent._error_indicates_overlay_intercept(error):
+    elif reason_code == "pointer_intercepted" or (
+        reason_code in {"not_actionable", "no_state_change"} and agent._error_indicates_overlay_intercept(error)
+    ):
         agent._overlay_intercept_pending = True
         agent._record_reason_code("overlay_intercept_detected")
+        pointer_interceptor = state_change.get("pointer_interceptor") if isinstance(state_change, dict) else None
+        blocker = ""
+        if isinstance(pointer_interceptor, dict):
+            blocker = str(pointer_interceptor.get("description") or "").strip()
+        if blocker:
+            agent._action_feedback.append(
+                f"클릭 지점이 {blocker} 오버레이에 가려졌습니다. 같은 ref를 반복하지 말고 전면 오버레이를 먼저 닫거나 우회하세요."
+            )
+            if len(agent._action_feedback) > 10:
+                agent._action_feedback = agent._action_feedback[-10:]
     if (
         reason_code in {"not_found", "ref_stale", "missing_element_id"}
         and _has_zero_result_surface(agent, post_dom)
@@ -253,14 +327,14 @@ def handle_post_action_runtime(
     ref_used = agent._last_exec_result.ref_id_used if agent._last_exec_result else ""
     agent._track_ref_outcome(
         ref_id=ref_used,
-        reason_code=reason_code,
+        reason_code=outcome_reason_code,
         success=success,
         changed=changed,
     )
     if (
         login_gate_visible
         and decision.action == ActionType.CLICK
-        and reason_code in {"no_state_change", "not_actionable"}
+        and outcome_reason_code in {"no_state_change", "not_actionable"}
         and agent._has_duplicate_account_signal(state_change=state_change, dom_elements=post_dom)
     ):
         new_username = agent._rotate_signup_identity(goal)

@@ -47,6 +47,9 @@ from gaia.src.phase4.mcp_ref.state_probe import (
 from gaia.src.phase4.mcp_ref.verify_fallbacks import (
     run_verify_fallback_chain,
 )
+from gaia.src.phase4.mcp_ref.actionability_errors import (
+    extract_pointer_interceptor as _extract_pointer_interceptor,
+)
 from gaia.src.phase4.mcp_server.error_converter import to_ai_friendly_error
 
 
@@ -697,11 +700,34 @@ async def execute_ref_action_with_snapshot_impl(
                 )
             interaction_success = True
         except Exception as action_exc:
+            raw_action_error = str(action_exc)
             friendly_msg = to_ai_friendly_error(action_exc, ref_id=ref_id)
             retry_path.append(f"action_error:{friendly_msg}")
             fatal_driver_disconnect = _is_driver_disconnect_error(action_exc) or _is_driver_disconnect_error(friendly_msg)
             fatal_timeout_abort = _is_fatal_timeout_abort(action_exc) or _is_fatal_timeout_abort(friendly_msg)
             visibility_timeout_abort = _is_visibility_timeout_abort(action_exc) or _is_visibility_timeout_abort(friendly_msg)
+            pointer_interceptor = _extract_pointer_interceptor(raw_action_error)
+            if pointer_interceptor:
+                reason_code = "pointer_intercepted"
+                state_change = dict(state_change)
+                state_change["pointer_interceptor"] = pointer_interceptor
+                attempt_logs.append(
+                    {
+                        "attempt": attempt_idx,
+                        "mode": mode,
+                        "selector": resolved_selector,
+                        "frame_index": frame_index,
+                        "reason_code": reason_code,
+                        "error": friendly_msg,
+                        "raw_error": raw_action_error,
+                        "pointer_interceptor": pointer_interceptor,
+                    }
+                )
+                print(
+                    f"[execute_ref_action] step={attempt_idx} mode={mode} "
+                    f"reason={reason_code} blocker={pointer_interceptor.get('description', '')}"
+                )
+                break
             if visibility_timeout_abort:
                 reason_code = "not_found"
                 attempt_logs.append(

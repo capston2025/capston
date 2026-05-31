@@ -46,6 +46,7 @@ class _FakeWindow(QObject):
     benchmarkSaveRequested = Signal(str, str)
     benchmarkRunRequested = Signal(str, str)
     benchmarkViewRequested = Signal(str, str)
+    benchmarkBattleCatalogRequested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -297,12 +298,21 @@ def test_controller_passes_push_metrics_to_benchmark_worker(tmp_path: Path) -> N
     controller._benchmark_registry = json.loads(registry_path.read_text(encoding="utf-8"))
     captured: dict[str, object] = {}
 
-    def fake_start_benchmark_worker(preset, target_url, *, suite_payload=None, run_tag="full_suite", push_metrics=False):
+    def fake_start_benchmark_worker(
+        preset,
+        target_url,
+        *,
+        suite_payload=None,
+        run_tag="full_suite",
+        push_metrics=False,
+        run_options=None,
+    ):
         captured["preset"] = preset
         captured["target_url"] = target_url
         captured["suite_payload"] = suite_payload
         captured["run_tag"] = run_tag
         captured["push_metrics"] = push_metrics
+        captured["run_options"] = run_options
 
     controller._start_benchmark_worker = fake_start_benchmark_worker
 
@@ -314,6 +324,200 @@ def test_controller_passes_push_metrics_to_benchmark_worker(tmp_path: Path) -> N
 
     assert captured["push_metrics"] is True
     assert captured["run_tag"] == "full_suite"
+
+
+def test_benchmark_manager_dialog_battle_mode_uses_manifest_shortlist(tmp_path: Path) -> None:
+    _app()
+    scenario_dir = tmp_path / "gaia/tests/scenarios"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    save_suite_payload(
+        scenario_dir / "custom_story_docs_suite.json",
+        {
+            **create_custom_suite_payload(
+                site_key="story_docs",
+                label="Storybook Docs",
+                default_url="https://storybook.js.org/",
+            ),
+            "scenarios": [
+                {"id": "STORY_001_HOME", "url": "https://storybook.js.org/", "goal": "홈 확인"},
+                {"id": "STORY_002_DOCS", "url": "https://storybook.js.org/docs", "goal": "문서 확인"},
+            ],
+        },
+    )
+    save_suite_payload(
+        scenario_dir / "custom_lms_suite.json",
+        {
+            **create_custom_suite_payload(
+                site_key="inu_lms_hvh",
+                label="인천대학교 LMS",
+                default_url="https://cyber.inu.ac.kr/",
+            ),
+            "scenarios": [{"id": "CYBER_001_LSM_LOGIN_AND_CHAT", "goal": "LMS 확인"}],
+        },
+    )
+    (scenario_dir / "gaia_vs_human_manifest.json").write_text(
+        json.dumps(
+            {
+                "sites": [
+                    {
+                        "site_key": "story_docs",
+                        "label": "Storybook Docs",
+                        "default_url": "https://storybook.js.org/",
+                        "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+                        "host_aliases": ["storybook.js.org"],
+                        "allowed_scenarios": ["STORY_002_DOCS"],
+                    },
+                    {
+                        "site_key": "inu_lms_hvh",
+                        "label": "인천대학교 LMS",
+                        "default_url": "https://cyber.inu.ac.kr/",
+                        "suite_path": "gaia/tests/scenarios/custom_lms_suite.json",
+                        "host_aliases": ["cyber.inu.ac.kr"],
+                        "allowed_scenarios": ["CYBER_001_LSM_LOGIN_AND_CHAT"],
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    registry_path = tmp_path / "benchmark_registry.json"
+    save_benchmark_registry({"sites": {}, "custom_sites": {}}, registry_path)
+
+    dialog = BenchmarkManagerDialog(
+        workspace_root=tmp_path,
+        registry_path=registry_path,
+    )
+
+    dialog._battle_mode_checkbox.setChecked(True)
+
+    assert [str(item.get("key") or "") for item in dialog._catalog] == ["story_docs"]
+    assert dialog._scenario_list.count() == 1
+    assert dialog._current_scenario_id() == "STORY_002_DOCS"
+    assert dialog._add_site_button.isEnabled() is False
+    assert dialog._add_scenario_button.isEnabled() is False
+    assert dialog.benchmark_run_options()["battle_mode"] is True
+
+
+def test_controller_battle_mode_filters_suite_and_forwards_options(tmp_path: Path, monkeypatch) -> None:
+    _app()
+    window = _FakeWindow()
+    controller = AppController(window)
+    scenario_dir = tmp_path / "gaia/tests/scenarios"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    save_suite_payload(
+        scenario_dir / "custom_story_docs_suite.json",
+        {
+            **create_custom_suite_payload(
+                site_key="story_docs",
+                label="Storybook Docs",
+                default_url="https://storybook.js.org/",
+            ),
+            "scenarios": [
+                {"id": "STORY_001_HOME", "url": "https://storybook.js.org/", "goal": "홈 확인"},
+                {"id": "STORY_002_DOCS", "url": "https://storybook.js.org/docs", "goal": "문서 확인"},
+            ],
+        },
+    )
+    (scenario_dir / "gaia_vs_human_manifest.json").write_text(
+        json.dumps(
+            {
+                "sites": [
+                    {
+                        "site_key": "story_docs",
+                        "label": "Storybook Docs",
+                        "default_url": "https://storybook.js.org/",
+                        "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+                        "host_aliases": ["storybook.js.org"],
+                        "allowed_scenarios": ["STORY_002_DOCS"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    controller._workspace_root = lambda: tmp_path
+    controller._benchmark_registry = {"sites": {}, "custom_sites": {}}
+    monkeypatch.setattr(
+        "gaia.src.gui.controller.save_benchmark_registry",
+        lambda _payload: tmp_path / "benchmark_registry.json",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_start_benchmark_worker(
+        preset,
+        target_url,
+        *,
+        suite_payload=None,
+        run_tag="full_suite",
+        push_metrics=False,
+        run_options=None,
+    ):
+        captured["preset"] = preset
+        captured["target_url"] = target_url
+        captured["suite_payload"] = suite_payload
+        captured["run_tag"] = run_tag
+        captured["push_metrics"] = push_metrics
+        captured["run_options"] = run_options
+
+    controller._start_benchmark_worker = fake_start_benchmark_worker
+
+    controller._run_benchmark_request(
+        site_key="story_docs",
+        url="https://storybook.js.org/",
+        push_metrics=True,
+        run_options={"battle_mode": True, "fast_mode": True},
+    )
+
+    assert captured["target_url"] == "https://storybook.js.org/"
+    assert captured["run_options"] == {"battle_mode": True, "fast_mode": True}
+    assert [str(item.get("key") or "") for item in window.catalog] == ["story_docs"]
+    assert window.catalog[0]["allowed_scenarios"] == ["STORY_002_DOCS"]
+    suite_payload = captured["suite_payload"]
+    assert isinstance(suite_payload, dict)
+    assert [row["id"] for row in suite_payload["scenarios"]] == ["STORY_002_DOCS"]
+
+
+def test_controller_battle_catalog_signal_uses_human_vs_gaia_shortlist(tmp_path: Path) -> None:
+    _app()
+    window = _FakeWindow()
+    controller = AppController(window)
+    scenario_dir = tmp_path / "gaia/tests/scenarios"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    (scenario_dir / "gaia_vs_human_manifest.json").write_text(
+        json.dumps(
+            {
+                "sites": [
+                    {
+                        "site_key": "story_docs",
+                        "label": "Storybook Docs",
+                        "default_url": "https://storybook.js.org/",
+                        "suite_path": "gaia/tests/scenarios/custom_story_docs_suite.json",
+                        "host_aliases": ["storybook.js.org"],
+                        "allowed_scenarios": ["STORY_002_DOCS"],
+                    },
+                    {
+                        "site_key": "inu_lms_hvh",
+                        "label": "인천대학교 LMS",
+                        "default_url": "https://cyber.inu.ac.kr/",
+                        "suite_path": "gaia/tests/scenarios/custom_lms_suite.json",
+                        "host_aliases": ["cyber.inu.ac.kr"],
+                        "allowed_scenarios": ["CYBER_001_LSM_LOGIN_AND_CHAT"],
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    controller._workspace_root = lambda: tmp_path
+    controller._benchmark_registry = {"sites": {}, "custom_sites": {}}
+
+    window.benchmarkBattleCatalogRequested.emit()
+
+    assert [str(item.get("key") or "") for item in window.catalog] == ["story_docs"]
+    assert window.catalog[0]["allowed_scenarios"] == ["STORY_002_DOCS"]
 
 
 def test_benchmark_worker_supports_in_memory_suite_payload(tmp_path: Path, monkeypatch) -> None:
@@ -436,6 +640,154 @@ def test_benchmark_worker_appends_push_metrics_flag(tmp_path: Path, monkeypatch)
     assert "--push-metrics" in captured_cmd
 
 
+def test_benchmark_worker_appends_battle_and_fast_options(tmp_path: Path, monkeypatch) -> None:
+    _app()
+    captured_cmd: list[str] = []
+    captured_env: dict[str, str] = {}
+    captured_session_body: dict[str, object] = {}
+
+    class _FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        del timeout
+        captured_session_body.update(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse()
+
+    class _FakeProcess:
+        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None, **kwargs):
+            del cwd, stdout, stderr, text, bufsize, kwargs
+            captured_cmd[:] = list(cmd)
+            captured_env.update(dict(env or {}))
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1, "FAIL": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "STORY_001_HOME", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr("gaia.src.gui.goal_worker.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr(subprocess, "Popen", _FakeProcess)
+
+    worker = BenchmarkWorker(
+        site_key="story_docs",
+        site_label="Storybook Docs",
+        suite_path="gaia/tests/scenarios/custom_story_docs_suite.json",
+        suite_payload={
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "grader_configs": {},
+            "scenarios": [
+                {
+                    "id": "STORY_001_HOME",
+                    "name": "스토리북 홈",
+                    "url": "https://storybook.js.org/",
+                    "goal": "홈 확인",
+                }
+            ],
+        },
+        target_url="https://storybook.js.org/",
+        run_tag="STORY_001_HOME",
+        workspace_root=tmp_path,
+        run_options={"battle_mode": True, "fast_mode": True},
+    )
+
+    worker.start()
+
+    assert "--battle-board" in captured_cmd
+    assert captured_cmd[captured_cmd.index("--battle-upload-url") + 1] == "https://gaia-battle-web.vercel.app/api/records"
+    assert captured_cmd[captured_cmd.index("--battle-session-id") + 1] == "battle-live"
+    assert captured_env["GAIA_CODEX_APP_SERVER_ARGS"] == '-c service_tier="priority"'
+    assert captured_env["GAIA_BATTLE_SCENARIO_LABEL"] == "스토리북 홈"
+    assert captured_session_body["sessionId"] == "battle-live"
+    assert captured_session_body["scenarioLabel"] == "스토리북 홈"
+
+
+def test_benchmark_worker_disables_inherited_fast_mode_when_toggle_off(tmp_path: Path, monkeypatch) -> None:
+    _app()
+    captured_env: dict[str, str] = {}
+
+    class _FakeProcess:
+        def __init__(self, cmd, cwd=None, stdout=None, stderr=None, text=None, bufsize=None, env=None, **kwargs):
+            del cwd, stdout, stderr, text, bufsize, kwargs
+            captured_env.update(dict(env or {}))
+            output_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "scenario_count": 1,
+                        "status_counts": {"SUCCESS": 1, "FAIL": 0},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "results.json").write_text(
+                json.dumps([{"scenario_id": "STORY_001_HOME", "status": "SUCCESS"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+            self.stdout = iter([])
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setenv("GAIA_CODEX_APP_SERVER_ARGS", '-c service_tier="priority"')
+    monkeypatch.setattr(subprocess, "Popen", _FakeProcess)
+
+    worker = BenchmarkWorker(
+        site_key="story_docs",
+        site_label="Storybook Docs",
+        suite_path="gaia/tests/scenarios/custom_story_docs_suite.json",
+        suite_payload={
+            "suite_id": "story_docs_public_v1",
+            "site": {"name": "Storybook Docs", "base_url": "https://storybook.js.org/"},
+            "grader_configs": {},
+            "scenarios": [{"id": "STORY_001_HOME", "url": "https://storybook.js.org/", "goal": "홈 확인"}],
+        },
+        target_url="https://storybook.js.org/",
+        run_tag="STORY_001_HOME",
+        workspace_root=tmp_path,
+        run_options={"fast_mode": False},
+    )
+
+    worker.start()
+
+    assert "GAIA_CODEX_APP_SERVER_ARGS" not in captured_env
+
+
 def test_main_window_benchmark_mode_emits_manager_open_without_auto_stage_jump(monkeypatch) -> None:
     _app()
     monkeypatch.setattr(MainWindow, "_setup_screencast", lambda self: None)
@@ -449,6 +801,46 @@ def test_main_window_benchmark_mode_emits_manager_open_without_auto_stage_jump(m
     assert window.get_selected_run_mode() == "benchmark"
     assert window._standard_action_container.isVisible() is False
     assert emitted == [("", "")]
+
+
+def test_main_window_battle_demo_mode_enables_web_and_fast_path(monkeypatch) -> None:
+    _app()
+    monkeypatch.setattr(MainWindow, "_setup_screencast", lambda self: None)
+
+    window = MainWindow()
+    emitted: list[bool] = []
+    window.benchmarkBattleCatalogRequested.connect(lambda: emitted.append(True))
+
+    window._battle_demo_mode_button.click()
+
+    assert window.get_selected_run_mode() == "battle_demo"
+    assert window._workflow_stage == "site_selection"
+    assert window._site_battle_demo_button.text() == "Human vs GAIA 시연 모드"
+    assert window._site_battle_demo_button.isChecked() is True
+    assert window._standard_action_container.isVisible() is False
+    assert window.get_benchmark_run_options()["battle_mode"] is True
+    assert window.get_benchmark_run_options()["fast_mode"] is True
+    assert window._benchmark_battle_checkbox.isChecked() is True
+    assert window._benchmark_fast_checkbox.isChecked() is True
+    assert emitted == [True]
+
+
+def test_main_window_site_selection_battle_demo_button_is_direct_entry(monkeypatch) -> None:
+    _app()
+    monkeypatch.setattr(MainWindow, "_setup_screencast", lambda self: None)
+
+    window = MainWindow()
+    emitted: list[bool] = []
+    window.benchmarkBattleCatalogRequested.connect(lambda: emitted.append(True))
+
+    window.show_site_selection_stage()
+    window._site_battle_demo_button.click()
+
+    assert window.get_selected_run_mode() == "battle_demo"
+    assert window.get_benchmark_run_options()["battle_mode"] is True
+    assert window.get_benchmark_run_options()["fast_mode"] is True
+    assert window._site_battle_demo_button.isChecked() is True
+    assert emitted == [True]
 
 
 def test_main_window_benchmark_stage_summary_tracks_selected_catalog(monkeypatch) -> None:

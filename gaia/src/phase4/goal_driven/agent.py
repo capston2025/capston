@@ -37,6 +37,7 @@ from .goal_policy_helpers import (
     run_goal_policy_closer as run_goal_policy_closer_impl,
 )
 from .goal_completion_helpers import (
+    detect_service_unavailable_state as detect_service_unavailable_state_impl,
     record_llm_requested_text_evidence as record_llm_requested_text_evidence_impl,
     evaluate_destination_region_completion as evaluate_destination_region_completion_impl,
     evaluate_goal_target_completion as evaluate_goal_target_completion_impl,
@@ -335,6 +336,7 @@ class GoalDrivenAgent:
         self._success_click_intent_streak: int = 0
         self._intent_stats: Dict[str, Dict[str, int]] = {}
         self._context_shift_round: int = 0
+        self._dead_navigation_recovery_count: int = 0
         self._last_context_shift_intent: str = ""
         self._runtime_phase: str = "COLLECT"
         self._progress_counter: int = 0
@@ -1211,6 +1213,104 @@ class GoalDrivenAgent:
             return True
         return False
 
+    @classmethod
+    def _is_recoverable_dead_navigation_state(cls, service_state: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(service_state, dict):
+            return False
+        blob = " ".join(
+            cls._normalize_text(str(service_state.get(key) or ""))
+            for key in ("matched", "reason")
+        )
+        return any(
+            token in blob
+            for token in (
+                "page not found",
+                "404 not found",
+                "페이지를 찾을 수 없습니다",
+            )
+        )
+
+    def _maybe_recover_dead_navigation(
+        self,
+        *,
+        goal: TestGoal,
+        service_state: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not self._is_recoverable_dead_navigation_state(service_state):
+            return False
+        if int(getattr(self, "_dead_navigation_recovery_count", 0) or 0) >= 2:
+            return False
+
+        last_decision = getattr(self, "_last_action_decision", None)
+        last_action = getattr(last_decision, "action", None)
+        if last_action not in {ActionType.CLICK, ActionType.NAVIGATE, ActionType.PRESS}:
+            return False
+
+        recovery_url = str(getattr(goal, "start_url", "") or "").strip()
+        active_url = str(getattr(self, "_active_url", "") or "").strip()
+        if not recovery_url or active_url == recovery_url:
+            return False
+
+        selected = getattr(self, "_last_action_selected_element", None)
+        target_parts = []
+        if selected is not None:
+            for field in ("text", "aria_label", "title", "href", "context_text"):
+                value = str(getattr(selected, field, "") or "").strip()
+                if value:
+                    target_parts.append(value)
+        if not target_parts and active_url:
+            target_parts.append(active_url)
+        target_summary = " | ".join(target_parts)[:240]
+
+        self._dead_navigation_recovery_count = int(getattr(self, "_dead_navigation_recovery_count", 0) or 0) + 1
+        self._record_reason_code("dead_navigation_recovered")
+        feedback = (
+            "방금 선택한 링크/요소가 page-not-found 화면으로 이동했습니다. "
+            "같은 링크/URL을 반복하지 말고 시작 페이지에 남아있는 검색, 필터, 지역 선택, 탭 같은 대체 UI로 진행하세요."
+        )
+        target_blob = self._normalize_text(target_summary)
+        last_action_value = str(getattr(last_action, "value", last_action) or "").strip().lower()
+        if last_action_value == "press" or any(token in target_blob for token in ("검색", "search", "입력")):
+            feedback = (
+                f"{feedback} 이 실행에서 검색 입력/검색 버튼/Enter submit 경로도 dead navigation입니다. "
+                "검색 submit을 반복하지 말고 현재 페이지의 select/option/link 기반 지역 선택 UI로 커밋하세요."
+            )
+        if target_summary:
+            feedback = f"{feedback} dead_target={target_summary}"
+        self._action_feedback.append(feedback)
+        if len(self._action_feedback) > 10:
+            self._action_feedback = self._action_feedback[-10:]
+        self._log(
+            "↩️ page-not-found dead navigation 감지: "
+            f"직전 페이지로 복귀 후 대체 UI를 선택합니다. target={target_summary or active_url or 'unknown'}"
+        )
+        went_back = False
+        try:
+            self._last_exec_result = self._execute_action(
+                "evaluate",
+                value=(
+                    "() => {"
+                    " const canGoBack = window.history.length > 1;"
+                    " if (canGoBack) window.history.back();"
+                    " return { wentBack: canGoBack, href: window.location.href };"
+                    "}"
+                ),
+            )
+            state_change = getattr(self._last_exec_result, "state_change", None)
+            eval_result = state_change.get("evaluate_result") if isinstance(state_change, dict) else None
+            went_back = bool(isinstance(eval_result, dict) and eval_result.get("wentBack"))
+        except Exception as exc:
+            self._log(f"⚠️ dead navigation history 복구 실패: {exc}")
+        if not went_back:
+            try:
+                self._last_exec_result = self._execute_action("goto", url=recovery_url)
+            except Exception as exc:
+                self._log(f"⚠️ dead navigation 시작 URL 복구 실패: {exc}")
+                return False
+        self._last_action_selected_element = None
+        time.sleep(1.0)
+        return True
+
     def _pick_context_shift_element(
         self,
         dom_elements: List[DOMElement],
@@ -1422,6 +1522,7 @@ class GoalDrivenAgent:
         last_metric_value: Optional[float] = None
         collect_metric_stall_count = 0
         context_shift_cooldown = 0
+        service_unavailable_streak = 0
         thin_wrapper_mode = thin_wrapper_enabled(self)
 
         while orchestrator.can_continue():
@@ -1466,6 +1567,43 @@ class GoalDrivenAgent:
                 self._log("⚠️ DOM 요소를 찾을 수 없음, 잠시 대기 후 재시도")
                 dom_elements = self._recover_dom_after_empty(goal)
                 if not dom_elements:
+                    try:
+                        self._last_exec_result = self._execute_action("inspect")
+                    except Exception:
+                        pass
+                    service_unavailable_state = detect_service_unavailable_state_impl(self, [])
+                    if service_unavailable_state:
+                        matched_signal = str(service_unavailable_state.get("matched") or "unknown").strip()
+                        reason = str(
+                            service_unavailable_state.get("reason") or "외부 서비스 오류 화면이 표시되었습니다."
+                        ).strip()
+                        if self._maybe_recover_dead_navigation(goal=goal, service_state=service_unavailable_state):
+                            service_unavailable_streak = 0
+                            continue
+                        self._record_reason_code("external_service_unavailable")
+                        self._log(f"🚧 빈 DOM 상태에서 외부 서비스 오류/차단 신호 감지 (signal={matched_signal})")
+                        return self._build_failure_result(
+                            goal=goal,
+                            steps=steps,
+                            step_count=step_count,
+                            start_time=start_time,
+                            reason=f"external_service_unavailable: {reason}",
+                        )
+                    active_url = str(getattr(self, "_active_url", "") or getattr(goal, "start_url", "") or "").strip()
+                    no_dom_count = int(getattr(orchestrator, "no_dom_count", 0) or 0)
+                    no_dom_limit = int(getattr(orchestrator, "_no_dom_limit", 3) or 3)
+                    if active_url.startswith(("http://", "https://")) and no_dom_count >= max(0, no_dom_limit - 1):
+                        self._record_reason_code("external_page_unreadable")
+                        return self._build_failure_result(
+                            goal=goal,
+                            steps=steps,
+                            step_count=step_count,
+                            start_time=start_time,
+                            reason=(
+                                "external_service_unavailable: 외부 페이지가 렌더링됐지만 "
+                                "접근 가능한 DOM을 제공하지 않아 anti-bot/challenge 또는 외부 로딩 차단으로 분리했습니다."
+                            ),
+                        )
                     orchestrator.observe_no_dom()
                     if orchestrator.stop_reason:
                         return self._build_failure_result(
@@ -1476,6 +1614,32 @@ class GoalDrivenAgent:
                             reason=orchestrator.stop_reason,
                         )
                     continue
+
+            service_unavailable_state = detect_service_unavailable_state_impl(self, dom_elements)
+            if service_unavailable_state:
+                matched_signal = str(service_unavailable_state.get("matched") or "unknown").strip()
+                reason = str(service_unavailable_state.get("reason") or "외부 서비스 오류 화면이 표시되었습니다.").strip()
+                if self._maybe_recover_dead_navigation(goal=goal, service_state=service_unavailable_state):
+                    service_unavailable_streak = 0
+                    continue
+                service_unavailable_streak += 1
+                is_hard_block = bool(service_unavailable_state.get("hard"))
+                self._record_reason_code("external_service_unavailable")
+                self._log(
+                    "🚧 외부 서비스 오류/차단 신호 감지"
+                    f" ({service_unavailable_streak}회, signal={matched_signal})"
+                )
+                if is_hard_block or service_unavailable_streak >= 2:
+                    return self._build_failure_result(
+                        goal=goal,
+                        steps=steps,
+                        step_count=step_count,
+                        start_time=start_time,
+                        reason=f"external_service_unavailable: {reason}",
+                    )
+                time.sleep(1.0)
+                continue
+            service_unavailable_streak = 0
 
             self._goal_metric_value = self._estimate_goal_metric_from_dom(dom_elements)
             collect_unmet = self._is_collect_constraint_unmet()
@@ -1957,7 +2121,10 @@ class GoalDrivenAgent:
             else:
                 self._consecutive_wait_count = 0
 
-            if decision.action == ActionType.WAIT and self._wait_completion_ready(dom_elements):
+            if (
+                decision.action == ActionType.INSPECT
+                or (decision.action == ActionType.WAIT and self._wait_completion_ready(dom_elements))
+            ):
                 reasoning_only_wait_reason = self._evaluate_reasoning_only_wait_completion(
                     goal=goal,
                     decision=decision,

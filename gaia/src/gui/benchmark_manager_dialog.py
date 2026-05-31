@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from gaia.src.benchmark_manager import (
     append_scenario_to_suite,
     build_benchmark_site_catalog,
+    build_human_vs_gaia_site_catalog,
     build_scenario_payload,
     build_single_scenario_suite_payload,
     build_url_history,
@@ -39,6 +40,7 @@ from gaia.src.benchmark_manager import (
     delete_scenario_from_suite,
     load_benchmark_registry,
     load_suite_payload,
+    filter_suite_payload_for_scenario_ids,
     resolve_benchmark_site,
     save_benchmark_registry,
     save_suite_payload,
@@ -567,6 +569,8 @@ class BenchmarkManagerDialog(QDialog):
         self._selected_url = str(selected_url or "").strip()
         self._registry: dict[str, Any] = {}
         self._catalog: list[dict[str, Any]] = []
+        self._preset_map: dict[str, Any] = {}
+        self._scenario_filter_map: dict[str, set[str]] = {}
         self._suite_payload: dict[str, Any] = {"scenarios": []}
 
         self.setWindowTitle("벤치 관리")
@@ -716,6 +720,19 @@ class BenchmarkManagerDialog(QDialog):
         )
         scenario_layout.addWidget(self._push_metrics_checkbox)
 
+        self._battle_mode_checkbox = QCheckBox("Human vs GAIA 웹 연동 (battle-live)", self)
+        self._battle_mode_checkbox.setToolTip(
+            "대결 시연용 고정 Vercel 보드(battle-live)에 GAIA 결과와 Human 타이머 시작 신호를 업로드합니다."
+        )
+        self._battle_mode_checkbox.toggled.connect(lambda _checked: self._reload_catalog(selected_site_key=self._current_site_key()))
+        scenario_layout.addWidget(self._battle_mode_checkbox)
+
+        self._fast_mode_checkbox = QCheckBox("Fast mode (시연용 priority)", self)
+        self._fast_mode_checkbox.setToolTip(
+            "켜면 Codex app-server에 service_tier=priority를 전달합니다. 토큰 소모가 커서 시연 때만 켜세요."
+        )
+        scenario_layout.addWidget(self._fast_mode_checkbox)
+
         self._scenario_empty_panel = QFrame(scenario_card)
         self._scenario_empty_panel.setObjectName("ScenarioEmptyPanel")
         empty_layout = QHBoxLayout(self._scenario_empty_panel)
@@ -788,8 +805,20 @@ class BenchmarkManagerDialog(QDialog):
         selected_scenario_id: str | None = None,
     ) -> None:
         self._load_registry()
-        catalog, _ = build_benchmark_site_catalog(self._registry)
+        if self._battle_mode_enabled():
+            catalog, preset_map, scenario_filter_map = build_human_vs_gaia_site_catalog(
+                self._registry,
+                workspace_root=self._workspace_root,
+            )
+            if not catalog:
+                catalog, preset_map = build_benchmark_site_catalog(self._registry)
+                scenario_filter_map = {}
+        else:
+            catalog, preset_map = build_benchmark_site_catalog(self._registry)
+            scenario_filter_map = {}
         self._catalog = catalog
+        self._preset_map = preset_map
+        self._scenario_filter_map = scenario_filter_map
         if hasattr(self, "_site_count_label"):
             self._site_count_label.setText(f"{len(self._catalog)}")
         effective_site_key = str(selected_site_key or self._current_site_key() or "").strip()
@@ -811,6 +840,22 @@ class BenchmarkManagerDialog(QDialog):
         self._site_list.blockSignals(False)
         self._refresh_current_site(selected_url=selected_url, selected_scenario_id=selected_scenario_id)
         self._refresh_site_item_selection()
+
+    def _battle_mode_enabled(self) -> bool:
+        checkbox = getattr(self, "_battle_mode_checkbox", None)
+        return bool(checkbox is not None and checkbox.isChecked())
+
+    def benchmark_run_options(self) -> dict[str, Any]:
+        return {
+            "battle_mode": self._battle_mode_enabled(),
+            "fast_mode": self._fast_mode_enabled(),
+            "battle_site_url": "https://gaia-battle-web.vercel.app",
+            "battle_session_id": "battle-live",
+        }
+
+    def _fast_mode_enabled(self) -> bool:
+        checkbox = getattr(self, "_fast_mode_checkbox", None)
+        return bool(checkbox is not None and checkbox.isChecked())
 
     def _current_site_key(self) -> str:
         item = self._site_list.currentItem()
@@ -840,7 +885,7 @@ class BenchmarkManagerDialog(QDialog):
         label_widget.setObjectName("SiteItemName")
         layout.addWidget(label_widget)
 
-        suffix = "직접 추가" if bool(site.get("is_custom")) else "기본 사이트"
+        suffix = "Human vs GAIA" if bool(site.get("battle_mode")) else ("직접 추가" if bool(site.get("is_custom")) else "기본 사이트")
         meta_widget = QLabel(suffix, frame)
         meta_widget.setObjectName("SiteItemMeta")
         layout.addWidget(meta_widget)
@@ -907,13 +952,20 @@ class BenchmarkManagerDialog(QDialog):
         suite_path = self._current_suite_path()
         if suite_path and suite_path.exists():
             self._suite_payload = load_suite_payload(self._workspace_root, str(site.get("suite_path") or ""))
+            allowed = self._scenario_filter_map.get(str(site.get("key") or "").strip())
+            if allowed:
+                self._suite_payload = filter_suite_payload_for_scenario_ids(self._suite_payload, allowed)
         else:
             self._suite_payload = {"scenarios": []}
         self._refresh_scenario_list(selected_scenario_id=selected_scenario_id)
 
-        is_custom = bool(site.get("is_custom"))
+        is_custom = bool(site.get("is_custom")) and not self._battle_mode_enabled()
         self._edit_site_button.setEnabled(is_custom)
         self._delete_site_button.setEnabled(is_custom)
+        self._add_site_button.setEnabled(not self._battle_mode_enabled())
+        self._add_scenario_button.setEnabled(not self._battle_mode_enabled())
+        self._edit_scenario_button.setEnabled(not self._battle_mode_enabled())
+        self._delete_scenario_button.setEnabled(not self._battle_mode_enabled())
         scenario_count = len([row for row in list(self._suite_payload.get("scenarios") or []) if isinstance(row, Mapping)])
         suite_text = str(site.get("suite_path") or "-")
         status_text = str(site.get("status_text") or "")
