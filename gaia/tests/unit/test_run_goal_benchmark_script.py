@@ -18,6 +18,8 @@ from scripts.run_goal_benchmark import (
     _build_battle_upload_payload,
     _compute_kpi_metrics,
     _compute_metrics,
+    _compute_trace_metrics,
+    _extract_trace_metrics,
     _infer_provider_from_model,
     _normalize_runtime_isolation,
     _normalize_qa_mode,
@@ -495,6 +497,40 @@ def test_blocked_captcha_is_excluded_from_primary_success_rate() -> None:
     assert kpis["primary_success_rate"] == 0.5
     assert kpis["counts"]["blocked"] == 1
     assert kpis["counts"]["primary_runs"] == 2
+
+
+def test_trace_metrics_count_wait_inspect_llm_latency_and_reason_codes() -> None:
+    row = {
+        "captured_log": "\n".join(
+            [
+                "LLM 결정: wait - 결과 반영을 확인합니다",
+                "🧪 llm trace: {'used_llm': True, 'llm_ms': 1200}",
+                "LLM 결정: inspect - 현재 화면을 확인합니다",
+                '🧪 llm trace: {"used_llm": true, "llm_ms": 800}',
+            ]
+        ),
+        "summary": {
+            "reason_code_summary": {
+                "no_state_change": 2,
+                "blocked_ref_no_progress": 1,
+                "goal_achievement_wait_rejected": 1,
+            }
+        },
+    }
+
+    metrics = _extract_trace_metrics(row)
+    aggregate = _compute_trace_metrics([row])
+
+    assert metrics["wait_decisions"] == 1
+    assert metrics["inspect_decisions"] == 1
+    assert metrics["llm_calls"] == 2
+    assert metrics["llm_ms_total"] == 2000
+    assert metrics["llm_ms_avg"] == 1000.0
+    assert metrics["no_state_change"] == 2
+    assert aggregate["wait_decisions_total"] == 1
+    assert aggregate["blocked_ref_no_progress_total"] == 1
+    assert aggregate["goal_achievement_wait_rejected_total"] == 1
+    assert aggregate["llm_ms_avg"] == 1000.0
 
 
 def test_external_service_unavailable_is_normalized_to_blocked_user_action() -> None:

@@ -1757,8 +1757,7 @@ def execute_decision(
                 )
                 return False, agent._last_exec_result.as_error_message()
         if (
-            not openclaw_agentic_mode
-            and decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.TYPE, ActionType.PRESS}
+            decision.action in {ActionType.CLICK, ActionType.FILL, ActionType.TYPE, ActionType.PRESS}
             and agent._is_ref_temporarily_blocked(ref_id)
         ):
             agent._last_exec_result = ActionExecResult(

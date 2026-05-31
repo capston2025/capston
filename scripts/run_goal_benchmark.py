@@ -7,6 +7,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -577,6 +578,72 @@ def _compute_metrics(rows: List[Dict[str, Any]], repeats: int) -> Dict[str, Any]
 
 def _summary_reason_code_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     return summary_reason_code_summary(row)
+
+
+_TRACE_LLM_MS_RE = re.compile(r"[\"']llm_ms[\"']\s*:\s*(\d+)")
+_TRACE_ACTION_RE = re.compile(r"LLM 결정:\s*([a-z_]+)\b", re.IGNORECASE)
+
+
+def _extract_trace_metrics(row: Dict[str, Any]) -> Dict[str, Any]:
+    log = str(row.get("captured_log") or "")
+    action_counts = Counter(action.lower() for action in _TRACE_ACTION_RE.findall(log))
+    llm_ms_values = [int(item) for item in _TRACE_LLM_MS_RE.findall(log)]
+    llm_trace_count = log.count("🧪 llm trace:")
+    rc_summary = _summary_reason_code_summary(row)
+
+    return {
+        "llm_decisions": int(sum(action_counts.values())),
+        "wait_decisions": int(action_counts.get("wait", 0)),
+        "inspect_decisions": int(action_counts.get("inspect", 0)),
+        "llm_calls": int(max(llm_trace_count, len(llm_ms_values))),
+        "llm_ms_count": int(len(llm_ms_values)),
+        "llm_ms_total": int(sum(llm_ms_values)),
+        "llm_ms_avg": round(sum(llm_ms_values) / len(llm_ms_values), 2) if llm_ms_values else 0.0,
+        "no_state_change": int(rc_summary.get("no_state_change") or 0),
+        "blocked_ref_no_progress": int(rc_summary.get("blocked_ref_no_progress") or 0),
+        "pointer_intercepted": int(rc_summary.get("pointer_intercepted") or 0),
+        "goal_achievement_wait_rejected": int(rc_summary.get("goal_achievement_wait_rejected") or 0),
+        "goal_achievement_verification_rejected": int(rc_summary.get("goal_achievement_verification_rejected") or 0),
+    }
+
+
+def _compute_trace_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    totals = Counter()
+    llm_ms_total = 0
+    llm_calls_with_ms = 0
+    for row in rows:
+        metrics = row.get("trace_metrics")
+        if not isinstance(metrics, dict):
+            metrics = _extract_trace_metrics(row)
+        for key in (
+            "llm_decisions",
+            "wait_decisions",
+            "inspect_decisions",
+            "llm_calls",
+            "no_state_change",
+            "blocked_ref_no_progress",
+            "pointer_intercepted",
+            "goal_achievement_wait_rejected",
+            "goal_achievement_verification_rejected",
+        ):
+            totals[key] += int(metrics.get(key) or 0)
+        llm_ms_total += int(metrics.get("llm_ms_total") or 0)
+        llm_calls_with_ms += int(metrics.get("llm_ms_count") or 0)
+
+    return {
+        "runs_total": len(rows),
+        "llm_decisions_total": int(totals["llm_decisions"]),
+        "wait_decisions_total": int(totals["wait_decisions"]),
+        "inspect_decisions_total": int(totals["inspect_decisions"]),
+        "llm_calls_total": int(totals["llm_calls"]),
+        "llm_ms_total": int(llm_ms_total),
+        "llm_ms_avg": round(llm_ms_total / llm_calls_with_ms, 2) if llm_calls_with_ms else 0.0,
+        "no_state_change_total": int(totals["no_state_change"]),
+        "blocked_ref_no_progress_total": int(totals["blocked_ref_no_progress"]),
+        "pointer_intercepted_total": int(totals["pointer_intercepted"]),
+        "goal_achievement_wait_rejected_total": int(totals["goal_achievement_wait_rejected"]),
+        "goal_achievement_verification_rejected_total": int(totals["goal_achievement_verification_rejected"]),
+    }
 
 
 def _is_blocked_user_action(row: Dict[str, Any]) -> bool:
@@ -1219,6 +1286,7 @@ def main() -> int:
             row["max_steps"] = scenario_max_steps or max_steps_override or None
             row["constraints"] = scenario.get("constraints") if isinstance(scenario.get("constraints"), dict) else {}
             row["expected_signals"] = scenario.get("expected_signals") if isinstance(scenario.get("expected_signals"), list) else []
+            row["trace_metrics"] = _extract_trace_metrics(row)
             rows.append(row)
             if battle_board_enabled:
                 partial_summary = {
@@ -1235,6 +1303,7 @@ def main() -> int:
                     "benchmark_mode": benchmark_mode,
                     "runtime_isolation": runtime_isolation,
                     "metrics": _compute_metrics(rows, repeats),
+                    "trace_metrics": _compute_trace_metrics(rows),
                     "status_counts": dict(Counter(str(r.get("status") or "UNKNOWN") for r in rows)),
                 }
                 battle_board_info = _try_write_battle_board(output_dir, summary=partial_summary, rows=rows)
@@ -1256,6 +1325,7 @@ def main() -> int:
 
     metrics = _compute_metrics(rows, repeats)
     kpi_metrics = _compute_kpi_metrics(rows, repeats)
+    trace_metrics = _compute_trace_metrics(rows)
     status_counts = Counter(str(r.get("status") or "UNKNOWN") for r in rows)
     blocked_rows = [r for r in rows if _is_blocked_user_action(r)]
     summary = {
@@ -1275,6 +1345,7 @@ def main() -> int:
         "max_steps_override": max_steps_override or None,
         "metrics": metrics,
         "kpi_metrics": kpi_metrics,
+        "trace_metrics": trace_metrics,
         "status_counts": dict(status_counts),
         "failures": [
             {
@@ -1329,6 +1400,11 @@ def main() -> int:
     md.write(f"- KPI progress_stop_failure_rate: {kpi_metrics['progress_stop_failure_rate']}\n")
     md.write(f"- KPI self_recovery_rate: {kpi_metrics['self_recovery_rate']}\n")
     md.write(f"- KPI intervention_rate: {kpi_metrics['intervention_rate']}\n")
+    md.write(f"- trace wait_decisions_total: {trace_metrics['wait_decisions_total']}\n")
+    md.write(f"- trace inspect_decisions_total: {trace_metrics['inspect_decisions_total']}\n")
+    md.write(f"- trace llm_ms_avg: {trace_metrics['llm_ms_avg']}\n")
+    md.write(f"- trace no_state_change_total: {trace_metrics['no_state_change_total']}\n")
+    md.write(f"- trace blocked_ref_no_progress_total: {trace_metrics['blocked_ref_no_progress_total']}\n")
     md.write(f"- status_counts: {dict(status_counts)}\n\n")
     if summary["failures"]:
         md.write("## Failures\n\n")

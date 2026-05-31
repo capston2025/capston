@@ -272,6 +272,16 @@ def _evaluate_multi_user_completion_evidence(
     return "multi-user blackboard와 현재 화면 증거가 성공 조건을 모두 포함해 목표를 완료로 판정했습니다."
 
 
+def _record_completion_gate_reason(agent, reason_code: str) -> None:
+    recorder = getattr(agent, "_record_reason_code", None)
+    if not callable(recorder):
+        return
+    try:
+        recorder(reason_code)
+    except Exception:
+        return
+
+
 def validate_goal_achievement_claim(
     agent,
     goal: TestGoal,
@@ -351,6 +361,23 @@ def validate_goal_achievement_claim(
         return False, constraint_reason
 
     if decision.action == ActionType.WAIT:
+        if missing and not wait_contract_override:
+            judge_reason = evaluate_goal_completion_judge(
+                agent,
+                goal=goal,
+                decision=decision,
+                dom_elements=dom_elements,
+            )
+            if judge_reason:
+                setattr(agent, "_last_goal_completion_source", "judge")
+                decision.goal_achievement_reason = judge_reason
+                return True, None
+            setattr(agent, "_last_goal_completion_source", "wait_completion_rejected_missing_signals")
+            _record_completion_gate_reason(agent, "goal_achievement_wait_rejected")
+            return (
+                False,
+                "goal contract signal 미충족: " + ", ".join(missing),
+            )
         setattr(agent, "_last_goal_completion_source", "llm_completion_claim")
         if not str(decision.goal_achievement_reason or "").strip():
             decision.goal_achievement_reason = (

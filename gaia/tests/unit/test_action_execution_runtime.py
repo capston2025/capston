@@ -198,6 +198,33 @@ def test_execute_decision_retries_stale_timeout_with_rebound_ref(monkeypatch) ->
     assert any("ref 재바인딩" in log for log in agent.logs)
 
 
+def test_execute_decision_blocks_temporarily_ineffective_ref_in_openclaw_mode() -> None:
+    agent = _FakeAgent()
+    agent._browser_backend_name = "openclaw"
+    agent._is_ref_temporarily_blocked = lambda ref_id: ref_id == "old-ref"  # type: ignore[method-assign]
+    dom_elements = [
+        DOMElement(
+            id=23,
+            tag="button",
+            text="바로 추가",
+            ref_id="old-ref",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+    decision = ActionDecision(
+        action=ActionType.CLICK,
+        element_id=23,
+        reasoning="같은 버튼을 다시 눌러본다.",
+    )
+
+    ok, err = runtime.execute_decision(agent, decision, dom_elements)
+
+    assert ok is False
+    assert "blocked_ref_no_progress" in str(err)
+    assert agent._last_exec_result.reason_code == "blocked_ref_no_progress"
+
+
 def test_execute_decision_retries_ref_stale_with_rebound_ref(monkeypatch) -> None:
     agent = _FakeAgent()
     dom_elements = [

@@ -32,6 +32,53 @@ def dom_progress_signature(dom_elements: List[DOMElement]) -> str:
     return f"{bucket}#" + "||".join(chunks)
 
 
+def append_run_state_ledger(
+    agent: Any,
+    *,
+    step_number: int,
+    decision: ActionDecision,
+    success: bool,
+    changed: bool,
+    reason_code: str,
+    state_change: Optional[Dict[str, Any]],
+) -> None:
+    ledger = getattr(agent, "_run_state_ledger", None)
+    if not isinstance(ledger, list):
+        ledger = []
+
+    value = str(getattr(decision, "value", "") or "").strip()
+    state_keys: list[str] = []
+    if isinstance(state_change, dict):
+        state_keys = sorted(str(key) for key, val in state_change.items() if bool(val))[:16]
+
+    entry: Dict[str, Any] = {
+        "step": int(step_number),
+        "action": str(getattr(getattr(decision, "action", ""), "value", "") or getattr(decision, "action", "")),
+        "element_id": getattr(decision, "element_id", None),
+        "value": value[:120],
+        "success": bool(success),
+        "changed": bool(changed),
+        "reason_code": str(reason_code or "unknown"),
+        "state_keys": state_keys,
+    }
+    completion_source = str(getattr(agent, "_last_goal_completion_source", "") or "").strip()
+    if completion_source:
+        entry["completion_source"] = completion_source
+    if isinstance(state_change, dict):
+        for key in (
+            "effective",
+            "url_changed",
+            "dom_changed",
+            "text_digest_changed",
+            "target_value_changed",
+            "new_page_detected",
+        ):
+            if key in state_change:
+                entry[key] = bool(state_change.get(key))
+    ledger.append(entry)
+    agent._run_state_ledger = ledger[-12:]
+
+
 def record_action_feedback(
     agent: Any,
     *,
@@ -46,6 +93,15 @@ def record_action_feedback(
 ) -> None:
     code = reason_code or (agent._last_exec_result.reason_code if agent._last_exec_result else "unknown")
     agent._record_reason_code(str(code or "unknown"))
+    append_run_state_ledger(
+        agent,
+        step_number=step_number,
+        decision=decision,
+        success=bool(success),
+        changed=bool(changed),
+        reason_code=str(code or "unknown"),
+        state_change=state_change,
+    )
     agent._update_intent_stats(
         intent_key=intent_key or "",
         success=bool(success),

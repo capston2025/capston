@@ -995,6 +995,45 @@ def test_recent_transition_completion_rejects_uncertain_wait_rationale() -> None
     assert reason is None
 
 
+def test_validate_goal_achievement_claim_rejects_wait_when_expected_signals_missing_without_proof() -> None:
+    agent = _FakeAgent()
+    reason_codes: list[str] = []
+    agent._record_reason_code = lambda code: reason_codes.append(str(code or ""))  # type: ignore[method-assign]
+    agent._goal_constraints = {"require_state_change": True}
+    agent._last_exec_result = SimpleNamespace(state_change={})
+    goal = SimpleNamespace(
+        name="결과 필터 적용 확인",
+        description="필터 적용 후 결과 목록 변화가 반영됐는지 확인한다.",
+        success_criteria=["필터 적용 결과 확인"],
+        expected_signals=["target_value_changed", "dom_changed"],
+    )
+    decision = ActionDecision(
+        action=ActionType.WAIT,
+        reasoning="필터 적용이 끝난 것으로 보이므로 완료합니다.",
+        confidence=0.9,
+        is_goal_achieved=True,
+        goal_achievement_reason="필터 결과 확인",
+    )
+    dom = [
+        DOMElement(
+            id=1,
+            tag="div",
+            role="generic",
+            text="결과 목록",
+            context_text="검색 결과",
+            is_visible=True,
+            is_enabled=True,
+        )
+    ]
+
+    ok, reason = validate_goal_achievement_claim(agent, goal, decision, dom)
+
+    assert ok is False
+    assert reason == "goal contract signal 미충족: target_value_changed, dom_changed"
+    assert agent._last_goal_completion_source == "wait_completion_rejected_missing_signals"
+    assert reason_codes == ["goal_achievement_wait_rejected"]
+
+
 def test_validate_goal_achievement_claim_accepts_wait_for_readonly_visibility_goal() -> None:
     agent = _FakeAgent()
     agent._goal_constraints = {
@@ -2259,7 +2298,7 @@ def test_validate_goal_achievement_claim_allows_judge_to_bypass_missing_expected
 
     assert ok is True
     assert reason is None
-    assert agent._last_goal_completion_source == "llm_completion_claim"
+    assert agent._last_goal_completion_source == "judge"
 
 
 def test_validate_goal_achievement_claim_accepts_active_sort_result_with_plain_expected_terms() -> None:
