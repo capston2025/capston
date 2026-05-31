@@ -2167,7 +2167,7 @@ def execute_action(
                 retry_path=retry_path,
                 attempt_count=attempt_count,
                 snapshot_id_used=str(data.get("snapshot_id_used") or ""),
-                ref_id_used=str(data.get("ref_id_used") or ""),
+                ref_id_used=str(data.get("ref_id_used") or ref_id or ""),
             )
 
         is_success = bool(data.get("success"))
@@ -2216,7 +2216,7 @@ def execute_action(
                 retry_path=retry_path if isinstance(retry_path, list) else [],
                 attempt_count=attempt_count,
                 snapshot_id_used=str(data.get("snapshot_id_used") or ""),
-                ref_id_used=str(data.get("ref_id_used") or ""),
+                ref_id_used=str(data.get("ref_id_used") or ref_id or ""),
             )
 
         reason_code, reason = extract_reason_fields(data, response.status_code)
@@ -2238,7 +2238,7 @@ def execute_action(
             retry_path=retry_path if isinstance(retry_path, list) else [],
             attempt_count=attempt_count,
             snapshot_id_used=str(data.get("snapshot_id_used") or ""),
-            ref_id_used=str(data.get("ref_id_used") or ""),
+            ref_id_used=str(data.get("ref_id_used") or ref_id or ""),
         )
 
     except Exception as exc:

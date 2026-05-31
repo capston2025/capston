@@ -225,6 +225,35 @@ def test_execute_decision_blocks_temporarily_ineffective_ref_in_openclaw_mode() 
     assert agent._last_exec_result.reason_code == "blocked_ref_no_progress"
 
 
+def test_execute_action_preserves_requested_ref_on_openclaw_failure(monkeypatch) -> None:
+    agent = _FakeAgent()
+
+    def fake_execute_mcp_action_with_recovery(**_kwargs):
+        return type(
+            "Response",
+            (),
+            {
+                "status_code": 200,
+                "payload": {
+                    "success": False,
+                    "effective": False,
+                    "reason_code": "not_actionable",
+                    "reason": 'Element "e20" not found or not visible.',
+                    "state_change": {"effective": False, "backend": "openclaw"},
+                },
+                "text": "",
+            },
+        )()
+
+    monkeypatch.setattr(runtime, "execute_mcp_action_with_recovery", fake_execute_mcp_action_with_recovery)
+
+    result = runtime.execute_action(agent, "click", ref_id="e20")
+
+    assert result.success is False
+    assert result.reason_code == "not_actionable"
+    assert result.ref_id_used == "e20"
+
+
 def test_execute_decision_retries_ref_stale_with_rebound_ref(monkeypatch) -> None:
     agent = _FakeAgent()
     dom_elements = [
