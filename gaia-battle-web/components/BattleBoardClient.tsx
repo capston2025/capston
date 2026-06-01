@@ -38,11 +38,11 @@ function statusTag(status: BattleRecord["status"]) {
 }
 
 function winner(summary: ReturnType<typeof summarizeBattle>) {
-  if (summary.bestHumanSeconds === null && summary.bestGaiaSeconds === null) return "대기 중";
-  if (summary.bestHumanSeconds === null) return "GAIA 선공";
-  if (summary.bestGaiaSeconds === null) return "Human 선공";
-  if (summary.bestHumanSeconds < summary.bestGaiaSeconds) return "Human 리드";
-  if (summary.bestGaiaSeconds < summary.bestHumanSeconds) return "GAIA 리드";
+  if (summary.averageHumanSeconds === null && summary.averageGaiaSeconds === null) return "대기 중";
+  if (summary.averageHumanSeconds === null) return "GAIA 선공";
+  if (summary.averageGaiaSeconds === null) return "Human 선공";
+  if (summary.averageHumanSeconds < summary.averageGaiaSeconds) return "Human 리드";
+  if (summary.averageGaiaSeconds < summary.averageHumanSeconds) return "GAIA 리드";
   return "동률";
 }
 
@@ -63,12 +63,39 @@ function metadataText(value: unknown) {
   return "";
 }
 
-function evidenceImageUrl(record: BattleRecord) {
-  const direct = metadataText(record.metadata?.evidenceImageDataUrl || record.metadata?.screenshotDataUrl);
-  if (direct.startsWith("data:image/")) return direct;
+function isPublicEvidenceUrl(value: string) {
+  return /^https?:\/\//i.test(value) || value.startsWith("/");
+}
+
+function evidenceImageUrls(record: BattleRecord) {
+  const urls: string[] = [];
+  const add = (value: string) => {
+    if (!value || urls.includes(value)) return;
+    if (value.startsWith("data:image/")) {
+      urls.push(value);
+      return;
+    }
+    if (isPublicEvidenceUrl(value) && /\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(value)) {
+      urls.push(value);
+    }
+  };
+  const images = record.metadata?.evidenceImages;
+  if (Array.isArray(images)) {
+    for (const image of images) {
+      if (image && typeof image === "object" && !Array.isArray(image)) {
+        add(metadataText((image as Record<string, unknown>).dataUrl || (image as Record<string, unknown>).url));
+      }
+    }
+  }
+  add(metadataText(record.metadata?.evidenceImageDataUrl || record.metadata?.screenshotDataUrl));
   const url = metadataText(record.metadata?.screenshotUrl || record.artifactUrl);
-  if (url.startsWith("data:image/")) return url;
-  if (/\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(url)) return url;
+  add(url);
+  return urls;
+}
+
+function evidenceLinkUrl(record: BattleRecord) {
+  const url = metadataText(record.metadata?.screenshotUrl || record.artifactUrl);
+  if (/^https?:\/\//i.test(url)) return url;
   return "";
 }
 
@@ -81,20 +108,54 @@ function realtimeTag(status: BattleRealtimeStatus) {
 function verdictTag(verdict: CaseVerdict) {
   switch (verdict) {
     case "HUMAN_FASTER":
-      return <Tag color="green">사람 우세</Tag>;
+      return <Tag color="green">Human 승리</Tag>;
     case "GAIA_FASTER":
-      return <Tag color="blue">GAIA 우세</Tag>;
+      return <Tag color="blue">GAIA 승리</Tag>;
     case "TIE":
       return <Tag color="gold">동률</Tag>;
     case "HUMAN_WIN":
-      return <Tag color="green">사람만 성공</Tag>;
+      return <Tag color="green">Human 승리</Tag>;
     case "GAIA_WIN":
-      return <Tag color="blue">GAIA만 성공</Tag>;
+      return <Tag color="blue">GAIA 승리</Tag>;
     case "BOTH_FAILED":
       return <Tag color="error">둘 다 미성공</Tag>;
     default:
       return <Tag color="default">대기 중</Tag>;
   }
+}
+
+function sideOutcome(verdict: CaseVerdict, isHuman: boolean) {
+  if (verdict === "TIE") return "tie";
+  if (verdict === "BOTH_FAILED") return "failed";
+  if (verdict === "WAITING") return "waiting";
+  const humanWon = verdict === "HUMAN_FASTER" || verdict === "HUMAN_WIN";
+  const gaiaWon = verdict === "GAIA_FASTER" || verdict === "GAIA_WIN";
+  if ((isHuman && humanWon) || (!isHuman && gaiaWon)) return "winner";
+  return "loser";
+}
+
+function outcomeTag(outcome: string) {
+  if (outcome === "winner") return <Tag color="success">승리</Tag>;
+  if (outcome === "loser") return <Tag color="default">패배</Tag>;
+  if (outcome === "tie") return <Tag color="gold">동률</Tag>;
+  if (outcome === "failed") return <Tag color="error">미성공</Tag>;
+  return null;
+}
+
+function verdictDetail(battleCase: BattleCase) {
+  const humanSeconds = battleCase.bestHuman?.durationSeconds;
+  const gaiaSeconds = battleCase.bestGaia?.durationSeconds;
+  if (battleCase.verdict === "HUMAN_FASTER" && typeof humanSeconds === "number" && typeof gaiaSeconds === "number") {
+    return `Human이 ${(gaiaSeconds - humanSeconds).toFixed(1)}s 빠름`;
+  }
+  if (battleCase.verdict === "GAIA_FASTER" && typeof humanSeconds === "number" && typeof gaiaSeconds === "number") {
+    return `GAIA가 ${(humanSeconds - gaiaSeconds).toFixed(1)}s 빠름`;
+  }
+  if (battleCase.verdict === "HUMAN_WIN") return "Human만 성공";
+  if (battleCase.verdict === "GAIA_WIN") return "GAIA만 성공";
+  if (battleCase.verdict === "BOTH_FAILED") return "성공 기록 없음";
+  if (battleCase.verdict === "TIE") return "같은 시간";
+  return "대기 중";
 }
 
 export function BattleBoardClient({ sessionId, initialRecords }: Props) {
@@ -225,7 +286,7 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
         </Card>
 
         <Row gutter={[14, 14]} className="metricRow">
-          <Col xs={24} md={12} xl={6}>
+          <Col xs={24} md={12} xl={8}>
             <Card className="metricCard leadCard">
               <Statistic prefix={<TrophyOutlined />} title="현재 리드" value={winner(summary)} />
             </Card>
@@ -240,14 +301,14 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
               <Statistic prefix={<RobotOutlined />} title="GAIA 기록" value={summary.gaiaTotal} />
             </Card>
           </Col>
-          <Col xs={12} md={8} xl={5}>
+          <Col xs={12} md={8} xl={4}>
             <Card className="metricCard">
-              <Statistic prefix={<ClockCircleOutlined />} title="Best Human" value={seconds(summary.bestHumanSeconds)} />
+              <Statistic prefix={<ClockCircleOutlined />} title="평균 Human" value={seconds(summary.averageHumanSeconds)} />
             </Card>
           </Col>
-          <Col xs={12} md={8} xl={5}>
+          <Col xs={12} md={8} xl={4}>
             <Card className="metricCard">
-              <Statistic title="Best GAIA" value={seconds(summary.bestGaiaSeconds)} />
+              <Statistic title="평균 GAIA" value={seconds(summary.averageGaiaSeconds)} />
             </Card>
           </Col>
           <Col xs={24} md={8} xl={24}>
@@ -261,16 +322,14 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
           </Col>
         </Row>
 
-        <Card
-          className="casesCard"
-          extra={<Tag color="processing">{cases.length} cases</Tag>}
-          title={
-            <Space>
+        <section className="casesSection">
+          <div className="casesSectionHead">
+            <h2 className="sectionTitle">
               <FileSearchOutlined />
               케이스별 대결
-            </Space>
-          }
-        >
+            </h2>
+            <Tag color="processing">{cases.length} cases</Tag>
+          </div>
           {cases.length ? (
             <div className="caseList">
               {cases.map((battleCase) => (
@@ -283,7 +342,7 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
               image={Empty.PRESENTED_IMAGE_SIMPLE}
             />
           )}
-        </Card>
+        </section>
       </section>
     </main>
   );
@@ -291,30 +350,52 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
 
 function CaseCard({ battleCase }: { battleCase: BattleCase }) {
   return (
-    <Card className="caseCard">
+    <Card className={`caseCard caseCard-${battleCase.verdict.toLowerCase()}`}>
       <div className="caseCardHead">
         <strong className="caseTitle">{battleCase.label}</strong>
-        <Space size={8}>
+        <Space className="caseVerdictSummary" size={8}>
           {verdictTag(battleCase.verdict)}
+          <span>{verdictDetail(battleCase)}</span>
           <span className="evidenceTime">{formatTime(battleCase.latestAt)}</span>
         </Space>
       </div>
       <div className="caseSides">
-        <CaseSide isHuman record={battleCase.bestHuman} attempts={battleCase.humans.length} />
+        <CaseSide
+          attempts={battleCase.humans.length}
+          isHuman
+          outcome={sideOutcome(battleCase.verdict, true)}
+          record={battleCase.bestHuman}
+        />
         <div className="caseVs">VS</div>
-        <CaseSide isHuman={false} record={battleCase.bestGaia} attempts={battleCase.gaias.length} />
+        <CaseSide
+          attempts={battleCase.gaias.length}
+          isHuman={false}
+          outcome={sideOutcome(battleCase.verdict, false)}
+          record={battleCase.bestGaia}
+        />
       </div>
     </Card>
   );
 }
 
-function CaseSide({ isHuman, record, attempts }: { isHuman: boolean; record: BattleRecord | null; attempts: number }) {
-  const imageUrl = record ? evidenceImageUrl(record) : "";
+function CaseSide({
+  isHuman,
+  record,
+  attempts,
+  outcome,
+}: {
+  isHuman: boolean;
+  record: BattleRecord | null;
+  attempts: number;
+  outcome: string;
+}) {
+  const imageUrls = record ? evidenceImageUrls(record) : [];
+  const linkUrl = record ? evidenceLinkUrl(record) : "";
   const provider = record ? metadataText(record.metadata?.provider) : "";
   const model = record ? metadataText(record.metadata?.model) : "";
   const qaMode = record ? metadataText(record.metadata?.qaMode) : "";
   return (
-    <div className={isHuman ? "caseSide humanSide" : "caseSide gaiaSide"}>
+    <div className={`${isHuman ? "caseSide humanSide" : "caseSide gaiaSide"} outcome-${outcome}`}>
       <div className="caseSideHead">
         <Space size={10}>
           <span className={isHuman ? "avatarIcon humanAvatar" : "avatarIcon gaiaAvatar"}>
@@ -328,7 +409,10 @@ function CaseSide({ isHuman, record, attempts }: { isHuman: boolean; record: Bat
             </small>
           </span>
         </Space>
-        {record ? statusTag(record.status) : <Tag color="default">대기</Tag>}
+        <Space size={6}>
+          {outcomeTag(outcome)}
+          {record ? statusTag(record.status) : <Tag color="default">대기</Tag>}
+        </Space>
       </div>
       {record ? (
         <>
@@ -337,17 +421,29 @@ function CaseSide({ isHuman, record, attempts }: { isHuman: boolean; record: Bat
             <strong className="monoValue">{seconds(record.durationSeconds)}</strong>
             <span>{formatTime(record.updatedAt)}</span>
           </div>
-          <p>{record.reason || "증거 메모 없음"}</p>
-          {imageUrl ? (
-            <Image alt="증거 스크린샷" className="evidenceScreenshot" preview={false} src={imageUrl} />
+          <p>{record.reason || "성공 이유 없음"}</p>
+          {imageUrls.length ? (
+            <Image.PreviewGroup>
+              <div className="evidenceGallery">
+                {imageUrls.map((imageUrl, index) => (
+                  <Image
+                    alt={`증거 스크린샷 ${index + 1}`}
+                    className="evidenceScreenshot"
+                    key={`${imageUrl}-${index}`}
+                    preview={{ mask: "크게 보기" }}
+                    src={imageUrl}
+                  />
+                ))}
+              </div>
+            </Image.PreviewGroup>
           ) : null}
-          {provider || model || qaMode || record.artifactUrl ? (
+          {provider || model || qaMode || linkUrl ? (
             <div className="evidenceMeta">
               {provider ? <Tag>{provider}</Tag> : null}
               {model ? <Tag>{model}</Tag> : null}
               {qaMode ? <Tag>{qaMode}</Tag> : null}
-              {record.artifactUrl ? (
-                <Button href={record.artifactUrl} icon={<LinkOutlined />} size="small" target="_blank">
+              {linkUrl ? (
+                <Button href={linkUrl} icon={<LinkOutlined />} size="small" target="_blank">
                   증거 열기
                 </Button>
               ) : null}

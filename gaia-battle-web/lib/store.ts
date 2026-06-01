@@ -33,6 +33,10 @@ type SupabaseSessionStateRow = {
   updated_at?: string | null;
 };
 
+const MAX_CLIENT_INLINE_IMAGE_DATA_URL_LENGTH = 360_000;
+const PREPARED_HUMAN_STARTED_AT = "1970-01-01T00:00:00.000Z";
+const INLINE_IMAGE_METADATA_KEYS = ["evidenceImageDataUrl", "screenshotDataUrl"];
+
 declare global {
   var __gaiaBattleRecords: BattleRecord[] | undefined;
   var __gaiaBattleSessionStates: BattleSessionState[] | undefined;
@@ -61,6 +65,31 @@ function normalizeStatus(value: unknown): BattleStatus {
   return "SUCCESS";
 }
 
+function sanitizeMetadata(metadata: Record<string, unknown> | null | undefined) {
+  const clean = metadata && typeof metadata === "object" ? { ...metadata } : {};
+  for (const key of INLINE_IMAGE_METADATA_KEYS) {
+    const value = clean[key];
+    if (typeof value === "string" && value.length > MAX_CLIENT_INLINE_IMAGE_DATA_URL_LENGTH) {
+      delete clean[key];
+      clean[`${key}SkippedReason`] = `inline_image_too_large:${value.length}`;
+    }
+  }
+  if (Array.isArray(clean.evidenceImages)) {
+    clean.evidenceImages = clean.evidenceImages
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .map((item) => {
+        const image = { ...item };
+        const dataUrl = image.dataUrl;
+        if (typeof dataUrl === "string" && dataUrl.length > MAX_CLIENT_INLINE_IMAGE_DATA_URL_LENGTH) {
+          delete image.dataUrl;
+          image.skippedReason = `inline_image_too_large:${dataUrl.length}`;
+        }
+        return image;
+      });
+  }
+  return clean;
+}
+
 function normalizeRecord(input: BattleRecordInput): BattleRecord {
   const createdAt = nowIso();
   const sessionId = String(input.sessionId || "").trim();
@@ -82,7 +111,7 @@ function normalizeRecord(input: BattleRecordInput): BattleRecord {
         : null,
     reason: String(input.reason || "").trim(),
     artifactUrl: String(input.artifactUrl || "").trim(),
-    metadata: input.metadata && typeof input.metadata === "object" ? input.metadata : {},
+    metadata: sanitizeMetadata(input.metadata),
     createdAt,
     updatedAt: createdAt,
   };
@@ -92,11 +121,12 @@ function normalizeSessionState(input: BattleSessionStateInput): BattleSessionSta
   const sessionId = String(input.sessionId || "").trim();
   const scenarioId = slug(String(input.scenarioId || "live-mission"), "live-mission");
   const now = nowIso();
+  const hasHumanStartedAt = Object.prototype.hasOwnProperty.call(input, "humanStartedAt");
   return {
     sessionId,
     scenarioId,
     scenarioLabel: String(input.scenarioLabel || "Live QA Mission").trim(),
-    humanStartedAt: String(input.humanStartedAt || now).trim(),
+    humanStartedAt: hasHumanStartedAt ? String(input.humanStartedAt || "").trim() || PREPARED_HUMAN_STARTED_AT : now,
     updatedAt: now,
   };
 }
@@ -145,7 +175,7 @@ function fromRow(row: SupabaseRow): BattleRecord {
     durationSeconds: typeof row.duration_seconds === "number" ? row.duration_seconds : null,
     reason: row.reason || "",
     artifactUrl: row.artifact_url || "",
-    metadata: row.metadata || {},
+    metadata: sanitizeMetadata(row.metadata),
     createdAt,
     updatedAt: row.updated_at || createdAt,
   };
@@ -156,7 +186,7 @@ function toSessionStateRow(state: BattleSessionState): SupabaseSessionStateRow {
     session_id: state.sessionId,
     scenario_id: state.scenarioId,
     scenario_label: state.scenarioLabel,
-    human_started_at: state.humanStartedAt,
+    human_started_at: state.humanStartedAt || PREPARED_HUMAN_STARTED_AT,
     updated_at: state.updatedAt,
   };
 }

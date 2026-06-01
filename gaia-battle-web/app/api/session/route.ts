@@ -36,9 +36,10 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const hasHumanStartedAt = Object.prototype.hasOwnProperty.call(input, "humanStartedAt");
     const state = await updateBattleSessionState({
       ...input,
-      humanStartedAt: new Date().toISOString(),
+      humanStartedAt: hasHumanStartedAt ? input.humanStartedAt : new Date().toISOString(),
     });
     return NextResponse.json({ state, serverNow: new Date().toISOString() });
   } catch (error) {

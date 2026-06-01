@@ -1,14 +1,29 @@
 :root {
-  --bg: #f4f7fb;
-  --surface: #ffffff;
-  --surface-soft: #f8fafc;
-  --text: #172033;
-  --muted: #667085;
-  --line: #e6ebf2;
-  --blue: #1677ff;
-  --green: #12b76a;
-  --red: #f04438;
-  --shadow: 0 20px 60px rgba(31, 45, 61, 0.1);
+  /* 쿨 뉴트럴 베이스 — 차분한 운영 대시보드 */
+  --bg: oklch(0.972 0.006 256);
+  --surface: oklch(1 0 0);
+  --surface-soft: oklch(0.984 0.005 256);
+  --text: oklch(0.27 0.032 262);
+  --muted: oklch(0.505 0.027 262); /* 대비 강화: 틴트 배경 위에서도 ≥4.5:1 */
+  --line: oklch(0.918 0.009 256);
+
+  /* 대결 정체성 — GAIA=쿨 인디고, Human=에메랄드 */
+  --gaia: oklch(0.515 0.16 266);
+  --gaia-strong: oklch(0.44 0.17 266);
+  --gaia-soft: oklch(0.955 0.025 266);
+  --human: oklch(0.585 0.125 162);
+  --human-strong: oklch(0.49 0.13 162);
+  --human-soft: oklch(0.955 0.03 165);
+
+  /* 기존 참조 호환 별칭 */
+  --blue: var(--gaia);
+  --green: var(--human);
+  --red: oklch(0.605 0.2 25);
+  --warn: oklch(0.78 0.15 78);
+
+  /* 절제된 그림자 2레벨 (기존 0 20px 60px 과도) */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 20px rgba(16, 24, 40, 0.06);
 }
 
 * {
@@ -27,7 +42,7 @@ body {
 
 body {
   background:
-    linear-gradient(180deg, rgba(22, 119, 255, 0.08), transparent 320px),
+    linear-gradient(180deg, color-mix(in oklch, var(--gaia) 7%, transparent), transparent 300px),
     var(--bg);
 }
 
@@ -262,12 +277,12 @@ h1 {
 }
 
 .leadCard {
-  background: linear-gradient(135deg, #f0f6ff 0%, #ffffff 72%);
-  border-color: #b7d4ff;
+  background: var(--gaia-soft);
+  border-color: color-mix(in oklch, var(--gaia) 30%, var(--line));
 }
 
 .leadCard .ant-statistic-content {
-  color: #0b5ed7;
+  color: var(--gaia-strong);
 }
 
 .progressCard .ant-card-body {
@@ -327,13 +342,25 @@ h1 {
 
 .evidenceScreenshot,
 .gaiaScreenshot {
+  display: block;
   width: 100%;
-  max-height: 180px;
+  max-height: 260px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
-  object-fit: cover;
-  object-position: top left;
+  background: #f8fafc;
+  cursor: zoom-in;
+  object-fit: contain;
+  object-position: center;
+}
+
+.evidenceGallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.gaiaEvidenceGallery {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .evidenceMeta {
@@ -374,13 +401,13 @@ h1 {
 }
 
 .humanAvatar {
-  background: #ecfdf3;
-  color: var(--green);
+  background: var(--human-soft);
+  color: var(--human-strong);
 }
 
 .gaiaAvatar {
-  background: #eff4ff;
-  color: var(--blue);
+  background: var(--gaia-soft);
+  color: var(--gaia-strong);
 }
 
 .monoValue {
@@ -433,6 +460,54 @@ h1 {
   margin-bottom: 14px;
 }
 
+.submitRequirementBox {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.submitRequirementBox strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.submitRequirementBox span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #5b6472;
+  font-size: 13px;
+}
+
+.submitRequirementBox span::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: #f59e0b;
+}
+
+.submitRequirementBox span.isMet {
+  color: #0f8a55;
+}
+
+.submitRequirementBox span.isMet::before {
+  background: #10b981;
+}
+
+.submitRequirementBox b {
+  margin-left: auto;
+  color: inherit;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .pasteBox {
   min-height: 152px;
   border: 1px dashed #9ec5ff;
@@ -457,6 +532,11 @@ h1 {
   background: #fff;
 }
 
+.pasteBox.isSubmitting {
+  cursor: progress;
+  opacity: 0.72;
+}
+
 .pasteEmpty {
   height: 126px;
   display: grid;
@@ -472,31 +552,63 @@ h1 {
 }
 
 .pasteEmpty span,
-.pastePreview span {
+.pastePreviewSummary span,
+.pastePreviewItem span,
+.pasteLimitText {
   color: var(--muted);
   font-size: 12px;
 }
 
-.pastePreview {
+.pastePreviewMulti {
   display: grid;
-  grid-template-columns: 170px minmax(0, 1fr);
   gap: 12px;
-  align-items: center;
 }
 
-.pastePreview img {
-  width: 170px;
-  height: 116px;
+.pastePreviewSummary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pastePreviewGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.pastePreviewItem {
+  display: grid;
+  gap: 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  object-fit: cover;
-  object-position: top left;
+  background: #fff;
+  padding: 8px;
 }
 
-.pastePreview div {
-  display: grid;
-  gap: 6px;
-  justify-items: start;
+.pastePreviewItem img {
+  width: 100%;
+  height: 104px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  object-fit: contain;
+  object-position: center;
+  background: #f8fafc;
+}
+
+.pastePreviewItem > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pastePreviewItem span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .gaiaConnectionBox {
@@ -596,9 +708,9 @@ h1 {
   gap: 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: #fff;
+  background: var(--surface);
   padding: 14px;
-  box-shadow: 0 10px 26px rgba(31, 45, 61, 0.06);
+  box-shadow: var(--shadow-sm);
 }
 
 .gaiaEvidenceHead,
@@ -625,8 +737,31 @@ h1 {
   justify-content: center;
 }
 
-.casesCard {
-  border: 1px solid var(--line);
+.casesSection {
+  display: grid;
+  gap: 14px;
+}
+
+.casesSectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.sectionTitle svg {
+  color: var(--gaia);
 }
 
 .caseList {
@@ -637,6 +772,20 @@ h1 {
 .caseCard {
   border: 1px solid var(--line);
   border-radius: 12px;
+}
+
+.caseCard-human_faster,
+.caseCard-human_win {
+  border-color: color-mix(in oklch, var(--human) 45%, var(--line));
+}
+
+.caseCard-gaia_faster,
+.caseCard-gaia_win {
+  border-color: color-mix(in oklch, var(--gaia) 45%, var(--line));
+}
+
+.caseCard-both_failed {
+  border-color: color-mix(in oklch, var(--red) 35%, var(--line));
 }
 
 .caseCard .ant-card-body {
@@ -650,6 +799,32 @@ h1 {
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 14px;
+}
+
+.caseVerdictSummary {
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 6px 8px;
+}
+
+.caseCard-human_faster .caseVerdictSummary,
+.caseCard-human_win .caseVerdictSummary {
+  background: #ecfdf3;
+}
+
+.caseCard-gaia_faster .caseVerdictSummary,
+.caseCard-gaia_win .caseVerdictSummary {
+  background: #eff6ff;
+}
+
+.caseCard-both_failed .caseVerdictSummary {
+  background: #fff1f2;
+}
+
+.caseVerdictSummary > span:not(.ant-tag) {
+  color: oklch(0.4 0.03 262); /* 틴트 배경 위에서도 대비 확보 */
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .caseTitle {
@@ -682,14 +857,42 @@ h1 {
   padding: 14px;
 }
 
+.caseSide.outcome-winner {
+  border-width: 2px;
+  box-shadow: var(--shadow-sm);
+}
+
+.caseSide.outcome-loser {
+  background: #f8fafc;
+  border-color: #d0d5dd;
+  opacity: 0.82;
+}
+
+.caseSide.outcome-tie {
+  border-color: #f2c94c;
+}
+
+.caseSide.outcome-failed {
+  background: #fff7f7;
+  border-color: #fecaca;
+}
+
 .humanSide {
-  background: #f4fdf8;
-  border-color: #c6efda;
+  background: var(--human-soft);
+  border-color: color-mix(in oklch, var(--human) 28%, var(--line));
+}
+
+.humanSide.outcome-winner {
+  border-color: var(--human);
 }
 
 .gaiaSide {
-  background: #f4f8ff;
-  border-color: #c9defb;
+  background: var(--gaia-soft);
+  border-color: color-mix(in oklch, var(--gaia) 28%, var(--line));
+}
+
+.gaiaSide.outcome-winner {
+  border-color: var(--gaia);
 }
 
 .caseSideHead {

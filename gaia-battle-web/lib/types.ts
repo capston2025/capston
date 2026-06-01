@@ -45,7 +45,7 @@ export type BattleSessionStateInput = {
   sessionId: string;
   scenarioId?: string;
   scenarioLabel?: string;
-  humanStartedAt?: string;
+  humanStartedAt?: string | null;
 };
 
 export type BattleSummary = {
@@ -55,6 +55,8 @@ export type BattleSummary = {
   successTotal: number;
   failTotal: number;
   blockedTotal: number;
+  averageHumanSeconds: number | null;
+  averageGaiaSeconds: number | null;
   bestHumanSeconds: number | null;
   bestGaiaSeconds: number | null;
 };

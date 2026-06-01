@@ -10,6 +10,7 @@ import {
   LinkOutlined,
   LockOutlined,
   PictureOutlined,
+  PhoneOutlined,
   RobotOutlined,
   StopOutlined,
   UserOutlined,
@@ -26,6 +27,7 @@ import {
   Row,
   Segmented,
   Space,
+  Spin,
   Tag,
 } from "antd";
 import type { ClipboardEvent } from "react";
@@ -50,6 +52,12 @@ type EvidenceImage = {
 };
 
 const STALE_HUMAN_RUN_MS = 20 * 60 * 1000;
+const PREPARED_HUMAN_STARTED_AT_MS = Date.UTC(1970, 0, 1);
+const MAX_EVIDENCE_DATA_URL_LENGTH = 320_000;
+const EVIDENCE_START_LONG_SIDE = 900;
+const EVIDENCE_MIN_LONG_SIDE = 420;
+const MIN_SUCCESS_REASON_LENGTH = 20;
+const MAX_EVIDENCE_IMAGES = 4;
 
 function participantId(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9가-힣_-]+/gi, "-") || "human";
@@ -77,12 +85,39 @@ function metadataText(value: unknown) {
   return "";
 }
 
-function evidenceImageUrl(record: BattleRecord) {
-  const direct = metadataText(record.metadata?.evidenceImageDataUrl || record.metadata?.screenshotDataUrl);
-  if (direct.startsWith("data:image/")) return direct;
+function isPublicEvidenceUrl(value: string) {
+  return /^https?:\/\//i.test(value) || value.startsWith("/");
+}
+
+function evidenceImageUrls(record: BattleRecord) {
+  const urls: string[] = [];
+  const add = (value: string) => {
+    if (!value || urls.includes(value)) return;
+    if (value.startsWith("data:image/")) {
+      urls.push(value);
+      return;
+    }
+    if (isPublicEvidenceUrl(value) && /\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(value)) {
+      urls.push(value);
+    }
+  };
+  const images = record.metadata?.evidenceImages;
+  if (Array.isArray(images)) {
+    for (const image of images) {
+      if (image && typeof image === "object" && !Array.isArray(image)) {
+        add(metadataText((image as Record<string, unknown>).dataUrl || (image as Record<string, unknown>).url));
+      }
+    }
+  }
+  add(metadataText(record.metadata?.evidenceImageDataUrl || record.metadata?.screenshotDataUrl));
   const url = metadataText(record.metadata?.screenshotUrl || record.artifactUrl);
-  if (url.startsWith("data:image/")) return url;
-  if (/\.(png|jpe?g|webp|gif)(\?|#|$)/i.test(url)) return url;
+  add(url);
+  return urls;
+}
+
+function evidenceLinkUrl(record: BattleRecord) {
+  const url = metadataText(record.metadata?.screenshotUrl || record.artifactUrl);
+  if (/^https?:\/\//i.test(url)) return url;
   return "";
 }
 
@@ -137,44 +172,89 @@ function loadImage(src: string) {
 async function compressScreenshot(file: File): Promise<EvidenceImage> {
   const rawDataUrl = await readFileAsDataUrl(file);
   const image = await loadImage(rawDataUrl);
-  const maxWidth = 1200;
-  const scale = Math.min(1, maxWidth / Math.max(1, image.naturalWidth));
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("canvas unavailable");
-  context.drawImage(image, 0, 0, width, height);
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
-  return { dataUrl, name: file.name || "pasted-screenshot.jpg", size: dataUrl.length, width, height };
+
+  const naturalLongSide = Math.max(1, image.naturalWidth, image.naturalHeight);
+  let longSide = Math.min(EVIDENCE_START_LONG_SIDE, naturalLongSide);
+  const qualities = [0.72, 0.62, 0.52, 0.44, 0.36];
+  let best: EvidenceImage | null = null;
+
+  while (longSide >= EVIDENCE_MIN_LONG_SIDE) {
+    const scale = Math.min(1, longSide / naturalLongSide);
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas.width = width;
+    canvas.height = height;
+    context.clearRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    for (const quality of qualities) {
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      const candidate = {
+        dataUrl,
+        name: file.name || "pasted-screenshot.jpg",
+        size: dataUrl.length,
+        width,
+        height,
+      };
+      best = candidate;
+      if (dataUrl.length <= MAX_EVIDENCE_DATA_URL_LENGTH) return candidate;
+    }
+    longSide = Math.floor(longSide * 0.78);
+  }
+
+  if (best && best.dataUrl.length <= MAX_EVIDENCE_DATA_URL_LENGTH * 1.2) return best;
+  throw new Error("evidence image too large");
+}
+
+async function readJsonOrError(response: Response): Promise<{ record?: BattleRecord; records?: BattleRecord[]; error?: string }> {
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as { record?: BattleRecord; records?: BattleRecord[]; error?: string };
+  } catch {
+    return {
+      error: text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160) || "서버 응답 오류",
+    };
+  }
 }
 
 export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Props) {
   const [name, setName] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [status, setStatus] = useState<"SUCCESS" | "FAIL">("SUCCESS");
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   // The operator-visible "상황". The matching key (scenarioId) is received from
   // the session state and never shown to the participant.
   const [sessionScenarioId, setSessionScenarioId] = useState<string | null>(null);
+  const [sessionScenarioLabel, setSessionScenarioLabel] = useState<string | null>(null);
+  const [sessionUpdatedAt, setSessionUpdatedAt] = useState<string | null>(null);
   const [scenarioSituation, setScenarioSituation] = useState("");
-  const [evidenceNote, setEvidenceNote] = useState("");
-  const [evidenceImage, setEvidenceImage] = useState<EvidenceImage | null>(null);
+  const [successReason, setSuccessReason] = useState("");
+  const [evidenceImages, setEvidenceImages] = useState<EvidenceImage[]>([]);
   const [records, setRecords] = useState(initialRecords);
-  const [message, setMessage] = useState<{ type: "success" | "warning" | "error"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: "success" | "info" | "warning" | "error"; text: string } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [now, setNow] = useState(0);
   const [serverClockOffsetMs, setServerClockOffsetMs] = useState(0);
   const [storageMode, setStorageMode] = useState<BattleStorageMode>("memory");
   const [mounted, setMounted] = useState(false);
-  const lastScenarioRef = useRef<string | null>(null);
+  const lastCaseResetKeyRef = useRef<string | null>(null);
 
   const effectiveScenarioId = sessionScenarioId || scenarioId;
   const sessionStartTime = useMemo(() => {
     if (!sessionStartedAt) return null;
     const parsed = new Date(sessionStartedAt).getTime();
-    return Number.isNaN(parsed) ? null : parsed;
+    if (Number.isNaN(parsed)) return null;
+    if (parsed <= PREPARED_HUMAN_STARTED_AT_MS) return null;
+    return parsed;
   }, [sessionStartedAt]);
+  const caseResetKey = useMemo(
+    () => [effectiveScenarioId, sessionScenarioLabel || "", sessionUpdatedAt || ""].join("\u001f"),
+    [effectiveScenarioId, sessionScenarioLabel, sessionUpdatedAt],
+  );
   const submittedRecord = useMemo(() => {
     const id = participantId(name);
     if (!name.trim() || !sessionStartTime) return null;
@@ -211,19 +291,25 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
   const shouldShowCurrentRun = Boolean(activeSessionStartTime || submittedRecord);
 
   useEffect(() => {
-    if (!effectiveScenarioId) return;
-    if (lastScenarioRef.current === null) {
-      lastScenarioRef.current = effectiveScenarioId;
+    if (!caseResetKey) return;
+    if (lastCaseResetKeyRef.current === null) {
+      lastCaseResetKeyRef.current = caseResetKey;
       return;
     }
-    if (lastScenarioRef.current === effectiveScenarioId) return;
-    lastScenarioRef.current = effectiveScenarioId;
-    setName("");
-    setStatus("SUCCESS");
-    setEvidenceNote("");
-    setEvidenceImage(null);
-    setMessage(null);
-  }, [effectiveScenarioId]);
+    if (lastCaseResetKeyRef.current === caseResetKey) return;
+    lastCaseResetKeyRef.current = caseResetKey;
+    if (sessionStartTime) return;
+    const timer = window.setTimeout(() => {
+      setName("");
+      setPhoneNumber("");
+      setStatus("SUCCESS");
+      setSuccessReason("");
+      setEvidenceImages([]);
+      setMessage(null);
+      setIsSubmitting(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [caseResetKey, sessionStartTime]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMounted(true), 0);
@@ -248,6 +334,8 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
     if (data.storage) setStorageMode(data.storage);
     setSessionStartedAt(data.state?.humanStartedAt || null);
     setSessionScenarioId(data.state?.scenarioId || null);
+    setSessionScenarioLabel(data.state?.scenarioLabel || null);
+    setSessionUpdatedAt(data.state?.updatedAt || null);
     if (data.state?.scenarioLabel) {
       setScenarioSituation(data.state.scenarioLabel);
     }
@@ -270,13 +358,15 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
 
   useEffect(() => {
     const initialTimer = window.setTimeout(() => void refreshSession(), 0);
-    if (!shouldPoll) return () => window.clearTimeout(initialTimer);
+    // Realtime can miss session-state changes when the state table is not part
+    // of the active publication. Keep a tiny session heartbeat so selecting the
+    // next demo case always resets the participant screen.
     const timer = window.setInterval(refreshSession, 500);
     return () => {
       window.clearTimeout(initialTimer);
       window.clearInterval(timer);
     };
-  }, [refreshSession, shouldPoll]);
+  }, [refreshSession]);
 
   useEffect(() => {
     const initialTimer = window.setTimeout(() => void refreshRecords(), 0);
@@ -299,8 +389,27 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
   const submittedDuration =
     typeof submittedRecord?.durationSeconds === "number" ? submittedRecord.durationSeconds : null;
   const displayDuration = submittedDuration ?? liveDuration;
-  const timerLabel = submittedRecord ? "제출 완료" : activeSessionStartTime ? "측정 중" : "시작 대기";
-  const timerHelp = submittedRecord ? "타이머 종료" : activeSessionStartTime ? "타이머 자동 실행 중" : "GAIA 시작 신호 대기";
+  const cleanSuccessReason = successReason.trim();
+  const successReasonLength = cleanSuccessReason.length;
+  const hasRequiredSuccessReason = successReasonLength >= MIN_SUCCESS_REASON_LENGTH;
+  const hasRequiredScreenshot = evidenceImages.length > 0;
+  const submitReady = Boolean(
+    !locked &&
+      !isSubmitting &&
+      activeSessionStartTime &&
+      name.trim() &&
+      hasRequiredSuccessReason &&
+      hasRequiredScreenshot,
+  );
+  const preparedScenario = Boolean(scenarioSituation.trim() && !activeSessionStartTime && !submittedRecord);
+  const timerLabel = submittedRecord ? "제출 완료" : activeSessionStartTime ? "측정 중" : preparedScenario ? "준비 완료" : "시작 대기";
+  const timerHelp = submittedRecord
+    ? "타이머 종료"
+    : activeSessionStartTime
+      ? "타이머 자동 실행 중"
+      : preparedScenario
+        ? "시나리오 확인 후 시작 신호 대기"
+        : "GAIA 시작 신호 대기";
   const gaiaRecords = useMemo(
     () => {
       if (storageMode === "memory" || !sessionStartTime || !shouldShowCurrentRun) return [];
@@ -348,27 +457,49 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
   }
 
   async function handleScreenshotPaste(event: ClipboardEvent<HTMLDivElement>) {
-    const item = Array.from(event.clipboardData.items).find((entry) => entry.type.startsWith("image/"));
-    if (!item) {
+    if (isSubmitting) return;
+    const imageItems = Array.from(event.clipboardData.items).filter((entry) => entry.type.startsWith("image/"));
+    if (!imageItems.length) {
       setMessage({ type: "warning", text: "클립보드에 이미지가 없습니다." });
       return;
     }
     event.preventDefault();
-    const file = item.getAsFile();
-    if (!file) {
+    const remainingSlots = MAX_EVIDENCE_IMAGES - evidenceImages.length;
+    if (remainingSlots <= 0) {
+      setMessage({ type: "warning", text: `스크린샷은 최대 ${MAX_EVIDENCE_IMAGES}개까지 첨부할 수 있습니다.` });
+      return;
+    }
+    const files = imageItems
+      .slice(0, remainingSlots)
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (!files.length) {
       setMessage({ type: "error", text: "스크린샷을 읽지 못했습니다." });
       return;
     }
-    try {
-      const compressed = await compressScreenshot(file);
-      setEvidenceImage(compressed);
-      setMessage({ type: "success", text: "스크린샷이 붙었습니다." });
-    } catch {
-      setMessage({ type: "error", text: "스크린샷 처리 실패" });
+    const compressedImages: EvidenceImage[] = [];
+    let failedCount = 0;
+    for (const file of files) {
+      try {
+        compressedImages.push(await compressScreenshot(file));
+      } catch {
+        failedCount += 1;
+      }
+    }
+    if (compressedImages.length) {
+      setEvidenceImages((currentImages) => [...currentImages, ...compressedImages].slice(0, MAX_EVIDENCE_IMAGES));
+      const ignoredCount = Math.max(0, imageItems.length - files.length);
+      const suffix = ignoredCount ? ` ${ignoredCount}개는 최대 개수 제한으로 제외됐습니다.` : "";
+      setMessage({ type: "success", text: `스크린샷 ${compressedImages.length}개가 붙었습니다.${suffix}` });
+      return;
+    }
+    if (failedCount) {
+      setMessage({ type: "error", text: "스크린샷이 너무 큽니다. 화면 일부만 캡처해서 다시 붙여주세요." });
     }
   }
 
   async function submit() {
+    if (isSubmitting) return;
     const cleanName = name.trim();
     if (!cleanName) {
       setMessage({ type: "warning", text: "이름을 먼저 입력해줘." });
@@ -382,45 +513,74 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
       setMessage({ type: "warning", text: "이미 기록됨" });
       return;
     }
-    const finalDuration = Math.max(0, Math.round((((now || Date.now()) - activeSessionStartTime) / 1000) * 100) / 100);
-    const cleanSituation = scenarioSituation.trim();
-    const response = await fetch("/api/records", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        sessionId,
-        participantId: participantId(cleanName),
-        participantName: cleanName,
-        participantType: "human",
-        scenarioId: effectiveScenarioId,
-        scenarioLabel: cleanSituation || "Live QA Mission",
-        status,
-        durationSeconds: finalDuration,
-        reason: evidenceNote.trim() || (status === "SUCCESS" ? "사람 QA 완료" : "사람 QA 실패"),
-        artifactUrl: "",
-        metadata: {
-          evidenceSource: "human-form",
-          sessionStartedAt,
-          scenarioSituation: cleanSituation,
-          evidenceImageDataUrl: evidenceImage?.dataUrl || "",
-          evidenceImageName: evidenceImage?.name || "",
-          evidenceImageSize: evidenceImage?.size || 0,
-          evidenceImageWidth: evidenceImage?.width || 0,
-          evidenceImageHeight: evidenceImage?.height || 0,
-        },
-      }),
-    });
-    const data = (await response.json()) as { record?: BattleRecord; records?: BattleRecord[]; error?: string };
-    if (!response.ok) {
-      setMessage({ type: "error", text: data.error || "제출 실패" });
+    if (cleanSuccessReason.length < MIN_SUCCESS_REASON_LENGTH) {
+      setMessage({ type: "warning", text: `성공 이유를 ${MIN_SUCCESS_REASON_LENGTH}자 이상 입력해줘.` });
       return;
     }
-    setRecords(data.records || (data.record ? [data.record, ...records] : []));
-    setMessage({ type: "success", text: "제출 완료. 타이머 종료." });
+    if (!evidenceImages.length) {
+      setMessage({ type: "warning", text: "증거 스크린샷을 1개 붙여넣어줘." });
+      return;
+    }
+    setIsSubmitting(true);
+    setMessage({ type: "info", text: "제출 중입니다. 잠시만 기다려주세요." });
+    try {
+      const finalDuration = Math.max(0, Math.round((((now || Date.now()) - activeSessionStartTime) / 1000) * 100) / 100);
+      const cleanSituation = scenarioSituation.trim();
+      const cleanPhoneNumber = phoneNumber.trim();
+      const response = await fetch("/api/records", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          participantId: participantId(cleanName),
+          participantName: cleanName,
+          participantType: "human",
+          scenarioId: effectiveScenarioId,
+          scenarioLabel: cleanSituation || "Live QA Mission",
+          status,
+          durationSeconds: finalDuration,
+          reason: cleanSuccessReason,
+          artifactUrl: "",
+          metadata: {
+            evidenceSource: "human-form",
+            rafflePhoneNumber: cleanPhoneNumber || undefined,
+            sessionStartedAt,
+            scenarioSituation: cleanSituation,
+            successReason: cleanSuccessReason,
+            evidenceImageDataUrl: evidenceImages[0]?.dataUrl || "",
+            evidenceImageName: evidenceImages[0]?.name || "",
+            evidenceImageSize: evidenceImages[0]?.size || 0,
+            evidenceImageWidth: evidenceImages[0]?.width || 0,
+            evidenceImageHeight: evidenceImages[0]?.height || 0,
+            evidenceImageCount: evidenceImages.length,
+            evidenceImages: evidenceImages.map((image, index) => ({
+              dataUrl: image.dataUrl,
+              name: image.name,
+              size: image.size,
+              width: image.width,
+              height: image.height,
+              index,
+            })),
+          },
+        }),
+      });
+      const data = await readJsonOrError(response);
+      if (!response.ok) {
+        setMessage({ type: "error", text: data.error || "제출 실패" });
+        return;
+      }
+      setRecords((currentRecords) => data.records || (data.record ? [data.record, ...currentRecords] : currentRecords));
+      setMessage({ type: "success", text: "제출 완료. 타이머 종료." });
+    } catch {
+      setMessage({ type: "error", text: "제출 중 네트워크 오류가 발생했습니다." });
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   return (
     <main className="appFrame humanFrame">
+      <Spin description="제출 중" fullscreen spinning={isSubmitting} />
       <section className="appContainer humanContainer">
         <Card className="humanCard">
           <div className="humanHeader">
@@ -460,6 +620,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
                     <Form.Item label="참가자 이름" required>
                       <Input
                         allowClear
+                        disabled={isSubmitting}
                         onChange={(event) => setName(event.target.value)}
                         placeholder="예: 교수님 A"
                         prefix={<UserOutlined />}
@@ -467,17 +628,34 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
                         value={name}
                       />
                     </Form.Item>
+                    <Form.Item
+                      extra="추첨 연락용으로만 저장됩니다. 점수판에는 표시되지 않습니다."
+                      label="전화번호 (선택)"
+                    >
+                      <Input
+                        allowClear
+                        disabled={isSubmitting}
+                        inputMode="tel"
+                        onChange={(event) => setPhoneNumber(event.target.value)}
+                        placeholder="예: 010-1234-5678"
+                        prefix={<PhoneOutlined />}
+                        size="large"
+                        value={phoneNumber}
+                      />
+                    </Form.Item>
                     <Form.Item label="시나리오 상황">
                       <Input.TextArea
                         autoSize={{ minRows: 3, maxRows: 5 }}
+                        disabled={isSubmitting}
                         onChange={(event) => setScenarioSituation(event.target.value)}
-                        placeholder="운영자가 시작하면 시나리오가 표시됩니다."
-                        value={shouldShowCurrentRun ? scenarioSituation : ""}
+                        placeholder="운영자가 케이스를 선택하면 시나리오가 표시됩니다."
+                        value={scenarioSituation}
                       />
                     </Form.Item>
                     <Form.Item label="결과">
                       <Segmented
                         block
+                        disabled={isSubmitting}
                         onChange={(value) => setStatus(value as "SUCCESS" | "FAIL")}
                         options={[
                           {
@@ -503,49 +681,108 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
                         value={status}
                       />
                     </Form.Item>
-                    <Form.Item label="증거 메모">
+                    <Form.Item
+                      help={
+                        hasRequiredSuccessReason
+                          ? `좋아요. 현재 ${successReasonLength}자 입력됨.`
+                          : `성공 이유는 최소 ${MIN_SUCCESS_REASON_LENGTH}자 이상 작성해야 제출할 수 있습니다. 현재 ${successReasonLength}자.`
+                      }
+                      label={`성공 이유 (${MIN_SUCCESS_REASON_LENGTH}자 이상 필수)`}
+                      required
+                      validateStatus={successReasonLength > 0 && !hasRequiredSuccessReason ? "warning" : undefined}
+                    >
                       <Input.TextArea
                         autoSize={{ minRows: 3, maxRows: 5 }}
-                        onChange={(event) => setEvidenceNote(event.target.value)}
-                        placeholder="예: 로그인 성공 후 주문 내역 화면까지 확인"
+                        disabled={isSubmitting}
+                        onChange={(event) => setSuccessReason(event.target.value)}
+                        placeholder="예: 최종 화면에서 주문 내역 진입 상태와 결제 완료 문구를 확인했습니다."
                         showCount
                         maxLength={180}
-                        value={evidenceNote}
+                        value={successReason}
                       />
                     </Form.Item>
-                    <Form.Item label="증거 스크린샷">
+                    <Form.Item label="증거 스크린샷" required>
                       <div
-                        className={evidenceImage ? "pasteBox hasImage" : "pasteBox"}
+                        className={`${evidenceImages.length ? "pasteBox hasImage" : "pasteBox"}${isSubmitting ? " isSubmitting" : ""}`}
                         onPaste={handleScreenshotPaste}
                         tabIndex={0}
                       >
-                        {evidenceImage ? (
-                          <div className="pastePreview">
-                            <Image alt="붙여넣은 증거 스크린샷" preview={false} src={evidenceImage.dataUrl} />
-                            <div>
-                              <strong>스크린샷 첨부됨</strong>
-                              <span>
-                                {evidenceImage.width}x{evidenceImage.height}
-                              </span>
-                              <Button htmlType="button" icon={<DeleteOutlined />} onClick={() => setEvidenceImage(null)} size="small">
-                                제거
-                              </Button>
+                        {evidenceImages.length ? (
+                          <div className="pastePreviewMulti">
+                            <div className="pastePreviewSummary">
+                              <strong>스크린샷 {evidenceImages.length}개 첨부됨</strong>
+                              <span>추가 캡처 후 다시 붙여넣으면 최대 {MAX_EVIDENCE_IMAGES}개까지 누적됩니다.</span>
                             </div>
+                            <Image.PreviewGroup>
+                              <div className="pastePreviewGrid">
+                                {evidenceImages.map((image, index) => (
+                                  <div className="pastePreviewItem" key={`${image.name}-${image.size}-${index}`}>
+                                    <Image
+                                      alt={`붙여넣은 증거 스크린샷 ${index + 1}`}
+                                      preview={{ mask: "크게 보기" }}
+                                      src={image.dataUrl}
+                                    />
+                                    <div>
+                                      <span>
+                                        {index + 1}. {image.width}x{image.height}
+                                      </span>
+                                      <Button
+                                        disabled={isSubmitting}
+                                        htmlType="button"
+                                        icon={<DeleteOutlined />}
+                                        onClick={() =>
+                                          setEvidenceImages((currentImages) =>
+                                            currentImages.filter((_, imageIndex) => imageIndex !== index),
+                                          )
+                                        }
+                                        size="small"
+                                      >
+                                        제거
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </Image.PreviewGroup>
+                            {evidenceImages.length >= MAX_EVIDENCE_IMAGES ? (
+                              <span className="pasteLimitText">최대 {MAX_EVIDENCE_IMAGES}개까지 첨부됨</span>
+                            ) : null}
                           </div>
                         ) : (
                           <div className="pasteEmpty">
                             <PictureOutlined />
                             <strong>여기에 스크린샷 붙여넣기</strong>
-                            <span>캡처 후 Cmd+V / Ctrl+V</span>
+                            <span>캡처 후 Cmd+V / Ctrl+V, 여러 번 붙여넣기 가능</span>
                           </div>
                         )}
                       </div>
                     </Form.Item>
 
-                    {locked ? <Alert icon={<LockOutlined />} message="제출 완료" showIcon type="success" /> : null}
+                    <div className="submitRequirementBox">
+                      <strong>제출 조건</strong>
+                      <span className={hasRequiredSuccessReason ? "isMet" : ""}>
+                        성공 이유 {MIN_SUCCESS_REASON_LENGTH}자 이상
+                        <b>{successReasonLength} / {MIN_SUCCESS_REASON_LENGTH}</b>
+                      </span>
+                      <span className={hasRequiredScreenshot ? "isMet" : ""}>
+                        증거 스크린샷 1개 이상
+                        <b>{evidenceImages.length}개</b>
+                      </span>
+                    </div>
 
-                    <Button block disabled={locked} htmlType="submit" size="large" type="primary">
-                      {locked ? "제출 완료" : "완료 제출"}
+                    {locked ? <Alert icon={<LockOutlined />} message="제출 완료" showIcon type="success" /> : null}
+                    {isSubmitting ? (
+                      <Alert
+                        description="서버에 기록을 저장하고 타이머를 종료하는 중입니다."
+                        icon={<Spin size="small" />}
+                        message="제출 중"
+                        showIcon
+                        type="info"
+                      />
+                    ) : null}
+
+                    <Button block disabled={!submitReady} htmlType="submit" loading={isSubmitting} size="large" type="primary">
+                      {locked ? "제출 완료" : isSubmitting ? "제출 중" : "완료 제출"}
                     </Button>
                     {message ? <Alert message={message.text} showIcon type={message.type} /> : null}
                   </Form>
@@ -593,6 +830,8 @@ function GaiaLiveFeed({ records, storageMode }: { records: BattleRecord[]; stora
         const provider = metadataText(record.metadata?.provider);
         const model = metadataText(record.metadata?.model);
         const qaMode = metadataText(record.metadata?.qaMode);
+        const linkUrl = evidenceLinkUrl(record);
+        const imageUrls = evidenceImageUrls(record);
         return (
           <article className="gaiaEvidenceItem" key={`${record.id}-${record.updatedAt}`}>
             <div className="gaiaEvidenceHead">
@@ -609,18 +848,25 @@ function GaiaLiveFeed({ records, storageMode }: { records: BattleRecord[]; stora
               {model ? <Tag>{model}</Tag> : null}
               {qaMode ? <Tag>{qaMode}</Tag> : null}
             </div>
-            {record.artifactUrl ? (
-              <Button href={record.artifactUrl} icon={<LinkOutlined />} size="small" target="_blank">
+            {linkUrl ? (
+              <Button href={linkUrl} icon={<LinkOutlined />} size="small" target="_blank">
                 증거 열기
               </Button>
             ) : null}
-            {evidenceImageUrl(record) ? (
-              <Image
-                alt={`${record.participantName} 증거 스크린샷`}
-                className="gaiaScreenshot"
-                preview={false}
-                src={evidenceImageUrl(record)}
-              />
+            {imageUrls.length ? (
+              <Image.PreviewGroup>
+                <div className="evidenceGallery gaiaEvidenceGallery">
+                  {imageUrls.map((imageUrl, index) => (
+                    <Image
+                      alt={`${record.participantName} 증거 스크린샷 ${index + 1}`}
+                      className="gaiaScreenshot"
+                      key={`${imageUrl}-${index}`}
+                      preview={{ mask: "크게 보기" }}
+                      src={imageUrl}
+                    />
+                  ))}
+                </div>
+              </Image.PreviewGroup>
             ) : null}
           </article>
         );

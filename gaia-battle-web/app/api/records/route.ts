@@ -11,6 +11,9 @@ import { BattleRecordInput } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+const MAX_INLINE_IMAGE_DATA_URL_LENGTH = 360_000;
+const INLINE_IMAGE_METADATA_KEYS = ["evidenceImageDataUrl", "screenshotDataUrl"];
+
 function unauthorized() {
   return NextResponse.json({ error: "invalid upload token" }, { status: 401 });
 }
@@ -33,6 +36,31 @@ function requiresToken(input: BattleRecordInput) {
 
 function requiresResetToken() {
   return Boolean(process.env.BATTLE_RESET_TOKEN);
+}
+
+function sanitizeInlineEvidence(input: BattleRecordInput): BattleRecordInput {
+  const metadata = input.metadata && typeof input.metadata === "object" ? { ...input.metadata } : {};
+  for (const key of INLINE_IMAGE_METADATA_KEYS) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.length > MAX_INLINE_IMAGE_DATA_URL_LENGTH) {
+      delete metadata[key];
+      metadata[`${key}SkippedReason`] = `inline_image_too_large:${value.length}`;
+    }
+  }
+  if (Array.isArray(metadata.evidenceImages)) {
+    metadata.evidenceImages = metadata.evidenceImages
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .map((item) => {
+        const image = { ...item };
+        const dataUrl = image.dataUrl;
+        if (typeof dataUrl === "string" && dataUrl.length > MAX_INLINE_IMAGE_DATA_URL_LENGTH) {
+          delete image.dataUrl;
+          image.skippedReason = `inline_image_too_large:${dataUrl.length}`;
+        }
+        return image;
+      });
+  }
+  return { ...input, metadata };
 }
 
 function roundedSeconds(startedAt: string, endedAt: Date) {
@@ -81,9 +109,8 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const record = await upsertBattleRecord(await withServerHumanDuration(input));
-    const records = await listBattleRecords(record.sessionId);
-    return NextResponse.json({ record, records });
+    const record = await upsertBattleRecord(await withServerHumanDuration(sanitizeInlineEvidence(input)));
+    return NextResponse.json({ record });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "record upsert failed" },
