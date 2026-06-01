@@ -442,21 +442,40 @@ def _limit_attachments_for_status(
     return images
 
 
-def _capture_final_evidence_attachment(session_id: str) -> Optional[Dict[str, Any]]:
+def _capture_final_evidence_attachment(
+    session_id: str,
+    *,
+    target_ref: str = "",
+) -> Optional[Dict[str, Any]]:
     """Capture proof before the runner closes the browser session."""
     last_error = ""
-    for attempt in range(2):
+    clean_target_ref = str(target_ref or "").strip()
+    capture_plans: List[Dict[str, Any]] = []
+    if clean_target_ref:
+        capture_plans.append(
+            {
+                "ref": clean_target_ref,
+                "label": "최종 증거 영역",
+                "targeted": True,
+            }
+        )
+    capture_plans.append({"label": "최종 증거 화면", "targeted": False})
+
+    for attempt, plan in enumerate(capture_plans):
         if attempt:
             time.sleep(0.45)
         try:
+            params: Dict[str, Any] = {
+                "session_id": session_id,
+                "full_page": False,
+                "type": "png",
+            }
+            if plan.get("ref"):
+                params["ref"] = str(plan["ref"])
             response = execute_mcp_action(
                 CONFIG.mcp.host_url,
                 action="browser_screenshot",
-                params={
-                    "session_id": session_id,
-                    "full_page": False,
-                    "type": "png",
-                },
+                params=params,
                 timeout=90,
             )
             data = response.payload if not hasattr(response, "json") else response.json()
@@ -478,8 +497,11 @@ def _capture_final_evidence_attachment(session_id: str) -> Optional[Dict[str, An
                 "kind": "image_base64",
                 "mime": str(data.get("mime_type") or "image/png"),
                 "data": screenshot,
-                "label": "최종 증거 화면",
+                "label": str(plan.get("label") or "최종 증거 화면"),
             }
+            if plan.get("targeted"):
+                attachment["targeted"] = True
+                attachment["targetRef"] = clean_target_ref
             saved_path = str(data.get("saved_path") or "").strip()
             if saved_path:
                 attachment["path"] = saved_path
@@ -888,7 +910,10 @@ def _run_single_chat_goal(
             if isinstance(validation_report.get("attachments"), list)
             else []
         )
-        evidence_attachment = _capture_final_evidence_attachment(normalized_session_id)
+        evidence_attachment = _capture_final_evidence_attachment(
+            normalized_session_id,
+            target_ref=str(getattr(agent, "_active_scoped_container_ref", "") or ""),
+        )
         summary_attachments: List[Dict[str, Any]] = []
         if isinstance(evidence_attachment, dict) and evidence_attachment.get("kind") == "image_base64":
             summary_attachments.append(evidence_attachment)

@@ -49,6 +49,8 @@ type EvidenceImage = {
   height: number;
 };
 
+const STALE_HUMAN_RUN_MS = 20 * 60 * 1000;
+
 function participantId(name: string) {
   return name.trim().toLowerCase().replace(/[^a-z0-9가-힣_-]+/gi, "-") || "human";
 }
@@ -197,7 +199,15 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
         isRecordAtOrAfter(record, sessionStartTime),
     );
   }, [effectiveScenarioId, records, sessionStartTime]);
-  const activeSessionStartTime = sessionStartTime && !currentRunHasHumanRecord ? sessionStartTime : null;
+  const displayNowMs = now;
+  const staleRun = Boolean(
+    sessionStartTime &&
+      displayNowMs > 0 &&
+      !submittedRecord &&
+      !currentRunHasHumanRecord &&
+      displayNowMs - sessionStartTime > STALE_HUMAN_RUN_MS,
+  );
+  const activeSessionStartTime = sessionStartTime && !currentRunHasHumanRecord && !staleRun ? sessionStartTime : null;
   const shouldShowCurrentRun = Boolean(activeSessionStartTime || submittedRecord);
 
   useEffect(() => {
@@ -233,6 +243,7 @@ export function HumanSubmitClient({ sessionId, scenarioId, initialRecords }: Pro
     const serverNowMs = data.serverNow ? new Date(data.serverNow).getTime() : NaN;
     if (!Number.isNaN(serverNowMs)) {
       setServerClockOffsetMs(serverNowMs - Math.round((requestedAt + receivedAt) / 2));
+      setNow(serverNowMs);
     }
     if (data.storage) setStorageMode(data.storage);
     setSessionStartedAt(data.state?.humanStartedAt || null);

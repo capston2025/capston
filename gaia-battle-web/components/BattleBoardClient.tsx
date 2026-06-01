@@ -3,6 +3,7 @@
 import {
   ClockCircleOutlined,
   DashboardOutlined,
+  DeleteOutlined,
   FileSearchOutlined,
   FormOutlined,
   LinkOutlined,
@@ -11,7 +12,7 @@ import {
   TrophyOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import { Badge, Button, Card, Col, Empty, Image, Progress, Row, Space, Statistic, Tag } from "antd";
+import { Badge, Button, Card, Col, Empty, Image, Popconfirm, Progress, Row, Space, Statistic, Tag } from "antd";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { BattleCase, CaseVerdict, groupBattleCases } from "@/lib/cases";
@@ -100,6 +101,7 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
   const [records, setRecords] = useState(initialRecords);
   const [updatedAt, setUpdatedAt] = useState("대기 중");
   const [mounted, setMounted] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMounted(true), 0);
@@ -119,6 +121,25 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
     if (!response.ok) return;
     setUpdatedAt(new Date().toLocaleTimeString("ko-KR"));
   }, [sessionId]);
+
+  const resetSession = useCallback(async () => {
+    setResetting(true);
+    try {
+      const response = await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        window.alert(data.error || "세션 초기화 실패");
+        return;
+      }
+      setRecords([]);
+      setUpdatedAt(`${new Date().toLocaleTimeString("ko-KR")} 초기화`);
+      void refreshSession();
+    } finally {
+      setResetting(false);
+    }
+  }, [refreshSession, sessionId]);
 
   const realtimeStatus = useBattleRealtime({
     sessionId,
@@ -175,6 +196,18 @@ export function BattleBoardClient({ sessionId, initialRecords }: Props) {
               <Button href={`/battle/${sessionId}/human`} icon={<FormOutlined />} size="large" type="primary">
                 사람 입력
               </Button>
+              <Popconfirm
+                cancelText="취소"
+                description="현재 세션의 시작 신호와 기록을 모두 지웁니다."
+                okButtonProps={{ danger: true, loading: resetting }}
+                okText="초기화"
+                onConfirm={resetSession}
+                title="세션을 초기화할까요?"
+              >
+                <Button danger icon={<DeleteOutlined />} loading={resetting} size="large">
+                  초기화
+                </Button>
+              </Popconfirm>
               <Button href="/" icon={<DashboardOutlined />} size="large">
                 홈
               </Button>

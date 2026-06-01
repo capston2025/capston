@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getBattleSessionState, getBattleStorageMode, listBattleRecords, upsertBattleRecord } from "@/lib/store";
+import {
+  deleteBattleRecord,
+  getBattleSessionState,
+  getBattleStorageMode,
+  listBattleRecords,
+  upsertBattleRecord,
+} from "@/lib/store";
 import { BattleRecordInput } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +21,18 @@ function tokenFrom(request: NextRequest) {
   return request.headers.get("x-battle-token") || "";
 }
 
+function resetTokenFrom(request: NextRequest) {
+  const auth = request.headers.get("authorization") || "";
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice("bearer ".length).trim();
+  return request.headers.get("x-battle-reset-token") || request.headers.get("x-battle-token") || "";
+}
+
 function requiresToken(input: BattleRecordInput) {
   return Boolean(process.env.BATTLE_UPLOAD_TOKEN) && input.participantType !== "human";
+}
+
+function requiresResetToken() {
+  return Boolean(process.env.BATTLE_RESET_TOKEN);
 }
 
 function roundedSeconds(startedAt: string, endedAt: Date) {
@@ -71,6 +87,25 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "record upsert failed" },
+      { status: 400 },
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  if (requiresResetToken() && resetTokenFrom(request) !== process.env.BATTLE_RESET_TOKEN) {
+    return NextResponse.json({ error: "invalid reset token" }, { status: 401 });
+  }
+
+  const sessionId = request.nextUrl.searchParams.get("sessionId") || "";
+  const recordId = request.nextUrl.searchParams.get("recordId") || "";
+  try {
+    const deleted = await deleteBattleRecord(sessionId, recordId);
+    const records = await listBattleRecords(sessionId);
+    return NextResponse.json({ deleted, records });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "record delete failed" },
       { status: 400 },
     );
   }

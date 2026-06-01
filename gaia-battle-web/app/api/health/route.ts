@@ -11,6 +11,7 @@ export async function GET() {
     storage,
     supabaseConfigured: storage === "supabase",
     uploadTokenConfigured: Boolean(process.env.BATTLE_UPLOAD_TOKEN),
+    resetTokenConfigured: Boolean(process.env.BATTLE_RESET_TOKEN),
     defaultSessionId: process.env.NEXT_PUBLIC_DEFAULT_SESSION_ID || "",
   });
 }

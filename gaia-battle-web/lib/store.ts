@@ -294,3 +294,77 @@ export async function updateBattleSessionState(input: BattleSessionStateInput): 
   states.push(state);
   return state;
 }
+
+export async function resetBattleTimer(sessionId: string): Promise<{ sessionId: string; storage: BattleStorageMode }> {
+  const cleanSessionId = String(sessionId || "").trim();
+  if (!cleanSessionId) {
+    throw new Error("sessionId is required");
+  }
+  const config = getSupabaseConfig();
+  if (config) {
+    const query = new URLSearchParams({ session_id: `eq.${cleanSessionId}` });
+    await supabaseFetch(`${config.stateTable}?${query.toString()}`, {
+      method: "DELETE",
+      headers: { Prefer: "return=minimal" },
+    });
+    return { sessionId: cleanSessionId, storage: "supabase" };
+  }
+
+  globalThis.__gaiaBattleSessionStates = memorySessionStates().filter((state) => state.sessionId !== cleanSessionId);
+  return { sessionId: cleanSessionId, storage: "memory" };
+}
+
+export async function resetBattleSession(sessionId: string): Promise<{ sessionId: string; storage: BattleStorageMode }> {
+  const cleanSessionId = String(sessionId || "").trim();
+  if (!cleanSessionId) {
+    throw new Error("sessionId is required");
+  }
+  const config = getSupabaseConfig();
+  if (config) {
+    const query = new URLSearchParams({ session_id: `eq.${cleanSessionId}` });
+    await supabaseFetch(`${config.recordTable}?${query.toString()}`, {
+      method: "DELETE",
+      headers: { Prefer: "return=minimal" },
+    });
+    await supabaseFetch(`${config.stateTable}?${query.toString()}`, {
+      method: "DELETE",
+      headers: { Prefer: "return=minimal" },
+    });
+    return { sessionId: cleanSessionId, storage: "supabase" };
+  }
+
+  globalThis.__gaiaBattleRecords = memoryRecords().filter((record) => record.sessionId !== cleanSessionId);
+  globalThis.__gaiaBattleSessionStates = memorySessionStates().filter((state) => state.sessionId !== cleanSessionId);
+  return { sessionId: cleanSessionId, storage: "memory" };
+}
+
+export async function deleteBattleRecord(
+  sessionId: string,
+  recordId: string,
+): Promise<{ sessionId: string; recordId: string; storage: BattleStorageMode }> {
+  const cleanSessionId = String(sessionId || "").trim();
+  const cleanRecordId = String(recordId || "").trim();
+  if (!cleanSessionId) {
+    throw new Error("sessionId is required");
+  }
+  if (!cleanRecordId) {
+    throw new Error("recordId is required");
+  }
+  const config = getSupabaseConfig();
+  if (config) {
+    const query = new URLSearchParams({
+      session_id: `eq.${cleanSessionId}`,
+      id: `eq.${cleanRecordId}`,
+    });
+    await supabaseFetch(`${config.recordTable}?${query.toString()}`, {
+      method: "DELETE",
+      headers: { Prefer: "return=minimal" },
+    });
+    return { sessionId: cleanSessionId, recordId: cleanRecordId, storage: "supabase" };
+  }
+
+  globalThis.__gaiaBattleRecords = memoryRecords().filter(
+    (record) => !(record.sessionId === cleanSessionId && record.id === cleanRecordId),
+  );
+  return { sessionId: cleanSessionId, recordId: cleanRecordId, storage: "memory" };
+}

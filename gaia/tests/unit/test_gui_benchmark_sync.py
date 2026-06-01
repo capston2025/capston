@@ -822,6 +822,11 @@ def test_main_window_battle_demo_mode_enables_web_and_fast_path(monkeypatch) -> 
     assert window.get_benchmark_run_options()["fast_mode"] is True
     assert window._benchmark_battle_checkbox.isChecked() is True
     assert window._benchmark_fast_checkbox.isChecked() is True
+    assert window._battle_ops_panel.isHidden() is False
+    assert window._battle_timer_reset_button.text() == "타이머 초기화"
+    assert window._battle_records_delete_button.text() == "기록 삭제"
+    assert window._site_battle_timer_reset_button.isHidden() is False
+    assert window._site_battle_records_delete_button.isHidden() is False
     assert emitted == [True]
 
 
@@ -840,6 +845,9 @@ def test_main_window_site_selection_battle_demo_button_is_direct_entry(monkeypat
     assert window.get_benchmark_run_options()["battle_mode"] is True
     assert window.get_benchmark_run_options()["fast_mode"] is True
     assert window._site_battle_demo_button.isChecked() is True
+    assert window._battle_ops_panel.isHidden() is False
+    assert window._site_battle_timer_reset_button.text() == "타이머 초기화"
+    assert window._site_battle_records_delete_button.text() == "기록 삭제"
     assert emitted == [True]
 
 

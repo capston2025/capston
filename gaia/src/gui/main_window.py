@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Sequence
+from typing import Any, Callable, Iterable, List, Mapping, Sequence
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QByteArray
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont, QPixmap
@@ -38,6 +38,14 @@ from PySide6.QtWidgets import (
 from gaia.src.gui.screencast_client import ScreencastClient
 from gaia.src.gui.exploration_viewer import ExplorationViewer
 from gaia.src.gui.asset_widgets import GuiAssetLabel
+from gaia.src.gui.battle_web_admin import (
+    BATTLE_DEFAULT_SESSION_ID,
+    BATTLE_DEFAULT_SITE_URL,
+    BattleWebError,
+    delete_battle_record,
+    list_battle_records,
+    reset_battle_timer,
+)
 from gaia.src.screenshot_quality import is_low_information_screenshot
 
 
@@ -1830,6 +1838,108 @@ class NotificationDialog(QDialog):
             is_question=True, ok_text=ok_text, cancel_text=cancel_text,
         )
         return dlg.exec() == QDialog.DialogCode.Accepted
+
+
+class BattleRecordsDialog(QDialog):
+    """Operator dialog for deleting Human vs GAIA web records one at a time."""
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        *,
+        site_url: str,
+        session_id: str,
+        token: str = "",
+    ) -> None:
+        super().__init__(parent)
+        self._site_url = site_url
+        self._session_id = session_id
+        self._token = token
+        self.setWindowTitle("Human vs GAIA 기록 삭제")
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(440)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        title = QLabel("삭제할 기록을 하나 선택하세요.", self)
+        title.setObjectName("BenchmarkHeroKicker")
+        layout.addWidget(title)
+
+        self._record_list = QListWidget(self)
+        self._record_list.setAlternatingRowColors(True)
+        layout.addWidget(self._record_list, stretch=1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        refresh_button = QPushButton("새로고침", self)
+        refresh_button.clicked.connect(self.reload_records)
+        button_row.addWidget(refresh_button)
+        delete_button = QPushButton("선택 삭제", self)
+        delete_button.setObjectName("DangerButton")
+        delete_button.clicked.connect(self._delete_selected)
+        button_row.addWidget(delete_button)
+        close_button = QPushButton("닫기", self)
+        close_button.clicked.connect(self.accept)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        self.reload_records()
+
+    @staticmethod
+    def _record_label(record: Mapping[str, Any]) -> str:
+        participant = str(record.get("participantName") or record.get("participantType") or "-")
+        participant_type = str(record.get("participantType") or "").upper()
+        scenario = str(record.get("scenarioLabel") or record.get("scenarioId") or "-")
+        status = str(record.get("status") or "-")
+        duration = record.get("durationSeconds")
+        seconds = f"{float(duration):.2f}s" if isinstance(duration, (int, float)) else "-"
+        updated_at = str(record.get("updatedAt") or record.get("createdAt") or "")
+        return f"[{participant_type}] {scenario} / {participant} / {status} / {seconds} / {updated_at}"
+
+    def reload_records(self) -> None:
+        self._record_list.clear()
+        try:
+            records = list_battle_records(site_url=self._site_url, session_id=self._session_id)
+        except BattleWebError as exc:
+            NotificationDialog.error(self, "기록 조회 실패", str(exc))
+            return
+        if not records:
+            empty = QListWidgetItem("현재 삭제할 기록이 없습니다.")
+            empty.setData(Qt.ItemDataRole.UserRole, "")
+            self._record_list.addItem(empty)
+            return
+        for record in records:
+            item = QListWidgetItem(self._record_label(record))
+            item.setData(Qt.ItemDataRole.UserRole, str(record.get("id") or ""))
+            self._record_list.addItem(item)
+
+    def _delete_selected(self) -> None:
+        item = self._record_list.currentItem()
+        record_id = str(item.data(Qt.ItemDataRole.UserRole) if item is not None else "").strip()
+        if not record_id:
+            NotificationDialog.warning(self, "선택 필요", "삭제할 기록을 먼저 선택해주세요.")
+            return
+        if not NotificationDialog.question(
+            self,
+            "기록을 삭제할까요?",
+            item.text(),
+            ok_text="삭제",
+            cancel_text="취소",
+        ):
+            return
+        try:
+            delete_battle_record(
+                site_url=self._site_url,
+                session_id=self._session_id,
+                record_id=record_id,
+                token=self._token,
+            )
+        except BattleWebError as exc:
+            NotificationDialog.error(self, "기록 삭제 실패", str(exc))
+            return
+        self.reload_records()
 
 
 class MainWindow(QMainWindow):
@@ -4203,6 +4313,16 @@ class MainWindow(QMainWindow):
         self._site_battle_demo_button.clicked.connect(self._activate_battle_demo_mode)
         battle_layout.addWidget(self._site_battle_demo_button)
 
+        self._site_battle_timer_reset_button = QPushButton("타이머 초기화", battle_panel)
+        self._site_battle_timer_reset_button.setObjectName("GhostButton")
+        self._site_battle_timer_reset_button.clicked.connect(self._reset_battle_timer_from_gui)
+        battle_layout.addWidget(self._site_battle_timer_reset_button)
+
+        self._site_battle_records_delete_button = QPushButton("기록 삭제", battle_panel)
+        self._site_battle_records_delete_button.setObjectName("DangerButton")
+        self._site_battle_records_delete_button.clicked.connect(self._open_battle_records_delete_dialog)
+        battle_layout.addWidget(self._site_battle_records_delete_button)
+
         layout.addWidget(battle_panel)
 
         # 검색 + 카테고리 + "+ 직접 URL 입력하기"
@@ -5423,6 +5543,7 @@ class MainWindow(QMainWindow):
         self._benchmark_battle_checkbox.setToolTip(
             "켜면 고정 battle-live 웹 보드에 Human 타이머 시작 신호와 GAIA 증거를 업로드합니다."
         )
+        self._benchmark_battle_checkbox.toggled.connect(lambda _checked: self._update_battle_ops_panel_visibility())
         option_row.addWidget(self._benchmark_battle_checkbox)
         self._benchmark_fast_checkbox = QCheckBox("Fast mode", card)
         self._benchmark_fast_checkbox.setToolTip(
@@ -5431,6 +5552,26 @@ class MainWindow(QMainWindow):
         option_row.addWidget(self._benchmark_fast_checkbox)
         option_row.addStretch()
         card_layout.addLayout(option_row)
+
+        self._battle_ops_panel = QFrame(card)
+        self._battle_ops_panel.setObjectName("FeatureInputContainer")
+        battle_ops_layout = QHBoxLayout(self._battle_ops_panel)
+        battle_ops_layout.setContentsMargins(14, 12, 14, 12)
+        battle_ops_layout.setSpacing(10)
+        battle_ops_text = QLabel("Human vs GAIA 운영", self._battle_ops_panel)
+        battle_ops_text.setObjectName("BenchmarkStageMetric")
+        battle_ops_layout.addWidget(battle_ops_text)
+        battle_ops_layout.addStretch(1)
+        self._battle_timer_reset_button = QPushButton("타이머 초기화", self._battle_ops_panel)
+        self._battle_timer_reset_button.setObjectName("GhostButton")
+        self._battle_timer_reset_button.clicked.connect(self._reset_battle_timer_from_gui)
+        battle_ops_layout.addWidget(self._battle_timer_reset_button)
+        self._battle_records_delete_button = QPushButton("기록 삭제", self._battle_ops_panel)
+        self._battle_records_delete_button.setObjectName("DangerButton")
+        self._battle_records_delete_button.clicked.connect(self._open_battle_records_delete_dialog)
+        battle_ops_layout.addWidget(self._battle_records_delete_button)
+        self._battle_ops_panel.setVisible(False)
+        card_layout.addWidget(self._battle_ops_panel)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(12)
@@ -6774,6 +6915,12 @@ class MainWindow(QMainWindow):
     def get_selected_benchmark_url(self) -> str:
         return self._selected_benchmark_url
 
+    def _update_battle_ops_panel_visibility(self) -> None:
+        panel = getattr(self, "_battle_ops_panel", None)
+        if panel is None:
+            return
+        panel.setVisible(bool(self.get_benchmark_run_options().get("battle_mode")))
+
     def get_benchmark_run_options(self) -> dict[str, Any]:
         battle_checkbox = getattr(self, "_benchmark_battle_checkbox", None)
         fast_checkbox = getattr(self, "_benchmark_fast_checkbox", None)
@@ -6784,6 +6931,50 @@ class MainWindow(QMainWindow):
             "battle_site_url": "https://gaia-battle-web.vercel.app",
             "battle_session_id": "battle-live",
         }
+
+    def _battle_reset_token(self) -> str:
+        import os
+
+        return (
+            os.getenv("GAIA_BATTLE_RESET_TOKEN", "").strip()
+            or os.getenv("BATTLE_RESET_TOKEN", "").strip()
+            or os.getenv("GAIA_BATTLE_UPLOAD_TOKEN", "").strip()
+        )
+
+    def _battle_web_config_from_window(self) -> tuple[str, str, str]:
+        options = self.get_benchmark_run_options()
+        site_url = str(options.get("battle_site_url") or BATTLE_DEFAULT_SITE_URL).strip() or BATTLE_DEFAULT_SITE_URL
+        session_id = str(options.get("battle_session_id") or BATTLE_DEFAULT_SESSION_ID).strip() or BATTLE_DEFAULT_SESSION_ID
+        return site_url, session_id, self._battle_reset_token()
+
+    def _reset_battle_timer_from_gui(self) -> None:
+        site_url, session_id, token = self._battle_web_config_from_window()
+        if not NotificationDialog.question(
+            self,
+            "Human 타이머를 초기화할까요?",
+            f"{session_id}의 시작 신호만 지웁니다. GAIA/Human 기록은 유지됩니다.",
+            ok_text="초기화",
+            cancel_text="취소",
+        ):
+            return
+        try:
+            reset_battle_timer(site_url=site_url, session_id=session_id, token=token)
+        except BattleWebError as exc:
+            self.append_log(f"⚠️ Human vs GAIA 타이머 초기화 실패: {exc}")
+            NotificationDialog.error(self, "초기화 실패", str(exc))
+            return
+        self.append_log(f"🧹 Human vs GAIA 타이머 초기화: {session_id}")
+        NotificationDialog.success(self, "초기화 완료", "사람 입력 화면이 시작 대기 상태로 돌아갑니다.")
+
+    def _open_battle_records_delete_dialog(self) -> None:
+        site_url, session_id, token = self._battle_web_config_from_window()
+        dialog = BattleRecordsDialog(
+            self,
+            site_url=site_url,
+            session_id=session_id,
+            token=token,
+        )
+        dialog.exec()
 
     def show_html_in_browser(self, html_content: str) -> None:
         """브라우저 뷰에 HTML 콘텐츠를 표시합니다"""
@@ -7347,6 +7538,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_benchmark_fast_checkbox"):
             self._benchmark_fast_checkbox.setChecked(False)
         self.set_selected_run_mode("benchmark")
+        self._update_battle_ops_panel_visibility()
         self._emit_benchmark_manage()
 
     def _activate_battle_demo_mode(self) -> None:
@@ -7356,6 +7548,7 @@ class MainWindow(QMainWindow):
             self._benchmark_battle_checkbox.setChecked(True)
         if hasattr(self, "_benchmark_fast_checkbox"):
             self._benchmark_fast_checkbox.setChecked(True)
+        self._update_battle_ops_panel_visibility()
         self.benchmarkBattleCatalogRequested.emit()
         self.show_site_selection_stage()
 
@@ -7387,6 +7580,7 @@ class MainWindow(QMainWindow):
             self._feature_input_container.setVisible(normalized in {"quick", "adaptive_qa", "deep_adaptive_qa"})
         if hasattr(self, "_standard_action_container"):
             self._standard_action_container.setVisible(normalized not in {"benchmark", "battle_demo"})
+        self._update_battle_ops_panel_visibility()
         # 신규 3단계 UX: mode 변경만으로 stage를 자동 전환하지 않음.
         # Step 2 (test_case_stage)에서 선택 완료 시 _on_case_selection_complete가
         # 적절한 시그널을 발생시키고, controller가 set_busy(True)를 호출하여 Step 3로 전환.

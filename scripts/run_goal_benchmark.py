@@ -1014,7 +1014,7 @@ def _battle_screenshot_metadata(summary: Dict[str, Any], *, max_bytes: int) -> D
                     "screenshotPath": path,
                 }
             data_url = data if data.startswith("data:image/") else f"data:{mime};base64,{data}"
-            return {
+            metadata = {
                 "screenshotDataUrl": data_url,
                 "screenshotMime": mime,
                 "screenshotLabel": str(attachment.get("label") or "GAIA evidence").strip(),
@@ -1022,10 +1022,21 @@ def _battle_screenshot_metadata(summary: Dict[str, Any], *, max_bytes: int) -> D
                 "screenshotBytes": size,
                 "currentUrl": str(attachment.get("current_url") or "").strip(),
             }
+            if bool(attachment.get("targeted")):
+                metadata["screenshotTargeted"] = True
+                target_ref = str(attachment.get("targetRef") or "").strip()
+                if target_ref:
+                    metadata["screenshotTargetRef"] = target_ref
+            return metadata
         from_path = _read_image_path_as_data_url(path, max_bytes=max_bytes)
         if from_path:
             from_path.setdefault("screenshotLabel", str(attachment.get("label") or "GAIA evidence").strip())
             from_path.setdefault("currentUrl", str(attachment.get("current_url") or "").strip())
+            if bool(attachment.get("targeted")):
+                from_path["screenshotTargeted"] = True
+                target_ref = str(attachment.get("targetRef") or "").strip()
+                if target_ref:
+                    from_path["screenshotTargetRef"] = target_ref
             return from_path
     return {}
 

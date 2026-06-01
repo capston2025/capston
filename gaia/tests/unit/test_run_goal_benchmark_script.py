@@ -315,6 +315,8 @@ def test_build_battle_upload_payload_maps_gaia_result() -> None:
                         "label": "최종 증거 화면",
                         "path": "/tmp/final-proof.png",
                         "current_url": "https://service.example/result",
+                        "targeted": True,
+                        "targetRef": "e42",
                     }
                 ]
             },
@@ -334,6 +336,8 @@ def test_build_battle_upload_payload_maps_gaia_result() -> None:
     assert payload["metadata"]["expectedSignals"] == ["order-visible"]
     assert payload["metadata"]["screenshotDataUrl"] == "data:image/png;base64,ZmFrZQ=="
     assert payload["metadata"]["screenshotLabel"] == "최종 증거 화면"
+    assert payload["metadata"]["screenshotTargeted"] is True
+    assert payload["metadata"]["screenshotTargetRef"] == "e42"
     assert payload["metadata"]["currentUrl"] == "https://service.example/result"
 
 
